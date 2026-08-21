@@ -520,7 +520,7 @@ def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
     def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         database_path = Path(database)
         recovery_databases.append(database_path)
-        if database_path == source_data:
+        if database_path != source_data and replacement_data.exists():
             os.replace(replacement_data, source_data)
         connection = cast(sqlite3.Connection, original_connect(database, *args, **kwargs))
         connection.set_trace_callback(executed_sql.append)
@@ -529,10 +529,13 @@ def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
     monkeypatch.setattr(sqlite3, "connect", connect)
     with native_testmon_source_binding(source_data) as binding:
         assert binding is not None
+        assert Path(f"{binding.data_path}-wal").exists(), binding
         state = inspect_native_testmon_environment(
             source_data,
             environment_name="owned-environment",
             data_fd=binding.descriptor,
+            bound_data_path=binding.data_path,
+            bound_sidecar_fds=dict(binding.sidecar_descriptors),
         )
 
     assert state.valid
@@ -542,8 +545,8 @@ def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
     assert all(database != source_data for database in recovery_databases)
     assert "PRAGMA wal_checkpoint(PASSIVE)" in executed_sql
     current_identity = (source_data.stat().st_dev, source_data.stat().st_ino)
-    assert current_identity == original_identity
-    assert replacement_data.exists()
+    assert current_identity != original_identity
+    assert not replacement_data.exists()
 
 
 def _seed_partial_native_graph(
@@ -975,6 +978,56 @@ def test_atomic_copy_carries_validated_source_descriptor_across_public_replaceme
     assert copied.valid
     assert copied.environment is not None
     assert copied.environment.nodeids == ("tests/test_original.py::test_original",)
+
+
+def test_atomic_copy_retains_wal_backed_bound_source_after_public_replacement(tmp_path: Path) -> None:
+    """A bound SQLite family carries WAL-only graph rows across public replacement."""
+    import sqlite3
+
+    source_root = tmp_path / "source"
+    destination_root = tmp_path / "destination"
+    replacement_root = tmp_path / "replacement"
+    for root in (source_root, destination_root, replacement_root):
+        (root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_original.py",
+        recorded_test_name="tests/test_original.py::test_original",
+    )
+    replacement_data = _seed_partial_native_graph(
+        replacement_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_twin.py",
+        recorded_test_name="tests/test_twin.py::test_twin",
+    )
+    destination_data = destination_root / TESTMON_DATA_RELPATH
+    with sqlite3.connect(source_data) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "UPDATE test_execution SET test_name = ?",
+            ("tests/test_wal.py::test_wal",),
+        )
+        connection.commit()
+        assert Path(f"{source_data}-wal").exists()
+        with native_testmon_source_binding(source_data) as binding:
+            assert binding is not None
+            assert "-wal" in dict(binding.sidecar_descriptors)
+            os.replace(replacement_data, source_data)
+            _atomic_copy_sqlite_database(
+                source_data,
+                destination_data,
+                environment_name="owned-environment",
+                required_executable_paths=(),
+                deadline_monotonic=None,
+                source_fd=binding.descriptor,
+                bound_source_path=binding.data_path,
+            )
+
+    copied = inspect_native_testmon_environment(destination_data, environment_name="owned-environment")
+    assert copied.valid
+    assert copied.environment is not None
+    assert copied.environment.nodeids == ("tests/test_wal.py::test_wal",)
 
 
 def test_partial_bootstrap_graph_is_incomplete_rather_than_invalid(tmp_path: Path) -> None:

@@ -1338,7 +1338,7 @@ def test_matching_main_copy_then_product_mutation_selects_and_fails_owner(tmp_pa
 
     preparation = prepare_native_testmon_environment(lane, required_executable_paths=("app.py",))
 
-    assert preparation.selection_mode == "affected"
+    assert preparation.selection_mode == "affected", preparation
     assert preparation.copied_from == main / TESTMON_DATA_RELPATH
     result = _run_lane(
         lane,

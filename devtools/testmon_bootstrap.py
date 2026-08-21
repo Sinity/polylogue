@@ -135,10 +135,13 @@ class NativeTestmonPreparation:
 
 @dataclass(frozen=True, slots=True)
 class NativeTestmonSourceBinding:
-    """A source database descriptor retained across validation and copy."""
+    """A private SQLite filename family retained across validation and copy."""
 
+    directory_descriptor: int
     descriptor: int
+    sidecar_descriptors: tuple[tuple[str, int], ...]
     data_path: Path
+    private_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,33 +745,48 @@ def inspect_native_testmon_environment(
     environment_name: str,
     required_executable_paths: Sequence[str] = (),
     data_fd: int | None = None,
+    bound_data_path: Path | None = None,
+    bound_sidecar_fds: Mapping[str, int] | None = None,
     deadline_monotonic: float | None = None,
 ) -> NativeTestmonState:
     """Validate one native environment without interpreting plugin internals."""
     _ensure_deadline(deadline_monotonic)
-    sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
-    # A supplied descriptor is the authority for this source generation.  The
-    # public name may be replaced after binding, so every SQLite read below
-    # must reopen the retained descriptor rather than the mutable pathname.
-    sqlite_data_path = _descriptor_bound_path(data_fd) if data_fd is not None else data_path
+    sqlite_data_path = bound_data_path or (_descriptor_bound_path(data_fd) if data_fd is not None else data_path)
+    sidecars = tuple(Path(f"{sqlite_data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
     if data_fd is None and not data_path.exists():
         if any(path.exists() or path.is_symlink() for path in sidecars):
             return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
         return NativeTestmonState("absent", "native testmon database is absent")
     try:
         state = os.fstat(data_fd) if data_fd is not None else data_path.lstat()
+        bound_state = sqlite_data_path.lstat() if bound_data_path is not None else state
     except OSError as exc:
         return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
     if not stat.S_ISREG(state.st_mode) or (data_fd is None and state.st_nlink != 1) or state.st_nlink < 1:
         return NativeTestmonState("invalid", "native testmon database is not a single-link regular file")
-    for sidecar in sidecars:
+    if bound_data_path is not None and (bound_state.st_dev, bound_state.st_ino) != (state.st_dev, state.st_ino):
+        return NativeTestmonState("invalid", "native testmon database changed while binding")
+    bound_sidecar_fds = bound_sidecar_fds or {}
+    for suffix, sidecar in zip(TESTMON_SIDECAR_SUFFIXES, sidecars, strict=True):
+        descriptor = bound_sidecar_fds.get(suffix)
         try:
             sidecar_state = sidecar.lstat()
         except FileNotFoundError:
+            if descriptor is not None:
+                return NativeTestmonState("invalid", f"bound native testmon sidecar disappeared: {sidecar}")
             continue
         except OSError as exc:
             return NativeTestmonState("invalid", f"cannot inspect native testmon sidecar {sidecar}: {exc}")
-        if not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
+        if descriptor is not None:
+            retained = os.fstat(descriptor)
+            if not stat.S_ISREG(retained.st_mode) or (sidecar_state.st_dev, sidecar_state.st_ino) != (
+                retained.st_dev,
+                retained.st_ino,
+            ):
+                return NativeTestmonState("invalid", f"bound native testmon sidecar changed: {sidecar}")
+        elif bound_data_path is not None:
+            return NativeTestmonState("invalid", f"unexpected native testmon sidecar: {sidecar}")
+        elif not stat.S_ISREG(sidecar_state.st_mode) or sidecar_state.st_nlink != 1:
             return NativeTestmonState("invalid", f"native testmon sidecar is not a single-link regular file: {sidecar}")
     # A killed writer (supervisor SIGTERM, operator interrupt) leaves a WAL
     # that only a read-WRITE connection can replay -- the read-only URI below
@@ -1098,11 +1116,15 @@ def _open_owned_testmon_directory(repo_root: Path, *, create: bool) -> int:
         raise
 
 
-def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, str]:
+def _open_owned_testmon_child(
+    directory_fd: int,
+    name: str,
+    *,
+    private_name: str | None = None,
+) -> tuple[int, Path, str]:
     """Open and retain the private bound child before exposing its descriptor path."""
     child_fd: int | None = None
     bound_fd: int | None = None
-    private_name: str | None = None
     try:
         child_fd = os.open(
             name,
@@ -1119,7 +1141,7 @@ def _open_owned_testmon_child(directory_fd: int, name: str) -> tuple[int, Path, 
             or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
         ):
             raise NativeTestmonRepairError(f"owned testmon child changed while binding: {name}")
-        private_name = f".{name}.bound-{os.getpid()}-{uuid.uuid4().hex}.tmp"
+        private_name = private_name or f".{name}.bound-{os.getpid()}-{uuid.uuid4().hex}.tmp"
         bound_child = _descriptor_bound_path(child_fd)
         os.link(bound_child, private_name, dst_dir_fd=directory_fd, follow_symlinks=True)
         # Open the link before validating it, then use the retained descriptor
@@ -1197,26 +1219,54 @@ def _unlink_bound_entry_if_owned(directory_fd: int, private_name: str, retained_
 
 @contextlib.contextmanager
 def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
-    """Retain one source inode for semantic validation and any subsequent copy."""
+    """Retain a private SQLite filename family for validation and copying."""
     if not data_path.is_file():
         yield None
         return
     directory_fd: int | None = None
     child_fd: int | None = None
-    private_name: str | None = None
+    private_names: list[str] = []
+    sidecar_descriptors: list[tuple[str, int]] = []
     try:
         directory_fd = _open_owned_testmon_directory(data_path.parent.parent.parent, create=False)
-        child_fd, bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
-        yield NativeTestmonSourceBinding(child_fd, bound_path)
+        child_fd, _bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
+        private_names.append(private_name)
+        for suffix in TESTMON_SIDECAR_SUFFIXES:
+            public_name = f"{data_path.name}{suffix}"
+            try:
+                os.stat(public_name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            sidecar_fd, _sidecar_path, sidecar_private_name = _open_owned_testmon_child(
+                directory_fd,
+                public_name,
+                private_name=f"{private_name}{suffix}",
+            )
+            sidecar_descriptors.append((suffix, sidecar_fd))
+            private_names.append(sidecar_private_name)
+        private_base = _descriptor_bound_path(directory_fd) / private_name
+        yield NativeTestmonSourceBinding(
+            directory_descriptor=directory_fd,
+            descriptor=child_fd,
+            sidecar_descriptors=tuple(sidecar_descriptors),
+            data_path=private_base,
+            private_names=tuple(private_names),
+        )
     finally:
         try:
-            if directory_fd is not None and private_name is not None:
-                _unlink_bound_entry_if_owned(directory_fd, private_name, child_fd)
+            if directory_fd is not None:
+                for suffix, descriptor in reversed(sidecar_descriptors):
+                    _unlink_bound_entry_if_owned(directory_fd, f"{private_names[0]}{suffix}", descriptor)
+                if child_fd is not None and private_names:
+                    _unlink_bound_entry_if_owned(directory_fd, private_names[0], child_fd)
         finally:
             try:
                 if directory_fd is not None:
                     os.close(directory_fd)
             finally:
+                for _suffix, descriptor in sidecar_descriptors:
+                    with contextlib.suppress(OSError):
+                        os.close(descriptor)
                 if child_fd is not None:
                     os.close(child_fd)
 
@@ -1281,6 +1331,7 @@ def _atomic_copy_sqlite_database(
     required_executable_paths: Sequence[str],
     deadline_monotonic: float | None,
     source_fd: int | None = None,
+    bound_source_path: Path | None = None,
 ) -> None:
     _ensure_deadline(deadline_monotonic)
     source_directory_fd: int | None = None
@@ -1295,10 +1346,9 @@ def _atomic_copy_sqlite_database(
         if source_fd is None:
             source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         else:
-            # The caller has already retained the source generation. Reopen its
-            # descriptor so a later replacement of the public name cannot
-            # invalidate or redirect this SQLite backup.
-            source_path = _descriptor_bound_path(source_fd)
+            # A bound SQLite filename family retains the source generation and
+            # its paired WAL without reopening the mutable public basename.
+            source_path = bound_source_path or _descriptor_bound_path(source_fd)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
         if source_fd is None:
             # Retain the source inode before SQLite opens it.  The returned
@@ -1310,6 +1360,11 @@ def _atomic_copy_sqlite_database(
                 source_directory_fd, source.name
             )
         assert source_path is not None
+        if source_fd is not None and bound_source_path is not None:
+            retained_source = os.fstat(source_fd)
+            current_source = source_path.stat()
+            if (current_source.st_dev, current_source.st_ino) != (retained_source.st_dev, retained_source.st_ino):
+                raise NativeTestmonRepairError("bound source testmon database changed before SQLite backup")
         destination_name = destination.name
         temporary_fd = os.open(
             temporary_name,
@@ -1340,6 +1395,11 @@ def _atomic_copy_sqlite_database(
                 progress=lambda _status, _remaining, _total: _ensure_deadline(deadline_monotonic),
                 sleep=0.05,
             )
+        if source_fd is not None and bound_source_path is not None:
+            retained_source = os.fstat(source_fd)
+            current_source = source_path.stat()
+            if (current_source.st_dev, current_source.st_ino) != (retained_source.st_dev, retained_source.st_ino):
+                raise NativeTestmonRepairError("bound source testmon database changed during SQLite backup")
         _ensure_deadline(deadline_monotonic)
         # Validate through the held descriptor.  Reopening ``temporary`` by
         # name here would allow a replacement of that directory entry to
@@ -1555,6 +1615,8 @@ def prepare_native_testmon_environment(
                                     environment_name=environment_name,
                                     required_executable_paths=required_executable_paths,
                                     data_fd=main_binding.descriptor,
+                                    bound_data_path=main_binding.data_path,
+                                    bound_sidecar_fds=dict(main_binding.sidecar_descriptors),
                                     deadline_monotonic=deadline_monotonic,
                                 )
                                 if main.valid:
@@ -1565,6 +1627,7 @@ def prepare_native_testmon_environment(
                                         required_executable_paths=required_executable_paths,
                                         deadline_monotonic=deadline_monotonic,
                                         source_fd=main_binding.descriptor,
+                                        bound_source_path=main_binding.data_path,
                                     )
                                     copied_from = main_data
                         finally:

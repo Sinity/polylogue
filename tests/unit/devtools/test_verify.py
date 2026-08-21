@@ -2947,13 +2947,12 @@ def test_native_verifier_keeps_descriptor_binding_for_parent_inspection(
     monkeypatch.setattr(verify, "_ACTIVE_VERIFY_RUN", SimpleNamespace(owned_native_testmon_state=state))
     try:
         assert state.data_path == Path(f"/proc/{os.getpid()}/fd/{state.descriptor}") / verify.TESTMON_DATA.name
-        assert state.executable_data_path == tmp_path / verify.TESTMON_DATA
         with patch("devtools.verify._run_step", side_effect=fake_run_step):
             assert _run("pytest native parallel (affected)", ["pytest"])[0] == 0
     finally:
         state.close()
 
-    assert captured["native_testmon_data"] == state.executable_data_path
+    assert captured["native_testmon_data"] == state.data_path
 
 
 @pytest.mark.uses_real_clock("The systemd scope and xdist worker are independent exec boundaries.")
@@ -2982,7 +2981,7 @@ def test_native_verifier_gives_xdist_worker_a_real_sqlite_path_through_systemd(
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setenv(CGROUP_MODE_ENV, "require")
     state = verify._open_owned_native_testmon_state(tmp_path)
-    executable_data_path = state.executable_data_path
+    bound_data_path = state.data_path
     observed = tmp_path / "contained-worker.json"
     module = tmp_path / "test_xdist_testmon_state.py"
     module.write_text(
@@ -3022,7 +3021,7 @@ def test_native_verifier_gives_xdist_worker_a_real_sqlite_path_through_systemd(
     assert rc == 0
     payload = json.loads(observed.read_text(encoding="utf-8"))
     containment = json.loads((tmp_path / PYTEST_CONTAINMENT_PATH).read_text(encoding="utf-8"))
-    assert payload["datafile"] == str(executable_data_path)
+    assert payload["datafile"] == str(bound_data_path)
     assert payload["pid"] != containment["controller_pid"]
     assert containment["mode"] == "systemd-scope"
     assert containment["cgroup_owned"] is True
@@ -3049,6 +3048,7 @@ def test_native_verifier_does_not_depend_on_systemd_forwarding_testmon_descripto
     monkeypatch.setenv(CGROUP_MODE_ENV, "require")
 
     state = verify._open_owned_native_testmon_state(tmp_path)
+    bound_data_path = state.data_path
     observed = tmp_path / "closed-descriptor-worker.txt"
     module = tmp_path / "test_closed_descriptor.py"
     module.write_text(
@@ -3081,7 +3081,7 @@ def test_native_verifier_does_not_depend_on_systemd_forwarding_testmon_descripto
         state.close()
 
     assert rc == 0
-    assert observed.read_text(encoding="utf-8") == str(tmp_path / verify.TESTMON_DATA)
+    assert observed.read_text(encoding="utf-8") == str(bound_data_path)
 
 
 def test_run_records_managed_basetemp_cleanup_metadata(tmp_path: Path) -> None:
