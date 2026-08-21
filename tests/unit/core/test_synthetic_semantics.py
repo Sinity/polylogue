@@ -702,6 +702,35 @@ class TestParseRoundtrip:
             # At least one message should have non-empty text
             assert any(m.text for m in conv.messages), f"No message text for {provider}"
 
+    def test_antigravity_metadata_sidecar_artifact_still_refused_as_a_session(self) -> None:
+        """Red twin for polylogue-ujitw: unblocking the real markdown-export
+        route above must not accidentally make the synthetic generator's
+        OTHER antigravity shape -- the generic-engine brain-metadata sidecar
+        (artifactType/summary/updatedAt) -- pass as a session too. PR #3441
+        made a real ``*.metadata.json`` file on disk classify as
+        ``AGENT_SIDECAR_META``, never a session; this proves the synthetic
+        generator's own sidecar-shaped output still hits that same refusal
+        at the real acquisition-classification boundary, not just a parser
+        smoke test.
+        """
+        from polylogue.archive.artifact_taxonomy import classify_artifact
+        from polylogue.schemas.synthetic.core import SyntheticCorpus
+
+        corpus = SyntheticCorpus.for_provider("antigravity")
+        [raw] = corpus.generate(count=1, seed=42)
+        payload = json.loads(raw)
+        assert set(payload) >= {"artifactType", "summary", "updatedAt"}, (
+            "fixture drifted off the brain-metadata sidecar shape this test targets"
+        )
+
+        artifact = classify_artifact(
+            payload,
+            provider="antigravity",
+            source_path="/home/user/.antigravity/brain/artifact-1.metadata.json",
+        )
+
+        assert artifact.parse_as_session is False
+
 
 # =============================================================================
 # Merged from test_synthetic_zero_knowledge.py (2024-03-15)
