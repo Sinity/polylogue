@@ -237,10 +237,10 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
 
     monkeypatch.setattr(integration_module, "_git", timeout_on_cherry_pick)
     report = integration_module.integrate(target, explicit_commits=[commit])
-    assert report.status == "timeout"
+    assert report.status == "indeterminate"
     assert report.conflict is False
     assert report.error is not None and "timed out" in report.error
-    assert report.conflict_head is None
+    assert report.conflict_head is not None
     assert report.active_operation == "CHERRY_PICK_HEAD"
 
 
@@ -264,7 +264,7 @@ def test_timeout_after_cherry_pick_reconciles_applied_head(tmp_path: Path, monke
     assert report.status == "applied"
     assert report.applied_commits == [commit]
     assert report.conflict is False
-    assert report.error is not None and "timeout" in report.error
+    assert report.error is not None and "timed out" in report.error
     assert (target / "lane.txt").read_text() == "lane\n"
     assert _git(target, "log", "--format=%s", "-1") == "lane"
     assert report.active_operation is None
@@ -285,5 +285,5 @@ def test_timeout_without_head_change_is_indeterminate(tmp_path: Path, monkeypatc
 
     assert report.status == "indeterminate"
     assert report.applied_commits == []
-    assert report.error is not None and "timeout" in report.error
+    assert report.error is not None and "timed out" in report.error
     assert report.active_operation is None

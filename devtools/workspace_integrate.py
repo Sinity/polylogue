@@ -11,14 +11,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from devtools.verify_worktree import _git, inspect_worktree
 
 _ACTIVE_MARKERS = ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "REBASE_HEAD")
+_GIT_SELECTION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+@contextmanager
+def _sanitized_git_environment() -> Iterator[None]:
+    """Bind every subprocess Git invocation to its ``-C`` worktree metadata."""
+    saved = {name: os.environ.get(name) for name in _GIT_SELECTION_VARS}
+    for name in _GIT_SELECTION_VARS:
+        os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @dataclass
@@ -82,6 +101,9 @@ def _active_operation(target: Path) -> str | None:
             return marker
     if _git_path(target, "sequencer").is_dir():
         return "sequencer"
+    for directory in ("rebase-apply", "rebase-merge"):
+        if _git_path(target, directory).is_dir():
+            return directory
     return None
 
 
@@ -102,14 +124,14 @@ def _validate_target(target: Path, report: IntegrationReport) -> tuple[Path | No
     report.branch = branch
     if branch in {None, "master", "refs/heads/master"}:
         return None, "target must be on a named non-master branch"
+    active = _active_operation(canonical)
+    if active is not None:
+        return None, f"active Git operation ({active}) must be completed before integration"
     status = _git(canonical, "status", "--porcelain")
     if status.returncode:
         return None, f"could not inspect target status: {status.stderr.strip()}"
     if status.stdout.strip():
         return None, "target worktree must be clean before integration"
-    active = _active_operation(canonical)
-    if active is not None:
-        return None, f"active Git operation ({active}) must be completed before integration"
     return canonical, None
 
 
@@ -128,7 +150,32 @@ def _operation_state_after_timeout(target: Path) -> str | None:
         return None
 
 
-def integrate(
+def _reconcile_cherry_pick_timeout(
+    report: IntegrationReport, target: Path, commit: str, pre_head: str | None, timeout: float | None
+) -> IntegrationReport:
+    """Reconcile a timeout without claiming the pick is safe to retry."""
+    report.active_operation = _operation_state_after_timeout(target)
+    post_head = _commit_sha(target, "HEAD")
+    report.conflict_head = _commit_sha(target, "CHERRY_PICK_HEAD")
+    status = _git(target, "status", "--porcelain")
+    unmerged = any(
+        status_line[:2] in {"UU", "AA", "DD", "AU", "UA", "DU"} for status_line in status.stdout.splitlines()
+    )
+    if report.conflict_head and unmerged:
+        report.conflict = True
+        report.status = "indeterminate"
+        report.error = f"git cherry-pick timed out after {timeout}s; content conflict remains; do not retry"
+    elif post_head is not None and pre_head is not None and post_head != pre_head and report.active_operation is None:
+        report.applied_commits.append(commit)
+        report.status = "applied"
+        report.error = f"git cherry-pick timed out after {timeout}s; target HEAD advanced and was reconciled as applied"
+    else:
+        report.status = "indeterminate"
+        report.error = f"git cherry-pick timed out after {timeout}s; outcome is indeterminate; do not retry"
+    return report
+
+
+def _integrate(
     target: Path,
     source_refs: Sequence[str] = (),
     explicit_commits: Sequence[str] = (),
@@ -165,13 +212,11 @@ def integrate(
         report.planned_commits = planned
 
         for commit in planned:
+            pre_head = _commit_sha(target, "HEAD")
             try:
                 result = _git(target, "cherry-pick", commit)
             except subprocess.TimeoutExpired as exc:
-                report.status = "timeout"
-                report.active_operation = _operation_state_after_timeout(target)
-                report.error = f"git cherry-pick timed out after {exc.timeout}s"
-                return report
+                return _reconcile_cherry_pick_timeout(report, target, commit, pre_head, exc.timeout)
             if result.returncode:
                 conflict_head = _git(target, "rev-parse", "--verify", "CHERRY_PICK_HEAD").stdout.strip()
                 report.conflict_head = conflict_head or None
@@ -190,10 +235,20 @@ def integrate(
         report.status = "applied"
         return report
     except subprocess.TimeoutExpired as exc:
-        report.status = "timeout"
+        report.status = "indeterminate"
         report.active_operation = _operation_state_after_timeout(target)
-        report.error = f"git command timed out after {exc.timeout}s"
+        report.error = f"git command timed out after {exc.timeout}s; outcome is indeterminate; do not retry"
         return report
+
+
+def integrate(
+    target: Path,
+    source_refs: Sequence[str] = (),
+    explicit_commits: Sequence[str] = (),
+) -> IntegrationReport:
+    """Run integration with repository-selection environment sanitized."""
+    with _sanitized_git_environment():
+        return _integrate(target, source_refs, explicit_commits)
 
 
 def _render_text(report: IntegrationReport) -> str:
