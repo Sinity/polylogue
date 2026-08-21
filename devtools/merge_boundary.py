@@ -1,10 +1,10 @@
 """merge-boundary: the merge-gate/broad-verify safety net, wired into the
 actual place PRs get merged, instead of a rule a coordinator has to remember.
 
-``devtools workspace merge-gate record/check`` (see ``merge_gate.py``) and the
-one-full-suite-verify-per-merge-train rule from CLAUDE.md are both real,
-already-built fixes for real 2026-08-01 incidents -- but both fire only if a
-coordinator remembers to invoke them at the right moment. The fanout-
+The merge-gate check (see ``merge_gate.py``) and the one-full-suite-verify-
+per-merge-train rule from CLAUDE.md are both real, already-built fixes for real
+2026-08-01 incidents -- but both fire only if a coordinator remembers to
+invoke them at the right moment. The fanout-
 operations report's incident-ledger cross-check (polylogue-ct3r2 /
 polylogue-t6iga, duplicate filings of the same finding) found the exact
 pattern: "everything that became a command stuck; everything that stayed a

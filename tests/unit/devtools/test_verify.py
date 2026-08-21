@@ -100,6 +100,11 @@ def _pytest_marker_expr(command: list[str]) -> str:
     return command[marker_indexes[-1] + 1]
 
 
+def test_verify_history_is_not_a_public_parser_option() -> None:
+    with pytest.raises(SystemExit):
+        main(["--history"])
+
+
 def test_quick_verify_omits_pytest() -> None:
     steps = build_verify_steps(quick=True, lab=False)
 
@@ -862,50 +867,6 @@ def test_run_recovers_xdist_collection_facts_after_containment_failure(tmp_path:
     selection = json.loads((run.run_dir / "steps" / "01-pytest-focused" / "selection.json").read_text())
     assert selection["recovered_after_interruption"] is True
     assert selection["worker_id"] == "runner"
-
-
-def test_print_history_accepts_verify_and_focused_run_records(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(
-        verify,
-        "_load_history",
-        lambda: [
-            {
-                "timestamp": "2026-08-12T20:00:00+00:00",
-                "tier": "quick",
-                "git_head": "a" * 40,
-                "total_duration_s": 2.0,
-                "exit_code": 0,
-                "steps": [{"name": "ruff", "duration_s": 1.0, "exit": 0}],
-            },
-            {
-                "finished_at": "2026-08-12T20:01:00+00:00",
-                "tier": "focused-test",
-                "git_head": "b" * 40,
-                "duration_s": 3.0,
-                "exit_code": 1,
-                "steps": [{"name": "pytest focused", "duration_s": None, "exit": 1}],
-            },
-            {
-                "finished_at": "2026-08-12T20:02:00+00:00",
-                "tier": "focused-test",
-                "git_head": "c" * 40,
-                "duration_s": "invalid",
-                "exit_code": None,
-                "steps": [{"name": "pytest interrupted", "duration_s": "invalid", "exit": None}],
-            },
-        ],
-    )
-
-    verify._print_history()
-
-    output = capsys.readouterr().out
-    assert "quick" in output
-    assert "focused-" in output
-    assert "pytest focused(0s FAIL)" in output
-    assert "pytest interrupted(0s FAIL)" in output
 
 
 def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path: Path) -> None:

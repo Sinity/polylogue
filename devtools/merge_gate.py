@@ -52,7 +52,6 @@ protection settings (a one-time operator action) or switch lanes to
 `--auto` merging -- see polylogue-1cbeh follow-ups.
 
 Usage:
-    devtools workspace merge-gate record 3517 --command "devtools verify"
     devtools workspace merge-gate check 3517
     devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1
     devtools workspace merge-gate check 3517 --post-status
@@ -556,8 +555,8 @@ def cmd_check(
     if receipt is None:
         verdict.ok = False
         verdict.reasons.append(
-            f"no local verification receipt found (or it is unreadable) at {receipt_path} -- run "
-            f'`devtools workspace merge-gate record {pr} --command "..."` against the current head first'
+            f"no local verification receipt found (or it is unreadable) at {receipt_path} -- the merge wrapper "
+            "must record a fresh receipt against the current head before checking"
         )
     else:
         verdict.receipt = receipt
@@ -678,10 +677,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
 
-    record_p = sub.add_parser("record", help="Run local verification against a PR's current head and persist a receipt")
-    record_p.add_argument("pr", type=int)
-    record_p.add_argument("--command", required=True, help="Local verification command to run, e.g. 'devtools verify'")
-
     check_p = sub.add_parser("check", help="Decide whether a PR is safe to merge right now")
     check_p.add_argument("pr", type=int)
     check_p.add_argument("--max-age-s", type=int, default=_DEFAULT_MAX_AGE_S)
@@ -700,8 +695,6 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    if args.action == "record":
-        return cmd_record(args.pr, args.command)
     return cmd_check(
         args.pr,
         max_age_s=args.max_age_s,

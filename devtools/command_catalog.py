@@ -486,10 +486,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Immediately before squash-merging any PR in a merge train, replacing coordinator memory "
             "(grace-period comment polling, remembering to run the broader local test suite CI skips "
-            'per-PR) with a check that fails closed. `record <PR> --command "..."` requires the current '
-            "checkout to already be the PR's exact head commit with a clean tree (it refuses otherwise), "
-            "first validates the same versioned PR-scope carrier CircleCI checks, then runs a local verification "
-            "command and persists its typed verification scope. `check <PR>` polls structured GitHub "
+            "per-PR) with a check that fails closed. The merge wrapper records a receipt internally "
+            "against the exact PR head before invoking this command. `check <PR>` polls structured GitHub "
             "review-thread state across a real grace window (default 3x20s, covering CodeRabbit's "
             "30-60s late-arrival window) and BLOCKs unless a receipt exists for the CURRENT head sha "
             "within a freshness window with exit_code 0, every review thread is resolved, and GitHub's "
@@ -506,7 +504,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "coordinator manually cycling checkout->test->check->merge one PR at a time."
         ),
         examples=(
-            'devtools workspace merge-gate record 3517 --command "devtools verify"',
             "devtools workspace merge-gate check 3517",
             "devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1",
             "devtools workspace merge-gate check 3517 --post-status",
@@ -520,7 +517,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
             "(polylogue-ct3r2 / polylogue-t6iga: duplicate filings of the same finding -- "
-            "`merge-gate record/check` and the one-full-verify-per-train rule both existed but "
+            "the merge-gate check and the one-full-verify-per-train rule both existed but "
             "fired only if a coordinator remembered to invoke them). `merge <PR>` validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
@@ -1143,21 +1140,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace affordance-usage --days 7 --json",
             "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
             "devtools workspace affordance-usage --out-dir .local/evidence/agent-affordance-usage",
-        ),
-    ),
-    CommandSpec(
-        "workspace degraded-archive-proof",
-        "workspace",
-        "Build a degraded archive self-healing proof artifact.",
-        "devtools.degraded_archive_proof",
-        use_when=(
-            "Prove WAL, FTS freshness, and planner-stat upkeep on a deterministic archive copy by "
-            "deliberately degrading rebuildable state and running the same bounded repair/checkpoint/"
-            "optimize primitives used by the daemon."
-        ),
-        examples=(
-            "devtools workspace degraded-archive-proof --json",
-            "devtools workspace degraded-archive-proof --out-dir .local/evidence/degraded-archive-proof/current --json",
         ),
     ),
     CommandSpec(
