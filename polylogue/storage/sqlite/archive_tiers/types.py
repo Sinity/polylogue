@@ -5,6 +5,8 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
+from polylogue.core.enums import DelegationMappingState, DelegationResultStatus
+
 
 class ArchiveTier(StrEnum):
     """Durability tiers in the split archive file set."""
@@ -17,30 +19,9 @@ class ArchiveTier(StrEnum):
     AUDIT = "audit"
 
 
-# polylogue-u6tl: these two live here (a dependency-free leaf module) rather
-# than in archive.py, where they conceptually belong, so that index.py's DDL
-# can import them for `literal_check` without a cycle -- archive.py
-# transitively imports insights.archive -> storage.repair ->
-# storage.raw_authority -> storage.sqlite.migration_runner ->
-# storage.sqlite.archive_tiers (this package), so `index.py` (loaded by that
-# package's __init__) importing anything from archive.py at module scope
-# deadlocks partial initialization. archive.py re-exports both names for
-# existing call sites.
-# polylogue-foee: "authority-contradicted" joins the delegation mapping
-# vocabulary because the quarantined_rows CTE previously hardcoded
-# 'quarantined' AS mapping_state while its WHERE clause was widened to
-# the whole exclusion set -- so an edge excluded for a PROVENANCE
-# contradiction was documented to the operator as a structural
-# cycle-break. ``literal_check`` regenerates the DDL CHECK from this
-# Literal, so widening it here is the whole schema change.
-DelegationMappingState = Literal[
-    "resolved",
-    "unresolved",
-    "edge_only",
-    "quarantined",
-    "authority-contradicted",
-]
-DelegationResultStatus = Literal["ok", "error", "unknown"]
+# Re-export the core read vocabulary where index DDL needs its ``Literal``
+# arguments. Keeping this compatibility import avoids an archive-tier cycle
+# while giving storage and public surfaces one declaration owner.
 
 # polylogue-h57ic: raw_session_memberships.revision_authority is a genuinely
 # narrower domain than polylogue.archive.revision_authority.RawRevisionAuthority

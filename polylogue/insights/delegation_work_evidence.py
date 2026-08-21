@@ -71,6 +71,7 @@ _MAPPING_STATE_TO_ASSOCIATION: dict[str, WorkEvidenceAssociationState] = {
     "unresolved": "unresolved",
     "edge_only": "unresolved",
     "quarantined": "contradicted",
+    "authority-contradicted": "contradicted",
 }
 
 

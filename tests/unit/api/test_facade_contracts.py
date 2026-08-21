@@ -3647,6 +3647,56 @@ async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path
         await archive.close()
 
 
+async def test_delegation_authority_contradiction_survives_public_reads(tmp_path: Path) -> None:
+    """The async facade reads the persisted verdict but never composes its edge.
+
+    The fixture creates both sessions through the archive writer, then persists
+    the authority resolver's final ``session_links.status`` verdict in the real
+    index database. ``resolve_ref()`` and ``query_units()`` open fresh archive
+    readers, so this proves the public asynchronous routes observe the stored
+    state rather than a test-local adapter.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            parent_session_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-authority-parent-v1", with_dispatch=False)
+            )
+            child_session_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-authority-child-v1",
+                    title="Delegation authority child fixture",
+                    messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-authority-parent-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+            archive_db._conn.execute(
+                "UPDATE session_links SET status = 'authority-contradicted' WHERE src_session_id = ?",
+                (child_session_id,),
+            )
+            archive_db._conn.commit()
+
+        edge_ref = f"delegation:{delegation_edge_object_id(parent_session_id, child_session_id)}"
+        card_payload = await archive.resolve_ref(edge_ref)
+        query_payload = await archive.query_units("delegations where mapping_state:authority-contradicted", limit=10)
+        ancestry_payload = await archive.resolve_ref(f"delegation:{delegation_ancestry_object_id(child_session_id)}")
+        subtree_payload = await archive.resolve_ref(f"delegation:{delegation_subtree_object_id(parent_session_id)}")
+
+        assert card_payload.payload is not None
+        assert card_payload.payload["attempt"]["mapping_state"] == "authority-contradicted"
+        assert any("authority-contradicted" in caveat for caveat in card_payload.caveats)
+        [query_item] = query_payload.items
+        assert query_item.model_dump(mode="json")["mapping_state"] == "authority-contradicted"
+        assert ancestry_payload.payload is not None
+        assert [node["session_id"] for node in ancestry_payload.payload["nodes"]] == [child_session_id]
+        assert subtree_payload.payload is not None
+        assert [node["session_id"] for node in subtree_payload.payload["nodes"]] == [parent_session_id]
+    finally:
+        await archive.close()
+
+
 async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without_matching_content(
     tmp_path: Path,
 ) -> None:
@@ -4084,6 +4134,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+    from polylogue.surfaces.payloads import MessageQueryRowPayload
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -4232,8 +4283,10 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert unit_envelope.mode == "query-unit"
         assert unit_envelope.unit == "message"
         assert unit_envelope.total == 1
-        assert unit_envelope.items[0].unit == "message"
-        assert unit_envelope.items[0].session_id == session_id
+        unit_item = unit_envelope.items[0]
+        assert isinstance(unit_item, MessageQueryRowPayload)
+        assert unit_item.unit == "message"
+        assert unit_item.session_id == session_id
         assert [candidate.session_id for candidate in normal_neighbors] == [session_id]
         assert normal_neighbors[0].summary.message_count == 1
         assert {reason.kind for reason in normal_neighbors[0].reasons} >= {"query_match", "content_similarity"}

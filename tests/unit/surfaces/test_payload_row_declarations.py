@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import fields
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from polylogue.core.enums import DelegationMappingState
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -16,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveBlockQueryRow,
     ArchiveContextSnapshotQueryRow,
     ArchiveDelegationAncestryRow,
+    ArchiveDelegationCard,
     ArchiveDelegationQueryRow,
     ArchiveDelegationSubtreeRow,
     ArchiveFileQueryRow,
@@ -25,12 +27,20 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveRunQueryRow,
 )
 from polylogue.surfaces.payloads import (
+    _CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _CONTEXT_SNAPSHOT_QUERY_ROW_MASK,
+    _OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _OBSERVED_EVENT_QUERY_ROW_MASK,
+    _RUN_QUERY_ROW_ANNOTATION_OVERRIDES,
+    _RUN_QUERY_ROW_MASK,
+    DELEGATION_STATE_CAVEATS,
     ActionQueryRowPayload,
     AssertionQueryRowPayload,
     BlockQueryRowPayload,
     ContextSnapshotQueryRowPayload,
     DelegationAncestryNodePayload,
     DelegationAttemptPayload,
+    DelegationCardPayload,
     DelegationQueryRowPayload,
     DelegationSubtreeNodePayload,
     FileQueryRowPayload,
@@ -208,6 +218,149 @@ def test_delegation_node_from_rows_preserves_declared_wire_fields() -> None:
         "link_confidence": None,
         "link_method": "topology-edge",
     }
+
+
+def test_delegation_payloads_accept_every_storage_declared_mapping_state() -> None:
+    """The archive's valid provenance verdict must survive both read payloads."""
+    row = ArchiveDelegationQueryRow(
+        parent_session_id="session-parent",
+        child_session_id="session-child",
+        mapping_state="authority-contradicted",
+        link_confidence=0.75,
+        link_method="authoritative-hook",
+        inheritance="spawned-fresh",
+        branch_point_message_id=None,
+        instruction_message_id="message-dispatch",
+        instruction_tool_use_block_id="block-dispatch",
+        instruction_payload="review the diff",
+        dispatch_turn_model="configured-model",
+        requested_model="requested-model",
+        artifact_block_id=None,
+        artifact_text=None,
+        result_is_error=None,
+        result_exit_code=None,
+        result_status="unknown",
+        parent_origin="codex-session",
+        parent_session_dominant_model=None,
+        parent_session_dominant_model_family=None,
+        parent_terminal_state=None,
+        child_session_dominant_model=None,
+        child_session_dominant_model_family=None,
+        child_cost_usd=None,
+        child_cost_is_estimated=None,
+        child_tokens=None,
+        child_wall_ms=None,
+        child_terminal_state=None,
+    )
+
+    query_payload = DelegationQueryRowPayload.from_row(row)
+    attempt_payload = DelegationAttemptPayload.from_row(row)
+
+    assert query_payload.mapping_state == "authority-contradicted"
+    assert attempt_payload.mapping_state == "authority-contradicted"
+
+
+def test_delegation_card_payload_preserves_authority_contradicted_state() -> None:
+    """The surface card preserves the storage-owned provenance verdict."""
+    attempt = ArchiveDelegationQueryRow(
+        parent_session_id="session-parent",
+        child_session_id="session-child",
+        mapping_state="authority-contradicted",
+        link_confidence=0.75,
+        link_method="authoritative-hook",
+        inheritance="spawned-fresh",
+        branch_point_message_id=None,
+        instruction_message_id=None,
+        instruction_tool_use_block_id=None,
+        instruction_payload=None,
+        dispatch_turn_model=None,
+        requested_model=None,
+        artifact_block_id=None,
+        artifact_text=None,
+        result_is_error=None,
+        result_exit_code=None,
+        result_status="unknown",
+        parent_origin="codex-session",
+        parent_session_dominant_model=None,
+        parent_session_dominant_model_family=None,
+        parent_terminal_state=None,
+        child_session_dominant_model=None,
+        child_session_dominant_model_family=None,
+        child_cost_usd=None,
+        child_cost_is_estimated=None,
+        child_tokens=None,
+        child_wall_ms=None,
+        child_terminal_state=None,
+    )
+    card = ArchiveDelegationCard(
+        attempt=attempt,
+        delegation_ref="delegation:edge:session-parent::session-child",
+        parent_session_title="Parent",
+        child_session_title="Child",
+        run_ref=None,
+        run_title=None,
+        instruction=None,
+        parent_context=(),
+        parent_context_truncated=False,
+        dispatch_result=None,
+        dispatch_result_truncated=False,
+        child_excerpt=None,
+        child_excerpt_truncated=False,
+        parent_followup=(),
+        parent_followup_truncated=False,
+        annotation_refs=(),
+        evidence_refs=(),
+    )
+
+    payload = DelegationCardPayload.from_card(card)
+    assert payload.attempt.mapping_state == "authority-contradicted"
+    assert "authority-contradicted" in DELEGATION_STATE_CAVEATS[payload.attempt.mapping_state]
+
+
+def test_every_non_resolved_delegation_state_has_a_public_caveat() -> None:
+    """A stored verdict cannot become a silent public card state."""
+    assert set(DELEGATION_STATE_CAVEATS) == set(get_args(DelegationMappingState)) - {"resolved"}
+
+
+@pytest.mark.parametrize(
+    ("source_model", "mask", "annotation_overrides", "payload_model", "wire_required"),
+    (
+        (
+            ObservedEvent,
+            _OBSERVED_EVENT_QUERY_ROW_MASK,
+            _OBSERVED_EVENT_QUERY_ROW_ANNOTATION_OVERRIDES,
+            ObservedEventQueryRowPayload,
+            frozenset({"delivery_state"}),
+        ),
+        (
+            ContextSnapshot,
+            _CONTEXT_SNAPSHOT_QUERY_ROW_MASK,
+            _CONTEXT_SNAPSHOT_QUERY_ROW_ANNOTATION_OVERRIDES,
+            ContextSnapshotQueryRowPayload,
+            frozenset({"inheritance_mode", "metadata"}),
+        ),
+        (
+            ProjectedRun,
+            _RUN_QUERY_ROW_MASK,
+            _RUN_QUERY_ROW_ANNOTATION_OVERRIDES,
+            RunQueryRowPayload,
+            frozenset({"provider_origin", "harness", "role", "status", "confidence"}),
+        ),
+    ),
+)
+def test_run_projection_payload_masks_preserve_canonical_field_contracts(
+    source_model: type[Any],
+    mask: tuple[tuple[str, str], ...],
+    annotation_overrides: dict[str, object],
+    payload_model: type[SurfacePayloadModel],
+    wire_required: frozenset[str],
+) -> None:
+    """Payload fields project source declarations without narrowing public wire values."""
+    for source_name, payload_name in mask:
+        source_field = source_model.model_fields[source_name]
+        payload_field = payload_model.model_fields[payload_name]
+        assert payload_field.annotation == annotation_overrides.get(source_name, source_field.annotation)
+        assert payload_field.is_required() == (payload_name in wire_required or source_field.is_required())
 
 
 def test_hybrid_row_converters_preserve_complete_wire_payloads() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from polylogue.core.provider_identity import canonical_runtime_provider
 
@@ -426,6 +427,19 @@ class TopologyEdgeStatus(PolylogueStrEnum):
     AUTHORITY_CONTRADICTED = "authority-contradicted"
 
 
+# The delegation read model carries ordinary matching state plus exceptional
+# topology verdicts. It is a ``Literal`` because index DDL derives its CHECK
+# from this declaration through the archive-tier re-export.
+DelegationMappingState = Literal[
+    "resolved",
+    "unresolved",
+    "edge_only",
+    "quarantined",
+    "authority-contradicted",
+]
+DelegationResultStatus = Literal["ok", "error", "unknown"]
+
+
 class StopReason(PolylogueStrEnum):
     """Provider-reported terminal state for one assistant turn.
 
@@ -810,6 +824,8 @@ __all__ = [
     "ArtifactSupportStatus",
     "BlockType",
     "BranchType",
+    "DelegationMappingState",
+    "DelegationResultStatus",
     "LinkType",
     "MaterialOrigin",
     "MessageType",
