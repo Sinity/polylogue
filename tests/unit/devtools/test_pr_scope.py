@@ -1312,6 +1312,26 @@ def test_check_rejects_a_terminal_target_before_the_pr_is_merged(beads_path: Pat
     assert any("pre-applied terminal disposition" in reason for reason in verdict.reasons)
 
 
+def test_receipt_validation_reads_the_immutable_pr_head(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    beads_path = repository / ".beads" / "issues.jsonl"
+    receipt_path = beads_path.parent / "disposition-receipts" / f"{'a' * 64}.json"
+    receipt_path.parent.mkdir(parents=True)
+    beads_path.write_text(json.dumps(_record(ASSIGNED)) + "\n")
+    receipt_path.write_text('{"committed": true}\n')
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    head_sha = _commit(repository, "committed receipt")
+    receipt_path.write_text('{"committed": false}\n')
+    monkeypatch.chdir(repository)
+
+    receipt = pr_scope._receipt_at(execution_id="a" * 64, head_sha=head_sha, beads_path=beads_path)
+
+    assert receipt == {"committed": True}
+
+
 def test_normal_scope_attestation_keeps_the_pre_receipt_digest_shape() -> None:
     scope = pr_scope.ScopeVerdict(
         ok=True,
