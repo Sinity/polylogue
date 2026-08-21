@@ -137,6 +137,56 @@ def test_active_git_operation_is_rejected_even_with_clean_status(tmp_path: Path,
     assert report.error is not None and "active Git operation" in report.error
 
 
+def test_git_selection_environment_cannot_escape_target_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, target = _repo(tmp_path)
+    _git(repo, "switch", "lane-a")
+    (repo / "lane.txt").write_text("lane\n")
+    _git(repo, "add", ".")
+    commit = _commit(repo, "lane")
+
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    _git(attacker, "init", "-b", "master")
+    _git(attacker, "config", "user.email", "attacker@example.invalid")
+    _git(attacker, "config", "user.name", "Attacker")
+    (attacker / "attacker.txt").write_text("attacker\n")
+    _git(attacker, "add", ".")
+    _git(attacker, "commit", "-m", "attacker")
+
+    monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(attacker))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(attacker / ".git" / "index"))
+
+    report = integrate(target, explicit_commits=[commit])
+
+    assert report.status == "applied"
+    assert (target / "lane.txt").read_text() == "lane\n"
+    assert not (attacker / "lane.txt").exists()
+
+
+def test_git_am_rebase_apply_state_is_rejected(tmp_path: Path) -> None:
+    repo, target = _repo(tmp_path)
+    _git(repo, "switch", "lane-a")
+    (repo / "base.txt").write_text("lane\n")
+    _git(repo, "add", ".")
+    commit = _commit(repo, "lane patch")
+    patch = tmp_path / "lane.patch"
+    patch.write_text(_git(repo, "format-patch", "-1", "--stdout", commit))
+
+    (target / "base.txt").write_text("target\n")
+    _git(target, "add", ".")
+    _git(target, "commit", "-m", "target change")
+    am = subprocess.run(["git", "am", str(patch)], cwd=target, capture_output=True, text=True)
+    assert am.returncode != 0
+
+    report = integrate(target, explicit_commits=[commit])
+    assert report.status == "blocked"
+    assert report.error is not None and "rebase-apply" in report.error
+
+
 def test_sequencer_operation_is_rejected(tmp_path: Path) -> None:
     repo, target = _repo(tmp_path)
     sequencer = Path(_git(target, "rev-parse", "--git-path", "sequencer"))
@@ -192,3 +242,48 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
     assert report.error is not None and "timed out" in report.error
     assert report.conflict_head is None
     assert report.active_operation == "CHERRY_PICK_HEAD"
+
+
+def test_timeout_after_cherry_pick_reconciles_applied_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, target = _repo(tmp_path)
+    _git(repo, "switch", "lane-a")
+    (repo / "lane.txt").write_text("lane\n")
+    _git(repo, "add", ".")
+    commit = _commit(repo, "lane")
+    original_git = integration_module.__dict__["_git"]
+
+    def apply_then_timeout(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ("cherry-pick",):
+            original_git(path, *args)
+            raise subprocess.TimeoutExpired(["git", *args], timeout=30)
+        return cast(subprocess.CompletedProcess[str], original_git(path, *args))
+
+    monkeypatch.setattr(integration_module, "_git", apply_then_timeout)
+    report = integration_module.integrate(target, explicit_commits=[commit])
+
+    assert report.status == "applied"
+    assert report.applied_commits == [commit]
+    assert report.conflict is False
+    assert report.error is not None and "timeout" in report.error
+    assert (target / "lane.txt").read_text() == "lane\n"
+    assert _git(target, "log", "--format=%s", "-1") == "lane"
+    assert report.active_operation is None
+
+
+def test_timeout_without_head_change_is_indeterminate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, target = _repo(tmp_path)
+    commit = _git(repo, "rev-parse", "HEAD")
+    original_git = integration_module.__dict__["_git"]
+
+    def timeout_before_cherry_pick(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ("cherry-pick",):
+            raise subprocess.TimeoutExpired(["git", *args], timeout=30)
+        return cast(subprocess.CompletedProcess[str], original_git(path, *args))
+
+    monkeypatch.setattr(integration_module, "_git", timeout_before_cherry_pick)
+    report = integration_module.integrate(target, explicit_commits=[commit])
+
+    assert report.status == "indeterminate"
+    assert report.applied_commits == []
+    assert report.error is not None and "timeout" in report.error
+    assert report.active_operation is None
