@@ -257,9 +257,31 @@ _LANE_ENV_UNSETS = (
 )
 
 
+def _implementation_root() -> Path:
+    """Return the checkout containing the lane-init implementation."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _bootstrap_source_error(root: Path) -> str | None:
+    """Refuse bootstrap if this command was imported from another checkout."""
+    implementation_root = _implementation_root()
+    if implementation_root == root.resolve():
+        return None
+    return (
+        "lane-init implementation belongs to a different checkout:\n"
+        f"  invoking checkout: {root.resolve()}\n"
+        f"  implementation:    {implementation_root}"
+    )
+
+
 def _lane_env(worktree: Path) -> dict[str, str]:
     """Return an environment that cannot inherit another checkout's Python."""
     env = os.environ.copy()
+    inherited_venv = env.get("VIRTUAL_ENV")
+    if inherited_venv:
+        inherited_bin = str(Path(inherited_venv) / "bin")
+        path_entries = env.get("PATH", "").split(os.pathsep)
+        env["PATH"] = os.pathsep.join(entry for entry in path_entries if entry != inherited_bin)
     for key in _LANE_ENV_UNSETS:
         env.pop(key, None)
     # Not merely hygiene: these describe a specific interpreter BUILD, so
@@ -666,6 +688,9 @@ def dispatch_env_lines(
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = repo_root()
+    if error := _bootstrap_source_error(root):
+        print(f"lane-init: {error}", file=sys.stderr)
+        return 125
     worktree = Path(args.worktree).resolve()
     beads = [b.strip() for b in args.beads.split(",") if b.strip()]
 

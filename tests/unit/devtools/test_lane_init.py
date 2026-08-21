@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -130,6 +131,34 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch:
     assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
 
 
+def test_lane_env_removes_the_inherited_venv_bin_from_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    coordinator = tmp_path / "coordinator"
+    lane = tmp_path / "lane"
+    foreign_bin = coordinator / ".venv" / "bin"
+    retained_bin = tmp_path / "tools"
+    monkeypatch.setenv("VIRTUAL_ENV", str(coordinator / ".venv"))
+    monkeypatch.setenv("PATH", os.pathsep.join((str(foreign_bin), str(retained_bin), str(foreign_bin))))
+
+    env = lane_init._lane_env(lane)
+
+    assert env["PATH"] == str(retained_bin)
+    assert "VIRTUAL_ENV" not in env
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
+
+
+def test_main_refuses_foreign_lane_init_implementation_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "lane"
+    root.mkdir()
+    monkeypatch.setattr(lane_init, "repo_root", lambda: root)
+    monkeypatch.setattr(lane_init, "_implementation_root", lambda: tmp_path / "other-checkout")
+    monkeypatch.setattr(lane_init, "_ensure_worktree", lambda *_args: pytest.fail("must not create a worktree"))
+
+    assert lane_init.main([str(root / "child"), "--branch", "feature/test/lane"]) == 125
+    assert "implementation belongs to a different checkout" in capsys.readouterr().err
+
+
 def test_provision_venv_ignores_inherited_uv_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A coordinator's UV_PROJECT must not install its editable source in a lane venv."""
     coordinator = tmp_path / "coordinator"
@@ -234,6 +263,57 @@ def test_main_provisions_and_verifies_a_real_lane_from_a_poisoned_coordinator(tm
     assert foreign_guard.returncode == 125
     assert "resolved OUTSIDE this checkout" in foreign_guard.stderr
     assert "give this checkout its own venv" in foreign_guard.stderr
+
+
+def test_public_lane_init_bootstraps_an_existing_lane_with_inherited_coordinator_venv(tmp_path: Path) -> None:
+    """The public devtools command self-heals the one allowed foreign environment."""
+    coordinator = tmp_path / "main"
+    lane = tmp_path / "lane"
+    project_root = Path(__file__).resolve().parents[3]
+    subprocess.run(
+        ["git", "clone", "--shared", str(project_root), str(coordinator)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    coordinator_python = coordinator / ".venv" / "bin" / "python"
+    coordinator_python.parent.mkdir(parents=True)
+    coordinator_python.write_text(
+        f'#!/bin/sh\nexec {sys.executable!s} "$@"\n',
+        encoding="utf-8",
+    )
+    coordinator_python.chmod(0o755)
+    branch = "feature/test/public-lane-bootstrap"
+    assert lane_init._ensure_worktree(coordinator, lane, branch, "HEAD") is None
+    for relative_path in ("devtools/click_dispatch.py", "devtools/lane_init.py"):
+        shutil.copy2(project_root / relative_path, lane / relative_path)
+
+    poisoned_env = os.environ | {
+        "VIRTUAL_ENV": str(coordinator / ".venv"),
+        "PYTHONPATH": str(coordinator),
+        "UV_PROJECT": str(coordinator),
+        "UV_WORKING_DIR": str(coordinator),
+    }
+    result = subprocess.run(
+        [
+            str(coordinator_python),
+            "-m",
+            "devtools",
+            "workspace",
+            "lane-init",
+            str(lane),
+            "--branch",
+            branch,
+        ],
+        cwd=lane,
+        env=poisoned_env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "lane ready:" in result.stdout
+    assert (lane / ".venv" / "bin" / "python").is_file()
 
 
 def test_lane_warm_claim_is_revalidated_after_distribution_drift(

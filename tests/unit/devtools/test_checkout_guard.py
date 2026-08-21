@@ -133,6 +133,50 @@ def test_click_dispatch_main_refuses_on_checkout_mismatch(
     assert captured.out == ""
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["workspace", "lane-init", "/worktree", "--branch", "feature/test/lane"],
+        ["--json", "workspace", "lane-init", "/worktree", "--branch", "feature/test/lane"],
+    ],
+)
+def test_click_dispatch_allows_only_lane_init_to_bootstrap_foreign_environment(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one self-healing command reaches lane-init before import validation."""
+    dispatched: list[list[str]] = []
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ordinary checkout guard must not run for lane-init")
+
+    monkeypatch.setattr(click_dispatch, "assert_polylogue_matches_checkout", _boom)
+    monkeypatch.setattr(click_dispatch, "_dispatch", lambda command_argv: dispatched.append(command_argv) or 23)
+
+    assert click_dispatch.main(argv) == 23
+    assert dispatched == [argv]
+
+
+def test_click_dispatch_keeps_workspace_non_bootstrap_commands_guarded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dispatched = False
+
+    def _boom(repo_root: Path, *, context: str) -> None:
+        raise CheckoutImportMismatchError(f"{context}: foreign environment at {repo_root}")
+
+    def _dispatch(_argv: list[str]) -> int:
+        nonlocal dispatched
+        dispatched = True
+        return 0
+
+    monkeypatch.setattr(click_dispatch, "assert_polylogue_matches_checkout", _boom)
+    monkeypatch.setattr(click_dispatch, "_dispatch", _dispatch)
+
+    assert click_dispatch.main(["workspace", "verify-worktree", "/worktree"]) == 125
+    assert dispatched is False
+    assert "foreign environment" in capsys.readouterr().err
+
+
 def test_run_tests_main_refuses_on_checkout_mismatch(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

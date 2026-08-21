@@ -257,13 +257,28 @@ def _dispatch(argv: list[str]) -> int:
         return code if isinstance(code, int) else 0
 
 
+def _is_lane_init_bootstrap(argv: list[str]) -> bool:
+    """Return whether ``argv`` names the sole self-provisioning command.
+
+    A harness-created worktree may inherit the coordinator's environment, so
+    it cannot pass the ordinary import guard until its first lane-init has
+    built a local venv. Every other command remains guarded before dispatch.
+    """
+    normalized = list(argv)
+    if normalized[:1] == ["--json"]:
+        normalized.pop(0)
+    return normalized[:2] == ["workspace", "lane-init"]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI."""
 
-    try:
-        assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
-    except CheckoutImportMismatchError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 125
+    command_argv = list(argv or [])
+    if not _is_lane_init_bootstrap(command_argv):
+        try:
+            assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
+        except CheckoutImportMismatchError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 125
 
-    return _dispatch(list(argv or []))
+    return _dispatch(command_argv)
