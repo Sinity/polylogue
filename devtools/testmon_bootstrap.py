@@ -565,6 +565,15 @@ def _is_type_checking_guard(node: ast.expr) -> bool:
     )
 
 
+def _is_literal_all_assignment(node: ast.Assign) -> bool:
+    """Recognize an export declaration that coverage cannot fingerprint."""
+    if not all(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets):
+        return False
+    return isinstance(node.value, (ast.List, ast.Tuple)) and all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str) for element in node.value.elts
+    )
+
+
 def _body_is_executable(body: list[ast.stmt]) -> bool:
     for index, node in enumerate(body):
         if _is_docstring(node, first=index == 0):
@@ -617,6 +626,8 @@ def _body_is_executable(body: list[ast.stmt]) -> bool:
                 return True
             continue
         if isinstance(node, ast.Assign):
+            if _is_literal_all_assignment(node):
+                continue
             return True
         if isinstance(node, ast.AnnAssign):
             if node.value is not None:

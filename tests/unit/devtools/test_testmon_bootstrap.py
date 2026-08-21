@@ -98,7 +98,8 @@ def test_runtime_protocol_contracts_are_non_traceable_runtime_inputs(tmp_path: P
         "    from polylogue.storage.models import Record\n\n"
         "@runtime_checkable\n"
         "class RecordStore(Protocol):\n"
-        "    async def get(self, record_id: str) -> Record | None: ...\n",
+        "    async def get(self, record_id: str) -> Record | None: ...\n\n"
+        "__all__ = ('RecordStore',)\n",
         encoding="utf-8",
     )
 
