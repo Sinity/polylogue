@@ -38,7 +38,7 @@ from polylogue.archive.query.transaction import QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
 def _seed_archive(
@@ -81,27 +81,6 @@ def _seed_archive(
         )
 
 
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Point the real MCP facade at one isolated archive root."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
-
-
 @pytest.mark.asyncio
 async def test_read_migration_fails_closed_without_shared_query_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -121,7 +100,7 @@ async def test_read_migration_fails_closed_without_shared_query_transaction(
 
     monkeypatch.setattr(QueryTransaction, "run", disabled_transaction)
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         result = json.loads(
             await invoke_surface_async(
                 query_fn,
@@ -270,7 +249,7 @@ async def test_registered_query_disconnect_drains_real_transaction(
     reset_default_admission_controller_for_tests()
     before_fds = _require_fd_probe(archive_root)
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         task = asyncio.create_task(
             invoke_surface_async(
                 query_fn,
@@ -319,7 +298,7 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         )
 
     outer_before_fds = _require_fd_probe(archive_root)
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         warm_response = json.loads(await invoke_large_query())
         assert warm_response["status"] == "response_budget_exceeded"
 
@@ -387,7 +366,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
         before_fds = _require_fd_probe(archive_root)
 

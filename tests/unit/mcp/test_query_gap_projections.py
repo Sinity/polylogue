@@ -12,15 +12,12 @@ calls were always live and independently tested; only the ``query()``/
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -48,45 +45,15 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Install real RuntimeServices for ``archive_root``, restoring whatever was active before."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
-
-
-def _build_tools(
-    capabilities: MCPCapabilities = MCPCapabilities(),
-) -> dict[str, Callable[..., str | Awaitable[str]]]:
-    from polylogue.mcp.server import build_server
-
-    server = cast(MCPServerUnderTest, build_server(capabilities=capabilities))
-    return {name: tool.fn for name, tool in server._tool_manager._tools.items()}
-
-
 class TestPersonalStateProjections:
     @pytest.mark.asyncio
     async def test_marks_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             added = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="add_mark", session_id=session_id, fields={"mark_type": "star"}
@@ -103,10 +70,10 @@ class TestPersonalStateProjections:
     async def test_annotations_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -125,10 +92,10 @@ class TestPersonalStateProjections:
     async def test_saved_views_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -147,10 +114,10 @@ class TestPersonalStateProjections:
     async def test_recall_packs_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -172,10 +139,10 @@ class TestPersonalStateProjections:
     async def test_workspaces_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -193,10 +160,10 @@ class TestPersonalStateProjections:
     async def test_corrections_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             recorded = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -215,10 +182,10 @@ class TestPersonalStateProjections:
     async def test_blackboard_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools(MCPCapabilities(write=True))
+        tools = build_tools(MCPCapabilities(write=True))
         query_fn, write_fn = tools["query"], tools["write"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             # author_kind="user" is required for the note to land as an
             # active (visible) blackboard note: the promotion gate coerces
             # any other author_kind (the "agent" default) to a candidate
@@ -246,10 +213,10 @@ class TestPersonalStateProjections:
     async def test_personal_state_projection_rejects_continuation(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="marks", continuation="bogus"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_continuation"
@@ -260,10 +227,10 @@ class TestInsightProjections:
     async def test_postmortem_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="postmortem"))
             assert result.get("is_error") is not True, result
             assert "scope" in result
@@ -272,10 +239,10 @@ class TestInsightProjections:
     async def test_pathologies_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="pathologies"))
             assert result.get("is_error") is not True, result
             assert "findings" in result
@@ -284,10 +251,10 @@ class TestInsightProjections:
     async def test_abandoned_sessions_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="abandoned_sessions"))
             assert result.get("is_error") is not True, result
             assert "total" in result
@@ -296,10 +263,10 @@ class TestInsightProjections:
     async def test_stuck_sessions_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="stuck_sessions"))
             assert result.get("is_error") is not True, result
             assert "items" in result
@@ -308,10 +275,10 @@ class TestInsightProjections:
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         query_fn = tools["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="postmortem", continuation="bogus"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_continuation"
@@ -322,10 +289,10 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_sources_requires_ref(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         status_fn = tools["status"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(status_fn, scope="sources"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -334,10 +301,10 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_sources_with_ref_returns_freshness_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         status_fn = tools["status"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(status_fn, scope="sources", ref=str(tmp_path / "nonexistent-source"))
             )
@@ -349,10 +316,10 @@ class TestStatusSourcesAndEmbeddingsScopes:
     async def test_status_embeddings_scope_returns_readiness_payload(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)
-        tools = _build_tools()
+        tools = build_tools()
         status_fn = tools["status"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(status_fn, scope="embeddings"))
             assert result.get("is_error") is not True, result
             assert result["scope"] == "embeddings"

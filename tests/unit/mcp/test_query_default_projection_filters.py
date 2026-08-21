@@ -14,45 +14,11 @@ instead of being ignored.
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
 
 import pytest
 
-from polylogue.mcp.declarations.models import MCPCapabilities
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
-
-
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Install real RuntimeServices for ``archive_root``, restoring whatever was active before."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
-
-
-def _build_tools(
-    capabilities: MCPCapabilities = MCPCapabilities(),
-) -> dict[str, Callable[..., str | Awaitable[str]]]:
-    from polylogue.mcp.server import build_server
-
-    server = cast(MCPServerUnderTest, build_server(capabilities=capabilities))
-    return {name: tool.fn for name, tool in server._tool_manager._tools.items()}
+from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
 def _seed_two_origin_sessions(archive_root: Path) -> None:
@@ -88,9 +54,9 @@ class TestDefaultProjectionFilters:
     async def test_origin_filter_scopes_default_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_two_origin_sessions(archive_root)
-        query_fn = _build_tools()["query"]
+        query_fn = build_tools()["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             unfiltered = json.loads(await invoke_surface_async(query_fn, expression="messages where role:user | count"))
             scoped = json.loads(
                 await invoke_surface_async(
@@ -110,9 +76,9 @@ class TestDefaultProjectionFilters:
     async def test_unknown_origin_rejected_loudly(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_two_origin_sessions(archive_root)
-        query_fn = _build_tools()["query"]
+        query_fn = build_tools()["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     query_fn,
@@ -129,9 +95,9 @@ class TestDefaultProjectionFilters:
     async def test_sort_rejected_on_default_projection(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_two_origin_sessions(archive_root)
-        query_fn = _build_tools()["query"]
+        query_fn = build_tools()["query"]
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     query_fn,

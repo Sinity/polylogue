@@ -16,15 +16,13 @@ pattern in ``test_privileged_tools.py``.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -52,27 +50,6 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Install real RuntimeServices for ``archive_root``, restoring whatever was active before."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
-
-
 class TestDeliverContextOperation:
     @pytest.mark.asyncio
     async def test_deliver_context_records_a_receipt_the_context_tool_can_resolve(self, tmp_path: Path) -> None:
@@ -84,7 +61,7 @@ class TestDeliverContextOperation:
         write_fn = server._tool_manager._tools["write"].fn
         context_fn = server._tool_manager._tools["context"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             delivered = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -143,7 +120,7 @@ class TestDeliverContextOperation:
             "query": "needle context delivery",
             "max_sessions": 1,
         }
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             first = json.loads(await invoke_surface_async(write_fn, operation="deliver_context", fields=call_fields))
             replay = json.loads(await invoke_surface_async(write_fn, operation="deliver_context", fields=call_fields))
 
@@ -159,7 +136,7 @@ class TestDeliverContextOperation:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -192,7 +169,7 @@ class TestContextToolListsReceiptSummaries:
         write_fn = server._tool_manager._tools["write"].fn
         context_fn = server._tool_manager._tools["context"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             delivered = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -230,7 +207,7 @@ class TestContextToolListsReceiptSummaries:
         server = cast(MCPServerUnderTest, build_server())
         context_fn = server._tool_manager._tools["context"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(context_fn, intent="lookup", result_ref="context-snapshot:deadbeef")
             )
