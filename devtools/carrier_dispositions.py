@@ -46,14 +46,54 @@ def _git_show(revision: str, path: str, *, cwd: Path) -> str:
     return result.stdout
 
 
-def _scope_from_merged_pr(pr: int, *, cwd: Path) -> tuple[dict[str, Any], str, str, pr_scope.ScopeVerdict, str]:
+def _squash_merge_base(merge_sha: str, *, cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", merge_sha],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        raise DispositionError(f"cannot resolve merged squash commit {merge_sha[:8]} locally")
+    fields = result.stdout.strip().split()
+    if len(fields) != 2 or fields[0] != merge_sha:
+        raise DispositionError(f"merged PR squash {merge_sha[:8]} must have exactly one parent for recovery")
+    return fields[1]
+
+
+def _validate_merged_scope(
+    info: dict[str, Any], *, head_sha: str, base_sha: str, cwd: Path
+) -> tuple[pr_scope.ScopeVerdict, str]:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", encoding="utf-8", delete=False) as handle:
+        beads_path = Path(handle.name)
+        handle.write(_git_show(head_sha, ".beads/issues.jsonl", cwd=cwd))
+    try:
+        scope = pr_scope.validate_pr_body(
+            str(info.get("body") or ""),
+            head_sha=head_sha,
+            is_draft=bool(info.get("isDraft")),
+            beads_path=beads_path,
+            base_sha=base_sha,
+        )
+    finally:
+        beads_path.unlink(missing_ok=True)
+    if not scope.ok:
+        raise DispositionError("merged PR carrier is invalid: " + "; ".join(scope.reasons))
+    attestation = str(pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=base_sha)["attestation_digest"])
+    return scope, attestation
+
+
+def _scope_from_merged_pr(
+    pr: int, *, cwd: Path, recover_unledgered_merge: bool = False, persist_recovery: bool = True
+) -> tuple[dict[str, Any], str, str, pr_scope.ScopeVerdict, str]:
     info = _gh_json(
         [
             "pr",
             "view",
             str(pr),
             "--json",
-            "state,mergeCommit,headRefOid,baseRefOid,body,isDraft,author,files",
+            "state,mergeCommit,headRefOid,baseRefOid,body,isDraft,author,files,title",
         ]
     )
     if info.get("state") != "MERGED":
@@ -72,29 +112,28 @@ def _scope_from_merged_pr(pr: int, *, cwd: Path) -> tuple[dict[str, Any], str, s
         entry for entry in ledger["merges"] if entry.get("pr") == pr and entry.get("head_sha") == head_sha
     ]
     if len(matching_entries) != 1:
-        raise DispositionError(f"PR #{pr} has no unique merged ledger entry for its exact head")
+        if not recover_unledgered_merge or matching_entries:
+            raise DispositionError(f"PR #{pr} has no unique merged ledger entry for its exact head")
+        merge_base_sha = _squash_merge_base(merge_sha, cwd=cwd)
+        scope, attestation = _validate_merged_scope(info, head_sha=head_sha, base_sha=merge_base_sha, cwd=cwd)
+        title = info.get("title")
+        if not isinstance(title, str) or not title:
+            raise DispositionError(f"merged PR #{pr} lacks a title for recovery evidence")
+        if persist_recovery:
+            merge_boundary.record_post_merge_carrier_recovery(
+                pr,
+                head_sha,
+                title,
+                base_sha=merge_base_sha,
+                merge_sha=merge_sha,
+                scope_attestation_digest=attestation,
+            )
+        return info, head_sha, merge_sha, scope, attestation
     entry = matching_entries[0]
     merge_base_sha = entry.get("base_sha")
     if not isinstance(merge_base_sha, str) or not merge_base_sha:
         raise DispositionError(f"PR #{pr} ledger entry lacks its merge-time base SHA")
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", encoding="utf-8", delete=False) as handle:
-        beads_path = Path(handle.name)
-        handle.write(_git_show(head_sha, ".beads/issues.jsonl", cwd=cwd))
-    try:
-        scope = pr_scope.validate_pr_body(
-            str(info.get("body") or ""),
-            head_sha=head_sha,
-            is_draft=bool(info.get("isDraft")),
-            beads_path=beads_path,
-            base_sha=merge_base_sha,
-        )
-    finally:
-        beads_path.unlink(missing_ok=True)
-    if not scope.ok:
-        raise DispositionError("merged PR carrier is invalid: " + "; ".join(scope.reasons))
-    attestation = str(
-        pr_scope.attestation_payload(scope, head_sha=head_sha, base_sha=merge_base_sha)["attestation_digest"]
-    )
+    scope, attestation = _validate_merged_scope(info, head_sha=head_sha, base_sha=merge_base_sha, cwd=cwd)
     if entry.get("scope_attestation_digest") != attestation:
         raise DispositionError(
             f"PR #{pr} has no merged ledger entry bound to its current exact-head carrier attestation"
@@ -242,10 +281,17 @@ def _existing_receipt(path: Path, identity: dict[str, Any]) -> dict[str, Any] | 
     return existing
 
 
-def cmd_apply(pr: int, *, base_export: Path, output: Path, dry_run: bool) -> int:
+def cmd_apply(
+    pr: int, *, base_export: Path, output: Path, dry_run: bool, recover_unledgered_merge: bool = False
+) -> int:
     root = Path.cwd().resolve()
     try:
-        _info, head_sha, merge_sha, scope, attestation = _scope_from_merged_pr(pr, cwd=root)
+        _info, head_sha, merge_sha, scope, attestation = _scope_from_merged_pr(
+            pr,
+            cwd=root,
+            recover_unledgered_merge=recover_unledgered_merge,
+            persist_recovery=not dry_run,
+        )
         if scope.scope_kind is pr_scope.ScopeKind.SELF_CONTAINED:
             print(f"PR #{pr}: self-contained carrier; no Beads disposition is required")
             return 0
@@ -305,12 +351,26 @@ def cmd_apply(pr: int, *, base_export: Path, output: Path, dry_run: bool) -> int
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    recover_unledgered_merge = raw_argv[:1] == ["recover"]
+    if recover_unledgered_merge:
+        raw_argv.pop(0)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pr", type=int, help="Merged PR whose carrier should be applied")
+    parser.add_argument(
+        "pr",
+        type=int,
+        help="Merged PR whose carrier should be applied (use `recover` only for an unledgered external merge)",
+    )
     parser.add_argument("--base-export", required=True, type=Path, help="Current follow-on branch .beads/issues.jsonl")
     parser.add_argument("--output", required=True, type=Path, help="Target .beads/issues.jsonl for the follow-on PR")
     parser.add_argument(
         "--dry-run", action="store_true", help="Validate and print the one batch without mutating Beads"
     )
-    args = parser.parse_args(argv)
-    return cmd_apply(args.pr, base_export=args.base_export, output=args.output, dry_run=args.dry_run)
+    args = parser.parse_args(raw_argv)
+    return cmd_apply(
+        args.pr,
+        base_export=args.base_export,
+        output=args.output,
+        dry_run=args.dry_run,
+        recover_unledgered_merge=recover_unledgered_merge,
+    )

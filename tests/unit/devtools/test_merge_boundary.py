@@ -1552,6 +1552,27 @@ def test_merge_entry_append_is_idempotent_for_a_recovered_same_head(
     assert entries[0]["merge_sequence"] == 1
 
 
+def test_post_merge_carrier_recovery_records_distinct_provenance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    merge_boundary.record_post_merge_carrier_recovery(
+        42,
+        "feature-sha",
+        "fix: recover carrier",
+        base_sha="merge-base",
+        merge_sha="squash-merge",
+        scope_attestation_digest="a" * 64,
+    )
+
+    entry = merge_boundary._read_ledger()["merges"][0]
+    assert entry["scope_attestation_digest"] == "a" * 64
+    assert entry["base_sha"] == "merge-base"
+    assert entry["attestation_origin"] == "post-merge-recovery"
+    assert entry["recovery_merge_sha"] == "squash-merge"
+
+
 def test_external_merge_completion_write_failure_keeps_recovery_latch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
