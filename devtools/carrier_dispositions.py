@@ -288,6 +288,27 @@ def _existing_receipt(path: Path, identity: dict[str, Any]) -> dict[str, Any] | 
     return existing
 
 
+def _assert_existing_receipt_matches_result(
+    existing: dict[str, Any],
+    *,
+    changed: set[str],
+    after: dict[str, dict[str, Any]],
+) -> None:
+    """Refuse a retry whose retained receipt no longer names its exported result."""
+    recorded_ids = existing.get("changed_beads")
+    if not isinstance(recorded_ids, list) or not all(isinstance(bead_id, str) for bead_id in recorded_ids):
+        raise DispositionError("existing disposition receipt is incomplete")
+    if changed and sorted(recorded_ids) != sorted(changed):
+        raise DispositionError("existing disposition receipt does not match the current batch result")
+    if existing.get("version") != 2:
+        return
+    recorded_results = existing.get("changed_records")
+    if not isinstance(recorded_results, dict) or set(recorded_results) != set(recorded_ids):
+        raise DispositionError("existing disposition receipt is incomplete")
+    if any(after.get(bead_id) != record for bead_id, record in recorded_results.items()):
+        raise DispositionError("existing disposition receipt does not match the current batch result")
+
+
 def cmd_apply(
     pr: int, *, base_export: Path, output: Path, dry_run: bool, recover_unledgered_merge: bool = False
 ) -> int:
@@ -338,7 +359,9 @@ def cmd_apply(
         changed_after_batch = _changed_ids(before, after)
         if not changed_after_batch.issubset(selected):
             raise DispositionError("guarded batch changed rows outside its typed carrier scope")
-        if existing_receipt is None:
+        if existing_receipt is not None:
+            _assert_existing_receipt_matches_result(existing_receipt, changed=changed, after=after)
+        else:
             _write_receipt(
                 receipt_path,
                 {

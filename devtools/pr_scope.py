@@ -599,15 +599,20 @@ def _validate_carrier_disposition_receipt(
     if marker != _execution_marker(pr=source_pr, merge_sha=merge_sha, execution_id=execution_id):
         reasons.append("carrier disposition receipt marker does not match its canonical execution identity")
     changed = receipt.get("changed_beads")
-    if not isinstance(changed, list) or not all(isinstance(item, str) for item in changed):
+    changed_ids: list[str] | None = (
+        changed if isinstance(changed, list) and all(isinstance(item, str) for item in changed) else None
+    )
+    if changed_ids is None:
         reasons.append("carrier disposition receipt changed_beads must be a list of Bead IDs")
-    elif sorted(changed) != sorted(mutated_ids):
+    elif sorted(changed_ids) != sorted(mutated_ids):
         reasons.append("carrier disposition receipt changed_beads does not match mutated_beads")
     if result_records is not None:
-        if not isinstance(changed, list) or set(result_records) != set(changed):
+        if changed_ids is None or set(result_records) != set(changed_ids):
             reasons.append("carrier disposition receipt changed_records does not match changed_beads")
         elif any(records.get(bead_id) != record for bead_id, record in result_records.items()):
             reasons.append("carrier disposition receipt does not match the resulting Bead records")
+    if result_records is not None and base_records is None:
+        reasons.append("carrier disposition receipt requires a base revision to validate Bead record mutations")
     elif base_records is not None:
         for item in dispositions:
             before = base_records.get(item.bead_id)
@@ -617,7 +622,7 @@ def _validate_carrier_disposition_receipt(
                 or after is None
                 or not _legacy_record_delta_is_authorized(before, after, disposition=item.disposition)
             ):
-                reasons.append(f"{item.bead_id}: legacy receipt carries an unauthorized Bead record mutation")
+                reasons.append(f"{item.bead_id}: receipt carries an unauthorized Bead record mutation")
     if receipt.get("dispositions") != _disposition_payload(dispositions):
         reasons.append("carrier disposition receipt dispositions do not match the carrier")
     if not set(mutated_ids).issubset({item.bead_id for item in dispositions}):

@@ -1451,10 +1451,10 @@ def test_carrier_disposition_scope_binds_the_committed_receipt_and_source_pr(
     )
 
     assert not verdict.ok
-    assert any("legacy receipt carries an unauthorized Bead record mutation" in reason for reason in verdict.reasons)
+    assert any("receipt carries an unauthorized Bead record mutation" in reason for reason in verdict.reasons)
     records[0]["title"] = base_record["title"]
 
-    receipt["changed_beads"] = [ASSIGNED, 7]
+    receipt["changed_beads"] = [ASSIGNED, ["nested"]]
     receipt_path.write_text(json.dumps(receipt))
     verdict = pr_scope.validate_carrier(
         carrier,
@@ -1535,23 +1535,20 @@ def test_carrier_disposition_receipt_v2_preserves_the_attested_source_base(
     beads_path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
     receipt_path = beads_path.parent / "disposition-receipts" / f"{execution_id}.json"
     receipt_path.parent.mkdir()
-    receipt_path.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "execution_id": execution_id,
-                "pr": 4040,
-                "head_sha": source_head,
-                "merge_sha": merge_sha,
-                "base_sha": attested_base,
-                "scope_attestation_digest": attestation,
-                "marker": marker,
-                "dispositions": pr_scope._disposition_payload((disposition,)),
-                "changed_beads": [ASSIGNED],
-                "changed_records": {ASSIGNED: records[0]},
-            }
-        )
-    )
+    receipt = {
+        "version": 2,
+        "execution_id": execution_id,
+        "pr": 4040,
+        "head_sha": source_head,
+        "merge_sha": merge_sha,
+        "base_sha": attested_base,
+        "scope_attestation_digest": attestation,
+        "marker": marker,
+        "dispositions": pr_scope._disposition_payload((disposition,)),
+        "changed_beads": [ASSIGNED],
+        "changed_records": {ASSIGNED: dict(records[0])},
+    }
+    receipt_path.write_text(json.dumps(receipt))
     carrier = {
         "version": 2,
         "scope_kind": "carrier_disposition",
@@ -1579,12 +1576,21 @@ def test_carrier_disposition_receipt_v2_preserves_the_attested_source_base(
         "_single_parent_squash_base",
         lambda _sha: pytest.fail("v2 receipt must not replace its attested source base with the squash parent"),
     )
+    base_record = _record(ASSIGNED)
+    monkeypatch.setattr(pr_scope, "_receipt_at", lambda **_kwargs: receipt)
+    monkeypatch.setattr(pr_scope, "changed_bead_ids", lambda **_kwargs: [ASSIGNED])
+    monkeypatch.setattr(
+        pr_scope,
+        "_bead_records_at",
+        lambda revision: {ASSIGNED: records[0]} if revision == HEAD_SHA else {ASSIGNED: base_record},
+    )
 
     verdict = pr_scope.validate_carrier(
         carrier,
         head_sha=HEAD_SHA,
         is_draft=False,
         beads_path=beads_path,
+        base_sha="b" * 40,
         repository="Sinity/polylogue",
     )
 
@@ -1598,11 +1604,27 @@ def test_carrier_disposition_receipt_v2_preserves_the_attested_source_base(
         head_sha=HEAD_SHA,
         is_draft=False,
         beads_path=beads_path,
+        base_sha="b" * 40,
         repository="Sinity/polylogue",
     )
 
     assert not verdict.ok
     assert any("does not match the resulting Bead records" in reason for reason in verdict.reasons)
+
+    receipt = json.loads(receipt_path.read_text())
+    receipt["changed_records"][ASSIGNED] = records[0]
+    receipt_path.write_text(json.dumps(receipt))
+    verdict = pr_scope.validate_carrier(
+        carrier,
+        head_sha=HEAD_SHA,
+        is_draft=False,
+        beads_path=beads_path,
+        base_sha="b" * 40,
+        repository="Sinity/polylogue",
+    )
+
+    assert not verdict.ok
+    assert any("receipt carries an unauthorized Bead record mutation" in reason for reason in verdict.reasons)
 
 
 def test_carrier_disposition_scope_rejects_an_independently_closed_target(

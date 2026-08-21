@@ -382,6 +382,11 @@ def test_retry_preserves_the_first_immutable_receipt(monkeypatch: pytest.MonkeyP
     assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 0
     assert json.loads(receipt_path.read_text()) == first
 
+    after["polylogue-a"]["title"] = "edited after receipt"
+
+    assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 1
+    assert json.loads(receipt_path.read_text()) == first
+
 
 def test_existing_legacy_receipt_remains_valid_for_a_receipt_v2_execution(tmp_path: Path) -> None:
     identity = carrier_dispositions._receipt_identity(
