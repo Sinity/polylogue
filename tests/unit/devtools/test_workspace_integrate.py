@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -182,7 +183,7 @@ def test_git_timeout_reports_failure_and_inspects_operation_state(
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(commit + "\n")
             raise subprocess.TimeoutExpired(["git", *args], timeout=30)
-        return original_git(path, *args)
+        return cast(subprocess.CompletedProcess[str], original_git(path, *args))
 
     monkeypatch.setattr(integration_module, "_git", timeout_on_cherry_pick)
     report = integration_module.integrate(target, explicit_commits=[commit])
