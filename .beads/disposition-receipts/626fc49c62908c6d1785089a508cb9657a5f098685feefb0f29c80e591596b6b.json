@@ -1,0 +1,149 @@
+{
+  "base_sha": "44f3a98560531a39bc7991ecd39b1d0030eec1bb",
+  "changed_beads": [
+    "polylogue-a820",
+    "polylogue-did06",
+    "polylogue-ojbn6"
+  ],
+  "changed_records": {
+    "polylogue-a820": {
+      "_type": "issue",
+      "acceptance_criteria": "build_projection_html_messages() and get_render_projection() are removed (along with any now-dead supporting code and their dedicated tests), or kept with an explicit documented reason and a real caller wired to them.",
+      "assignee": "Sinity",
+      "close_reason": "carrier-disposition:v1:pr=4051:merge=6d08d9cbb38d064b27bd29a12e65c9e3b67fd289:execution=626fc49c62908c6d1785089a508cb9657a5f098685feefb0f29c80e591596b6b",
+      "closed_at": "2026-08-21T18:23:17Z",
+      "comment_count": 0,
+      "created_at": "2026-07-16T11:18:06Z",
+      "created_by": "Sinity",
+      "dependencies": [
+        {
+          "created_at": "2026-07-16T13:18:06Z",
+          "created_by": "Sinity",
+          "depends_on_id": "polylogue-4p1",
+          "issue_id": "polylogue-a820",
+          "metadata": "{}",
+          "type": "relates-to"
+        }
+      ],
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "dogfood-2 round-3 rendering re-inventory (investigations/rendering-path-divergence.md): rendering/renderers/html_messages.py:17 build_projection_html_messages() and its sole data source storage/repository/archive/sessions.py:92 get_render_projection() have zero callers anywhere in polylogue/ outside their own module and tests -- confirmed via grep. Looks like a leftover from an abandoned refactor step, not a live rendering path (the live html-rendering entrypoint is rendering/renderers/html.py:22 render_session_html() -> html_messages.py:47 build_session_html_messages(), a different function in the same file).",
+      "id": "polylogue-a820",
+      "issue_type": "chore",
+      "labels": [
+        "area:rendering",
+        "discovered-from:dogfood-2",
+        "lane:mechanical-sweep"
+      ],
+      "notes": "2026-08-21 F6 recovery audit: the clean wave-f-dead-surface lane also removes SessionRenderProjection and its projection-only supporting semantic shape as dead code supporting the two named a820 APIs. Current production search finds no caller outside defining modules. Direct MCP lookup removal is separately tracked as polylogue-ojbn6; ProjectionSemanticFacts ownership is polylogue-did06.\n2026-08-21 follow-up: after the projection reader removal, archive_views.py retained only ExistingSession. Source and test search found no importer; remove the stranded module with the same a820 deletion slice.",
+      "owner": "ezo.dev@gmail.com",
+      "priority": 4,
+      "started_at": "2026-08-21T16:31:02Z",
+      "status": "closed",
+      "title": "rendering: remove dead build_projection_html_messages / get_render_projection code path",
+      "updated_at": "2026-08-21T18:23:17Z"
+    },
+    "polylogue-did06": {
+      "_type": "issue",
+      "assignee": "Sinity",
+      "close_reason": "carrier-disposition:v1:pr=4051:merge=6d08d9cbb38d064b27bd29a12e65c9e3b67fd289:execution=626fc49c62908c6d1785089a508cb9657a5f098685feefb0f29c80e591596b6b",
+      "closed_at": "2026-08-21T18:23:17Z",
+      "comment_count": 0,
+      "created_at": "2026-08-21T16:30:09Z",
+      "created_by": "Sinity",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "## Problem\n\n`ProjectionSemanticFacts` and `build_projection_semantic_facts` have no production consumer. They were introduced with the older projection branch, and the current source tree has no caller outside their defining modules. Their retained protocols, model, exports, and test preserve a parallel semantic shape without a live read or rendering route.\n\n## Acceptance criteria\n\n1. Remove `ProjectionSemanticFacts`, `build_projection_semantic_facts`, and projection-only supporting protocols and exports.\n2. Remove their dedicated test and fixtures.\n3. Confirm the current production tree has no caller outside the deleted implementation before removal.\n4. Preserve live session, message, summary, stream, and MCP semantic facts.\n5. Verify the affected semantic-facts tests through `devtools test` and the complete managed gate.\n\n## Scope\n\nThis is a WS-F F6 dead-surface slice, discovered while recovering the clean `wave-f-dead-surface` lane. It is separate from the active read-algebra program: no replacement surface is added.\n",
+      "id": "polylogue-did06",
+      "issue_type": "task",
+      "labels": [
+        "area:archive",
+        "area:rendering"
+      ],
+      "owner": "ezo.dev@gmail.com",
+      "priority": 3,
+      "started_at": "2026-08-21T16:31:05Z",
+      "status": "closed",
+      "title": "Retire orphaned projection semantic facts",
+      "updated_at": "2026-08-21T18:23:17Z"
+    },
+    "polylogue-ojbn6": {
+      "_type": "issue",
+      "assignee": "Sinity",
+      "close_reason": "carrier-disposition:v1:pr=4051:merge=6d08d9cbb38d064b27bd29a12e65c9e3b67fd289:execution=626fc49c62908c6d1785089a508cb9657a5f098685feefb0f29c80e591596b6b",
+      "closed_at": "2026-08-21T18:23:17Z",
+      "comment_count": 0,
+      "created_at": "2026-08-21T16:30:19Z",
+      "created_by": "Sinity",
+      "dependency_count": 0,
+      "dependent_count": 0,
+      "description": "## Problem\n\n`read_mcp_call` is an isolated direct lookup over `mcp_call_log`. The current production tree has no caller. Live MCP-call access uses the filtered listing route, so the unused lookup and its narrow tests maintain an unexercised public-shaped API.\n\n## Acceptance criteria\n\n1. Confirm no current production caller exists outside the function definition.\n2. Remove `read_mcp_call` and tests that exist solely for it.\n3. Preserve `list_mcp_calls` and the session-ref listing behavior used by live routes.\n4. Verify affected ops-tier tests through `devtools test` and the complete managed gate.\n\n## Scope\n\nThis is a WS-F F6 dead-surface slice, discovered while recovering the clean `wave-f-dead-surface` lane. It does not alter the stored MCP-call schema or live list/query behavior.\n",
+      "id": "polylogue-ojbn6",
+      "issue_type": "task",
+      "labels": [
+        "area:mcp",
+        "area:storage"
+      ],
+      "owner": "ezo.dev@gmail.com",
+      "priority": 3,
+      "started_at": "2026-08-21T16:31:09Z",
+      "status": "closed",
+      "title": "Retire unused direct MCP-call lookup",
+      "updated_at": "2026-08-21T18:23:17Z"
+    }
+  },
+  "dispositions": [
+    {
+      "bead_id": "polylogue-a820",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "bb1cfae7e"
+        },
+        {
+          "kind": "test",
+          "ref": "tests/unit/rendering/test_html_messages.py"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-did06",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "c2279a72a"
+        },
+        {
+          "kind": "test",
+          "ref": "tests/unit/core/test_semantic_facts.py"
+        }
+      ],
+      "successors": []
+    },
+    {
+      "bead_id": "polylogue-ojbn6",
+      "disposition": "satisfied",
+      "evidence": [
+        {
+          "kind": "commit",
+          "ref": "bb1cfae7e"
+        },
+        {
+          "kind": "test",
+          "ref": "tests/unit/storage/test_archive_tiers_ops_write.py"
+        }
+      ],
+      "successors": []
+    }
+  ],
+  "execution_id": "626fc49c62908c6d1785089a508cb9657a5f098685feefb0f29c80e591596b6b",
+  "head_sha": "936a074552fc6966a16a5baabc13ef3bab165ae3",
+  "marker": "carrier-disposition:v1:pr=4051:merge=6d08d9cbb38d064b27bd29a12e65c9e3b67fd289:execution=626fc49c62908c6d1785089a508cb9657a5f098685feefb0f29c80e591596b6b",
+  "merge_sha": "6d08d9cbb38d064b27bd29a12e65c9e3b67fd289",
+  "pr": 4051,
+  "scope_attestation_digest": "c723a7f7bbf9361a47aed9846c345e08f89f3ed17038bacc598b8a85adfae58c",
+  "version": 2
+}
