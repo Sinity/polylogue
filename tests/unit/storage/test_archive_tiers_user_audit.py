@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_audit import audit_user_overlay_storage
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, mark_assertion_status, upsert_assertion
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.USER)
-    return conn
+from tests.infra.user_tier import connect_user_tier
 
 
 def _surface(payload: Mapping[str, object], name: str) -> Mapping[str, object]:
@@ -28,7 +19,7 @@ def _surface(payload: Mapping[str, object], name: str) -> Mapping[str, object]:
 
 
 def test_user_overlay_audit_reports_assertion_backed_surfaces(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -100,7 +91,7 @@ def test_user_overlay_audit_reports_assertion_backed_surfaces(tmp_path: Path) ->
 
 
 def test_user_overlay_audit_covers_every_assertion_kind(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         payload = audit_user_overlay_storage(conn).to_dict()
     finally:

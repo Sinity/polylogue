@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -25,6 +24,7 @@ from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
+from tests.infra.user_tier import connect_user_db
 
 
 def _schema() -> AnnotationSchema:
@@ -182,7 +182,7 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     assert {batch.batch_ref for batch in batches} == {"annotation-batch:batch-one", "annotation-batch:batch-two"}
     assert all(batch.validation_failures for batch in batches)
 
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         assertion_rows = conn.execute(
             "SELECT status, context_policy_json, scope_ref FROM assertions WHERE key LIKE 'row-%'"
         ).fetchall()
@@ -193,7 +193,7 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     assert {row[2] for row in assertion_rows} == {"annotation-batch:batch-one", "annotation-batch:batch-two"}
 
     judgment_refs = [row.assertion_ref for row in first.rows if row.status == "imported"][:3]
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         for candidate_ref, decision in zip(judgment_refs, ("accept", "reject", "defer"), strict=True):
             assert candidate_ref is not None
             judge_assertion_candidate(conn, candidate_ref=candidate_ref, decision=decision, now_ms=2_000)
@@ -335,7 +335,7 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
         "deferred",
         "rejected",
     }
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         assert (
             conn.execute("SELECT count(*) FROM annotation_batches WHERE batch_id = 'delegation-retry'").fetchone()[0]
             == 1

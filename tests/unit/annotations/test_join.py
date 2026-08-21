@@ -24,6 +24,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
+from tests.infra.user_tier import connect_user_db
 
 
 def _delegation_value(*, mode: str = "imperative") -> dict[str, object]:
@@ -191,7 +192,7 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
     unresolved_ref, unresolved_evidence = _seed_unresolved_delegation(archive_root)
     registry = AnnotationSchemaRegistry()
     registry.register(DELEGATION_DISCOURSE_SCHEMA)
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         _accept(
             conn,
             registry=registry,
@@ -361,7 +362,7 @@ async def test_join_is_generic_for_session_targets(workspace_env: dict[str, Path
     registry = AnnotationSchemaRegistry()
     registry.register(schema)
     target_ref = f"session:{session_id}"
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         persist_annotation_schema(conn, schema, registered_at_ms=1)
         _accept(
             conn,
@@ -486,7 +487,7 @@ async def test_terminal_lifecycle_join_retains_labeler_and_judgment_provenance(
     registry = AnnotationSchemaRegistry()
     registry.register(schema)
     target_ref = f"session:{session_id}"
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         persist_annotation_schema(conn, schema, registered_at_ms=1)
         candidate = upsert_annotation_assertion(
             conn,
@@ -556,7 +557,7 @@ async def test_registry_drift_reports_truncated_diagnostics_honestly(
     target_ref, evidence_ref = _seed_delegation(archive_root)
     drifted_schema = replace(DELEGATION_DISCOURSE_SCHEMA, title="Drifted delegation discourse")
     definition = drifted_schema.canonical_definition_json()
-    with sqlite3.connect(archive_root / "user.db") as conn:
+    with connect_user_db(archive_root / "user.db") as conn:
         for index in range(101):
             upsert_assertion(
                 conn,

@@ -2,31 +2,22 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, ComparativeVerdict
 from polylogue.insights.judgment.comparative import build_comparative_judgment
 from polylogue.insights.judgment.types import JudgeIdentity
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     judge_assertion_candidate,
     list_assertion_claims,
     list_comparative_judgments,
     upsert_comparative_judgment_assertion,
 )
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.USER)
-    return conn
+from tests.infra.user_tier import connect_user_tier
 
 
 def test_operator_judgment_is_stored_active_and_injectable_gate_reflects_user_authorship(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b"],
@@ -52,7 +43,7 @@ def test_operator_judgment_is_stored_active_and_injectable_gate_reflects_user_au
 def test_agent_judgment_stays_candidate_pending_promotion(tmp_path: Path) -> None:
     """AC (rxdo.9.15 spine): agent judgments stay candidates; promotion still gated."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b"],
@@ -80,7 +71,7 @@ def test_agent_judgment_stays_candidate_pending_promotion(tmp_path: Path) -> Non
 
 
 def test_round_trips_through_list_comparative_judgments(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b", "finding:c"],
@@ -122,7 +113,7 @@ def test_rejected_agent_judgment_is_excluded_from_list_comparative_judgments(tmp
     read this terminal row back as if it were a live verdict.
     """
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b"],
@@ -161,7 +152,7 @@ def test_accepted_agent_judgment_appears_exactly_once_via_promoted_row(tmp_path:
     ``ComparativeJudgment`` objects for the same verdict.
     """
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b"],
@@ -196,7 +187,7 @@ def test_accepted_agent_judgment_appears_exactly_once_via_promoted_row(tmp_path:
 
 
 def test_identical_verdict_written_twice_is_idempotent_not_duplicative(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         judgment = build_comparative_judgment(
             items=["finding:a", "finding:b"],

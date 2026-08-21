@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAnnotationEnvelope,
     ArchiveBlackboardNoteEnvelope,
@@ -33,17 +30,11 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_suppression,
     upsert_workspace,
 )
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.USER)
-    return conn
+from tests.infra.user_tier import connect_user_tier
 
 
 def test_archive_tiers_user_write_minimal_upserts(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     suppression = upsert_suppression(
         conn,
@@ -254,7 +245,7 @@ def test_upsert_recall_pack_without_explicit_id_updates_same_named_pack(tmp_path
     never matched and the update appended a second, disconnected row instead
     of updating the existing logical pack (polylogue-2o3d).
     """
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     first = upsert_recall_pack(conn, "launch-pack", {"session_ids": ["session-1"]}, now_ms=1)
     second = upsert_recall_pack(conn, "launch-pack", {"session_ids": ["session-1", "session-2"]}, now_ms=2)
@@ -284,7 +275,7 @@ def test_upsert_blackboard_note_default_id_is_content_hash_append_only_by_design
     correctly forks a new, independent note rather than overwriting the
     previous one.
     """
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     first = upsert_blackboard_note(conn, "status update", target_type="session", target_id="session-1", now_ms=1)
     identical_repeat = upsert_blackboard_note(
