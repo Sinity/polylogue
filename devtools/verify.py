@@ -174,6 +174,7 @@ def _python_optimization_level() -> int:
 class _OwnedNativeTestmonState:
     descriptor: int
     data_path: Path
+    executable_data_path: Path
 
     def close(self) -> None:
         os.close(self.descriptor)
@@ -213,6 +214,7 @@ def _open_owned_native_testmon_state(repo_root: Path) -> _OwnedNativeTestmonStat
     return _OwnedNativeTestmonState(
         descriptor=descriptor,
         data_path=bound,
+        executable_data_path=raw_data,
     )
 
 
@@ -2058,7 +2060,7 @@ def _run(
             cwd=cwd,
             run=run,
             timeout_s=timeout_s,
-            native_testmon_data=state.data_path,
+            native_testmon_data=state.executable_data_path,
         )
     finally:
         if temporary_state:

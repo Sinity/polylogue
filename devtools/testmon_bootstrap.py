@@ -747,18 +747,10 @@ def inspect_native_testmon_environment(
     """Validate one native environment without interpreting plugin internals."""
     _ensure_deadline(deadline_monotonic)
     sidecars = tuple(Path(f"{data_path}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES)
-    # SQLite derives ``-wal``/``-shm`` from the pathname it opens.  The retained
-    # descriptor proves this public inode before the read; opening through
-    # ``/proc/self/fd/<n>`` would instead strand the legitimate public WAL.
-    sqlite_data_path = data_path
-    if data_fd is not None:
-        try:
-            opened = os.fstat(data_fd)
-            current = data_path.stat()
-        except OSError as exc:
-            return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
-        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-            return NativeTestmonState("invalid", "native testmon database changed while binding")
+    # A supplied descriptor is the authority for this source generation.  The
+    # public name may be replaced after binding, so every SQLite read below
+    # must reopen the retained descriptor rather than the mutable pathname.
+    sqlite_data_path = _descriptor_bound_path(data_fd) if data_fd is not None else data_path
     if data_fd is None and not data_path.exists():
         if any(path.exists() or path.is_symlink() for path in sidecars):
             return NativeTestmonState("invalid", "SQLite sidecars exist without the owned database")
@@ -792,14 +784,6 @@ def inspect_native_testmon_environment(
                 recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
             finally:
                 recovery.close()
-        if data_fd is not None:
-            try:
-                opened = os.fstat(data_fd)
-                current = data_path.stat()
-            except OSError as exc:
-                return NativeTestmonState("invalid", f"cannot inspect native testmon database: {exc}")
-            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
-                return NativeTestmonState("invalid", "native testmon database changed while recovering sidecars")
     try:
         with (
             contextlib.closing(
@@ -1311,13 +1295,10 @@ def _atomic_copy_sqlite_database(
         if source_fd is None:
             source_directory_fd = _open_owned_testmon_directory(source.parent.parent.parent, create=False)
         else:
-            opened_source = os.fstat(source_fd)
-            current_source = source.stat()
-            if (opened_source.st_dev, opened_source.st_ino) != (current_source.st_dev, current_source.st_ino):
-                raise NativeTestmonRepairError("source testmon database changed before SQLite backup")
-            # Retain the descriptor as the inode authority, but use the public
-            # basename so SQLite can replay its paired WAL while copying.
-            source_path = source
+            # The caller has already retained the source generation. Reopen its
+            # descriptor so a later replacement of the public name cannot
+            # invalidate or redirect this SQLite backup.
+            source_path = _descriptor_bound_path(source_fd)
         destination_directory_fd = _open_owned_testmon_directory(destination.parent.parent.parent, create=True)
         if source_fd is None:
             # Retain the source inode before SQLite opens it.  The returned
@@ -1359,11 +1340,6 @@ def _atomic_copy_sqlite_database(
                 progress=lambda _status, _remaining, _total: _ensure_deadline(deadline_monotonic),
                 sleep=0.05,
             )
-        if source_fd is not None:
-            opened_source = os.fstat(source_fd)
-            current_source = source.stat()
-            if (opened_source.st_dev, opened_source.st_ino) != (current_source.st_dev, current_source.st_ino):
-                raise NativeTestmonRepairError("source testmon database changed during SQLite backup")
         _ensure_deadline(deadline_monotonic)
         # Validate through the held descriptor.  Reopening ``temporary`` by
         # name here would allow a replacement of that directory entry to
