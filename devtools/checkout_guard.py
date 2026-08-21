@@ -270,7 +270,11 @@ def _cache_artifact(
     if not state_path.exists():
         return None, None
     try:
-        if state_path.is_dir() and not any(state_path.iterdir()):
+        entries = list(state_path.iterdir()) if state_path.is_dir() else []
+        if not entries or all(entry.name == "merge-gate" for entry in entries):
+            # The merge-train ledger is control state, not a derived verification
+            # artifact. A carrier recovery can create it before the first lane
+            # verification writes a checkout-bound run marker.
             return None, None
     except OSError:
         pass
