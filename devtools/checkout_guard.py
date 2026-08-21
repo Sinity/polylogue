@@ -147,6 +147,63 @@ def _sha256_file(path: Path) -> str | None:
         return None
 
 
+def _sha256_executable_content(path: Path) -> str | None:
+    """Content-hash a resolved quick-gate tool, ignoring an install-root shebang.
+
+    ``verify --quick`` itself invokes ``ruff``/``mypy``/``dmypy`` by bare name
+    through inherited ``PATH`` (``devtools.verify._subprocess_env`` does not
+    touch ``PATH``), so this fingerprint has to answer "what does PATH
+    resolve to right now", not "what does this checkout's own venv contain"
+    -- ``shutil.which`` is the correct, PATH-matching resolution rule and
+    stays unchanged.
+
+    What must change is what gets hashed. A pip/uv-generated console-script
+    wrapper (``mypy``, ``dmypy`` -- a Python entry-point shim, not a compiled
+    binary) hardcodes the *absolute path to its own venv's interpreter* in a
+    leading ``#!`` shebang line. Two byte-identical installs of the exact
+    same package version therefore hash differently purely because of which
+    venv root happened to answer the PATH lookup -- a worktree's own
+    dedicated ``.venv`` versus a shared checkout's ``.venv``, both synced
+    from the same lockfile, is a routine, harmless lane-lifecycle transition
+    (see `devtools workspace lane-init`), not toolchain drift. Stripping a
+    leading ``#!`` line before hashing removes exactly that install-location
+    noise. It is a no-op for a compiled/native executable such as ruff's
+    binary (never starts with ``#!``), so genuine content drift -- a
+    different ruff build, a corrupted or tampered binary, or a real edit to
+    a wrapper's body -- is still fully detected, for every tool, by this
+    same hash.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if data.startswith(b"#!"):
+        newline = data.find(b"\n")
+        if newline != -1:
+            data = data[newline + 1 :]
+    digest = hashlib.sha256()
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def _venv_relative_executable_identity(path: Path) -> str:
+    """Return a venv-install-root-invariant identity for a resolved executable.
+
+    Companion to :func:`_sha256_executable_content`: once the content hash no
+    longer carries install-root noise, the raw absolute ``path`` alongside it
+    would still defeat receipt reuse on install location alone (a worktree's
+    own ``.venv`` vs. a shared checkout's ``.venv``). Strip the ``.venv``
+    root prefix so two equivalent venvs report the same relative identity,
+    e.g. ``.venv/bin/mypy``. A resolution that is *not* inside any ``.venv``
+    at all (a stray system-wide tool shadowing the checkout's own) keeps its
+    absolute path -- that is itself meaningful drift worth flagging.
+    """
+    for parent in (path, *path.parents):
+        if parent.name == ".venv":
+            return str(Path(".venv") / path.relative_to(parent))
+    return str(path)
+
+
 def quick_gate_toolchain_fingerprint(repo_root: Path) -> dict[str, object]:
     """Return the bounded runtime/toolchain state that affects ``verify --quick``."""
     executables: dict[str, dict[str, str | None]] = {}
@@ -154,8 +211,8 @@ def quick_gate_toolchain_fingerprint(repo_root: Path) -> dict[str, object]:
         resolved = shutil.which(name)
         path = Path(resolved).resolve() if resolved else None
         executables[name] = {
-            "path": str(path) if path is not None else None,
-            "sha256": _sha256_file(path) if path is not None else None,
+            "path": _venv_relative_executable_identity(path) if path is not None else None,
+            "sha256": _sha256_executable_content(path) if path is not None else None,
         }
     packages: dict[str, str | None] = {}
     for name in ("ruff", "mypy"):
@@ -171,7 +228,14 @@ def quick_gate_toolchain_fingerprint(repo_root: Path) -> dict[str, object]:
             "executable": str(Path(sys.executable).resolve()),
             "version": sys.version,
             "implementation": sys.implementation.name,
-            "prefix": sys.prefix,
+            # Same install-root noise as the executables above, on the
+            # interpreter's own venv root: two functionally identical venvs
+            # (same lockfile) at different absolute paths must not disagree
+            # here. base_prefix/stdlib are the underlying (non-venv) Python
+            # installation -- genuinely checkout-independent already, since a
+            # different Python build there IS meaningful drift -- so they stay
+            # raw.
+            "prefix": _venv_relative_executable_identity(Path(sys.prefix)),
             "base_prefix": sys.base_prefix,
             "stdlib": sysconfig.get_paths().get("stdlib"),
         },

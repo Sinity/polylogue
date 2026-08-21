@@ -1024,6 +1024,55 @@ def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> 
     assert before != after
 
 
+def test_worktree_fingerprint_ignores_untracked_beads_content(tmp_path: Path) -> None:
+    """``.beads/`` is RECEIPT_EXCLUDED_PATHSPECS's one entry -- nothing at
+    runtime reads it, so its bytes must not perturb the fingerprint whether
+    the file is *tracked-and-modified* (already excluded via the status/diff
+    commands) or, the gap this test pins, *untracked* (enumerated by the
+    separate `git ls-files --others` pass, which currently carries no
+    pathspec at all)."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+
+    before = _worktree_fingerprint()
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+    (beads_dir / "issues.jsonl").write_text('{"id": "one"}\n')
+    after_beads = _worktree_fingerprint()
+    (beads_dir / "issues.jsonl").write_text('{"id": "one", "status": "closed"}\n')
+    after_beads_edit = _worktree_fingerprint()
+
+    assert before == after_beads == after_beads_edit
+
+
+def test_worktree_fingerprint_still_detects_untracked_nonbeads_content(tmp_path: Path) -> None:
+    """The `.beads` exclusion must stay scoped to `.beads`: an untracked file
+    anywhere else still changes the fingerprint, both on first appearance and
+    on content edits."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+
+    before = _worktree_fingerprint()
+    other = tmp_path / "other.py"
+    other.write_text("VALUE = 1\n")
+    after_created = _worktree_fingerprint()
+    other.write_text("VALUE = 2\n")
+    after_edited = _worktree_fingerprint()
+
+    assert before != after_created
+    assert after_created != after_edited
+
+
 def test_worktree_fingerprint_rejects_partial_git_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
