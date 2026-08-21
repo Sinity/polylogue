@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -673,3 +674,80 @@ def test_build_gives_up_on_a_persistent_lock(tmp_path: Path, monkeypatch: pytest
 
     assert attempts == artifacts._BUILD_LOCK_ATTEMPTS
     assert not list((tmp_path / "cache" / ".staging").iterdir())
+
+
+@pytest.mark.parametrize(
+    ("error_code", "error_name", "message"),
+    (
+        (sqlite3.SQLITE_LOCKED | (1 << 8), None, "opaque SQLite error"),
+        (None, "SQLITE_LOCKED_SHAREDCACHE", "opaque SQLite error"),
+        (None, None, "database table is locked: sqlite_master"),
+        (sqlite3.SQLITE_BUSY, "SQLITE_BUSY", "database is busy"),
+    ),
+)
+def test_transient_sqlite_lock_recognizes_shared_cache_variants(
+    error_code: int | None,
+    error_name: str | None,
+    message: str,
+) -> None:
+    exc = sqlite3.OperationalError(message)
+    if error_code is not None:
+        exc.sqlite_errorcode = error_code
+    if error_name is not None:
+        exc.sqlite_errorname = error_name
+
+    assert is_transient_sqlite_lock(exc)
+
+
+@pytest.mark.parametrize(
+    ("error_code", "message"),
+    (
+        (sqlite3.SQLITE_CORRUPT, "database disk image is malformed"),
+        (sqlite3.SQLITE_CORRUPT, "database is locked while reading a corrupt page"),
+        (sqlite3.SQLITE_IOERR, "disk I/O error"),
+        (None, "no such table: sqlite_master"),
+    ),
+)
+def test_transient_sqlite_lock_rejects_non_contention_errors(
+    error_code: int | None,
+    message: str,
+) -> None:
+    exc = sqlite3.OperationalError(message)
+    if error_code is not None:
+        exc.sqlite_errorcode = error_code
+
+    assert not is_transient_sqlite_lock(exc)
+
+
+def test_contention_during_cache_validation_reuses_published_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient validation lock must not turn valid bytes into a rebuild."""
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    published = build_seeded_archive(cache_root=cache_root)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    real_validate = artifacts._validate_artifact
+    attempts = 0
+
+    def contend_once(root: Path, key: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            cause = sqlite3.OperationalError("database table is locked: sqlite_master")
+            raise artifacts._ArtifactValidationContentionError from cause
+        return real_validate(root, key)
+
+    def forbid_republish(path: Path) -> None:
+        raise AssertionError(f"valid artifact was republished: {path}")
+
+    monkeypatch.setattr(artifacts, "_validate_artifact", contend_once)
+    monkeypatch.setattr(artifacts, "_remove_tree", forbid_republish)
+    reused = build_seeded_archive(cache_root=cache_root)
+
+    assert attempts >= 2
+    assert reused.root == published.root
+    assert reused.manifest.manifest_id == published.manifest.manifest_id

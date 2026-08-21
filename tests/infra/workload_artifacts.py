@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from polylogue.config import Config, Source
+from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.scenarios.workload import (
@@ -377,7 +378,7 @@ def _journal_mode_delete_with_retry(conn: sqlite3.Connection, *, name: str) -> N
         try:
             mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
         except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+            if not is_transient_sqlite_lock(exc) or time.monotonic() >= deadline:
                 raise
             gc.collect()
             time.sleep(min(0.05 * attempt, 0.5))
@@ -528,11 +529,11 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
         _sqlite_integrity(root)
         _validate_facts(root, manifest.facts)
         _validate_frontier_convergence(root)
-    except sqlite3.OperationalError as exc:
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+    except sqlite3.Error as exc:
+        if is_transient_sqlite_lock(exc):
             raise _ArtifactValidationContentionError(f"published artifact validation is contended: {root}") from exc
         return None
-    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error):
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return SeededArchiveArtifact(root=root, manifest=manifest)
 
@@ -689,7 +690,7 @@ def build_seeded_archive(
                 # makes many workers rebuild artifacts at once and a setup ERROR
                 # here fails the whole consuming test.
                 _remove_tree(staging)
-                if "locked" not in str(exc).lower() or attempt == _BUILD_LOCK_ATTEMPTS:
+                if not is_transient_sqlite_lock(exc) or attempt == _BUILD_LOCK_ATTEMPTS:
                     raise
                 gc.collect()
                 time.sleep(min(0.25 * attempt, 2.0))

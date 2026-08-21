@@ -102,9 +102,9 @@ def archive_tier_spec(tier: ArchiveTier) -> ArchiveTierSpec:
 # faithful prototype for every later one in the same process, and SQLite's own
 # backup API restores it as a page copy instead of re-parsing.
 #
-# Embeddings is deliberately excluded: its DDL creates ``vec0`` virtual tables
-# that require the sqlite-vec extension to be loaded on the connection doing the
-# creating, so a page copy would silently skip that requirement.
+# Embeddings requires sqlite-vec to be loaded on the target connection before
+# a cached page copy is restored.  The restore path performs that readiness
+# step, so its empty vec0 schema is cacheable like every other tier.
 _TIER_PROTOTYPE_LOCK = threading.Lock()
 #: Per-process tally of how each tier initialization resolved, keyed
 #: ``(tier, outcome)``. Three outcomes, because they have three different
@@ -112,8 +112,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 #:
 #: * ``prototype_hit``  -- restored by page copy from this process's cache.
 #: * ``ddl_fresh``      -- verifiably-empty database, real DDL executed. Paid
-#:   once per tier per process for cacheable tiers; once per archive for
-#:   EMBEDDINGS, which is excluded from the cache.
+#:   once per tier/DDL identity per process for cacheable tiers.
 #: * ``ddl_reapply``    -- NON-empty database, whole-tier DDL re-executed for
 #:   its ``IF NOT EXISTS`` idempotence and the same-version convergence steps
 #:   that follow it. Every one of these is a fully redundant executescript
@@ -129,7 +128,7 @@ _TIER_INIT_COUNTS_LOCK = threading.Lock()
 
 _TIER_PROTOTYPES: dict[tuple[str, int, str], Path] = {}
 _TIER_PROTOTYPE_DIR: Path | None = None
-_PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier) - {ArchiveTier.EMBEDDINGS}
+_PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier)
 
 
 def _record_tier_init(tier: ArchiveTier, outcome: str) -> None:
@@ -173,6 +172,10 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
     if prototype is None or not prototype.is_file():
         return False
     try:
+        if tier is ArchiveTier.EMBEDDINGS:
+            loaded, _error = try_load_sqlite_vec(conn)
+            if not loaded:
+                return False
         with contextlib.closing(sqlite3.connect(prototype)) as source:
             source.backup(conn)
         stored = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -229,6 +232,7 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         if object_count == 0:
             if _restore_tier_prototype(conn, tier, spec.version):
                 conn.execute("PRAGMA foreign_keys = ON")
+                _apply_archive_tier_convergence(conn, tier, spec)
                 _record_tier_init(tier, "prototype_hit")
                 return
             _initialize_archive_tier_ddl(conn, tier)
@@ -238,9 +242,9 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         _initialize_archive_tier_ddl(conn, tier)
         _record_tier_init(tier, "ddl_reapply")
         return
-    # EMBEDDINGS: never prototype-cached, so classify it the same way rather
-    # than lumping every call together. One COUNT over ``sqlite_master`` on a
-    # database this call is about to run a whole schema against.
+    # Explicit escape hatch for a future tier that cannot safely be restored
+    # from a page-copy prototype (for example, an extension with connection-
+    # local state that cannot be prepared before backup restoration).
     empty = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) == 0
     _initialize_archive_tier_ddl(conn, tier)
     _record_tier_init(tier, "ddl_fresh" if empty else "ddl_reapply")
@@ -255,6 +259,19 @@ def _initialize_archive_tier_ddl(conn: sqlite3.Connection, tier: ArchiveTier) ->
         if not loaded:
             raise RuntimeError("archive embeddings initialization requires sqlite-vec") from error
     conn.executescript(spec.ddl)
+    _apply_archive_tier_convergence(conn, tier, spec)
+
+
+def _apply_archive_tier_convergence(
+    conn: sqlite3.Connection,
+    tier: ArchiveTier,
+    spec: ArchiveTierSpec,
+) -> None:
+    """Replay same-version convergence after either DDL or page-copy restore.
+
+    Prototypes accelerate canonical DDL; they are not a second schema
+    authority.  Any idempotent same-version repair must run on cache hits too.
+    """
     if tier is ArchiveTier.OPS:
         from polylogue.storage.sqlite.archive_tiers.ops_write import (
             ensure_embedding_catchup_run_outcome_columns,
