@@ -74,6 +74,48 @@ _MAPPING_STATE_TO_ASSOCIATION: dict[str, WorkEvidenceAssociationState] = {
     "authority-contradicted": "contradicted",
 }
 
+# Keep the same monotonic merge policy used by the Claude Workflow evidence
+# adapter. A repeated logical identity can accumulate evidence from independent
+# producers, but a weaker later observation must never erase a stronger
+# provenance verdict.
+_ASSOCIATION_STATE_RANK: dict[WorkEvidenceAssociationState, int] = {
+    "resolved": 0,
+    "superseded": 1,
+    "unresolved": 2,
+    "ambiguous": 3,
+    "contradicted": 4,
+}
+
+
+def _merge_evidence_refs(
+    existing: tuple[EvidenceRef | ObjectRef, ...],
+    incoming: tuple[EvidenceRef | ObjectRef, ...],
+) -> tuple[EvidenceRef | ObjectRef, ...]:
+    by_format = {ref.format(): ref for ref in existing}
+    for ref in incoming:
+        by_format.setdefault(ref.format(), ref)
+    return tuple(by_format[key] for key in sorted(by_format))
+
+
+def _merge_attempt_node(
+    existing: WorkEvidenceNode,
+    *,
+    evidence_ref: EvidenceRef,
+    association_state: WorkEvidenceAssociationState,
+) -> WorkEvidenceNode:
+    merged_state = (
+        existing.association_state
+        if _ASSOCIATION_STATE_RANK[existing.association_state] >= _ASSOCIATION_STATE_RANK[association_state]
+        else association_state
+    )
+    return existing.model_copy(
+        update={
+            "evidence_refs": _merge_evidence_refs(existing.evidence_refs, (evidence_ref,)),
+            "association_state": merged_state,
+            "confidence": 1.0 if merged_state == "resolved" else 0.5,
+        }
+    )
+
 
 def _dispatch_evidence_ref(row: ArchiveDelegationQueryRow) -> EvidenceRef:
     if row.instruction_message_id is not None:
@@ -122,16 +164,25 @@ def materialize_delegation_work_evidence_graph(
             continue
 
         attempt_ref = ObjectRef(kind="work-attempt", object_id=f"attempt:{row.child_session_id}")
-        nodes[attempt_ref.format()] = WorkEvidenceNode(
-            ref=attempt_ref,
-            kind="attempt",
-            label=f"delegation attempt {row.child_session_id}",
-            evidence_refs=(evidence_ref,),
-            corpus_snapshot_ref=corpus_snapshot_ref,
-            authority="provider",
-            confidence=1.0 if association_state == "resolved" else 0.5,
-            association_state=association_state,
-        )
+        attempt_key = attempt_ref.format()
+        existing_attempt = nodes.get(attempt_key)
+        if existing_attempt is None:
+            nodes[attempt_key] = WorkEvidenceNode(
+                ref=attempt_ref,
+                kind="attempt",
+                label=f"delegation attempt {row.child_session_id}",
+                evidence_refs=(evidence_ref,),
+                corpus_snapshot_ref=corpus_snapshot_ref,
+                authority="provider",
+                confidence=1.0 if association_state == "resolved" else 0.5,
+                association_state=association_state,
+            )
+        else:
+            nodes[attempt_key] = _merge_attempt_node(
+                existing_attempt,
+                evidence_ref=evidence_ref,
+                association_state=association_state,
+            )
         edge_kind: WorkEvidenceEdgeKind = "invoked" if association_state == "resolved" else "unresolved"
         edge_ref = ObjectRef(kind="work-edge", object_id=f"{edge_kind}:{call_ref.format()}->{attempt_ref.format()}")
         edges[edge_ref.format()] = WorkEvidenceEdge(
@@ -175,8 +226,8 @@ def materialize_delegation_work_evidence_graph(
     return WorkEvidenceGraph(
         graph_id=graph_id,
         corpus_snapshot_ref=corpus_snapshot_ref,
-        nodes=tuple(nodes.values()),
-        edges=tuple(edges.values()),
+        nodes=tuple(nodes[key] for key in sorted(nodes)),
+        edges=tuple(edges[key] for key in sorted(edges)),
     )
 
 

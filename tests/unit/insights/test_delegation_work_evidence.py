@@ -116,17 +116,24 @@ def test_same_child_from_distinct_parents_merges_attempt_evidence_order_independ
 
     rows = (
         _row(parent_session_id="codex-session:hook-parent"),
-        _row(parent_session_id="codex-session:parser-parent"),
+        _row(parent_session_id="codex-session:parser-parent", mapping_state="authority-contradicted"),
     )
     graph = materialize_delegation_work_evidence_graph(
         graph_id="delegation-graph", corpus_snapshot_ref=SNAPSHOT, rows=rows
     )
+    reversed_graph = materialize_delegation_work_evidence_graph(
+        graph_id="delegation-graph", corpus_snapshot_ref=SNAPSHOT, rows=tuple(reversed(rows))
+    )
 
     attempt = next(node for node in graph.nodes if node.kind == "attempt")
+    reversed_attempt = next(node for node in reversed_graph.nodes if node.kind == "attempt")
     assert {ref.format() for ref in attempt.evidence_refs} == {
         "codex-session:hook-parent::m1",
         "codex-session:parser-parent::m1",
     }
+    assert attempt.association_state == "contradicted"
+    assert reversed_attempt == attempt
+    assert reversed_graph == graph
 
 
 def test_many_dispatches_from_one_parent_session_retain_distinct_call_identity() -> None:
