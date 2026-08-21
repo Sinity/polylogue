@@ -12,7 +12,6 @@ import contextlib
 import faulthandler
 import os
 import signal
-import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -245,8 +244,11 @@ def install_signal_handlers(lifecycle: DaemonLifecycle) -> dict[int, SignalHandl
     def handle_signal(signum: int, _frame: FrameType | None) -> None:
         signal_name = signal.Signals(signum).name
         logger.error("daemon: received %s; dumping all thread stacks", signal_name)
-        with contextlib.suppress(Exception):
-            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        try:
+            faulthandler.dump_traceback(file=2, all_threads=True)
+        except Exception as exc:
+            with contextlib.suppress(OSError):
+                os.write(2, f"daemon: faulthandler dump failed: {exc}\n".encode())
         lifecycle.record_signal_best_effort(signum)
         if signum == signal.SIGINT:
             raise KeyboardInterrupt

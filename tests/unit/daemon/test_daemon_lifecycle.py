@@ -155,9 +155,35 @@ def test_sigterm_dumps_threads_and_persists_signal_before_exit(
 
         assert raised.value.code == 128 + signal.SIGTERM
         dump.assert_called_once()
-        assert dump.call_args.kwargs["all_threads"] is True
+        assert dump.call_args.kwargs == {"file": 2, "all_threads": True}
         status = lifecycle_status()
         assert status["signal"] == "SIGTERM"
+    finally:
+        restore_signal_handlers(previous)
+        lifecycle.stop(exit_kind="signal")
+
+
+def test_sigterm_reports_forensic_dump_failure_to_raw_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start()
+    previous = install_signal_handlers(lifecycle)
+    try:
+        with (
+            patch(
+                "polylogue.daemon.lifecycle.faulthandler.dump_traceback",
+                side_effect=RuntimeError("unavailable"),
+            ),
+            patch("polylogue.daemon.lifecycle.os.write") as write,
+            pytest.raises(SystemExit) as raised,
+        ):
+            signal.raise_signal(signal.SIGTERM)
+
+        assert raised.value.code == 128 + signal.SIGTERM
+        write.assert_called_once_with(2, b"daemon: faulthandler dump failed: unavailable\n")
+        assert lifecycle_status()["signal"] == "SIGTERM"
     finally:
         restore_signal_handlers(previous)
         lifecycle.stop(exit_kind="signal")
