@@ -276,12 +276,20 @@ def _scope_verdict(
         changed_files=changed_files,
     ):
         return pr_scope.ScopeVerdict(ok=True)
+    body = info.get("body") or ""
+    carrier, _reasons = pr_scope.extract_carrier(body)
+    repository = (
+        pr_scope.resolve_repository()
+        if carrier is not None and carrier.get("scope_kind") == pr_scope.ScopeKind.CARRIER_DISPOSITION.value
+        else None
+    )
     return pr_scope.validate_pr_body(
-        info.get("body") or "",
+        body,
         head_sha=head_sha,
         is_draft=bool(info.get("isDraft")),
         beads_path=checkout_root / ".beads" / "issues.jsonl",
         base_sha=_base_sha(info),
+        repository=repository,
     )
 
 

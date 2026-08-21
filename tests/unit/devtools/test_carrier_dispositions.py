@@ -220,7 +220,7 @@ def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
     monkeypatch.setattr(
         carrier_dispositions,
         "_scope_from_merged_pr",
-        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, "b" * 40, _scope(), "a" * 64),
     )
     monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
@@ -238,8 +238,11 @@ def test_apply_uses_one_guarded_batch_and_writes_only_typed_rows(
     assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 0
     assert calls == [["close polylogue-a marker"]]
     assert guard.parse_and_validate_jsonl(output.read_text()) == after
-    receipt = next((output.parent / "disposition-receipts").glob("*.json"))
-    assert json.loads(receipt.read_text())["changed_beads"] == ["polylogue-a"]
+    receipt = json.loads(next((output.parent / "disposition-receipts").glob("*.json")).read_text())
+    assert receipt["version"] == 2
+    assert receipt["base_sha"] == "b" * 40
+    assert receipt["changed_beads"] == ["polylogue-a"]
+    assert receipt["changed_records"] == after
 
 
 def test_apply_refuses_to_sweep_an_unrelated_live_bead_into_follow_on_export(
@@ -260,7 +263,7 @@ def test_apply_refuses_to_sweep_an_unrelated_live_bead_into_follow_on_export(
     monkeypatch.setattr(
         carrier_dispositions,
         "_scope_from_merged_pr",
-        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, "b" * 40, _scope(), "a" * 64),
     )
     monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
@@ -335,7 +338,7 @@ def test_dry_run_uses_the_real_bd_binary_and_rejects_unrelated_export_drift(
     monkeypatch.setattr(
         carrier_dispositions,
         "_scope_from_merged_pr",
-        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, "b" * 40, _scope(), "a" * 64),
     )
     monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
 
@@ -360,7 +363,7 @@ def test_retry_preserves_the_first_immutable_receipt(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         carrier_dispositions,
         "_scope_from_merged_pr",
-        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, "b" * 40, _scope(), "a" * 64),
     )
     monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: before)
@@ -379,6 +382,29 @@ def test_retry_preserves_the_first_immutable_receipt(monkeypatch: pytest.MonkeyP
     assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 0
     assert json.loads(receipt_path.read_text()) == first
 
+    after["polylogue-a"]["title"] = "edited after receipt"
+
+    assert carrier_dispositions.cmd_apply(42, base_export=base, output=output, dry_run=False) == 1
+    assert json.loads(receipt_path.read_text()) == first
+
+
+def test_existing_legacy_receipt_remains_valid_for_a_receipt_v2_execution(tmp_path: Path) -> None:
+    identity = carrier_dispositions._receipt_identity(
+        execution_id="e" * 64,
+        pr=42,
+        head_sha="h" * 40,
+        merge_sha="m" * 40,
+        base_sha="b" * 40,
+        attestation="a" * 64,
+        marker="carrier-disposition:v1:pr=42:merge=" + "m" * 40 + ":execution=" + "e" * 64,
+        scope=_scope(),
+    )
+    legacy = {key: value for key, value in identity.items() if key != "base_sha"} | {"version": 1, "changed_beads": []}
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(legacy))
+
+    assert carrier_dispositions._existing_receipt(receipt_path, identity) == legacy
+
 
 def test_interruption_after_export_keeps_the_original_mutation_receipt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -393,7 +419,7 @@ def test_interruption_after_export_keeps_the_original_mutation_receipt(
     monkeypatch.setattr(
         carrier_dispositions,
         "_scope_from_merged_pr",
-        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, _scope(), "a" * 64),
+        lambda _pr, **_kwargs: ({}, "h" * 40, "m" * 40, "b" * 40, _scope(), "a" * 64),
     )
     monkeypatch.setattr(guard, "_validated_real_bd_path", lambda _value: Path("/real/bd"))
     monkeypatch.setattr(guard, "_export_live_state", lambda **_kwargs: after)

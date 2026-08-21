@@ -11,7 +11,6 @@ pushes, creates a PR, or runs as an implicit merge side effect.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -86,7 +85,7 @@ def _validate_merged_scope(
 
 def _scope_from_merged_pr(
     pr: int, *, cwd: Path, recover_unledgered_merge: bool = False, persist_recovery: bool = True
-) -> tuple[dict[str, Any], str, str, pr_scope.ScopeVerdict, str]:
+) -> tuple[dict[str, Any], str, str, str, pr_scope.ScopeVerdict, str]:
     info = _gh_json(
         [
             "pr",
@@ -128,7 +127,7 @@ def _scope_from_merged_pr(
                 merge_sha=merge_sha,
                 scope_attestation_digest=attestation,
             )
-        return info, head_sha, merge_sha, scope, attestation
+        return info, head_sha, merge_sha, merge_base_sha, scope, attestation
     entry = matching_entries[0]
     merge_base_sha = entry.get("base_sha")
     if not isinstance(merge_base_sha, str) or not merge_base_sha:
@@ -138,16 +137,15 @@ def _scope_from_merged_pr(
         raise DispositionError(
             f"PR #{pr} has no merged ledger entry bound to its current exact-head carrier attestation"
         )
-    return info, head_sha, merge_sha, scope, attestation
+    return info, head_sha, merge_sha, merge_base_sha, scope, attestation
 
 
 def _execution_id(*, pr: int, head_sha: str, merge_sha: str, attestation: str) -> str:
-    payload = f"v1\0{pr}\0{head_sha}\0{merge_sha}\0{attestation}".encode()
-    return hashlib.sha256(payload).hexdigest()
+    return pr_scope._execution_id(pr=pr, head_sha=head_sha, merge_sha=merge_sha, attestation=attestation)
 
 
 def _marker(*, execution_id: str, pr: int, merge_sha: str) -> str:
-    return f"carrier-disposition:v1:pr={pr}:merge={merge_sha}:execution={execution_id}"
+    return pr_scope._execution_marker(pr=pr, merge_sha=merge_sha, execution_id=execution_id)
 
 
 def _validate_live_plan(scope: pr_scope.ScopeVerdict, live: dict[str, dict[str, Any]], *, marker: str) -> list[str]:
@@ -243,16 +241,18 @@ def _receipt_identity(
     pr: int,
     head_sha: str,
     merge_sha: str,
+    base_sha: str,
     attestation: str,
     marker: str,
     scope: pr_scope.ScopeVerdict,
 ) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "execution_id": execution_id,
         "pr": pr,
         "head_sha": head_sha,
         "merge_sha": merge_sha,
+        "base_sha": base_sha,
         "scope_attestation_digest": attestation,
         "marker": marker,
         "dispositions": [
@@ -274,11 +274,39 @@ def _existing_receipt(path: Path, identity: dict[str, Any]) -> dict[str, Any] | 
         existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DispositionError(f"existing disposition receipt is unreadable: {path}") from exc
-    if not isinstance(existing, dict) or any(existing.get(key) != value for key, value in identity.items()):
+    if not isinstance(existing, dict):
+        raise DispositionError(f"existing disposition receipt conflicts with this execution: {path}")
+    matches_current = all(existing.get(key) == value for key, value in identity.items())
+    legacy_identity = {key: value for key, value in identity.items() if key != "base_sha"} | {"version": 1}
+    matches_legacy = existing.get("version") == 1 and all(
+        existing.get(key) == value for key, value in legacy_identity.items()
+    )
+    if not matches_current and not matches_legacy:
         raise DispositionError(f"existing disposition receipt conflicts with this execution: {path}")
     if not isinstance(existing.get("changed_beads"), list):
         raise DispositionError(f"existing disposition receipt is incomplete: {path}")
     return existing
+
+
+def _assert_existing_receipt_matches_result(
+    existing: dict[str, Any],
+    *,
+    changed: set[str],
+    after: dict[str, dict[str, Any]],
+) -> None:
+    """Refuse a retry whose retained receipt no longer names its exported result."""
+    recorded_ids = existing.get("changed_beads")
+    if not isinstance(recorded_ids, list) or not all(isinstance(bead_id, str) for bead_id in recorded_ids):
+        raise DispositionError("existing disposition receipt is incomplete")
+    if changed and sorted(recorded_ids) != sorted(changed):
+        raise DispositionError("existing disposition receipt does not match the current batch result")
+    if existing.get("version") != 2:
+        return
+    recorded_results = existing.get("changed_records")
+    if not isinstance(recorded_results, dict) or set(recorded_results) != set(recorded_ids):
+        raise DispositionError("existing disposition receipt is incomplete")
+    if any(after.get(bead_id) != record for bead_id, record in recorded_results.items()):
+        raise DispositionError("existing disposition receipt does not match the current batch result")
 
 
 def cmd_apply(
@@ -286,7 +314,7 @@ def cmd_apply(
 ) -> int:
     root = Path.cwd().resolve()
     try:
-        _info, head_sha, merge_sha, scope, attestation = _scope_from_merged_pr(
+        _info, head_sha, merge_sha, base_sha, scope, attestation = _scope_from_merged_pr(
             pr,
             cwd=root,
             recover_unledgered_merge=recover_unledgered_merge,
@@ -306,6 +334,7 @@ def cmd_apply(
             pr=pr,
             head_sha=head_sha,
             merge_sha=merge_sha,
+            base_sha=base_sha,
             attestation=attestation,
             marker=marker,
             scope=scope,
@@ -330,8 +359,17 @@ def cmd_apply(
         changed_after_batch = _changed_ids(before, after)
         if not changed_after_batch.issubset(selected):
             raise DispositionError("guarded batch changed rows outside its typed carrier scope")
-        if existing_receipt is None:
-            _write_receipt(receipt_path, {**identity, "changed_beads": sorted(changed)})
+        if existing_receipt is not None:
+            _assert_existing_receipt_matches_result(existing_receipt, changed=changed, after=after)
+        else:
+            _write_receipt(
+                receipt_path,
+                {
+                    **identity,
+                    "changed_beads": sorted(changed),
+                    "changed_records": {bead_id: after[bead_id] for bead_id in sorted(changed)},
+                },
+            )
         bd_guard.atomic_write_jsonl(output, after)
     except (
         DispositionError,
