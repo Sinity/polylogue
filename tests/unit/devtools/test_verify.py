@@ -44,7 +44,6 @@ from devtools.verify import (
     ROOT,
     SERIAL_LANE_MAX_WORKERS,
     _anchor_verification_paths,
-    _format_completion_notification,
     _native_lane_failure_requires_stop,
     _parse_pytest_test_count,
     _pytest_command_metadata,
@@ -4559,7 +4558,6 @@ def test_verify_continues_after_failed_cheap_step(
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
     ):
         rc = main(["--quick", "--json"])
 
@@ -4583,7 +4581,6 @@ def test_verify_withholds_success_when_checkout_fingerprint_is_unavailable(
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
     ):
         rc = main(["--quick", "--json"])
@@ -4615,7 +4612,6 @@ def test_verify_classifies_unavailable_mutation_monitor_separately(
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.CheckoutMutationMonitor", _UnavailableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
     ):
@@ -4665,7 +4661,6 @@ def test_transient_mutation_invalidates_only_unisolated_runs(
         patch("devtools.verify.CheckoutMutationMonitor", _TransientMonitor),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
     ):
         rc = main(["--quick", "--json"])
@@ -4718,7 +4713,6 @@ def test_git_head_change_invalidates_only_unisolated_runs(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
     ):
         assert main(["--quick", "--json"]) == expected_rc
@@ -4765,7 +4759,6 @@ def test_verify_keeps_checkout_monitor_active_through_final_authority_samples(
         patch("devtools.verify.worktree_fingerprint", side_effect=fingerprint),
         patch("devtools.verify._save_history"),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--quick", "--json"]) == 0
 
@@ -4813,7 +4806,6 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", side_effect=fingerprints),
     ):
@@ -4861,7 +4853,6 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
         patch("devtools.verify._git_head", return_value="head"),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
         patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify"),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
     ):
         assert main(["--quick", "--json"]) == 125
@@ -4923,7 +4914,6 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
         patch("devtools.verify._git_head", side_effect=_git_head),
         patch("devtools.verify.worktree_fingerprint", side_effect=_worktree_fingerprint),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--quick", "--json"]) == expected_exit
 
@@ -4961,7 +4951,6 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
             side_effect=CheckoutImportMismatchError("wrong checkout import"),
         ),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--quick", "--json"]) == 125
 
@@ -5012,7 +5001,6 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", side_effect=fingerprint),
         patch("devtools.verify._save_history", side_effect=lambda entry: history.update(entry)),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 125
 
@@ -5100,7 +5088,6 @@ def test_verify_continues_serial_lane_after_parallel_test_failure(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 1
 
@@ -5173,7 +5160,6 @@ def test_verify_does_not_warm_from_default_after_invalid_initial_state(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 0
 
@@ -5293,7 +5279,6 @@ def test_preparation_mutation_withholds_release_authority_after_restoration(
         patch("devtools.verify.CheckoutMutationMonitor", _SequencedMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 125
 
@@ -5355,7 +5340,6 @@ def test_collection_failure_still_persists_native_run_aggregate(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 2
 
@@ -5417,7 +5401,6 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
         patch("devtools.verify.CheckoutMutationMonitor", _StableMonitor),
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
-        patch("devtools.verify._notify"),
     ):
         assert main(["--json"]) == 0
 
@@ -5426,67 +5409,6 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
     # work it produced; the pytest runtime and stall timeouts remain the guard
     # against a genuine hang.
     assert not any(step.get("diagnosis") == "verify_invocation_deadline_exceeded" for step in payload["steps"])
-
-
-def test_completion_notification_uses_pytest_count() -> None:
-    summary = _format_completion_notification(
-        exit_code=0,
-        total_duration=118.2,
-        step_results=[
-            {"name": "ruff check", "duration_s": 0.1, "exit": 0},
-            {"name": "pytest affected", "duration_s": 100.0, "exit": 0, "count": 12},
-        ],
-    )
-
-    assert summary == "PASS (118s), 12 tests"
-
-
-def test_completion_notification_omits_unknown_pytest_count() -> None:
-    summary = _format_completion_notification(
-        exit_code=0,
-        total_duration=118.2,
-        step_results=[{"name": "pytest", "duration_s": 100.0, "exit": 0}],
-    )
-
-    assert summary == "PASS (118s)"
-
-
-def test_verify_does_not_notify_on_pass() -> None:
-    """Passing verify runs stay silent — only failures send a desktop popup."""
-
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        return 0, 0.01, {}
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify") as notify,
-    ):
-        rc = main(["--quick", "--json"])
-
-    assert rc == 0
-    notify.assert_not_called()
-
-
-def test_verify_notifies_on_failure() -> None:
-    """Failing verify runs still send a desktop popup so the operator notices."""
-
-    def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
-        return 1, 0.01, {}
-
-    with (
-        patch("devtools.verify._run", side_effect=fake_run),
-        patch("devtools.verify._git_head", return_value="head"),
-        patch("devtools.verify._save_history"),
-        patch("devtools.verify._stamp_head"),
-        patch("devtools.verify._notify") as notify,
-    ):
-        rc = main(["--quick", "--json"])
-
-    assert rc == 1
-    notify.assert_called_once()
 
 
 def test_sigterm_is_finalized_rather_than_lost(monkeypatch: pytest.MonkeyPatch) -> None:
