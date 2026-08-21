@@ -101,7 +101,7 @@ def _current_provenance(cwd: Path) -> tuple[dict[str, object], str] | None:
     """Return the live provenance required to trust a cached quick receipt."""
     try:
         environment = assert_polylogue_matches_checkout(cwd, context="pre-push").as_dict()
-    except (CheckoutImportMismatchError, OSError):
+    except (CheckoutImportMismatchError, ImportError, OSError, ValueError):
         return None
     fingerprint = worktree_fingerprint(cwd)
     if fingerprint == "unavailable":
