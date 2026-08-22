@@ -10,6 +10,8 @@ touched :func:`build_coordination_envelope`.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -23,6 +25,7 @@ from polylogue.coordination.payloads import (
     CoordinationView,
     CoordinationWorkItemPayload,
 )
+from polylogue.operations.route_observation import RouteObservationContext
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 
 
@@ -98,3 +101,26 @@ def test_status_coordination_scope_detail_bypasses_cache(
     # The second compact call hits the warm cache (no new build call); the
     # detail request always goes live.
     assert calls == [False, True]
+
+
+def test_status_coordination_observation_carries_checkout_head_context(
+    mcp_server: MCPServerUnderTest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    @contextmanager
+    def capture_observation(**kwargs: object):
+        observed.update(kwargs)
+        yield RouteObservationContext()
+
+    monkeypatch.setattr("polylogue.operations.route_observation.observe_route", capture_observation)
+    monkeypatch.setattr("polylogue.coordination.build_coordination_envelope", lambda **kwargs: _payload())
+    monkeypatch.setattr("polylogue.coordination.envelope.build_coordination_envelope", lambda **kwargs: _payload())
+
+    raw = invoke_surface(mcp_server._tool_manager._tools["status"].fn, scope="coordination")
+
+    assert json.loads(raw)["scope"] == "coordination"
+    assert observed["surface"] == "mcp"
+    assert observed["route"] == "mcp.status.coordination"
+    assert observed["git_head_cwd"] == Path.cwd()
