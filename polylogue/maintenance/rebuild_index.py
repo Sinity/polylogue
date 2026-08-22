@@ -854,6 +854,12 @@ class RebuildPassCost:
     #: a diagnostic rollup over the replay stage ledger, retained separately
     #: from the parse/apply split for phase-level receipts.
     cohort_s: float = 0.0
+    #: Time spent warming this pass's bounded offline parse cache before
+    #: replay. This work used to sit outside both ``replay_s`` and ``pass_s``,
+    #: leaving a potentially substantial decode phase unexplained in a
+    #: full-corpus receipt. A caller-provided cache was warmed before this
+    #: function, so it truthfully records ``0.0`` here.
+    prefetch_warm_s: float = 0.0
     #: Terminal insight materialization time. Deferred/paused passes carry
     #: the explicit zero because they have not reached terminal stages.
     insight_s: float = 0.0
@@ -884,6 +890,7 @@ class RebuildPassCost:
         return {
             "selection_s": round(self.selection_s, 3),
             "cohort_s": round(self.cohort_s, 3),
+            "prefetch_warm_s": round(self.prefetch_warm_s, 3),
             "replay_s": round(self.replay_s, 3),
             "parse_s": round(self.parse_s, 3),
             "apply_s": round(self.apply_s, 3),
@@ -926,6 +933,7 @@ def _cohort_seconds(stage_timings_s: object) -> float:
 def _receipt_timings(
     *,
     selection_s: float,
+    prefetch_warm_s: float,
     replay: dict[str, object],
     terminal_timings_s: dict[str, float],
 ) -> dict[str, float]:
@@ -939,6 +947,7 @@ def _receipt_timings(
     terminal_s = sum(float(value) for key, value in terminal_timings_s.items() if key != "selection_s")
     rollups = {
         "selection_s": float(selection_s),
+        "prefetch_warm_s": float(prefetch_warm_s),
         "cohort_s": _cohort_seconds(stage_timings_s),
         "parse_s": resolved_parse_s,
         "apply_s": resolved_apply_s,
@@ -1803,13 +1812,21 @@ async def _rebuild_index_from_source_owned(
             # REAL archive root (`root`), not `generation_root`: source.db and
             # the blob store live beside the outer archive, never inside a
             # not-yet-promoted generation directory.
+            # A pre-warmed caller cache belongs to the caller's prior phase;
+            # only charge this pass for the bounded offline warm it performs
+            # itself. Keep the distinct replay clock below so ``replay_s``
+            # remains comparable with historical receipts.
+            pass_started_at_s = time.perf_counter()
+            prefetch_warm_s = 0.0
             effective_prefetch_cache = request.prefetch_cache
             if effective_prefetch_cache is None and selected_raw_ids:
+                prefetch_started_at_s = time.perf_counter()
                 warm_config = Config(archive_root=root, render_root=render_root(), sources=[])
                 effective_prefetch_cache = await asyncio.to_thread(
                     _warm_offline_prefetch_cache, warm_config, selected_raw_ids
                 )
-            pass_started_at_s = time.perf_counter()
+                prefetch_warm_s = time.perf_counter() - prefetch_started_at_s
+            replay_started_at_s = time.perf_counter()
             if sharded_replay:
                 # polylogue-pzxm: build request.shard_count owned-inactive
                 # generations in parallel and merge them into `generation`
@@ -1915,7 +1932,7 @@ async def _rebuild_index_from_source_owned(
                     # (content-hash upsert), so this can never duplicate or skip
                     # a raw/cohort; it can only redo bounded work.
                     assert transaction is not None  # deadline_check is only wired when transaction is not None
-                    pass_elapsed_s = time.perf_counter() - pass_started_at_s
+                    pass_elapsed_s = time.perf_counter() - replay_started_at_s
                     if rebuild_source_evidence_snapshot(root) != transaction.source_snapshot:
                         transaction = _checkpoint_rebuild_transaction_after_receipt_validation(
                             generation_store,
@@ -1943,6 +1960,7 @@ async def _rebuild_index_from_source_owned(
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
                         cohort_s=0.0,
+                        prefetch_warm_s=prefetch_warm_s,
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -2010,7 +2028,7 @@ async def _rebuild_index_from_source_owned(
                         provenance,
                     )
                     return pass_receipt
-            pass_elapsed_s = time.perf_counter() - pass_started_at_s
+            pass_elapsed_s = time.perf_counter() - replay_started_at_s
             processed_before = transaction.processed_raw_count if transaction is not None else None
             _validate_before_derived_state(provenance)
             if selected_raw_ids and _should_refresh_generation_planner_statistics(
@@ -2063,6 +2081,7 @@ async def _rebuild_index_from_source_owned(
                     pass_cost = RebuildPassCost(
                         selection_s=selection_elapsed_s,
                         cohort_s=_cohort_seconds(replay.get("stage_timings_s", {})),
+                        prefetch_warm_s=prefetch_warm_s,
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -2430,6 +2449,7 @@ async def _rebuild_index_from_source_owned(
             canary_acceptance=canary_acceptance,
             timings_s=_receipt_timings(
                 selection_s=selection_elapsed_s,
+                prefetch_warm_s=prefetch_warm_s,
                 replay=replay,
                 terminal_timings_s=terminal_timings_s,
             ),

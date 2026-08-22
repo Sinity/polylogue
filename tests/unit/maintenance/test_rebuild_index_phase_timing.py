@@ -6,26 +6,23 @@ refresh, byte-skip, batched commits, pool floor, and dedup shipped via
 sibling beads, and polylogue-o56w already threads terminal-stage timings
 (``terminal.session_insights``/``terminal.bulk_build.*``/``terminal.
 reindex_acceptance``/``terminal.readiness``/``terminal.promote``) plus
-``parse_s``/``apply_s`` onto every rebuild receipt. The one piece the bead's
-own notes call out as still unowned is a SELECTION-phase timing: the live
-full rebuild that motivated this bead spent ~86s of one CPU core choosing
-WHICH raws to replay before the inactive generation held a single session,
-and nothing durable recorded where that time went.
+``parse_s``/``apply_s`` onto every rebuild receipt. Selection timing names the
+raw-id query cost; this module also pins the bounded offline prefetch warm as
+its own phase, because it otherwise happened before the replay clock began
+and made full-corpus receipts understate end-to-end rebuild work.
 
-``RebuildPassCost.selection_s`` (and the matching ``"selection_s"`` key on
-the terminal/materialized receipt's ``timings_s``) closes that gap by
-extending the EXISTING receipt vocabulary rather than inventing a parallel
-one -- every ``RebuildIndexReceipt.timings_s`` shape (deferred, paused,
-replayed) now carries the same key for this phase.
+``RebuildPassCost.selection_s`` / ``prefetch_warm_s`` (and matching keys on
+the terminal/materialized receipt's ``timings_s``) extend the existing receipt
+vocabulary rather than inventing a parallel one -- every
+``RebuildIndexReceipt.timings_s`` shape (deferred, paused, replayed) carries
+the same keys for these phases.
 
 Production dependency exercised: ``polylogue.maintenance.rebuild_index.
 rebuild_index_from_source_sync`` -- the real offline-rebuild orchestrator.
-Anti-vacuity: the mutation that makes these tests fail is removing the
-``selection_elapsed_s`` measurement (or the ``selection_s=selection_elapsed_s``
-threading into ``RebuildPassCost``/``terminal_timings_s``) added around the
-``next_raw_page``/``select_rebuild_raw_ids`` calls in
-``_rebuild_index_from_source_owned`` -- the key would then be absent from
-every receipt's ``timings_s``, not merely zero.
+Anti-vacuity: removing either the selection measurement or the offline
+prefetch-warm measurement/threading makes the corresponding key absent from
+the production receipt; the final and deferred routes below exercise separate
+``RebuildIndexReceipt`` construction paths.
 """
 
 from __future__ import annotations
@@ -157,6 +154,7 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
     timings = receipt.timings_s
     assert {
         "selection_s",
+        "prefetch_warm_s",
         "cohort_s",
         "parse_s",
         "apply_s",
@@ -389,3 +387,5 @@ def test_deferred_pass_cost_carries_selection_phase_timing(tmp_path: Path, monke
     assert receipt.status == "deferred"
     assert "selection_s" in receipt.timings_s
     assert receipt.timings_s["selection_s"] >= 0.0
+    assert "prefetch_warm_s" in receipt.timings_s
+    assert receipt.timings_s["prefetch_warm_s"] >= 0.0
