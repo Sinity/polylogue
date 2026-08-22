@@ -134,9 +134,13 @@ def test_parse_updates_rejects_malformed_input() -> None:
         pre_push_gate.parse_updates("refs/heads/topic only-two-fields")
 
 
-def test_parse_updates_rejects_non_sha_update_fields() -> None:
+@pytest.mark.parametrize(
+    ("local_sha", "remote_sha"),
+    [("not-a-sha", ZERO_SHA), ("a" * 40, "not-a-sha")],
+)
+def test_parse_updates_rejects_malformed_local_or_remote_sha(local_sha: str, remote_sha: str) -> None:
     with pytest.raises(ValueError, match="40-character hexadecimal SHA"):
-        pre_push_gate.parse_updates("refs/heads/topic not-a-sha refs/heads/topic " + ZERO_SHA)
+        pre_push_gate.parse_updates(f"refs/heads/topic {local_sha} refs/heads/topic {remote_sha}")
 
 
 def test_parse_updates_accepts_full_sha_updates() -> None:

@@ -456,6 +456,22 @@ def test_apply_preserves_named_feature_branch(tmp_path: Path) -> None:
     assert branch in branches
 
 
+def test_apply_rechecks_ownership_before_removal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A candidate whose worktree identity changed is never removed."""
+    repo = _make_repo(tmp_path / "repo")
+    wt_path = _make_worktree(repo, tmp_path / "wt-replaced", "feature/replaced")
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
+    assert selected
+    monkeypatch.setattr(worktree_gc, "_recheck_removal_proof", lambda *args, **kwargs: "ownership-changed")
+
+    results = apply_removals(selected, repo_root=repo)
+
+    assert results[0]["removed"] is False
+    assert results[0]["blocked"] == "ownership-changed"
+    assert wt_path.exists()
+
+
 def test_apply_skips_blocked(tmp_path: Path) -> None:
     """Blocked candidates are not removed."""
     repo = _make_repo(tmp_path / "repo")
