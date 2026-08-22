@@ -357,8 +357,7 @@ def _write_parsed_precedence_result(
     defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
-    fallback_timestamp = raw_revision_file_mtime(store, raw_id)
-    session = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
+    session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
     content_hash = str(session_content_hash(session))
     existing_row = store._conn.execute(
@@ -507,12 +506,7 @@ def _write_parsed_precedence_result(
             # This early return bypasses the ordinary index write transaction;
             # make stale observation repair durable for direct governance calls.
             with store._conn if manage_transaction else nullcontext():
-                _repair_stale_session_observations(
-                    store._conn,
-                    session_id,
-                    session,
-                    fallback_timestamp=fallback_timestamp,
-                )
+                _repair_stale_session_observations(store._conn, session_id, session)
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
                 session_id=session_id,
@@ -750,7 +744,6 @@ def write_raw_blob_ref(
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
-        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,

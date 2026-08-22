@@ -91,6 +91,13 @@ def _write_append_raw_payload(
     acquired_at_ms: int,
 ) -> str:
     """Capture literal append bytes with their migration-stable raw identity."""
+    try:
+        file_mtime_ms = int(plan.path.stat().st_mtime * 1000)
+    except FileNotFoundError:
+        # The watcher can remove a completed append between planning and the
+        # write.  The payload remains authoritative; absence of a filesystem
+        # observation must stay unknown rather than aborting the append.
+        file_mtime_ms = None
     return cast(
         str,
         archive.write_raw_payload(
@@ -99,7 +106,7 @@ def _write_append_raw_payload(
             source_path=str(plan.path),
             source_index=plan.source_index,
             acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=plan.mtime_ns // 1_000_000,
+            file_mtime_ms=file_mtime_ms,
             native_id=plan.acquisition_native_id_hint,
             post_parse=True,
         ),
@@ -243,7 +250,6 @@ def _ingest_append_plans_archive(
                                 source_path=str(plan.path),
                                 source_index=-1,
                                 acquired_at_ms=acquired_at_ms,
-                                file_mtime_ms=plan.mtime_ns // 1_000_000,
                                 classification=classification,
                             )
                             if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
@@ -257,7 +263,6 @@ def _ingest_append_plans_archive(
                             source_path=str(plan.path),
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
-                            file_mtime_ms=plan.mtime_ns // 1_000_000,
                             classification=path_artifact,
                         )
                         if artifact_result.arm is not RawAdmissionArm.ARTIFACT:

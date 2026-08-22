@@ -19,8 +19,6 @@ from typing import Any
 
 from polylogue.core.timestamps import parse_timestamp
 
-_PRODUCER_PROVENANCE = frozenset({"producer", "unknown"})
-
 
 def timestamp_millis(value: Any) -> int | None:
     parsed = parse_timestamp(value)
@@ -59,18 +57,10 @@ def session_evidence_timestamps(
     # A normalized derived value is not producer evidence on a later pass. Keep
     # recomputing it from the current timeline, while retaining it only when no
     # timeline is available at all.
-    producer_created = raw_created if created_provenance in _PRODUCER_PROVENANCE else None
-    producer_updated = raw_updated if updated_provenance in _PRODUCER_PROVENANCE else None
-    created = (
-        producer_created
-        if producer_created is not None
-        else (derived_created if derived_created is not None else raw_created)
-    )
-    updated = (
-        producer_updated
-        if producer_updated is not None
-        else (derived_updated if derived_updated is not None else raw_updated)
-    )
+    producer_created = raw_created if created_provenance not in {"derived", "fallback"} else None
+    producer_updated = raw_updated if updated_provenance not in {"derived", "fallback"} else None
+    created = producer_created if producer_created is not None else (derived_created or raw_created)
+    updated = producer_updated if producer_updated is not None else (derived_updated or raw_updated)
     if created is None and updated is None and fallback_timestamp is not None:
         fallback = timestamp_millis(fallback_timestamp)
         created = fallback
@@ -100,26 +90,30 @@ def normalize_session_timestamps(session: Any, *, fallback_timestamp: str | None
     created_ms, updated_ms = session_evidence_timestamps(session, fallback_timestamp=fallback_timestamp)
     raw_created = timestamp_millis(getattr(session, "created_at", None))
     raw_updated = timestamp_millis(getattr(session, "updated_at", None))
-    created_provenance = getattr(session, "created_at_provenance", "unknown")
-    updated_provenance = getattr(session, "updated_at_provenance", "unknown")
-    message_times = [
-        int(message.occurred_at_ms)
-        for message in (getattr(session, "messages", ()) or ())
-        if getattr(message, "occurred_at_ms", None) is not None
-    ]
-    event_times = [
-        timestamp_millis(getattr(event, "timestamp", None)) for event in (getattr(session, "session_events", ()) or ())
-    ]
-    timeline_exists = bool(message_times or any(value is not None for value in event_times))
-    created_kind = "producer" if raw_created is not None and created_provenance in _PRODUCER_PROVENANCE else "derived"
-    updated_kind = "producer" if raw_updated is not None and updated_provenance in _PRODUCER_PROVENANCE else "derived"
-    # Provenance, not timestamp equality, identifies the fallback. A timeline
-    # observation may legitimately equal the file mtime, but it remains derived.
-    if not timeline_exists and fallback_timestamp is not None:
-        if created_ms is not None and created_kind == "derived":
-            created_kind = "fallback"
-        if updated_ms is not None and updated_kind == "derived":
-            updated_kind = "fallback"
+    created_kind = (
+        "producer"
+        if getattr(session, "created_at_provenance", "unknown") not in {"derived", "fallback"}
+        and raw_created is not None
+        else "derived"
+    )
+    updated_kind = (
+        "producer"
+        if getattr(session, "updated_at_provenance", "unknown") not in {"derived", "fallback"}
+        and raw_updated is not None
+        else "derived"
+    )
+    if created_ms is not None and raw_created is None:
+        created_kind = (
+            "fallback"
+            if fallback_timestamp is not None and created_ms == timestamp_millis(fallback_timestamp)
+            else "derived"
+        )
+    if updated_ms is not None and raw_updated is None:
+        updated_kind = (
+            "fallback"
+            if fallback_timestamp is not None and updated_ms == timestamp_millis(fallback_timestamp)
+            else "derived"
+        )
     updates: dict[str, object] = {
         "created_at_provenance": created_kind,
         "updated_at_provenance": updated_kind,
