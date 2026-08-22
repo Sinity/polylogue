@@ -500,7 +500,7 @@ def test_merge_reports_post_merge_disposition_failure_without_rollback(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(subprocess, "run", _fake_run(_base_pr_view()))
-    monkeypatch.setattr(merge_boundary.carrier_dispositions, "cmd_apply", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(carrier_dispositions, "cmd_apply", lambda *_args, **_kwargs: 7)
     assert (
         merge_boundary.cmd_merge(
             42,
