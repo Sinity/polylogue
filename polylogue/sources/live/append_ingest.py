@@ -243,6 +243,7 @@ def _ingest_append_plans_archive(
                                 source_path=str(plan.path),
                                 source_index=-1,
                                 acquired_at_ms=acquired_at_ms,
+                                file_mtime_ms=plan.mtime_ns // 1_000_000,
                                 classification=classification,
                             )
                             if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
@@ -256,6 +257,7 @@ def _ingest_append_plans_archive(
                             source_path=str(plan.path),
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
+                            file_mtime_ms=plan.mtime_ns // 1_000_000,
                             classification=path_artifact,
                         )
                         if artifact_result.arm is not RawAdmissionArm.ARTIFACT:

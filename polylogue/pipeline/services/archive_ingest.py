@@ -446,6 +446,7 @@ def _admit_non_session_origin_artifacts(
                     candidate,
                     provider=provider,
                     acquired_at_ms=acquired_at_ms,
+                    file_mtime_ms=timestamp_millis(_mtime),
                 )
                 continue
             classification = classify_artifact_path(candidate, provider=source.name)
@@ -467,6 +468,7 @@ def _admit_non_session_origin_artifacts(
                     source_path=str(candidate),
                     source_index=0,
                     acquired_at_ms=acquired_at_ms,
+                    file_mtime_ms=timestamp_millis(_mtime),
                     classification=classification,
                 )
                 admitted += 1
@@ -481,6 +483,7 @@ def _admit_non_session_zip_artifacts(
     *,
     provider: Provider,
     acquired_at_ms: int,
+    file_mtime_ms: int | None,
 ) -> int:
     """Retain ZIP member artifacts only after decoded JSONL evidence is absent."""
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -509,6 +512,7 @@ def _admit_non_session_zip_artifacts(
                     source_path=f"{zip_path}:{info.filename}",
                     source_index=0,
                     acquired_at_ms=acquired_at_ms,
+                    file_mtime_ms=file_mtime_ms,
                     classification=classification,
                     blob_publication_receipt_id=receipt_id,
                 )
