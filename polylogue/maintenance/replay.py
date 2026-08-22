@@ -391,7 +391,7 @@ def _resume_pending_specs(
             return None, (), "Legacy replay state has no authoritative successful targets"
         completed = set(completed_order)
         return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
-    index, cursor_error = _strict_cursor(cursor if isinstance(cursor, str) else None, total_targets=len(old_targets))
+    index, cursor_error = _strict_cursor(cursor, total_targets=len(old_targets))
     if cursor_error is not None or index is None:
         return None, (), cursor_error or "Persisted replay state has no valid target cursor"
     # A legacy failure sample proves that the positional prefix may include a

@@ -586,7 +586,11 @@ def test_blocker_receipt_retains_nested_cumulative_metrics(
     assert op.metrics["repaired_count"] == 0.0
     persisted = load_state(config, "op-blocked-receipt")
     assert persisted is not None
-    assert persisted["operation"]["scope"]["filter"] == MaintenanceScopeFilter().to_dict()
+    operation = persisted.get("operation")
+    assert isinstance(operation, dict)
+    scope = operation.get("scope")
+    assert isinstance(scope, dict)
+    assert scope.get("filter") == MaintenanceScopeFilter().to_dict()
     assert patched_dispatch["session_insights"] == []
 
 
