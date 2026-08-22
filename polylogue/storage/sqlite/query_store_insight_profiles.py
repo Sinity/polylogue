@@ -74,42 +74,5 @@ class SQLiteQueryStoreInsightProfilesMixin:
         async with self._connection_factory() as conn:
             return await session_insight_profiles_q.list_session_profiles(conn, query)
 
-    async def list_session_profiles(
-        self,
-        *,
-        origin: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        first_message_since: str | None = None,
-        first_message_until: str | None = None,
-        session_date_since: str | None = None,
-        session_date_until: str | None = None,
-        min_wallclock_seconds: int | None = None,
-        max_wallclock_seconds: int | None = None,
-        sort: str = "source",
-        tier: str = "merged",
-        limit: int | None = 50,
-        offset: int = 0,
-        query: str | None = None,
-    ) -> list[SessionProfileRecord]:
-        return await self._list_session_profiles_query(
-            SessionProfileListQuery(
-                origin=origin,
-                since=since,
-                until=until,
-                first_message_since=first_message_since,
-                first_message_until=first_message_until,
-                session_date_since=session_date_since,
-                session_date_until=session_date_until,
-                min_wallclock_seconds=min_wallclock_seconds,
-                max_wallclock_seconds=max_wallclock_seconds,
-                sort=sort,
-                tier=tier,
-                limit=limit,
-                offset=offset,
-                query=query,
-            )
-        )
-
 
 __all__ = ["SQLiteQueryStoreInsightProfilesMixin"]

@@ -74,25 +74,6 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await session_insight_threads_q.list_threads(conn, query)
 
-    async def list_threads(
-        self,
-        *,
-        since: str | None = None,
-        until: str | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
-        query: str | None = None,
-    ) -> list[ThreadRecord]:
-        return await self._list_threads_query(
-            ThreadListQuery(
-                since=since,
-                until=until,
-                limit=limit,
-                offset=offset,
-                query=query,
-            )
-        )
-
     # -- Summaries (formerly query_store_insight_summaries.py) --------------
 
     async def _list_session_tag_rollup_rows_query(
@@ -101,23 +82,6 @@ class SQLiteQueryStore(
     ) -> list[SessionTagRollupRecord]:
         async with self._connection_factory() as conn:
             return await session_insight_summaries_q.list_session_tag_rollup_rows(conn, query)
-
-    async def list_session_tag_rollup_rows(
-        self,
-        *,
-        origin: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        query: str | None = None,
-    ) -> list[SessionTagRollupRecord]:
-        return await self._list_session_tag_rollup_rows_query(
-            SessionTagRollupListQuery(
-                origin=origin,
-                since=since,
-                until=until,
-                query=query,
-            )
-        )
 
 
 __all__ = ["SQLiteQueryStore"]

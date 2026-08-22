@@ -47,53 +47,5 @@ class SQLiteQueryStoreInsightTimelinesMixin:
         async with self._connection_factory() as conn:
             return await session_insight_timelines_q.list_session_phases(conn, query)
 
-    async def list_session_work_events(
-        self,
-        *,
-        session_id: str | None = None,
-        origin: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        heuristic_label: str | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
-        query: str | None = None,
-    ) -> list[SessionWorkEventRecord]:
-        return await self._list_session_work_events_query(
-            SessionTimelineListQuery(
-                session_id=session_id,
-                origin=origin,
-                since=since,
-                until=until,
-                heuristic_label=heuristic_label,
-                limit=limit,
-                offset=offset,
-                query=query,
-            )
-        )
-
-    async def list_session_phases(
-        self,
-        *,
-        session_id: str | None = None,
-        origin: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        kind: str | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
-    ) -> list[SessionPhaseRecord]:
-        return await self._list_session_phases_query(
-            SessionTimelineListQuery(
-                session_id=session_id,
-                origin=origin,
-                since=since,
-                until=until,
-                kind=kind,
-                limit=limit,
-                offset=offset,
-            )
-        )
-
 
 __all__ = ["SQLiteQueryStoreInsightTimelinesMixin"]
