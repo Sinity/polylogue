@@ -46,6 +46,7 @@ class TestCheckDocsRepoBaseline:
         next_heading = text.find("\n### ", start + len(heading))
         section = text[start:] if next_heading == -1 else text[start:next_heading]
         lower_section = section.casefold()
+        normalized_section = " ".join(lower_section.replace("#", " ").split())
 
         restart = section.index("systemctl --user start polylogued.service")
         gate_timeout = f"{daemon_cli._CATCH_UP_GATE_TIMEOUT_SECONDS:g}-second gate timeout"
@@ -66,14 +67,12 @@ class TestCheckDocsRepoBaseline:
         assert target_name not in cli_reference
 
         assert gate_timeout in section
-        assert "daemon-owned blob-gc loop" in lower_section
-        assert restart < gate_release < first_wait, (
-            "restart must precede the catch-up gate and the first periodic wait"
-        )
+        assert "daemon-owned blob-gc loop" in normalized_section
+        assert restart < gate_release < first_wait, "restart must precede the catch-up gate and the first periodic wait"
         assert max_batch in section
-        assert "eligible leftovers are handled by later passes" in lower_section
-        assert "manual orphaned-blob repair is not a supported route" in lower_section
-        assert "reservation ttls must not be inferred" in lower_section
+        assert "eligible leftovers are handled by later passes" in normalized_section
+        assert "manual orphaned-blob repair is not a supported route" in normalized_section
+        assert "reservation ttls must not be inferred" in normalized_section
 
 
 class TestCheckDocsTmpFixtures:
