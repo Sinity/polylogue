@@ -70,7 +70,12 @@ def clone_archive_template(template: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     try:
         subprocess.run(
-            ["cp", "-a", "--reflink=auto", f"{template}/.", str(destination)],
+            # ``auto`` silently falls back to a byte-for-byte copy when the
+            # filesystem cannot reflink.  That makes a full test run look
+            # healthy while writing every template page for every fixture.
+            # Require the cheap path explicitly; the exception handler below
+            # keeps correctness on filesystems without CoW support.
+            ["cp", "-a", "--reflink=always", f"{template}/.", str(destination)],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
