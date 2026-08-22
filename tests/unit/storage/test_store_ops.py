@@ -1688,7 +1688,14 @@ class _VectorSpy:
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         return [("msg-1", 0.125)]
 
-    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+    def upsert(
+        self,
+        session_id: str,
+        messages: list[MessageRecord],
+        *,
+        origin: str | None = None,
+    ) -> None:
+        del origin
         self.upsert_calls.append((session_id, messages))
 
 

@@ -57,8 +57,19 @@ class VectorProvider(Protocol):
 
     model: str
 
-    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
-        """Synchronously embed and store vectors for a session's messages."""
+    def upsert(
+        self,
+        session_id: str,
+        messages: list[MessageRecord],
+        *,
+        origin: str | None = None,
+    ) -> None:
+        """Synchronously embed and store vectors for a session's messages.
+
+        ``origin`` is optional for compatibility with providers that do not
+        persist source metadata; canonical archive callers pass the first
+        non-empty ``MessageRecord.source_name`` when available.
+        """
         ...
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:

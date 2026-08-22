@@ -189,11 +189,27 @@ class RepositoryVectorMixin:
         if not messages:
             return 0
 
-        await asyncio.to_thread(
-            vector_provider.upsert,
-            session_id,
-            messages,
+        origin = next(
+            (
+                source_name.strip()
+                for message in messages
+                if (source_name := getattr(message, "source_name", "")) and source_name.strip()
+            ),
+            None,
         )
+        if origin is None:
+            await asyncio.to_thread(
+                vector_provider.upsert,
+                session_id,
+                messages,
+            )
+        else:
+            await asyncio.to_thread(
+                vector_provider.upsert,
+                session_id,
+                messages,
+                origin=origin,
+            )
         return len(messages)
 
     async def similarity_search(

@@ -1374,7 +1374,18 @@ def _embed_session_sync(
         if not messages:
             _record_embedding_success(repo.backend.db_path, full_id, message_count=0)
             return EmbedSessionOutcome(status="no_messages", session_id=full_id, title=title)
-        vec_provider.upsert(full_id, messages)
+        origin = next(
+            (
+                source_name.strip()
+                for message in messages
+                if (source_name := getattr(message, "source_name", "")) and source_name.strip()
+            ),
+            None,
+        )
+        if origin is None:
+            vec_provider.upsert(full_id, messages)
+        else:
+            vec_provider.upsert(full_id, messages, origin=origin)
         if not _embedding_status_row_exists(repo.backend.db_path, full_id):
             _record_embedding_success(repo.backend.db_path, full_id, message_count=0)
             return EmbedSessionOutcome(

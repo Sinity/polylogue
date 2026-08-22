@@ -42,7 +42,14 @@ class _FakeV1VectorProvider:
     def __init__(self) -> None:
         self.texts: list[str] = []
 
-    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+    def upsert(
+        self,
+        session_id: str,
+        messages: list[MessageRecord],
+        *,
+        origin: str | None = None,
+    ) -> None:
+        del session_id, messages, origin
         raise AssertionError("archive embedding helper must not call old upsert")
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:

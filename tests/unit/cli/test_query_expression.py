@@ -5347,7 +5347,13 @@ class TestBooleanQueryExpression:
         class StubVectorProvider:
             model = "stub"
 
-            def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+            def upsert(
+                self,
+                session_id: str,
+                messages: list[MessageRecord],
+                *,
+                origin: str | None = None,
+            ) -> None:
                 raise NotImplementedError
 
             def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
