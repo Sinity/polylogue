@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
+from shutil import copytree
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin
@@ -713,8 +715,20 @@ def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
     mutation.apply(archive_root)
 
 
+def clone_pathology_zoo(zoo: PathologyZoo, destination: Path) -> PathologyZoo:
+    """Copy a built zoo archive into a private writable location."""
+    copytree(zoo.archive_root, destination)
+    for path in (destination, *destination.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    return replace(zoo, archive_root=destination)
+
+
 __all__ = [
     "PathologyZoo",
+    "PathologyZooMutation",
+    "build_pathology_zoo",
+    "build_pathology_zoo_ro",
+    "clone_pathology_zoo",
     "PathologyZooMutation",
     "build_pathology_zoo",
     "build_pathology_zoo_ro",

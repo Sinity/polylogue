@@ -24,9 +24,10 @@ from tests.infra.pathology_zoo import (
 )
 
 
-@pytest.fixture(scope="module")
-def pathology_zoo(tmp_path_factory: pytest.TempPathFactory) -> PathologyZoo:
-    return build_pathology_zoo(tmp_path_factory.mktemp("pathology-zoo"))
+@pytest.fixture
+def pathology_zoo(pathology_zoo_archive: PathologyZoo) -> PathologyZoo:
+    """Local alias for the session-shared build; this module only reads it."""
+    return pathology_zoo_archive
 
 
 def test_pathology_zoo_manifest_covers_every_v0_dimension(pathology_zoo: PathologyZoo) -> None:

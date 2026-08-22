@@ -67,6 +67,7 @@ from polylogue.storage.sqlite.lifecycle import (
     TargetedReprocessScope,
     undeclared_index_delta_versions,
 )
+from tests.infra.pathology_zoo import PathologyZoo
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
@@ -1747,12 +1748,10 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
 
 
 def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    pathology_zoo_writable: PathologyZoo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A corrupt inactive lineage candidate is rejected without touching active data."""
-    from tests.infra.pathology_zoo import build_pathology_zoo
-
-    zoo = build_pathology_zoo(tmp_path / "zoo")
+    zoo = pathology_zoo_writable
     active_index = zoo.archive_root / "index.db"
     active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
     receipt_path = write_valid_rebuild_receipt(zoo.archive_root, tmp_path / "schema-inference-gate-receipt.json")
