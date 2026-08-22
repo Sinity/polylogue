@@ -383,13 +383,17 @@ def _resume_pending_specs(
         if len(set(completed_order)) != len(completed_order) or not set(completed_order) <= set(old_targets):
             return None, (), "Persisted replay state has incompatible completed target identities"
         completed = set(completed_order)
-        legacy_pending = tuple(name for name in old_targets if name not in completed)
         if cursor_override is None and "cursor" not in persisted:
             return None, (), "Persisted replay state has an invalid target cursor"
         cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
         if not isinstance(cursor, str):
             return None, (), "Persisted replay state has an invalid target cursor"
-        _, cursor_error = _strict_cursor(cursor, total_targets=len(legacy_pending))
+        # ``target:N`` is a coordinate in the persisted target history, not
+        # in the narrowed pending subset. Validate it against that history;
+        # identity completion below remaps the current selection without
+        # making a valid historical cursor invalid merely because fewer
+        # targets remain today.
+        _, cursor_error = _strict_cursor(cursor, total_targets=len(old_targets))
         if cursor_error is not None:
             return None, (), cursor_error
         # New checkpoints use identities as the sole coordinate. The cursor is
@@ -969,9 +973,11 @@ def execute_replay(
 
     # A state carrying target identities validates an explicit cursor against
     # that historical coordinate system in ``_resume_pending_specs`` above.
-    # For a fresh operation (or a legacy state without identities), validate
-    # its range here, still before the offline blocker can produce a receipt.
-    if requested_resume_cursor is not None and (persisted is None or "targets" not in persisted):
+    # Without persisted identity history, the current selection is the only
+    # coordinate system available for an explicit positional cursor. Do this
+    # after state loading/remapping so persisted cursors are checked against
+    # their historical target list instead of a narrowed current selection.
+    if persisted is None and explicit_resume:
         _, cursor_range_error = _strict_cursor(requested_resume_cursor, total_targets=len(resolved_names))
         if cursor_range_error is not None:
             return _failed_replay_state(
