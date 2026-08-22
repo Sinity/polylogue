@@ -65,6 +65,7 @@ from polylogue.storage.sqlite.lifecycle import (
     FastForwardOperationKind,
     IndexDeltaDeclaration,
     TargetedReprocessScope,
+    invalid_canary_change_declarations,
     undeclared_index_delta_versions,
 )
 from tests.infra.pathology_zoo import PathologyZoo
@@ -2541,6 +2542,38 @@ def _semantic_declaration(
         classes=classes,
         reprocess_scope=scope,
         expected_canary_changes=(ExpectedCanaryChange(table=table, operations=operations, columns=columns),),
+    )
+
+
+def test_schema_and_row_canary_signatures_are_distinct() -> None:
+    """Packaged authority must distinguish DDL differences from replay rows."""
+    declaration = _semantic_declaration(71, table="sessions", columns=("title_ref", "title_confidence"))
+    schema = ExpectedCanaryChange(
+        table="sessions", operations=("added",), columns=("title_ref", "title_confidence"), scope="schema"
+    )
+    row = ExpectedCanaryChange(
+        table="sessions", operations=("changed",), columns=("title_ref", "title_confidence"), scope="row"
+    )
+    assert schema.scope == "schema"
+    assert row.scope == "row"
+    assert invalid_canary_change_declarations((replace_declaration(declaration, (schema, row)),)) == ()
+
+
+def replace_declaration(
+    declaration: IndexDeltaDeclaration, changes: tuple[ExpectedCanaryChange, ...]
+) -> IndexDeltaDeclaration:
+    return IndexDeltaDeclaration(
+        version=declaration.version,
+        classes=declaration.classes,
+        reprocess_scope=declaration.reprocess_scope,
+        expected_canary_changes=changes,
+    )
+
+
+def test_invalid_canary_signature_is_rejected_by_lifecycle_policy() -> None:
+    declaration = _semantic_declaration(71, table="sessions", columns=("not_a_real_column",))
+    assert invalid_canary_change_declarations((declaration,)) == (
+        (71, "unknown column(s) on sessions: not_a_real_column"),
     )
 
 

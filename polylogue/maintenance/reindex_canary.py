@@ -192,8 +192,8 @@ def index_delta_expectations(
                     table=change.table,
                     operations=tuple(DifferenceOperation(value) for value in change.operations),
                     columns=tuple(change.columns),
-                    scope="row",
-                    origin=None if scope is None else scope.origin,
+                    scope=change.scope,
+                    origin=None if scope is None or change.scope == "schema" else scope.origin,
                     session_ids=() if scope is None else tuple(scope.session_ids),
                 )
             )
@@ -2529,7 +2529,11 @@ def _validate_expected_review_authorities(
             matching_changes = tuple(
                 change
                 for change in declaration.expected_canary_changes
-                if change.table == review.table and review.operation.value in change.operations and not review_is_schema
+                if (
+                    change.table == review.table
+                    and review.operation.value in change.operations
+                    and (change.scope == "schema") == review_is_schema
+                )
             )
             if not matching_changes:
                 unrelated_reviews.append(

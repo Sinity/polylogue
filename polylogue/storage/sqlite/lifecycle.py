@@ -78,19 +78,30 @@ class TargetedReprocessScope:
 
 
 CanaryChangeOperation = Literal["added", "removed", "changed"]
+CanaryChangeScope = Literal["row", "schema"]
 
 
 @dataclass(frozen=True, slots=True)
 class ExpectedCanaryChange:
-    """One row-difference shape that a semantic delta may authorize."""
+    """One row- or schema-difference shape a semantic delta may authorize.
+
+    ``row`` signatures describe values produced by replay.  ``schema``
+    signatures describe the DDL shape itself (for example, an additive column
+    that is absent from a genuinely older generation).  Keeping the two
+    namespaces explicit prevents a broad row declaration from silently
+    authorizing a schema difference.
+    """
 
     table: str
     operations: tuple[CanaryChangeOperation, ...]
     columns: tuple[str, ...]
+    scope: CanaryChangeScope = "row"
 
     def __post_init__(self) -> None:
         if not self.table or not self.operations or not self.columns:
             raise ValueError("ExpectedCanaryChange requires table, operations, and columns")
+        if self.scope not in ("row", "schema"):
+            raise ValueError("ExpectedCanaryChange scope must be 'row' or 'schema'")
 
 
 class FastForwardOperationKind(StrEnum):
@@ -482,10 +493,21 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         ),
         reprocess_scope=TargetedReprocessScope(origin="codex-session"),
         expected_canary_changes=(
+            # A genuine pre-v44 generation reports the additive DDL as schema
+            # differences, while a current-shape fixture reports populated row
+            # values.  Keep both signatures explicit; a row signature must not
+            # waive a schema difference (or vice versa).
+            ExpectedCanaryChange(
+                table="sessions",
+                operations=("added",),
+                columns=("title_ref", "title_confidence"),
+                scope="schema",
+            ),
             ExpectedCanaryChange(
                 table="sessions",
                 operations=("changed",),
                 columns=("title_ref", "title_confidence"),
+                scope="row",
             ),
         ),
     ),
@@ -1011,12 +1033,51 @@ def resolve_canonical_index_objects(objects: tuple[tuple[str, str], ...]) -> dic
         conn.close()
 
 
+def invalid_canary_change_declarations(
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> tuple[tuple[int, str], ...]:
+    """Return packaged canary signatures that cannot match canonical index DDL.
+
+    Expected signatures are executable comparator authority, not free-form
+    labels.  Validate their table/column vocabulary against the canonical
+    index schema so a typo cannot silently produce an inert expectation (or an
+    over-broad declaration that waives an unrelated difference).
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX])
+        invalid: list[tuple[int, str]] = []
+        for declaration in declarations:
+            for change in declaration.expected_canary_changes:
+                columns: set[str] = set()
+                try:
+                    rows = connection.execute(f'PRAGMA table_xinfo("{change.table.replace(chr(34), chr(34) * 2)}")')
+                    columns = {str(row[1]) for row in rows if int(row[6]) not in (1, 2)}
+                except sqlite3.OperationalError:
+                    pass
+                if not columns:
+                    invalid.append((declaration.version, f"unknown table {change.table!r}"))
+                    continue
+                missing = sorted(set(change.columns).difference(columns))
+                if missing:
+                    invalid.append((declaration.version, f"unknown column(s) on {change.table}: {', '.join(missing)}"))
+        return tuple(invalid)
+    finally:
+        connection.close()
+
+
 def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclarationReport:
     """Return the static declaration coverage used by the schema-policy lint."""
     versions = tuple(declaration.version for declaration in INDEX_DELTA_DECLARATIONS)
     expected = tuple(range(INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR + 1, current_version + 1))
     missing = tuple(version for version in expected if version not in versions)
     duplicates = tuple(sorted({version for version in versions if versions.count(version) > 1}))
+    invalid_signature_versions = {version for version, _reason in invalid_canary_change_declarations()}
     invalid = tuple(
         declaration.version
         for declaration in INDEX_DELTA_DECLARATIONS
@@ -1024,6 +1085,7 @@ def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclaratio
         or not declaration.classes
         or (not declaration.requires_semantic_reparse and not declaration.operations)
         or (declaration.requires_targeted_reprocess and declaration.reprocess_scope is None)
+        or declaration.version in invalid_signature_versions
     )
     return {
         "compatibility_floor": INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR,
@@ -1160,6 +1222,7 @@ def undeclared_index_delta_versions(
 
 __all__ = [
     "CanaryChangeOperation",
+    "CanaryChangeScope",
     "DerivedDeltaClass",
     "ExpectedCanaryChange",
     "FastForwardOperation",
@@ -1174,6 +1237,7 @@ __all__ = [
     "get_semantic_reparse_blocking_version_pair",
     "index_delta_declaration_report",
     "index_delta_declarations_between",
+    "invalid_canary_change_declarations",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",
     "undeclared_index_delta_versions",
