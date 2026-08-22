@@ -143,14 +143,16 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
         if (since is None) != (until is None):
             raise ValueError("since and until must be supplied together")
         time_range = (since, until) if since is not None and until is not None else None
-        return cls(
-            session_ids=session_ids,
-            origin=Origin(origin).value if origin is not None else None,
-            source_family=source_family,
-            source_root=source_root,
-            time_range=time_range,
-            failure_kind=failure_kind,
-            parser_version=parser_version,
+        return cls.model_validate(
+            {
+                "session_ids": session_ids,
+                "origin": Origin(origin).value if origin is not None else None,
+                "source_family": source_family,
+                "source_root": source_root,
+                "time_range": time_range,
+                "failure_kind": failure_kind,
+                "parser_version": parser_version,
+            }
         )
 
 
