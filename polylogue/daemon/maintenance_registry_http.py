@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config
 from polylogue.maintenance.envelope import envelope_from_operation
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.registry import MaintenanceOperationRegistry
 from polylogue.paths import archive_root, render_root
 
@@ -44,6 +45,11 @@ def _build_config() -> Config:
 
 def handle_status(handler: DaemonAPIHandler, operation_id: str) -> None:
     """GET /api/maintenance/status/<op_id> — one persisted operation snapshot."""
+    try:
+        operation_id = validate_operation_id(operation_id)
+    except ValueError:
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_operation_id")
+        return
     registry = MaintenanceOperationRegistry(config=_build_config())
     record = registry.get_operation(operation_id)
     if record is None:

@@ -42,6 +42,7 @@ from polylogue.config import Config
 from polylogue.core.enums import OperationStatus
 from polylogue.core.json import JSONDocument, json_document, loads
 from polylogue.logging import get_logger
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.planner import BackfillOperation
 
 logger = get_logger(__name__)
@@ -219,6 +220,7 @@ class MaintenanceOperationRegistry:
 
     def get_operation(self, operation_id: str) -> OperationRecord | None:
         """Return the snapshot for one operation, or ``None`` when absent."""
+        operation_id = validate_operation_id(operation_id)
         path = self.state_dir / f"{operation_id}.json"
         if not path.exists():
             return None
