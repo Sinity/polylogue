@@ -818,6 +818,7 @@ def execute_replay(
     """
 
     op_id = str(uuid.uuid4()) if operation_id is None else validate_operation_id(operation_id)
+    requested_resume_cursor = resume_cursor
     effective_filter = scope_filter or MaintenanceScopeFilter()
 
     # Explicit cursors are request validation, not resumable state. Reject
@@ -842,17 +843,6 @@ def execute_replay(
     # resolve to zero targets and report ``status=failed``).
     resolved_specs = catalog.resolve_or_default(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
-
-    if resume_cursor is not None and resolved_names:
-        _, cursor_range_error = _strict_cursor(resume_cursor, total_targets=len(resolved_names))
-        if cursor_range_error is not None:
-            return _failed_replay_state(
-                operation_id=op_id,
-                targets=resolved_names,
-                scope_filter=effective_filter,
-                message=cursor_range_error,
-                kind="InvalidReplayCursor",
-            )
 
     if not resolved_names:
         return BackfillOperation(
@@ -976,6 +966,21 @@ def execute_replay(
             resume_cursor = _encode_cursor(0)
     elif not explicit_resume:
         resume_cursor = None
+
+    # A state carrying target identities validates an explicit cursor against
+    # that historical coordinate system in ``_resume_pending_specs`` above.
+    # For a fresh operation (or a legacy state without identities), validate
+    # its range here, still before the offline blocker can produce a receipt.
+    if requested_resume_cursor is not None and (persisted is None or "targets" not in persisted):
+        _, cursor_range_error = _strict_cursor(requested_resume_cursor, total_targets=len(resolved_names))
+        if cursor_range_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=cursor_range_error,
+                kind="InvalidReplayCursor",
+            )
 
     blockers = offline_maintenance_blockers(
         config,
