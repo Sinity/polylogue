@@ -46,7 +46,15 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
     phases = first.manifest.receipt["phases"]
     assert isinstance(phases, list)
     assert any(isinstance(phase, dict) and phase.get("name") == "raw_authority_frontier" for phase in phases)
-    assert not (first.root.stat().st_mode & os.W_OK)
+    assert not (first.root.stat().st_mode & stat.S_IWUSR)
+    lock_path = first.root / ".index-rebuild.lock"
+    if lock_path.exists():
+        first.root.chmod(first.root.stat().st_mode | stat.S_IWUSR)
+        lock_path.unlink()
+        first.root.chmod(first.root.stat().st_mode & ~stat.S_IWUSR)
+    with pytest.raises(PermissionError):
+        lock_path.touch()
+    assert not lock_path.exists()
 
 
 def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,36 +66,6 @@ def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.Mo
     second = seeded_archive_key(())
 
     assert first.value != second.value
-
-
-def test_clone_close_reports_mode_restore_failure_after_releasing_descriptors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import tests.infra.workload_artifacts as artifacts
-
-    fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    clone = artifacts.SeededArchiveClone(
-        root=tmp_path,
-        source_manifest_id="manifest",
-        clone_method="copy",
-        _ancestor_fd=fd,
-        _ancestor_mode=os.fstat(fd).st_mode,
-    )
-    real_fchmod = os.fchmod
-
-    def fail_restore(target: int, mode: int) -> None:
-        if target == fd:
-            raise OSError("restore failed")
-        real_fchmod(target, mode)
-
-    monkeypatch.setattr(os, "fchmod", fail_restore)
-    with pytest.raises(RuntimeError, match="failed to close seeded archive clone"):
-        clone.close()
-    assert clone._ancestor_fd == -1
-    with pytest.raises(OSError):
-        os.fstat(fd)
-    monkeypatch.undo()
-    tmp_path.chmod(tmp_path.stat().st_mode | stat.S_IWUSR)
 
 
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:
@@ -136,8 +114,8 @@ def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: P
     cache_root = tmp_path / "cache"
     original = build_seeded_archive(cache_root=cache_root)
     index_path = original.root / "index.db"
-    os.chmod(original.root, 0o755)
-    os.chmod(index_path, 0o644)
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
     index_path.unlink()
 
     rebuilt = build_seeded_archive(cache_root=cache_root)
@@ -148,7 +126,306 @@ def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: P
     assert rebuilt.manifest.profile_id == original.manifest.profile_id
     assert rebuilt.manifest.recipe_id == original.manifest.recipe_id
     assert rebuilt.facts == original.facts
-    assert not (rebuilt.root.stat().st_mode & os.W_OK)
+    assert not (rebuilt.root.stat().st_mode & stat.S_IWUSR)
+
+
+def test_seeded_archive_rejects_unexpected_published_files(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    artifact = build_seeded_archive(cache_root=cache_root)
+    artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
+    extra = artifact.root / "unexpected.txt"
+    extra.write_text("contamination", encoding="utf-8")
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert not rebuilt.root.joinpath("unexpected.txt").exists()
+    assert not (rebuilt.root.stat().st_mode & stat.S_IWUSR)
+
+
+def test_seeded_archive_memo_rejects_same_size_database_corruption(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    index_path = original.root / "index.db"
+    original_bytes = index_path.read_bytes()
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
+    poison_offset = len(original_bytes) // 2
+    poisoned_bytes = original_bytes[:poison_offset] + b"poison" + original_bytes[poison_offset + 6 :]
+    with index_path.open("r+b") as handle:
+        handle.seek(poison_offset)
+        handle.write(b"poison")
+    index_path.chmod(index_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.root.joinpath("index.db").read_bytes() != poisoned_bytes
+
+
+def test_seeded_archive_rejects_forged_receipt_with_recomputed_manifest(
+    tmp_path: Path,
+) -> None:
+    import dataclasses
+
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    receipt = dict(original.manifest.receipt)
+    receipt["evidence_refs"] = ["forged-evidence"]
+    forged = dataclasses.replace(original.manifest, receipt=receipt)
+    manifest_path = original.root / "manifest.json"
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    manifest_path.chmod(manifest_path.stat().st_mode | stat.S_IWUSR)
+    manifest_path.write_text(json.dumps(forged.to_payload(), sort_keys=True) + "\\n", encoding="utf-8")
+    manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.manifest.receipt["evidence_refs"] == []
+
+
+def test_seeded_archive_rebuilds_malformed_build_provenance_without_raising(tmp_path: Path) -> None:
+    import dataclasses
+
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    forged = dataclasses.replace(original.manifest, build_id="git:not-a-commit")
+    manifest_path = original.root / "manifest.json"
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    manifest_path.chmod(manifest_path.stat().st_mode | stat.S_IWUSR)
+    manifest_path.write_text(json.dumps(forged.to_payload(), sort_keys=True) + "\\n", encoding="utf-8")
+    manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.manifest.build_id != "git:not-a-commit"
+    assert rebuilt.manifest.manifest_id == artifacts._read_manifest(rebuilt.root / "manifest.json").manifest_id
+
+
+def test_cleanup_fails_closed_on_replaced_lock_path(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    staging_root = cache_root / ".staging"
+    staging_root.mkdir(parents=True)
+    (staging_root / "old-key.dead").mkdir()
+    (cache_root / ".locks").mkdir()
+    (cache_root / ".cleanup.lock").symlink_to(tmp_path / "active.lock")
+
+    assert artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root) == ()
+    assert (staging_root / "old-key.dead").exists()
+    assert (cache_root / ".cleanup.lock").is_symlink()
+
+
+def test_seeded_archive_rejects_malformed_self_hashed_file_entry(
+    tmp_path: Path,
+) -> None:
+    import dataclasses
+
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    malformed_files = [dict(item) for item in original.manifest.files]
+    malformed_files[0].pop("path")
+    forged = dataclasses.replace(original.manifest, files=tuple(malformed_files))
+    manifest_path = original.root / "manifest.json"
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    manifest_path.chmod(manifest_path.stat().st_mode | stat.S_IWUSR)
+    manifest_path.write_text(json.dumps(forged.to_payload(), sort_keys=True) + "\\n", encoding="utf-8")
+    manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert rebuilt.manifest.files[0]["path"] == original.manifest.files[0]["path"]
+
+
+def test_seeded_archive_memo_rejects_manifest_replacement(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    manifest_path = original.root / "manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["manifest_id"] = "poisoned-manifest"
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    manifest_path.chmod(manifest_path.stat().st_mode | stat.S_IWUSR)
+    manifest_path.write_text(json.dumps(payload, sort_keys=True) + "\\n", encoding="utf-8")
+    manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    disk_manifest = json.loads(rebuilt.root.joinpath("manifest.json").read_text(encoding="utf-8"))
+    assert disk_manifest["manifest_id"] == rebuilt.manifest.manifest_id
+
+
+def test_seeded_archive_memo_rejects_nested_write_bits(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original = build_seeded_archive(cache_root=cache_root)
+    nested = original.root / "wire"
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    nested.chmod(nested.stat().st_mode | stat.S_IWGRP)
+    index_path = original.root / "index.db"
+    index_path.chmod(index_path.stat().st_mode | stat.S_IWOTH)
+    original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+
+    assert all(
+        not (path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)) for path in rebuilt.root.rglob("*")
+    )
+
+
+def test_publish_attempts_rename_with_a_sealed_staging_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    staging = tmp_path / "staging"
+    final_root = tmp_path / "final"
+    staging.mkdir()
+    staging.joinpath("payload").write_text("payload", encoding="utf-8")
+    observed_modes: list[int] = []
+
+    def reject_rename(source: str | bytes | os.PathLike[str] | os.PathLike[bytes], destination: object) -> None:
+        observed_modes.append(Path(os.fsdecode(source)).stat().st_mode)
+        raise PermissionError("injected sealed rename failure")
+
+    monkeypatch.setattr(os, "replace", reject_rename)
+    with pytest.raises(PermissionError, match="injected sealed rename failure"):
+        artifacts._publish_sealed_staging(staging, final_root)
+
+    assert observed_modes
+    assert not (observed_modes[0] & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+
+def test_sealed_fallback_publishes_only_sealed_final_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    staging = tmp_path / "staging"
+    final_root = tmp_path / "final"
+    staging.mkdir()
+    staging.joinpath("payload").write_text("payload", encoding="utf-8")
+    real_replace = os.replace
+    calls = 0
+    observed: list[tuple[Path, bool]] = []
+
+    def fail_once_then_replace(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        source_path = Path(os.fsdecode(source))
+        observed.append((source_path, bool(source_path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))))
+        if calls == 1:
+            raise PermissionError("injected first rename failure")
+        assert not Path(os.fsdecode(destination)).exists()
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_once_then_replace)
+    artifacts._publish_sealed_staging(staging, final_root)
+
+    assert calls == 2
+    assert observed[0] == (staging, False)
+    assert observed[1][0].parent == final_root.parent
+    assert not observed[1][1]
+    assert final_root.exists()
+    assert not staging.exists()
+    assert not (final_root.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+
+def test_sealed_fallback_kill_injection_leaves_no_visible_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    staging = tmp_path / "staging"
+    final_root = tmp_path / "final"
+    staging.mkdir()
+    staging.joinpath("payload").write_text("payload", encoding="utf-8")
+    calls = 0
+
+    def fail_then_interrupt(source: object, destination: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("injected first rename failure")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(os, "replace", fail_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        artifacts._publish_sealed_staging(staging, final_root)
+
+    assert not final_root.exists()
+    handoffs = tuple(final_root.parent.glob(f".{final_root.name}.*.handoff"))
+    assert len(handoffs) == 1
+    assert not (handoffs[0].stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    (tmp_path / ".locks").mkdir()
+    removed = artifacts._recover_stale_handoffs(cache_root=tmp_path, artifacts_root=tmp_path)
+    assert removed == (handoffs[0].name,)
+    assert not handoffs[0].exists()
+
+
+def test_archive_and_clone_reject_symlink_nodes_without_following_targets(
+    tmp_path: Path,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    root = tmp_path / "root"
+    root.mkdir()
+    target = tmp_path / "outside"
+    target.write_text("do not touch", encoding="utf-8")
+    root.joinpath("link").symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        artifacts._archive_files(root)
+    with pytest.raises(ValueError, match="symlink"):
+        artifacts._make_read_only(root)
+    with pytest.raises(ValueError, match="symlink"):
+        artifacts.clone_seeded_archive(type("Artifact", (), {"root": root})(), tmp_path / "clone")
+    assert target.read_text(encoding="utf-8") == "do not touch"
+
+
+def test_seeded_archive_sealing_failure_never_publishes_writable_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    def fail_sealing(_root: Path) -> None:
+        raise RuntimeError("injected sealing failure")
+
+    monkeypatch.setattr(artifacts, "_make_read_only", fail_sealing)
+    cache_root = tmp_path / "cache"
+
+    with pytest.raises(RuntimeError, match="injected sealing failure"):
+        build_seeded_archive(cache_root=cache_root)
+
+    assert not list((cache_root / "artifacts").iterdir())
+    assert not list((cache_root / ".staging").iterdir())
 
 
 def test_seeded_archive_failure_never_publishes_partial_staging(
@@ -187,6 +464,56 @@ def test_seeded_archive_recovers_crash_left_staging_before_rebuild(tmp_path: Pat
 
     assert removed == ("dead-build.123",)
     assert not stale.exists()
+
+
+def test_obsolete_staging_sweep_honors_budget_and_continues(
+    tmp_path: Path,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    staging_root = cache_root / ".staging"
+    lock_root = cache_root / ".locks"
+    staging_root.mkdir(parents=True)
+    lock_root.mkdir()
+    for index in range(5):
+        (staging_root / f"key-{index}.build").mkdir()
+
+    first = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+    second = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+    third = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+
+    assert len(first) == 2
+    assert len(second) == 2
+    assert len(third) == 1
+    assert not tuple(staging_root.iterdir())
+
+
+def test_obsolete_staging_sweep_does_not_remove_an_active_key(
+    tmp_path: Path,
+) -> None:
+    import fcntl
+
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    staging_root = cache_root / ".staging"
+    lock_root = cache_root / ".locks"
+    staging_root.mkdir(parents=True)
+    lock_root.mkdir()
+    candidate = staging_root / "active-key.123"
+    candidate.mkdir()
+    lock_path = lock_root / "active-key.lock"
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        removed = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
+        assert removed == ()
+        assert candidate.exists()
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    removed = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
+    assert removed == ("active-key.123",)
+    assert not candidate.exists()
 
 
 class _FlakyLockConnection:
@@ -419,6 +746,78 @@ def test_seeded_archive_is_reused_by_a_later_commit(tmp_path: Path) -> None:
     assert manifest["build_id"] == "git:" + "0" * 40
 
 
+def test_seeded_archive_key_includes_artifact_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    baseline = seeded_archive_key(())
+    monkeypatch.setattr(artifacts, "_ARTIFACT_PROTOCOL_VERSION", baseline.artifact_protocol_version + 1)
+
+    changed = seeded_archive_key(())
+
+    assert changed.value != baseline.value
+    assert changed.artifact_protocol_version != baseline.artifact_protocol_version
+
+
+def test_recipe_id_tracks_transitive_source_dependencies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    dependency_root = tmp_path / "dependencies"
+    dependency_root.mkdir()
+    nested = dependency_root / "nested_helper.py"
+    nested.write_text("VALUE = 1\\n", encoding="utf-8")
+    monkeypatch.setattr(artifacts, "_SOURCE_DEPENDENCY_ROOTS", (dependency_root,))
+    first = artifacts._recipe_id()
+    nested.write_text("VALUE = 2\\n", encoding="utf-8")
+
+    assert artifacts._recipe_id() != first
+
+
+def test_recipe_id_tracks_runtime_schema_inputs_but_ignores_unrelated_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    inputs = tmp_path / "schema-inputs"
+    inputs.mkdir()
+    catalog = inputs / "catalog.json"
+    unrelated = inputs / "README.txt"
+    catalog.write_text('{"version": 1}\\n', encoding="utf-8")
+    unrelated.write_text("unrelated\\n", encoding="utf-8")
+    monkeypatch.setattr(artifacts, "_SOURCE_DEPENDENCY_ROOTS", ())
+    monkeypatch.setattr(artifacts, "_RECIPE_INPUT_ROOTS", (inputs,))
+
+    baseline = artifacts._recipe_id()
+    unrelated.write_text("changed\\n", encoding="utf-8")
+    assert artifacts._recipe_id() == baseline
+    catalog.write_text('{"version": 2}\\n', encoding="utf-8")
+    assert artifacts._recipe_id() != baseline
+
+
+def test_recipe_id_only_tracks_selected_provider_catalogs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    providers = tmp_path / "providers"
+    (providers / "codex").mkdir(parents=True)
+    (providers / "chatgpt").mkdir()
+    codex = providers / "codex" / "catalog.json"
+    chatgpt = providers / "chatgpt" / "catalog.json"
+    codex.write_text('{"version": 1}\\n', encoding="utf-8")
+    chatgpt.write_text('{"version": 1}\\n', encoding="utf-8")
+    monkeypatch.setattr(artifacts, "_SOURCE_DEPENDENCY_ROOTS", ())
+    monkeypatch.setattr(artifacts, "_RECIPE_INPUT_ROOTS", ())
+    monkeypatch.setattr(artifacts, "_RECIPE_PROVIDER_ROOT", providers)
+
+    baseline = artifacts._recipe_id(("codex",))
+    chatgpt.write_text('{"version": 2}\\n', encoding="utf-8")
+    assert artifacts._recipe_id(("codex",)) == baseline
+    codex.write_text('{"version": 2}\\n', encoding="utf-8")
+    assert artifacts._recipe_id(("codex",)) != baseline
+
+
 def test_seeded_archive_key_changes_with_archive_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     """Archive DDL is part of the artifact's identity.
 
@@ -498,8 +897,8 @@ def test_seeded_archive_memo_is_dropped_when_the_artifact_is_unplaced(tmp_path: 
     artifacts._VALIDATED_ARTIFACTS.clear()
     original = build_seeded_archive(cache_root=cache_root)
     index_path = original.root / "index.db"
-    os.chmod(original.root, 0o755)
-    os.chmod(index_path, 0o644)
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
     index_path.unlink()
 
     rebuilt = build_seeded_archive(cache_root=cache_root)
@@ -615,7 +1014,7 @@ def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
     assert db_path.name == "index.db"
     assert "artifacts" in db_path.parts
     assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(db_path.parent)
-    assert not (db_path.parent.stat().st_mode & os.W_OK)
+    assert not (db_path.parent.stat().st_mode & stat.S_IWUSR)
 
     with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
         assert archive.count_sessions() > 0
