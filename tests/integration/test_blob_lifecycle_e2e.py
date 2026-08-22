@@ -12,9 +12,9 @@ and asserts the round-trip:
   → re-detect               reports zero orphans
   → ``verify_all``           confirms the referenced blob's integrity
 
-This test guards against regressions where one of these surfaces is
-silently disconnected (e.g., maintenance target unregistered, repair
-handler routed to a stale set of orphan hashes).
+These tests guard the low-level BlobStore contract. The daemon-owned
+periodic GC route and its source-tier safety conditions are covered by
+``tests/unit/daemon/test_blob_gc_periodic.py``.
 """
 
 from __future__ import annotations
@@ -43,20 +43,6 @@ def _seed_raw_row(db_path: Path, raw_id: str, source_path: Path, blob_size: int)
             (raw_id, "unknown-export", raw_id, str(source_path), bytes.fromhex(raw_id), blob_size, 1_746_830_400_000),
         )
         conn.commit()
-
-
-def _age_blob(store: object, blob_hash: str, *, seconds: int = 3600) -> None:
-    """Backdate a blob's mtime past the GC minimum-age floor."""
-    import os
-
-    from polylogue.storage.blob_gc import MIN_AGE_S
-
-    # Derive the backdate from the file's own mtime, not the host clock: the
-    # clock guard (tests/infra/clock_guard.py) rejects direct time.time() reads
-    # from test code, and the file's stamp is the value GC actually compares.
-    path = store.blob_path(blob_hash)  # type: ignore[attr-defined]
-    aged = path.stat().st_mtime - max(seconds, MIN_AGE_S * 2)
-    os.utime(path, (aged, aged))
 
 
 class TestBlobOrphanLifecycle:
