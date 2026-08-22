@@ -38,6 +38,7 @@ from typing import Any
 
 from pydantic import ConfigDict, field_validator
 
+from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
@@ -124,6 +125,33 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
         if payload is None or not payload:
             return cls()
         return cls.model_validate(payload)
+
+    @classmethod
+    def from_surface_args(
+        cls,
+        *,
+        session_ids: tuple[str, ...] | list[str] | None = None,
+        origin: str | None = None,
+        source_family: str | None = None,
+        source_root: str | Path | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
+        failure_kind: str | None = None,
+        parser_version: str | None = None,
+    ) -> MaintenanceScopeFilter:
+        """Build a filter from the common CLI/MCP argument vocabulary."""
+        if (since is None) != (until is None):
+            raise ValueError("since and until must be supplied together")
+        time_range = (since, until) if since is not None and until is not None else None
+        return cls(
+            session_ids=session_ids,
+            origin=Origin(origin).value if origin is not None else None,
+            source_family=source_family,
+            source_root=source_root,
+            time_range=time_range,
+            failure_kind=failure_kind,
+            parser_version=parser_version,
+        )
 
 
 def _coerce_datetime(value: Any) -> datetime:

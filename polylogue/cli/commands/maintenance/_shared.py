@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.enums import Origin
-from polylogue.maintenance.scope import MaintenanceScopeFilter
 
 #: Human-readable description of where each config layer's value came from,
 #: keyed by the layer names `PolylogueConfig.layer_of` returns
@@ -56,47 +52,6 @@ def print_archive_root_provenance(env: AppEnv) -> None:
     in the operator's terminal by default.
     """
     click.echo(archive_root_provenance_line(env), err=True)
-
-
-def _build_scope_filter(
-    *,
-    session_ids: tuple[str, ...],
-    origin: str | None,
-    source_family: str | None,
-    source_root: str | None,
-    since: str | None,
-    until: str | None,
-    failure_kind: str | None,
-    parser_version: str | None,
-) -> MaintenanceScopeFilter:
-    """Translate CLI options into a :class:`MaintenanceScopeFilter`.
-
-    Helper exists so the CLI ``plan`` and ``run`` commands share one
-    parsing path and one error surface.
-    """
-
-    time_range: tuple[datetime, datetime] | None
-    if since is not None or until is not None:
-        if since is None or until is None:
-            raise click.UsageError("--since and --until must be supplied together")
-        try:
-            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-            until_dt = datetime.fromisoformat(until.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise click.UsageError(f"--since/--until must be ISO-8601 timestamps: {exc}") from exc
-        time_range = (since_dt, until_dt)
-    else:
-        time_range = None
-
-    return MaintenanceScopeFilter(
-        session_ids=session_ids if session_ids else None,
-        origin=Origin(origin).value if origin is not None else None,
-        source_family=source_family,
-        source_root=Path(source_root) if source_root else None,
-        time_range=time_range,
-        failure_kind=failure_kind,
-        parser_version=parser_version,
-    )
 
 
 _SCOPE_FILTER_OPTIONS = [

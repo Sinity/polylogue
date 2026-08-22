@@ -6,12 +6,13 @@ import json
 
 import click
 
-from polylogue.cli.commands.maintenance._shared import _apply_scope_filter_options, _build_scope_filter
+from polylogue.cli.commands.maintenance._shared import _apply_scope_filter_options
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import configure_logging
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES, build_maintenance_target_catalog
 from polylogue.paths import archive_root, render_root
 
@@ -60,16 +61,19 @@ def plan_command(
         render_root=render_root(),
         sources=[],  # maintenance doesn't need source acquisition
     )
-    scope_filter = _build_scope_filter(
-        session_ids=session_ids,
-        origin=origin,
-        source_family=source_family,
-        source_root=source_root,
-        since=since,
-        until=until,
-        failure_kind=failure_kind,
-        parser_version=parser_version,
-    )
+    try:
+        scope_filter = MaintenanceScopeFilter.from_surface_args(
+            session_ids=session_ids,
+            origin=origin,
+            source_family=source_family,
+            source_root=source_root,
+            since=since,
+            until=until,
+            failure_kind=failure_kind,
+            parser_version=parser_version,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     result = preview_backfill(config, targets=targets, scope_filter=scope_filter)
 
     if output_format == "json":

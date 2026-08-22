@@ -27,7 +27,6 @@ from polylogue.mcp.payloads import (
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.coordination import CoordinationEnvelopeCache
-    from polylogue.maintenance.scope import MaintenanceScopeFilter
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
 
@@ -1930,49 +1929,6 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
     )
 
 
-def _build_mcp_scope_filter(
-    *,
-    session_ids: list[str] | None,
-    origin: str | None,
-    source_family: str | None,
-    source_root: str | None,
-    since: str | None,
-    until: str | None,
-    failure_kind: str | None,
-    parser_version: str | None,
-) -> MaintenanceScopeFilter:
-    """Translate maintenance() args into a :class:`MaintenanceScopeFilter`.
-
-    Shared by the preview and execute operations so they never drift on how
-    scope filters are parsed.
-    """
-    from datetime import datetime
-    from pathlib import Path
-
-    from polylogue.core.enums import Origin
-    from polylogue.maintenance.scope import MaintenanceScopeFilter
-
-    time_range: tuple[datetime, datetime] | None
-    if since is not None or until is not None:
-        if since is None or until is None:
-            raise ValueError("since and until must be supplied together")
-        since_dt = datetime.fromisoformat(since.replace("Z", "+00:00") if since.endswith("Z") else since)
-        until_dt = datetime.fromisoformat(until.replace("Z", "+00:00") if until.endswith("Z") else until)
-        time_range = (since_dt, until_dt)
-    else:
-        time_range = None
-
-    return MaintenanceScopeFilter(
-        session_ids=tuple(session_ids) if session_ids else None,
-        origin=Origin(origin).value if origin is not None else None,
-        source_family=source_family,
-        source_root=Path(source_root) if source_root else None,
-        time_range=time_range,
-        failure_kind=failure_kind,
-        parser_version=parser_version,
-    )
-
-
 async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
     """Preview/execute/inspect maintenance operations, delegating to the existing planner/registry."""
     from polylogue.config import Config
@@ -1988,7 +1944,9 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         targets = kwargs.get("targets")
         session_ids = kwargs.get("session_ids")
         try:
-            scope_filter = _build_mcp_scope_filter(
+            from polylogue.maintenance.scope import MaintenanceScopeFilter
+
+            scope_filter = MaintenanceScopeFilter.from_surface_args(
                 session_ids=list(session_ids) if session_ids else None,
                 origin=kwargs.get("origin"),
                 source_family=kwargs.get("source_family"),
