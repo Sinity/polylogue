@@ -74,7 +74,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
         "session_insights": [],
         "message_type_backfill": [],
         "empty_sessions": [],
-        "orphaned_blobs": [],
+        "superseded_raw_snapshots": [],
     }
 
     def stub(name: str):  # type: ignore[no-untyped-def]
@@ -189,14 +189,14 @@ def test_removed_persisted_target_does_not_shift_resume_cursor(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
         operation_id="op-removed-target",
     )
 
     assert op.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_positional_persisted_cursor_without_identity_fails_closed(
@@ -209,7 +209,7 @@ def test_positional_persisted_cursor_without_identity_fails_closed(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "orphaned_blobs"),
+        targets=("session_insights", "superseded_raw_snapshots"),
         operation_id="op-unverifiable",
     )
 
@@ -217,7 +217,7 @@ def test_positional_persisted_cursor_without_identity_fails_closed(
     assert op.error == "Persisted replay state has no valid target identity list"
     assert op.failure_samples.samples[0].kind == "IncompatibleReplayState"
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["orphaned_blobs"] == []
+    assert patched_dispatch["superseded_raw_snapshots"] == []
 
 
 def test_chained_resume_retains_completed_identity_history(
@@ -228,7 +228,7 @@ def test_chained_resume_retains_completed_identity_history(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-chained",'
-        '"targets":["session_insights","empty_sessions","orphaned_blobs"],'
+        '"targets":["session_insights","empty_sessions","superseded_raw_snapshots"],'
         '"completed_targets":["session_insights"],'
         '"cursor":"target:0"}'
     )
@@ -242,30 +242,30 @@ def test_chained_resume_retains_completed_identity_history(
         {
             "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
             "empty_sessions": fail_empty,
-            "orphaned_blobs": patched_dispatch_callable(patched_dispatch, "orphaned_blobs"),
+            "superseded_raw_snapshots": patched_dispatch_callable(patched_dispatch, "superseded_raw_snapshots"),
         },
     ):
         first = execute_replay(
             config,
-            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
             operation_id="op-chained",
         )
     assert first.status is OperationStatus.FAILED
     checkpoint = load_state(config, "op-chained")
     assert checkpoint is not None
-    assert checkpoint["targets"] == ["session_insights", "empty_sessions", "orphaned_blobs"]
-    assert checkpoint["completed_targets"] == ["session_insights", "orphaned_blobs"]
+    assert checkpoint["targets"] == ["session_insights", "empty_sessions", "superseded_raw_snapshots"]
+    assert checkpoint["completed_targets"] == ["session_insights", "superseded_raw_snapshots"]
 
     second = execute_replay(
         config,
-        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
         operation_id="op-chained",
     )
 
     assert second.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_all_completed_identity_remap_returns_completed_noop(
@@ -276,17 +276,17 @@ def test_all_completed_identity_remap_returns_completed_noop(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-all-done",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
         '"cursor":"done",'
         '"results":[{"name":"session_insights","success":true},'
         '{"name":"message_type_backfill","success":true},'
         '{"name":"empty_sessions","success":true},'
-        '{"name":"orphaned_blobs","success":true}]}'
+        '{"name":"superseded_raw_snapshots","success":true}]}'
     )
 
     op = execute_replay(
         config,
-        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
         operation_id="op-all-done",
     )
 
@@ -294,7 +294,7 @@ def test_all_completed_identity_remap_returns_completed_noop(
     assert op.progress == 1.0
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["empty_sessions"] == []
-    assert patched_dispatch["orphaned_blobs"] == []
+    assert patched_dispatch["superseded_raw_snapshots"] == []
 
 
 @pytest.mark.parametrize("contents", ["[]", "not-json"])
@@ -308,7 +308,7 @@ def test_invalid_persisted_state_fails_closed(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "orphaned_blobs"),
+        targets=("session_insights", "superseded_raw_snapshots"),
         operation_id="op-invalid",
     )
 
@@ -316,7 +316,7 @@ def test_invalid_persisted_state_fails_closed(
     assert op.error == "Persisted replay state is not a JSON object"
     assert op.failure_samples.samples[0].kind == "InvalidReplayState"
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["orphaned_blobs"] == []
+    assert patched_dispatch["superseded_raw_snapshots"] == []
 
 
 def test_explicit_resume_cursor_remaps_against_persisted_identities(
@@ -333,7 +333,7 @@ def test_explicit_resume_cursor_remaps_against_persisted_identities(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
         operation_id="op-explicit-removed",
         resume_cursor="target:2",
     )
@@ -341,7 +341,7 @@ def test_explicit_resume_cursor_remaps_against_persisted_identities(
     assert op.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
@@ -351,7 +351,7 @@ def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
 
     def reported_failure(_config: Config, _dry_run: bool) -> RepairResult:
         return RepairResult(
-            name="orphaned_blobs",
+            name="superseded_raw_snapshots",
             category=MaintenanceCategory.ARCHIVE_CLEANUP,
             destructive=True,
             repaired_count=3,
@@ -366,12 +366,12 @@ def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
         {
             "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
             "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
-            "orphaned_blobs": reported_failure,
+            "superseded_raw_snapshots": reported_failure,
         },
     ):
         first = execute_replay(
             config,
-            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
             operation_id="op-retry",
         )
 
@@ -383,14 +383,14 @@ def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
 
     second = execute_replay(
         config,
-        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
         operation_id="op-retry",
     )
 
     assert second.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == ["live"]
     assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
@@ -401,7 +401,7 @@ def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-receipt",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
         '"completed_targets":["session_insights"],"cursor":"target:0",'
         '"started_at":"2026-01-01T00:00:00+00:00",'
         '"results":[{"name":"session_insights","repaired_count":4,"success":true}],'
@@ -413,7 +413,7 @@ def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
 
     op = execute_replay(
         config,
-        targets=("orphaned_blobs", "empty_sessions"),
+        targets=("superseded_raw_snapshots", "empty_sessions"),
         operation_id="op-receipt",
         progress_callback=snapshots.append,
     )
@@ -425,7 +425,7 @@ def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
     assert op.metrics["prior"] == 2.0
     assert op.failure_samples.samples[0].kind == "old"
     assert snapshots and {snapshot.total for snapshot in snapshots} == {2}
-    assert [snapshot.target for snapshot in snapshots] == ["orphaned_blobs", "empty_sessions"]
+    assert [snapshot.target for snapshot in snapshots] == ["superseded_raw_snapshots", "empty_sessions"]
 
 
 def test_fresh_explicit_done_and_malformed_cursor_are_typed_noops_or_failures(
@@ -519,20 +519,20 @@ def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-reorder",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
         '"completed_targets":["session_insights"],"cursor":"target:0"}'
     )
 
     op = execute_replay(
         config,
-        targets=("orphaned_blobs", "empty_sessions"),
+        targets=("superseded_raw_snapshots", "empty_sessions"),
         operation_id="op-reorder",
         resume_cursor="target:0",
     )
 
     assert op.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
     assert patched_dispatch["empty_sessions"] == ["live"]
 
 
@@ -779,12 +779,12 @@ def test_progress_processed_is_monotonic_through_failure_and_inner_progress(
         {
             "session_insights": session_insights,
             "empty_sessions": fail,
-            "orphaned_blobs": patched_dispatch_callable(patched_dispatch, "orphaned_blobs"),
+            "superseded_raw_snapshots": patched_dispatch_callable(patched_dispatch, "superseded_raw_snapshots"),
         },
     ):
         op = execute_replay(
             config,
-            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
             operation_id="op-progress-failure",
             progress_callback=progress.append,
         )
