@@ -103,6 +103,30 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     assert patched_dispatch["session_insights"] == ["live"]
 
 
+def test_completed_prefix_cursor_uses_historical_target_identity(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    """A historical cursor remains valid after completed targets are filtered."""
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-historical-prefix")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-historical-prefix",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"completed_targets":["session_insights","message_type_backfill"],"cursor":"target:2"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("empty_sessions",),
+        operation_id="op-historical-prefix",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
+
+
 def test_positional_persisted_cursor_without_identity_fails_closed(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
