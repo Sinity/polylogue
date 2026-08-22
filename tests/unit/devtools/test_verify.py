@@ -3810,6 +3810,16 @@ def test_mypy_probe_uses_managed_python_startup_environment(monkeypatch: pytest.
     assert "PYTHONOPTIMIZE" not in env
 
 
+def test_verify_subprocess_env_removes_nested_supervisor_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "outer-gw7")
+    completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
+
+    with patch("devtools.verify.subprocess.run", return_value=completed) as run:
+        _run("render all", ["devtools", "render all", "--check"])
+
+    assert "PYTEST_XDIST_WORKER" not in run.call_args.kwargs["env"]
+
+
 def test_verify_subprocess_env_removes_cloud_basetemp_in_local_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_BASETEMP_ROOT", "/tmp/polylogue-pytest")
     completed = subprocess.CompletedProcess(args=["devtools"], returncode=0, stdout="", stderr="")
