@@ -541,47 +541,6 @@ def _save_history(entry: dict[str, Any]) -> None:
     append_verify_history(entry, path=HISTORY_PATH)
 
 
-def _print_history(file: Path | None = None) -> None:
-    """Print last 10 verify runs as a compact table."""
-    entries = _load_history()
-    if not entries:
-        print("verify: no history yet")
-        return
-    print(f"{'time':<20} {'tier':<8} {'head':<10} {'dur':>7} {'exit':>4}  steps")
-    print("-" * 75)
-    for entry in entries[-10:]:
-        timestamp = str(entry.get("timestamp") or entry.get("finished_at") or entry.get("started_at") or "unknown")
-        ts = timestamp[5:19] if timestamp != "unknown" else timestamp
-        tier = str(entry.get("tier") or "unknown")[:8]
-        head = str(entry.get("git_head") or "unknown")[:8]
-        duration = entry.get("total_duration_s", entry.get("duration_s", 0.0))
-        try:
-            dur = f"{float(duration or 0.0):.0f}s"
-        except (TypeError, ValueError):
-            dur = "0s"
-        raw_exit = entry.get("exit_code", 1)
-        try:
-            ec = int(raw_exit if raw_exit is not None else 1)
-        except (TypeError, ValueError):
-            ec = 1
-        rendered_steps: list[str] = []
-        for step in entry.get("steps", []):
-            if not isinstance(step, dict):
-                continue
-            try:
-                step_duration = float(step.get("duration_s") or 0.0)
-            except (TypeError, ValueError):
-                step_duration = 0.0
-            raw_step_exit = step.get("exit", 1)
-            try:
-                step_exit = int(raw_step_exit if raw_step_exit is not None else 1)
-            except (TypeError, ValueError):
-                step_exit = 1
-            rendered_steps.append(f"{step.get('name', 'unknown')}({step_duration:.0f}s{' FAIL' if step_exit else ''})")
-        steps = ", ".join(rendered_steps)
-        print(f"{ts:<20} {tier:<8} {head:<10} {dur:>7} {ec:>4}  {steps}")
-
-
 # ── step runner ─────────────────────────────────────────────────────
 
 
@@ -3224,7 +3183,6 @@ def _main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run the native pytest-testmon lifecycle plus verification-lab checks.",
     )
-    parser.add_argument("--history", action="store_true", help="Print last 10 verify runs and exit.")
     parser.add_argument(
         "--plan",
         action="store_true",
@@ -3241,14 +3199,6 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     _anchor_verification_paths()
-    if args.history:
-        try:
-            assert_polylogue_matches_checkout(ROOT, context="devtools verify")
-        except CheckoutImportMismatchError as exc:
-            sys.stderr.write(f"verify: {exc}\n")
-            return 125
-        _print_history()
-        return 0
     if args.plan:
         try:
             assert_polylogue_matches_checkout(ROOT, context="devtools verify")
@@ -3961,7 +3911,7 @@ def _should_isolate(raw_argv: Sequence[str]) -> bool:
 
     if "--no-isolated" in raw_argv or os.environ.get(_ISOLATION_SENTINEL):
         return False
-    if "--history" in raw_argv or "--plan" in raw_argv:
+    if "--plan" in raw_argv:
         return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # A verify invoked from inside a test is exercising this orchestration,
@@ -4065,7 +4015,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if _should_isolate(raw_argv):
         return _reexec_isolated(raw_argv)
-    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--history", "--plan"))
+    native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--plan"))
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # A verify invoked from inside a test must not contend for THIS
         # checkout's lifecycle lock.

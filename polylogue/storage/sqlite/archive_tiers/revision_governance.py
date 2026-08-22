@@ -142,6 +142,10 @@ from polylogue.core.raw_failure_evidence import (
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.timestamp_authority import (
+    normalize_session_timestamps,
+    session_evidence_timestamps,
+)
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -180,8 +184,9 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveWriteOutcome,
     PreparedSessionRows,
-    _timestamp_ms,
+    _repair_stale_session_observations,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -352,6 +357,8 @@ def _write_parsed_precedence_result(
     defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
+    fallback_timestamp = raw_revision_file_mtime(store, raw_id)
+    session = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
     content_hash = str(session_content_hash(session))
     existing_row = store._conn.execute(
@@ -368,6 +375,8 @@ def _write_parsed_precedence_result(
     incoming_has_native_browser_payload = any(flag in session.ingest_flags for flag in NATIVE_BROWSER_CAPTURE_FLAGS)
     current_stored_message_count = 0
     browser_precedence: BrowserCapturePrecedence = "default"
+
+    writer_outcomes: list[ArchiveWriteOutcome] = []
 
     def write_with_reparse_receipt(*, force_replace: bool) -> None:
         """Keep a reparse receipt and its session replacement in one index txn."""
@@ -401,6 +410,7 @@ def _write_parsed_precedence_result(
                 bulk_build=bulk_build,
                 defer_fts_rebuild=defer_fts_rebuild,
                 prepared=prepared,
+                write_outcome=writer_outcomes,
             )
         except BaseException:
             if commits_transaction:
@@ -479,7 +489,9 @@ def _write_parsed_precedence_result(
                 counts=store._skipped_counts(session, session_events=session_event_count),
             )
 
-    incoming_freshness_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    _incoming_created_at_ms, incoming_freshness_ms = session_evidence_timestamps(session)
+    if incoming_freshness_ms is None:
+        incoming_freshness_ms = _incoming_created_at_ms
     if (
         source_index >= 0
         and browser_precedence != "replace"
@@ -492,6 +504,15 @@ def _write_parsed_precedence_result(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_int,
         ):
+            # This early return bypasses the ordinary index write transaction;
+            # make stale observation repair durable for direct governance calls.
+            with store._conn if manage_transaction else nullcontext():
+                _repair_stale_session_observations(
+                    store._conn,
+                    session_id,
+                    session,
+                    fallback_timestamp=fallback_timestamp,
+                )
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
                 session_id=session_id,
@@ -525,6 +546,13 @@ def _write_parsed_precedence_result(
         )
 
     write_with_reparse_receipt(force_replace=browser_precedence == "replace")
+    if writer_outcomes and writer_outcomes[0].stale_skipped:
+        return ArchiveRawParsedWriteResult(
+            raw_id=raw_id,
+            session_id=session_id,
+            content_changed=False,
+            counts=store._skipped_counts(session),
+        )
     counts = store._write_counts(session)
     if (
         existing_raw_id
@@ -559,6 +587,7 @@ def write_raw_and_parsed(
     payload: bytes,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     source_index: int = 0,
     raw_id: str | None = None,
     stage_timings_s: dict[str, float] | None = None,
@@ -574,6 +603,7 @@ def write_raw_and_parsed(
         payload=payload,
         source_path=source_path,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         source_index=source_index,
         raw_id=raw_id,
         stage_timings_s=stage_timings_s,
@@ -593,6 +623,7 @@ def write_raw_payload(
     payload: bytes,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     source_index: int = 0,
     raw_id: str | None = None,
     native_id: str | None = None,
@@ -640,6 +671,7 @@ def write_raw_payload(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=raw_id,
             post_parse=True,
@@ -657,6 +689,7 @@ def write_raw_payload(
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         native_id=native_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
@@ -674,6 +707,7 @@ def write_raw_blob_ref(
     blob_size: int,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     source_index: int = 0,
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
@@ -700,6 +734,7 @@ def write_raw_blob_ref(
             blob_hash=bytes.fromhex(blob_hash_hex),
             blob_size=blob_size,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
@@ -715,6 +750,7 @@ def write_raw_blob_ref(
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
@@ -729,6 +765,7 @@ def admit_raw_artifact_payload(
     payload: bytes,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
     source_index: int = 0,
     raw_id: str | None = None,
@@ -761,6 +798,7 @@ def admit_raw_artifact_payload(
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         logical_source_key=f"{origin.value}:{source_path}",
         prior_head=None,
@@ -781,6 +819,7 @@ def admit_raw_artifact_blob_ref(
     blob_size: int,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
     source_index: int = 0,
     raw_id: str | None = None,
@@ -798,6 +837,7 @@ def admit_raw_artifact_blob_ref(
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         classification=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
@@ -2330,6 +2370,23 @@ def raw_revision_acquired_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -
     return int(row[0])
 
 
+def raw_revision_file_mtime(store: RawRevisionGovernanceHost, raw_id: str) -> str | None:
+    """Return retained acquisition file mtime for replay fallback authority."""
+    row = (
+        store._ensure_source_conn()
+        .execute(
+            "SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    if row is None:
+        raise KeyError(f"unknown raw revision {raw_id}")
+    if row[0] is None:
+        return None
+    return datetime.fromtimestamp(int(row[0]) / 1000, UTC).isoformat()
+
+
 def raw_revision_observed_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -> int:
     """Return the latest durable observation receipt for a retained raw.
 
@@ -3628,6 +3685,10 @@ def _index_parsed_for_retained_raw(
     prepared: PreparedSessionRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
     provider = Provider.from_string(session.source_name)
+    # Retained replay no longer has the parser's RawSessionData descriptor;
+    # recover file_mtime from durable source evidence before the shared writer
+    # computes freshness. This keeps replay equivalent to first acquisition.
+    session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     try:
         result = _write_parsed_precedence_result(
             store,
@@ -3688,6 +3749,7 @@ def write_raw_and_parsed_result(
     payload: bytes,
     source_path: str,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     source_index: int = 0,
     raw_id: str | None = None,
     stage_timings_s: dict[str, float] | None = None,
@@ -3732,6 +3794,7 @@ def write_raw_and_parsed_result(
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         native_id=session.provider_session_id,
         raw_id=raw_id,
         logical_source_key=f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
@@ -3770,6 +3833,7 @@ def admit_raw_and_parsed_result(
     source_path: str,
     acquired_at_ms: int,
     logical_source_key: str,
+    file_mtime_ms: int | None = None,
     source_index: int = 0,
     raw_id: str | None = None,
     shared_raw: bool = False,
@@ -3838,6 +3902,7 @@ def admit_raw_and_parsed_result(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             raw_id=raw_id,
             logical_source_key=logical_source_key,
             grouped=True,
@@ -3860,6 +3925,7 @@ def admit_raw_and_parsed_result(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=session.provider_session_id,
             raw_id=raw_id,
             logical_source_key=logical_source_key,

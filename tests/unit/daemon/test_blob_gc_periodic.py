@@ -18,6 +18,7 @@ import contextlib
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -56,6 +57,11 @@ def _make_source_db(path: Path) -> None:
                 completed_at_ms INTEGER,
                 reclaimed_count INTEGER NOT NULL DEFAULT 0,
                 reclaimed_bytes INTEGER NOT NULL DEFAULT 0
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE blob_publication_reservations (
+                blob_hash BLOB NOT NULL
             )"""
         )
         conn.commit()
@@ -103,15 +109,45 @@ def test_run_blob_gc_once_reclaims_unreferenced_aged_blob(tmp_path: Path) -> Non
     assert not blob_store.blob_path(blob_hash).exists()
 
 
+def test_orphaned_blobs_is_not_a_manual_maintenance_route() -> None:
+    """Blob GC is daemon-owned; the retired generic target must not linger."""
+    from polylogue.maintenance.targets import build_maintenance_target_catalog
+    from polylogue.storage import repair
+
+    catalog = build_maintenance_target_catalog()
+
+    assert catalog.resolve_name("orphaned_blobs") is None
+    assert "orphaned_blobs" not in repair.PREVIEW_HANDLERS
+    assert "orphaned_blobs" not in repair.REPAIR_HANDLERS
+
+
 def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
-    """Production-route proof; bypassing run_sync or its authority token makes this fail."""
+    """Production route preserves references and reservations while reclaiming an orphan."""
     db_path = tmp_path / "source.db"
     _make_source_db(db_path)
     blob_dir = tmp_path / "blob"
     blob_store = BlobStore(blob_dir)
 
-    blob_hash, _ = blob_store.write_from_bytes(b"orphan blob via coordinator")
-    _backdate(blob_store, blob_hash)
+    orphan_hash, _ = blob_store.write_from_bytes(b"orphan blob via coordinator")
+    referenced_hash, referenced_size = blob_store.write_from_bytes(b"referenced blob via coordinator")
+    reserved_hash, _ = blob_store.write_from_bytes(b"reserved blob via coordinator")
+    for blob_hash in (orphan_hash, referenced_hash, reserved_hash):
+        _backdate(blob_store, blob_hash)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-coordinator", bytes.fromhex(referenced_hash), referenced_size),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
+            (bytes.fromhex(referenced_hash), "raw-coordinator", "raw_payload"),
+        )
+        conn.execute(
+            "INSERT INTO blob_publication_reservations (blob_hash) VALUES (?)",
+            (bytes.fromhex(reserved_hash),),
+        )
+        conn.commit()
 
     coordinator = DaemonWriteCoordinator()
 
@@ -122,8 +158,57 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.deleted_count == 1  # type: ignore[attr-defined]
+    assert result.skipped_referenced == 1  # type: ignore[attr-defined]
+    assert result.skipped_reserved == 1  # type: ignore[attr-defined]
     assert coordinator.snapshot().active_actor is None
-    assert not blob_store.blob_path(blob_hash).exists()
+    assert not blob_store.blob_path(orphan_hash).exists()
+    assert blob_store.blob_path(referenced_hash).exists()
+    assert blob_store.blob_path(reserved_hash).exists()
+
+
+def test_periodic_blob_gc_uses_daemon_write_route_and_reclaims_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The scheduled loop must invoke the coordinator, not bypass it."""
+    db_path = tmp_path / "source.db"
+    _make_source_db(db_path)
+    blob_dir = tmp_path / "blob"
+    blob_store = BlobStore(blob_dir)
+    orphan_hash, _ = blob_store.write_from_bytes(b"orphan blob via periodic route")
+    _backdate(blob_store, orphan_hash)
+
+    coordinator_events: list[str] = []
+    first_run = asyncio.Event()
+    delegate = DaemonWriteCoordinator()
+
+    class RecordingCoordinator:
+        async def run_sync(self, actor: str, callback: Any, *args: Any, **kwargs: Any) -> Any:
+            coordinator_events.append(actor)
+            result: Any = await delegate.run_sync(actor, callback, *args, **kwargs)
+            first_run.set()
+            return result
+
+    coordinator = RecordingCoordinator()
+    monkeypatch.setattr(blob_gc_periodic, "BLOB_GC_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("polylogue.paths.source_db_path", lambda: db_path)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", lambda: coordinator)
+
+    async def run() -> None:
+        task = asyncio.create_task(blob_gc_periodic.periodic_blob_gc_check())
+        try:
+            await asyncio.wait_for(first_run.wait(), timeout=2.0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+    assert coordinator_events == ["maintenance.blob_gc"]
+    assert not blob_store.blob_path(orphan_hash).exists()
+    assert delegate.snapshot().active_actor is None
 
 
 def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]:

@@ -46,7 +46,6 @@ from polylogue.maintenance.targets import (
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
-from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
@@ -5778,13 +5777,6 @@ def collect_archive_debt_statuses_sync(
             ),
             skipped=skip_large_message_scans,
         )
-    if include_expensive and "orphaned_blobs" in selected:
-        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path, configured_root=configured_root)
-        debt_statuses["orphaned_blobs"] = _archive_debt_status(
-            "orphaned_blobs",
-            issue_count=orphaned_blobs,
-            detail="No orphaned blobs" if orphaned_blobs == 0 else f"{orphaned_blobs:,} orphaned blob files on disk",
-        )
     if include_expensive and "superseded_raw_snapshots" in selected:
         superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
         debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
@@ -6027,21 +6019,6 @@ def preview_empty_sessions(*, count: int) -> RepairResult:
     )
 
 
-# ---------------------------------------------------------------------------
-# Blob cleanup
-# ---------------------------------------------------------------------------
-
-
-def repair_orphaned_blobs(config: Config, dry_run: bool = False) -> RepairResult:
-    outcome = repair_orphaned_blobs_data(config, dry_run=dry_run)
-    return _repair_result(
-        "orphaned_blobs",
-        repaired_count=outcome.repaired_count,
-        success=outcome.success,
-        detail=outcome.detail,
-    )
-
-
 def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
     from polylogue.storage.raw_retention import superseded_raw_snapshot_candidates
 
@@ -6162,15 +6139,6 @@ def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> R
             f"{skipped_detail}{orphaned_plan_detail}"
             + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
         ),
-    )
-
-
-def preview_orphaned_blobs(*, count: int) -> RepairResult:
-    return _repair_result(
-        "orphaned_blobs",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: delete {count} orphaned blobs" if count else "Would: No orphaned blobs found",
     )
 
 
@@ -7454,7 +7422,6 @@ PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "message_type_backfill": preview_message_type_backfill,
     "empty_sessions": preview_empty_sessions,
-    "orphaned_blobs": preview_orphaned_blobs,
     "superseded_raw_snapshots": preview_superseded_raw_snapshots,
 }
 
@@ -7463,7 +7430,6 @@ REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
     "empty_sessions": repair_empty_sessions,
-    "orphaned_blobs": repair_orphaned_blobs,
     "superseded_raw_snapshots": repair_superseded_raw_snapshots,
 }
 
@@ -7576,13 +7542,11 @@ __all__ = [
     "RepairResult",
     "collect_archive_debt_statuses_sync",
     "count_empty_sessions_sync",
-    "count_orphaned_blobs_sync",
     "count_superseded_raw_snapshots_sync",
     "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
     "preview_counts_from_archive_debt",
     "preview_empty_sessions",
-    "preview_orphaned_blobs",
     "preview_superseded_raw_snapshots",
     "preview_message_type_backfill",
     "preview_session_insights",
@@ -7591,7 +7555,6 @@ __all__ = [
     "raw_materialization_scale_profile",
     "repair_empty_sessions",
     "repair_message_type_backfill",
-    "repair_orphaned_blobs",
     "repair_raw_materialization",
     "repair_superseded_raw_snapshots",
     "repair_session_insights",

@@ -29,16 +29,18 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.daemon.backup import backup_archive
+from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.raw_authority_recovery import (
     RecoveryOperation,
     inspect_raw_authority_recovery,
     write_recovery_plan,
 )
-from polylogue.maintenance.replay import rebuild_index_from_source
+from polylogue.maintenance.replay import rebuild_index_from_source, state_path_for
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
+from polylogue.storage.repair import RepairResult
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -55,6 +57,61 @@ from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, ups
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_replay_cli_explicit_malformed_cursor_is_typed_and_state_stable(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, blocked: bool
+) -> None:
+    """The public CLI and executor reject malformed cursors identically.
+
+    Cursor validation must not depend on whether the offline daemon blocker is
+    active, and must not replace an existing resumable checkpoint.
+    """
+    root = cli_workspace["archive_root"]
+    operation_id = f"cli-invalid-cursor-{blocked}"
+    config = Config(archive_root=root, render_root=cli_workspace["render_root"], sources=[])
+    path = state_path_for(config, operation_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = '{"operation_id":"cli-invalid-cursor","cursor":"target:0"}'
+    path.write_text(original)
+    blocker = RepairResult(
+        name="session_insights",
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=0,
+        success=False,
+        detail="daemon is running",
+    )
+
+    with patch(
+        "polylogue.maintenance.replay.offline_maintenance_blockers",
+        return_value=[blocker] if blocked else [],
+    ) as blocker_check:
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "run",
+                "--target",
+                "session_insights",
+                "--operation-id",
+                operation_id,
+                "--resume",
+                "",
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["failure_samples"]["samples"][0]["kind"] == "InvalidReplayCursor"
+    assert path.read_text() == original
+    blocker_check.assert_not_called()
 
 
 def test_raw_authority_census_cli_resolves_receipt_handle(

@@ -10,7 +10,11 @@ point at a different checkout than the one a tool is actually invoked from
 from __future__ import annotations
 
 import json
+import shutil
+import sys
+from importlib import metadata
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -24,6 +28,7 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
     checkout_environment_fingerprint,
     find_git_worktree_root,
+    quick_gate_toolchain_fingerprint,
     resolved_polylogue_path,
 )
 from devtools.verify_runs import VerifyRun
@@ -329,3 +334,144 @@ def test_verify_run_marker_is_attributable_without_a_fingerprint(tmp_path: Path)
     assert fingerprint.clean
     assert fingerprint.verify_state_origin == root.resolve()
     assert json.loads((root / ".cache" / "verify" / "current-run.json").read_text())["run_id"] == run.run_id
+
+
+_MYPY_WRAPPER_BODY = (
+    "# -*- coding: utf-8 -*-\n"
+    "import sys\n"
+    "from mypy.__main__ import console_entry\n"
+    "if __name__ == '__main__':\n"
+    "    sys.exit(console_entry())\n"
+)
+
+
+def _write_console_script(path: Path, *, shebang: str, body: str = _MYPY_WRAPPER_BODY) -> None:
+    """Write a pip/uv-style console-script wrapper: a shebang line naming the
+    owning venv's own interpreter, followed by boilerplate identical across
+    every install of the same package version."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{shebang}\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _executables(fingerprint: dict[str, object]) -> dict[str, dict[str, str | None]]:
+    return cast("dict[str, dict[str, str | None]]", fingerprint["executables"])
+
+
+def test_quick_gate_toolchain_fingerprint_ignores_relocated_wrapper_shebang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two functionally identical mypy installs, resolved from two different
+    venv roots, must fingerprint identically.
+
+    Real pip/uv-generated console-script wrappers for the same package
+    version share an identical body but hardcode the absolute path to their
+    *own* venv's interpreter in the leading ``#!`` line -- an install-location
+    accident (worktree-local `.venv` vs. a shared checkout's `.venv`, both
+    synced from the same lockfile), not a genuine toolchain difference. A
+    fingerprint that fails to ignore this defeats pre-push receipt reuse
+    every time a lane transitions between a borrowed and a dedicated venv,
+    even though nothing about what would actually run changed.
+    """
+    venv_a_root = tmp_path / "venv_a"
+    venv_b_root = tmp_path / "venv_b"
+    mypy_a = venv_a_root / ".venv" / "bin" / "mypy"
+    mypy_b = venv_b_root / ".venv" / "bin" / "mypy"
+    _write_console_script(mypy_a, shebang=f"#!{venv_a_root}/.venv/bin/python")
+    _write_console_script(mypy_b, shebang=f"#!{venv_b_root}/.venv/bin/python")
+
+    monkeypatch.setattr(metadata, "version", lambda name: "2.3.0")
+
+    monkeypatch.setattr(shutil, "which", lambda name: str(mypy_a) if name == "mypy" else None)
+    fingerprint_a = quick_gate_toolchain_fingerprint(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: str(mypy_b) if name == "mypy" else None)
+    fingerprint_b = quick_gate_toolchain_fingerprint(tmp_path)
+
+    assert _executables(fingerprint_a)["mypy"] == _executables(fingerprint_b)["mypy"]
+
+
+def test_quick_gate_toolchain_fingerprint_detects_genuine_wrapper_content_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real change to a console-script wrapper's body (not just its
+    venv-root shebang) must still change the fingerprint -- shebang
+    normalization must not blind the gate to actual tool drift."""
+    venv_root = tmp_path / "venv"
+    mypy_path = venv_root / ".venv" / "bin" / "mypy"
+    _write_console_script(mypy_path, shebang=f"#!{venv_root}/.venv/bin/python")
+    monkeypatch.setattr(metadata, "version", lambda name: "2.3.0")
+    monkeypatch.setattr(shutil, "which", lambda name: str(mypy_path) if name == "mypy" else None)
+    fingerprint_before = quick_gate_toolchain_fingerprint(tmp_path)
+
+    _write_console_script(
+        mypy_path,
+        shebang=f"#!{venv_root}/.venv/bin/python",
+        body=_MYPY_WRAPPER_BODY + "# tampered\n",
+    )
+    fingerprint_after = quick_gate_toolchain_fingerprint(tmp_path)
+
+    assert _executables(fingerprint_before)["mypy"]["sha256"] != _executables(fingerprint_after)["mypy"]["sha256"]
+
+
+def test_quick_gate_toolchain_fingerprint_detects_native_binary_content_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A native/compiled executable (no shebang -- ruff's real shape) with
+    genuinely different bytes must still fingerprint differently; shebang
+    normalization is a no-op for content that never starts with ``#!``."""
+    ruff_path = tmp_path / "venv" / ".venv" / "bin" / "ruff"
+    ruff_path.parent.mkdir(parents=True, exist_ok=True)
+    ruff_path.write_bytes(b"\x7fELF" + b"\x00" * 32)
+    ruff_path.chmod(0o755)
+    monkeypatch.setattr(metadata, "version", lambda name: "0.16.3")
+    monkeypatch.setattr(shutil, "which", lambda name: str(ruff_path) if name == "ruff" else None)
+    fingerprint_before = quick_gate_toolchain_fingerprint(tmp_path)
+
+    ruff_path.write_bytes(b"\x7fELF" + b"\xff" * 32)
+    fingerprint_after = quick_gate_toolchain_fingerprint(tmp_path)
+
+    assert _executables(fingerprint_before)["ruff"]["sha256"] != _executables(fingerprint_after)["ruff"]["sha256"]
+
+
+def _python_fields(fingerprint: dict[str, object]) -> dict[str, object]:
+    return cast("dict[str, object]", fingerprint["python"])
+
+
+def test_quick_gate_toolchain_fingerprint_ignores_relocated_venv_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``python.prefix`` carries the same install-root noise the executable
+    identity fix already removed: it is the raw absolute venv root, so a
+    worktree's own dedicated ``.venv`` and a shared checkout's ``.venv`` --
+    both synced from the same lockfile, functionally identical -- report
+    different prefixes and defeat receipt reuse on install location alone.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(metadata, "version", lambda name: "2.3.0")
+
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv_a" / ".venv"))
+    fingerprint_a = quick_gate_toolchain_fingerprint(tmp_path)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv_b" / ".venv"))
+    fingerprint_b = quick_gate_toolchain_fingerprint(tmp_path)
+
+    assert _python_fields(fingerprint_a)["prefix"] == _python_fields(fingerprint_b)["prefix"]
+
+
+def test_quick_gate_toolchain_fingerprint_detects_genuine_python_build_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normalizing the venv-root component of ``prefix`` must not blind the
+    gate to a real interpreter/build difference carried by the other
+    ``python`` fields (``base_prefix``, ``version``)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(metadata, "version", lambda name: "2.3.0")
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv" / ".venv"))
+    monkeypatch.setattr(sys, "base_prefix", "/nix/store/aaaa-python3-3.14.4")
+    fingerprint_before = quick_gate_toolchain_fingerprint(tmp_path)
+
+    monkeypatch.setattr(sys, "base_prefix", "/nix/store/bbbb-python3-3.15.0")
+    fingerprint_after = quick_gate_toolchain_fingerprint(tmp_path)
+
+    assert _python_fields(fingerprint_before)["prefix"] == _python_fields(fingerprint_after)["prefix"]
+    assert _python_fields(fingerprint_before)["base_prefix"] != _python_fields(fingerprint_after)["base_prefix"]
+    assert fingerprint_before["python"] != fingerprint_after["python"]

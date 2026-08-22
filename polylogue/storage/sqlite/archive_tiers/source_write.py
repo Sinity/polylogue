@@ -465,6 +465,15 @@ def _assert_existing_raw_identity(
         raise ValueError(f"raw id is already bound to a different revision envelope: {raw_id}")
 
 
+def _backfill_raw_file_mtime(conn: sqlite3.Connection, *, raw_id: str, file_mtime_ms: int | None) -> None:
+    """Fill an unknown source mtime without changing established evidence."""
+    if file_mtime_ms is not None:
+        conn.execute(
+            "UPDATE raw_sessions SET file_mtime_ms = ? WHERE raw_id = ? AND file_mtime_ms IS NULL",
+            (file_mtime_ms, raw_id),
+        )
+
+
 def apply_source_raw_state_update(
     conn: sqlite3.Connection,
     raw_id: str,
@@ -714,7 +723,7 @@ def write_source_raw_session(
     )
 
     with conn if manage_transaction else nullcontext():
-        cursor = conn.execute(
+        conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
@@ -757,22 +766,25 @@ def write_source_raw_session(
                 revision.authority.value if revision else "quarantined",
             ),
         )
-        if cursor.rowcount == 0:
-            if capture_mode is not None:
-                conn.execute(
-                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
-                    (_enum_value(capture_mode), resolved_raw_id),
-                )
-            _assert_existing_raw_identity(
-                conn,
-                raw_id=resolved_raw_id,
-                origin=origin_value,
-                native_id=native_id,
-                source_path=source_path,
-                source_index=source_index,
-                blob_hash=blob_hash,
-                blob_size=blob_size,
-                revision=revision,
+        # Validate the complete acquisition identity before the NULL-only mtime
+        # backfill or any observation/blob reference side effects. This keeps
+        # caller-owned transactions atomic when a raw_id conflicts.
+        _assert_existing_raw_identity(
+            conn,
+            raw_id=resolved_raw_id,
+            origin=origin_value,
+            native_id=native_id,
+            source_path=source_path,
+            source_index=source_index,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            revision=revision,
+        )
+        _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
+        if capture_mode is not None:
+            conn.execute(
+                "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                (_enum_value(capture_mode), resolved_raw_id),
             )
         record_capture_mode_observation(
             conn,
@@ -913,6 +925,7 @@ def write_source_raw_session_blob_ref(
     blob_hash: bytes,
     blob_size: int,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     native_id: str | None = None,
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
@@ -941,14 +954,14 @@ def write_source_raw_session_blob_ref(
         native_id,
     )
     with conn if manage_transaction else nullcontext():
-        cursor = conn.execute(
+        conn.execute(
             """
             INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                blob_size, acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(raw_id) DO NOTHING
             """,
             (
@@ -961,6 +974,7 @@ def write_source_raw_session_blob_ref(
                 blob_hash,
                 blob_size,
                 acquired_at_ms,
+                file_mtime_ms,
                 revision.logical_source_key if revision else None,
                 revision.kind.value if revision else "unknown",
                 revision.source_revision if revision else None,
@@ -973,22 +987,25 @@ def write_source_raw_session_blob_ref(
                 revision.authority.value if revision else "quarantined",
             ),
         )
-        if cursor.rowcount == 0:
-            if capture_mode is not None:
-                conn.execute(
-                    "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
-                    (_enum_value(capture_mode), resolved_raw_id),
-                )
-            _assert_existing_raw_identity(
-                conn,
-                raw_id=resolved_raw_id,
-                origin=origin_value,
-                native_id=native_id,
-                source_path=source_path,
-                source_index=source_index,
-                blob_hash=blob_hash,
-                blob_size=blob_size,
-                revision=revision,
+        # Validate the complete acquisition identity before the NULL-only mtime
+        # backfill or any observation/blob reference side effects. This keeps
+        # caller-owned transactions atomic when a raw_id conflicts.
+        _assert_existing_raw_identity(
+            conn,
+            raw_id=resolved_raw_id,
+            origin=origin_value,
+            native_id=native_id,
+            source_path=source_path,
+            source_index=source_index,
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            revision=revision,
+        )
+        _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
+        if capture_mode is not None:
+            conn.execute(
+                "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
+                (_enum_value(capture_mode), resolved_raw_id),
             )
         record_capture_mode_observation(
             conn,

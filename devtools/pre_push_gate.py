@@ -9,13 +9,17 @@ full quick gate.  Mixed and ordinary code pushes retain the normal gate.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root
+from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.command_catalog import control_plane_argv
+from devtools.verify_runs import RECEIPT_EXCLUDED_PATHSPECS, worktree_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +97,72 @@ def _run(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)
 
 
+def _worktree_is_clean(cwd: Path) -> bool:
+    # Share the exact exclusion `worktree_fingerprint` already applies
+    # (RECEIPT_EXCLUDED_PATHSPECS): `.beads/` is the tracker JSONL that
+    # nothing at `verify --quick` runtime reads, so an uncommitted
+    # bead-bookkeeping edit must not read as a dirty worktree here either --
+    # otherwise the two cleanliness checks disagree on what "dirty" means for
+    # the exact same receipt.
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and not result.stderr and not result.stdout
+
+
+def _current_provenance(cwd: Path) -> tuple[dict[str, object], str] | None:
+    """Return the live provenance required to trust a cached quick receipt."""
+    if not _worktree_is_clean(cwd):
+        return None
+    try:
+        environment = assert_polylogue_matches_checkout(cwd, context="pre-push").as_dict()
+    except (CheckoutImportMismatchError, ImportError, OSError, ValueError):
+        return None
+    fingerprint = worktree_fingerprint(cwd)
+    if fingerprint == "unavailable":
+        return None
+    return environment, fingerprint
+
+
+def _has_compatible_quick_receipt(
+    *,
+    cwd: Path,
+    head: str | None,
+    provenance: tuple[dict[str, object], str] | None,
+) -> bool:
+    """Accept only a successful receipt bound to this exact checkout state."""
+    if head is None or provenance is None:
+        return False
+    environment, fingerprint = provenance
+    receipt_path = cwd / ".cache" / "verify" / "current-run.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(receipt, Mapping):
+        return False
+    return (
+        receipt.get("tier") == "quick"
+        and receipt.get("status") == "success"
+        and type(receipt.get("exit_code")) is int
+        and receipt.get("exit_code") == 0
+        and receipt.get("git_head") == head
+        and receipt.get("final_git_head") == head
+        and receipt.get("checkout_root") == str(cwd.resolve())
+        and receipt.get("worktree_fingerprint") == fingerprint
+        and receipt.get("final_worktree_fingerprint") == fingerprint
+        and receipt.get("environment_fingerprint") == environment
+    )
+
+
+def _updates_match_head(updates: list[PushUpdate], head: str | None) -> bool:
+    return head is not None and all(_is_zero_sha(update.local_sha) or update.local_sha == head for update in updates)
+
+
 def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
     paths = changed_paths(updates, cwd=cwd)
     if is_beads_only(paths):
@@ -103,11 +173,30 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
         )
         return "beads"
 
-    stamp = cwd / ".cache" / "last-verify-head"
     current = _git("rev-parse", "HEAD", cwd=cwd)
-    if stamp.exists() and stamp.read_text(encoding="utf-8").splitlines()[:1] == [current]:
-        print(f"pre-push: HEAD already verified ({current[:8]}); skipping.", file=sys.stderr)
-        return "stamped"
+    provenance_before = (
+        _current_provenance(cwd) if _updates_match_head(updates, current) and _worktree_is_clean(cwd) else None
+    )
+    candidate = _has_compatible_quick_receipt(cwd=cwd, head=current, provenance=provenance_before)
+    provenance_after = _current_provenance(cwd) if candidate and _worktree_is_clean(cwd) else None
+    # This reuse gate is an opportunistic same-user performance optimization
+    # (skip a redundant quick verification the working tree already proved),
+    # not an authorization or attestation boundary. The worktree fingerprint
+    # diffs tracked content against HEAD, so it cannot by itself distinguish
+    # "nothing changed" from "HEAD moved to a different commit with an
+    # identical tree" (amend, rebase --onto, a concurrent writer) — re-sample
+    # live HEAD here and require it still match both the initially observed
+    # HEAD and every non-delete pushed local SHA before trusting reuse.
+    head_after = _git("rev-parse", "HEAD", cwd=cwd) if candidate else None
+    reuse_ok = (
+        candidate
+        and provenance_before == provenance_after
+        and head_after == current
+        and _updates_match_head(updates, head_after)
+    )
+    if reuse_ok:
+        print(f"pre-push: compatible quick receipt reused ({current[:8]}).", file=sys.stderr)
+        return "reused"
 
     print("pre-push: running quick verification baseline", file=sys.stderr)
     _run([sys.executable, "-m", "devtools", "verify", "--quick"], cwd=cwd)

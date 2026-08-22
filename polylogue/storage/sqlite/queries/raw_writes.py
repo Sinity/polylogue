@@ -34,6 +34,56 @@ async def save_raw_session(
         blob_hash = hashlib.sha256(blob_hash).digest()
 
     acquired_at_ms = _timestamp_ms(record.acquired_at) or 0
+    file_mtime_ms = _timestamp_ms(record.file_mtime)
+
+    # Validate the retained raw identity before any duplicate-side effects.
+    # This async compatibility writer is often called inside a caller-owned
+    # transaction; mutating observations or metadata before discovering a
+    # conflict would leave that transaction poisoned with partial evidence.
+    cursor = await conn.execute(
+        """
+        SELECT origin, source_path, source_index, blob_hash, blob_size,
+               logical_source_key, revision_kind, source_revision,
+               predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
+               append_start_offset, append_end_offset, acquisition_generation,
+               revision_authority
+        FROM raw_sessions WHERE raw_id = ?
+        """,
+        (record.raw_id,),
+    )
+    retained = await cursor.fetchone()
+    if retained is not None:
+        retained_values = tuple(retained)
+        unknown_origin = "unknown-export"
+        if retained_values[0] != origin.value and unknown_origin not in (retained_values[0], origin.value):
+            raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
+        if retained_values[1:5] != (
+            record.source_path,
+            int(record.source_index or 0),
+            blob_hash,
+            int(record.blob_size),
+        ):
+            raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
+        # A legacy retry may carry no revision envelope of its own. In that
+        # case the retained envelope is authoritative and must be preserved;
+        # a supplied envelope, however, is acquisition identity and must match.
+        expected_revision = record.revision
+        if expected_revision is not None:
+            expected_revision_values = (
+                expected_revision.logical_source_key,
+                expected_revision.kind.value,
+                expected_revision.source_revision,
+                expected_revision.predecessor_source_revision,
+                expected_revision.predecessor_raw_id,
+                expected_revision.baseline_raw_id,
+                expected_revision.append_start_offset,
+                expected_revision.append_end_offset,
+                expected_revision.acquisition_generation,
+                expected_revision.authority.value,
+            )
+            if retained_values[5:] != expected_revision_values:
+                raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
+
     cursor = await conn.execute(
         """
         INSERT OR IGNORE INTO raw_sessions (
@@ -56,7 +106,7 @@ async def save_raw_session(
             blob_hash,
             int(record.blob_size),
             acquired_at_ms,
-            _timestamp_ms(record.file_mtime),
+            file_mtime_ms,
             _timestamp_ms(record.parsed_at),
             record.parse_error,
             _timestamp_ms(record.validated_at),
@@ -110,12 +160,13 @@ async def save_raw_session(
             """,
             (record.raw_id, capture_mode.value, acquired_at_ms),
         )
-    if not inserted and record.file_mtime is not None:
-        file_mtime_ms = _timestamp_ms(record.file_mtime)
+    if not inserted and file_mtime_ms is not None:
+        # A later observation may fill missing acquisition evidence, but never
+        # replace an established mtime. Source path is identity and was
+        # validated above, so it is deliberately not rewritten here.
         await conn.execute(
-            "UPDATE raw_sessions SET file_mtime_ms = ?, source_path = ? "
-            "WHERE raw_id = ? AND (file_mtime_ms IS NOT ? OR source_path IS NOT ?)",
-            (file_mtime_ms, record.source_path, record.raw_id, file_mtime_ms, record.source_path),
+            "UPDATE raw_sessions SET file_mtime_ms = ? WHERE raw_id = ? AND file_mtime_ms IS NULL",
+            (file_mtime_ms, record.raw_id),
         )
 
     # ``raw_sessions`` and ``blob_refs`` are one durable acquisition contract.

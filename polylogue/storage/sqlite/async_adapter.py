@@ -29,12 +29,25 @@ class ArchiveReadAsyncAdapter:
         self._closed = False
         self._lock = Lock()
 
-    async def run(self, operation: Callable[[], T]) -> T:
+    async def run(
+        self,
+        operation: Callable[[], T],
+        *,
+        on_submitted: Callable[[], None] | None = None,
+        on_completed: Callable[[], None] | None = None,
+    ) -> T:
         """Await one already-admitted bounded submission with context vars.
 
         The read controller performs workload-class admission before this
         adapter receives work. This executor therefore contains only active
         reads, never scans blocked before admission.
+
+        ``on_submitted`` runs synchronously after the executor accepts the
+        operation. ``on_completed`` runs from the executor future's done
+        callback, including when a queued future is canceled by
+        ``shutdown(cancel_futures=True)``. Resource owners can therefore tie
+        release to the real executor future rather than to the cancellable
+        asyncio wrapper.
         """
         context = copy_context()
         with self._lock:
@@ -42,7 +55,12 @@ class ArchiveReadAsyncAdapter:
                 raise RuntimeError("archive read adapter is closed")
             executor = self._executor
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(executor, _run_in_context, context, operation)
+        concurrent_future = executor.submit(_run_in_context, context, operation)
+        if on_submitted is not None:
+            on_submitted()
+        if on_completed is not None:
+            concurrent_future.add_done_callback(lambda _future: on_completed())
+        return await asyncio.wrap_future(concurrent_future, loop=loop)
 
     def close(self) -> None:
         """Drain worker threads and reject subsequent submissions."""

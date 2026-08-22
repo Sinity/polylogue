@@ -17,8 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
-from typing_extensions import TypedDict
-
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     ArtifactKind,
@@ -67,11 +65,6 @@ _SCHEMA_REGISTRY: SchemaRegistry | None = None
 _SCHEMA_REGISTRY_LOCK = threading.Lock()
 
 
-class _TimestampUpdates(TypedDict, total=False):
-    created_at: str
-    updated_at: str
-
-
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -88,6 +81,7 @@ class SessionWritePayload:
     attachment_count: int = 0
     raw_id: str | None = None
     append_only: bool = False
+    fallback_timestamp: str | None = None
 
 
 @dataclass(slots=True)
@@ -211,13 +205,11 @@ def _normalized_session(
     *,
     fallback_timestamp: str | None,
 ) -> ParsedSession:
-    updates: _TimestampUpdates = {}
-    if convo.created_at is None and fallback_timestamp:
-        updates["created_at"] = fallback_timestamp
-    effective_created = updates.get("created_at", convo.created_at)
-    if convo.updated_at is None and isinstance(effective_created, str) and effective_created:
-        updates["updated_at"] = effective_created
-    return convo.model_copy(update=updates) if updates else convo
+    """Normalize timestamps using producer evidence before acquisition metadata."""
+    from polylogue.core.timestamp_authority import normalize_session_timestamps
+    from polylogue.sources.parsers.base import ParsedSession
+
+    return cast(ParsedSession, normalize_session_timestamps(convo, fallback_timestamp=fallback_timestamp))
 
 
 def _record_result(
@@ -758,6 +750,7 @@ def _materialize_parsed_sessions(
                     attachment_count=len(normalized_convo.attachments),
                     raw_id=context.raw_record.raw_id,
                     append_only=context.raw_record.source_index == -1,
+                    fallback_timestamp=context.fallback_timestamp,
                 )
             )
         except Exception as exc:

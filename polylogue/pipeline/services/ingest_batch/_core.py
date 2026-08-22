@@ -36,6 +36,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
@@ -76,10 +77,10 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveWriteOutcome,
     _message_content_hash,
     _normalized_message_native_id,
-    _timestamp_ms,
-    _write_repo_edges,
+    _repair_stale_session_observations,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -445,35 +446,11 @@ def _repair_stale_revision_observations(
     payload: SessionWritePayload,
 ) -> None:
     """Merge monotonic facts from a stale revision without replacing content."""
-    conn.execute(
-        "DELETE FROM insight_materialization WHERE session_id = ?",
-        (payload.session_id,),
-    )
-    candidate_created_at_ms = _timestamp_ms(payload.parsed_session.created_at)
-    if candidate_created_at_ms is None:
-        message_timestamps = [
-            timestamp_ms
-            for message in payload.parsed_session.messages
-            if (timestamp_ms := _timestamp_ms(message.timestamp)) is not None
-        ]
-        candidate_created_at_ms = min(message_timestamps, default=None)
-    if candidate_created_at_ms is not None:
-        conn.execute(
-            """
-            UPDATE sessions
-            SET created_at_ms = CASE
-                WHEN created_at_ms IS NULL THEN ?
-                ELSE MIN(created_at_ms, ?)
-            END
-            WHERE session_id = ?
-            """,
-            (candidate_created_at_ms, candidate_created_at_ms, payload.session_id),
-        )
-    _write_repo_edges(
+    _repair_stale_session_observations(
         conn,
         payload.session_id,
         payload.parsed_session,
-        update_session_observations=False,
+        fallback_timestamp=payload.fallback_timestamp,
     )
 
 
@@ -986,7 +963,9 @@ def _write_session(
             counts["skipped_session_events"] = len(payload.parsed_session.session_events) - outage_events
             return False, counts
 
-    incoming_freshness_ms = _timestamp_ms(session_to_write.updated_at) or _timestamp_ms(session_to_write.created_at)
+    _incoming_created_at_ms, incoming_freshness_ms = session_evidence_timestamps(session_to_write)
+    if incoming_freshness_ms is None:
+        incoming_freshness_ms = _incoming_created_at_ms
     if (
         not force_write
         and browser_precedence != "replace"
@@ -1123,6 +1102,7 @@ def _write_session(
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
 
+    writer_outcomes: list[ArchiveWriteOutcome] = []
     write_parsed_session_to_archive(
         conn,
         session_to_write,
@@ -1143,7 +1123,15 @@ def _write_session(
         # whale-session rewrite held the daemon writer >1h at 260GB of reads
         # with zero commits (2026-07-22) under per-row mode.
         bulk_fts=True,
+        write_outcome=writer_outcomes,
     )
+    if writer_outcomes and writer_outcomes[0].stale_skipped:
+        _repair_stale_revision_observations(conn, payload)
+        counts["skipped_sessions"] = 1
+        counts["skipped_messages"] = payload.message_count
+        counts["skipped_attachments"] = payload.attachment_count
+        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+        return False, counts
     conn.execute(
         "DELETE FROM insight_materialization WHERE session_id = ?",
         (payload.session_id,),

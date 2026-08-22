@@ -20,12 +20,14 @@ into a sequence of per-target executions that:
   in-flight failure count via the existing structured logger and via
   the returned :class:`BackfillOperation`.
 
-The cursor is intentionally a small opaque string (``"target:N"``)
-encoding the index of the *next* target to run. That gives us the AC
-requirements (resume, no duplicate work, no skipped work) without
-needing storage-layer schema changes — the cursor is kept either in
-memory by the caller, or persisted to a small JSON state file under
-the configured archive root.
+Persisted state records target identities in ``completed_targets``. New
+checkpoints use those successful identities as the sole work coordinate and
+retain ``cursor="target:0"`` only as a validated migration field for older
+states. On resume, the executor derives pending work from completed identities
+against the current catalog before any handler runs, so removing or reordering
+a target cannot shift work onto an unrelated target. An unverifiable
+historical state fails closed. The state is persisted to a small JSON file
+under the configured archive root.
 
 The state file is the only durable resume substrate this module
 introduces; it lives alongside the archive and is removed when the
@@ -40,7 +42,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from polylogue.config import Config
 from polylogue.core.enums import OperationStatus
@@ -52,7 +54,9 @@ if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.planner import (
+    MAX_FAILURE_SAMPLES,
     BackfillKind,
     BackfillOperation,
     BoundedFailureSamples,
@@ -79,10 +83,10 @@ logger = get_logger(__name__)
 #: Sentinel cursor value meaning "operation completed; nothing left to do."
 CURSOR_DONE: Final[str] = "done"
 
-#: Cursor prefix for the typed target-index encoding. The opaque string
-#: ``target:N`` means "the next target to run is index N in the resolved
-#: target tuple". Plain integers are reserved for future per-target
-#: progress (e.g. ``target:2:rowid:9182``).
+#: Cursor prefix retained for legacy state migration. New checkpoints write
+#: ``target:0`` and derive pending work from successful target identities;
+#: older ``target:N`` values are interpreted against their persisted target
+#: tuple only after strict validation.
 _CURSOR_TARGET_PREFIX: Final[str] = "target:"
 
 #: Subdirectory under :attr:`Config.archive_root` used for replay state
@@ -261,6 +265,41 @@ class UnsupportedReplayTargetError(RuntimeError):
     """Raised when a resolved target has no replay dispatch entry."""
 
 
+class InvalidReplayStateError(RuntimeError):
+    """Raised when persisted replay state cannot be trusted for resumption."""
+
+
+class IncompatibleReplayStateError(RuntimeError):
+    """Raised when persisted replay identities cannot map to current targets."""
+
+
+def _failed_replay_state(
+    *,
+    operation_id: str,
+    targets: tuple[str, ...],
+    scope_filter: MaintenanceScopeFilter,
+    message: str,
+    kind: str,
+) -> BackfillOperation:
+    """Build a typed failure without invoking a maintenance handler."""
+    started_at = datetime.now(timezone.utc).isoformat()
+    sample = FailureSample(kind=kind, locator=f"operation:{operation_id}", message=message)
+    return BackfillOperation(
+        operation_id=operation_id,
+        kind=BackfillKind.DERIVED_REBUILD,
+        targets=targets,
+        status=OperationStatus.FAILED,
+        progress=0.0,
+        started_at=started_at,
+        completed_at=started_at,
+        error=message,
+        scope=MaintenanceScope(targets=targets, filter=scope_filter),
+        reason=InvalidationReason.UNKNOWN,
+        failure_samples=BoundedFailureSamples.from_samples((sample,)),
+        metrics={"repaired_count": 0.0},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cursor encoding
 # ---------------------------------------------------------------------------
@@ -271,33 +310,141 @@ def _encode_cursor(next_target_index: int) -> str:
     return f"{_CURSOR_TARGET_PREFIX}{next_target_index}"
 
 
-def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
-    """Decode a cursor back into a next-target index.
+_INVALID_CURSOR_MESSAGE = "Persisted replay state has an invalid target cursor"
+_INCOMPATIBLE_CURSOR_MESSAGE = "Persisted replay state has an incompatible target cursor"
 
-    Returns ``0`` for an absent or empty cursor (fresh run) and
-    ``total_targets`` (i.e. "all done") for :data:`CURSOR_DONE`. Any
-    malformed cursor falls back to ``0`` so a corrupt state file can
-    never silently skip work.
+
+def _cursor_syntax_error(cursor: object) -> str | None:
+    """Validate explicit cursor syntax without requiring a target catalog.
+
+    Range validation is deliberately separate: an explicit cursor must be
+    rejected before target resolution, blocker checks, or state hydration, but
+    ``target:N`` cannot be range-checked until the current target set is known.
     """
-    if cursor is None or cursor == "":
-        return 0
+    if not isinstance(cursor, str) or cursor == "":
+        return _INVALID_CURSOR_MESSAGE
     if cursor == CURSOR_DONE:
-        return total_targets
+        return None
     if not cursor.startswith(_CURSOR_TARGET_PREFIX):
-        logger.warning("replay_cursor_unrecognized", cursor=cursor)
-        return 0
-    suffix = cursor[len(_CURSOR_TARGET_PREFIX) :]
-    head = suffix.split(":", 1)[0]
+        return _INVALID_CURSOR_MESSAGE
+    head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
     try:
         index = int(head)
     except ValueError:
-        logger.warning("replay_cursor_invalid_integer", cursor=cursor)
-        return 0
+        return _INVALID_CURSOR_MESSAGE
     if index < 0:
-        return 0
+        return _INVALID_CURSOR_MESSAGE
+    return None
+
+
+def _strict_cursor(cursor: str | None, *, total_targets: int) -> tuple[int | None, str | None]:
+    """Parse a cursor without converting corruption into a destructive run.
+
+    ``None`` is the in-memory marker for a genuinely new operation.  An empty
+    string, by contrast, is a persisted/explicit cursor value and therefore
+    malformed state; treating it as ``target:0`` would silently turn a corrupt
+    resume into a fresh replay.
+    """
+    if cursor is None:
+        return 0, None
+    syntax_error = _cursor_syntax_error(cursor)
+    if syntax_error is not None:
+        return None, syntax_error
+    assert isinstance(cursor, str)
+    if cursor == CURSOR_DONE:
+        return total_targets, None
+    head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
+    index = int(head)
     if index > total_targets:
-        return total_targets
-    return index
+        return None, _INCOMPATIBLE_CURSOR_MESSAGE
+    return index, None
+
+
+def _resume_pending_specs(
+    specs: tuple[MaintenanceTargetSpec, ...],
+    persisted: JSONDocument,
+    *,
+    cursor_override: str | None = None,
+) -> tuple[tuple[MaintenanceTargetSpec, ...] | None, tuple[str, ...], str | None]:
+    """Map persisted completion identities onto the current target catalog."""
+    raw_targets = persisted.get("targets")
+    if not isinstance(raw_targets, list) or not all(isinstance(name, str) for name in raw_targets):
+        return None, (), "Persisted replay state has no valid target identity list"
+    old_targets = cast(tuple[str, ...], tuple(raw_targets))
+    if len(set(old_targets)) != len(old_targets):
+        return None, (), "Persisted replay state has duplicate target identities"
+
+    has_completion_identities = "completed_targets" in persisted
+    completed_raw = persisted.get("completed_targets")
+    if has_completion_identities:
+        if not isinstance(completed_raw, list) or not all(isinstance(name, str) for name in completed_raw):
+            return None, (), "Persisted replay state has invalid completed target identities"
+        completed_order = cast(tuple[str, ...], tuple(completed_raw))
+        if len(set(completed_order)) != len(completed_order) or not set(completed_order) <= set(old_targets):
+            return None, (), "Persisted replay state has incompatible completed target identities"
+        completed = set(completed_order)
+        legacy_pending = tuple(name for name in old_targets if name not in completed)
+        if cursor_override is None and "cursor" not in persisted:
+            return None, (), "Persisted replay state has an invalid target cursor"
+        cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
+        if not isinstance(cursor, str):
+            return None, (), "Persisted replay state has an invalid target cursor"
+        _, cursor_error = _strict_cursor(cursor, total_targets=len(legacy_pending))
+        if cursor_error is not None:
+            return None, (), cursor_error
+        # New checkpoints use identities as the sole coordinate. The cursor is
+        # retained only as a validated migration field and never advances more
+        # identities after filtering.
+        return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
+
+    # Legacy checkpoints did not persist completed identities.  Successful
+    # result records are authoritative when available; the positional cursor
+    # is retained only for the older in-progress form.  A legacy ``done``
+    # cursor is not evidence that every attempted target succeeded (a failed
+    # target used to advance it), so it must fail closed unless success
+    # records identify the completed work.
+    raw_results = persisted.get("results", [])
+    successful_from_results: list[str] = []
+    if isinstance(raw_results, list):
+        for result in raw_results:
+            if not isinstance(result, dict):
+                continue
+            name = result.get("name")
+            if isinstance(name, str) and result.get("success") is True and name in old_targets:
+                successful_from_results.append(name)
+    completed_order = tuple(dict.fromkeys(successful_from_results))
+    cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
+    if cursor_override is None and "cursor" not in persisted:
+        return None, (), "Persisted replay state has an invalid target cursor"
+    if not isinstance(cursor, str):
+        return None, (), "Persisted replay state has an invalid target cursor"
+    if cursor == CURSOR_DONE:
+        if not completed_order:
+            return None, (), "Legacy replay state has no authoritative successful targets"
+        completed = set(completed_order)
+        return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
+    index, cursor_error = _strict_cursor(cursor, total_targets=len(old_targets))
+    if cursor_error is not None or index is None:
+        return None, (), cursor_error or "Persisted replay state has no valid target cursor"
+    # A legacy failure sample proves that the positional prefix may include a
+    # failed attempt. Without authoritative success records, inferring that
+    # prefix would silently skip retryable work, so fail closed.
+    raw_failure_records = persisted.get("failure_samples")
+    if raw_failure_records is None and isinstance(persisted.get("operation"), dict):
+        nested_failures = cast(JSONDocument, persisted["operation"]).get("failure_samples")
+        if isinstance(nested_failures, dict):
+            raw_failure_records = nested_failures.get("samples", [])
+        else:
+            raw_failure_records = nested_failures
+    if not completed_order and index > 0 and raw_failure_records:
+        return None, (), "Legacy replay state has failure samples but no authoritative successful targets"
+    # A non-terminal positional cursor remains compatible with historical
+    # interrupted checkpoints. Prefer explicit successful records, which also
+    # handles a cursor that was advanced past a reported failure.
+    if not completed_order:
+        completed_order = old_targets[:index]
+    completed = set(completed_order)
+    return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +458,8 @@ def _state_dir(config: Config) -> Path:
 
 def state_path_for(config: Config, operation_id: str) -> Path:
     """Path of the JSON state file for ``operation_id``."""
-    return _state_dir(config) / f"{operation_id}.json"
+    safe_operation_id = validate_operation_id(operation_id)
+    return _state_dir(config) / f"{safe_operation_id}.json"
 
 
 def _write_state(path: Path, payload: JSONDocument) -> None:
@@ -322,18 +470,31 @@ def _write_state(path: Path, payload: JSONDocument) -> None:
 
 
 def load_state(config: Config, operation_id: str) -> JSONDocument | None:
-    """Load a previously persisted operation state, or ``None``."""
+    """Load a previously persisted operation state, or ``None``.
+
+    A present but malformed state is distinct from an absent state. Callers
+    must fail closed rather than treating corruption as a fresh operation.
+    """
     path = state_path_for(config, operation_id)
     if not path.exists():
         return None
-    raw = loads(path.read_text())
+    try:
+        raw = loads(path.read_text())
+    except Exception as exc:
+        logger.warning(
+            "replay_state_unparseable",
+            operation_id=operation_id,
+            path=str(path),
+            error=str(exc),
+        )
+        raise InvalidReplayStateError("Persisted replay state is not a JSON object") from exc
     if not isinstance(raw, dict):
         logger.warning(
             "replay_state_unparseable",
             operation_id=operation_id,
             path=str(path),
         )
-        return None
+        raise InvalidReplayStateError("Persisted replay state is not a JSON object")
     return raw
 
 
@@ -406,10 +567,18 @@ class _ReplayState:
 
     operation_id: str
     targets: tuple[str, ...]
+    target_history: tuple[str, ...]
     cursor: str
+    started_at: str
+    completed_targets: list[str] = field(default_factory=list)
+    attempted_count: int = 0
     results: list[JSONDocument] = field(default_factory=list)
     failures: list[FailureSample] = field(default_factory=list)
+    failures_truncated: bool = False
     repaired_total: int = 0
+    metrics: dict[str, float] = field(default_factory=dict)
+    metric_baseline_results: int = 0
+    scope_filter: MaintenanceScopeFilter = field(default_factory=MaintenanceScopeFilter)
 
     def progress_for(self, target: str, processed: int) -> ReplayProgress:
         return ReplayProgress(
@@ -428,13 +597,14 @@ def _numeric_metric(value: object) -> float | None:
     return None
 
 
-def _operation_metrics(state: _ReplayState) -> dict[str, float]:
-    metrics = {"repaired_count": float(state.repaired_total)}
-    for result in state.results:
-        result_metrics = result.get("metrics")
-        if not isinstance(result_metrics, dict):
+def _aggregate_result_metrics(results: list[JSONDocument]) -> dict[str, float]:
+    """Aggregate numeric metrics from repair result rows."""
+    metrics: dict[str, float] = {}
+    for result in results:
+        raw = result.get("metrics")
+        if not isinstance(raw, dict):
             continue
-        for key, value in result_metrics.items():
+        for key, value in raw.items():
             metric_value = _numeric_metric(value)
             if metric_value is None:
                 continue
@@ -444,6 +614,155 @@ def _operation_metrics(state: _ReplayState) -> dict[str, float]:
             else:
                 metrics[metric_key] = metrics.get(metric_key, 0.0) + metric_value
     return metrics
+
+
+def _operation_metrics(state: _ReplayState) -> dict[str, float]:
+    # Compute metrics only for results appended after hydration. Persisted
+    # metrics already aggregate the earlier rows, so adding those rows again
+    # would double-count them.
+    result_metrics = _aggregate_result_metrics(state.results[state.metric_baseline_results :])
+
+    metrics = dict(state.metrics)
+
+    for key, value in result_metrics.items():
+        if key.endswith("_max_blob_bytes"):
+            metrics[key] = max(metrics.get(key, 0.0), value)
+        else:
+            metrics[key] = metrics.get(key, 0.0) + value
+    metrics["repaired_count"] = float(state.repaired_total)
+    return metrics
+
+
+def _hydrate_persisted_receipt(
+    persisted: JSONDocument,
+) -> tuple[str | None, list[JSONDocument], list[FailureSample], bool, int, dict[str, float], str | None]:
+    """Validate and hydrate cumulative receipt fields from a state file."""
+    started_at = persisted.get("started_at")
+    operation = persisted.get("operation")
+    if started_at is None and isinstance(operation, dict):
+        started_at = operation.get("started_at")
+    if started_at is not None and not isinstance(started_at, str):
+        return None, [], [], False, 0, {}, "Persisted replay state has invalid started_at"
+
+    raw_results = persisted.get("results", [])
+    if not isinstance(raw_results, list) or not all(isinstance(item, dict) for item in raw_results):
+        return None, [], [], False, 0, {}, "Persisted replay state has invalid results"
+    results = cast(list[JSONDocument], raw_results)
+
+    raw_failures = persisted.get("failure_samples")
+    failures_truncated = False
+    if isinstance(operation, dict):
+        nested = operation.get("failure_samples")
+        if isinstance(nested, dict):
+            failures_truncated = nested.get("truncated") is True
+            if raw_failures is None:
+                raw_failures = nested.get("samples", [])
+    if raw_failures is None:
+        raw_failures = []
+    if not isinstance(raw_failures, list):
+        return None, [], [], False, 0, {}, "Persisted replay state has invalid failure samples"
+    failures: list[FailureSample] = []
+    for item in raw_failures:
+        if not isinstance(item, dict) or not all(
+            isinstance(item.get(key), str) for key in ("kind", "locator", "message")
+        ):
+            return None, [], [], False, 0, {}, "Persisted replay state has invalid failure samples"
+        failures.append(
+            FailureSample(
+                kind=cast(str, item["kind"]),
+                locator=cast(str, item["locator"]),
+                message=cast(str, item["message"]),
+            )
+        )
+    failures_truncated = failures_truncated or len(failures) > MAX_FAILURE_SAMPLES
+    failures = list(BoundedFailureSamples.from_samples(failures).samples)
+
+    raw_repaired = persisted.get("repaired_count", 0)
+    if not isinstance(raw_repaired, (int, float)) or isinstance(raw_repaired, bool):
+        return None, [], [], False, 0, {}, "Persisted replay state has invalid repaired count"
+    raw_metrics = persisted.get("metrics")
+    # Older registry snapshots may carry an empty top-level metrics object
+    # while the nested operation snapshot has the cumulative aggregate.
+    if (raw_metrics is None or raw_metrics == {}) and isinstance(operation, dict):
+        nested_metrics = operation.get("metrics")
+        if nested_metrics is not None:
+            raw_metrics = nested_metrics
+    if raw_metrics is None:
+        raw_metrics = {}
+    if not isinstance(raw_metrics, dict):
+        return None, [], [], False, 0, {}, "Persisted replay state has invalid metrics"
+    metrics: dict[str, float] = {}
+    for key, value in raw_metrics.items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None, [], [], False, 0, {}, "Persisted replay state has invalid metrics"
+        metrics[str(key)] = float(value)
+    return started_at, results, failures, failures_truncated, int(raw_repaired), metrics, None
+
+
+def _has_persisted_metric_aggregate(persisted: JSONDocument) -> bool:
+    """Return whether persisted metrics are an explicit aggregate.
+
+    Older checkpoints omitted the aggregate while still retaining metric-bearing
+    result rows.  An explicit ``metrics: {}``, however, means the writer
+    intentionally persisted an empty aggregate and must not be reconstructed
+    from those rows.
+    """
+    marker = object()
+    raw_metrics: object = persisted.get("metrics", marker)
+    operation = persisted.get("operation")
+    if (raw_metrics is marker or raw_metrics == {}) and isinstance(operation, dict):
+        nested_metrics = operation.get("metrics", marker)
+        if nested_metrics is not marker and nested_metrics is not None:
+            raw_metrics = nested_metrics
+    return raw_metrics is not marker and raw_metrics is not None
+
+
+def _scope_identity(scope_filter: MaintenanceScopeFilter) -> tuple[object, ...]:
+    """Return a semantic, order-independent scope identity."""
+    payload = scope_filter.model_dump(mode="python", exclude_none=False)
+    session_ids = payload.get("session_ids")
+    if session_ids is not None:
+        payload["session_ids"] = tuple(sorted(session_ids))
+    for key, value in payload.items():
+        if isinstance(value, tuple) and len(value) == 2:
+            normalized: list[object] = []
+            for item in value:
+                if isinstance(item, datetime):
+                    instant = item if item.tzinfo is not None else item.replace(tzinfo=timezone.utc)
+                    normalized.append(instant.timestamp())
+                else:
+                    normalized.append(item)
+            payload[key] = tuple(normalized)
+        elif isinstance(value, Path):
+            payload[key] = str(value)
+    return tuple((key, payload[key]) for key in sorted(payload))
+
+
+def _validate_replay_context(
+    persisted: JSONDocument,
+    *,
+    dry_run: bool,
+    scope_filter: MaintenanceScopeFilter,
+) -> str | None:
+    """Reject a resume whose execution authority changed mid-operation."""
+    persisted_mode = persisted.get("dry_run")
+    if persisted_mode is not None and (not isinstance(persisted_mode, bool) or persisted_mode != dry_run):
+        return "Persisted replay execution mode does not match the requested mode"
+
+    persisted_scope = persisted.get("scope_filter")
+    if persisted_scope is None:
+        if not scope_filter.is_empty():
+            return "Persisted replay state has no scope filter for a scoped resume"
+        return None
+    if not isinstance(persisted_scope, dict):
+        return "Persisted replay state has invalid scope filter"
+    try:
+        stored_filter = MaintenanceScopeFilter.from_dict(persisted_scope)
+    except Exception as exc:
+        return f"Persisted replay state has invalid scope filter: {exc}"
+    if _scope_identity(stored_filter) != _scope_identity(scope_filter):
+        return "Persisted replay scope does not match the requested scope"
+    return None
 
 
 def execute_replay(
@@ -498,7 +817,24 @@ def execute_replay(
         partial results so callers can resume from the cursor.
     """
 
-    op_id = operation_id or str(uuid.uuid4())
+    op_id = str(uuid.uuid4()) if operation_id is None else validate_operation_id(operation_id)
+    requested_resume_cursor = resume_cursor
+    effective_filter = scope_filter or MaintenanceScopeFilter()
+
+    # Explicit cursors are request validation, not resumable state. Reject
+    # malformed values before catalog resolution, state hydration, and the
+    # offline blocker check so daemon state can never change their typed error
+    # or cause a state-file write.
+    cursor_syntax_error = _cursor_syntax_error(resume_cursor) if resume_cursor is not None else None
+    if cursor_syntax_error is not None:
+        return _failed_replay_state(
+            operation_id=op_id,
+            targets=(),
+            scope_filter=effective_filter,
+            message=cursor_syntax_error,
+            kind="InvalidReplayCursor",
+        )
+
     catalog = build_maintenance_target_catalog()
     # Empty ``targets`` means "no explicit scope" and expands to the
     # documented run-all set (every catalog target); an explicit but
@@ -507,7 +843,6 @@ def execute_replay(
     # resolve to zero targets and report ``status=failed``).
     resolved_specs = catalog.resolve_or_default(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
-    effective_filter = scope_filter or MaintenanceScopeFilter()
 
     if not resolved_names:
         return BackfillOperation(
@@ -518,6 +853,134 @@ def execute_replay(
             error="No valid targets resolved from input",
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
+    if resume_cursor is not None and not isinstance(resume_cursor, str):
+        return _failed_replay_state(
+            operation_id=op_id,
+            targets=resolved_names,
+            scope_filter=effective_filter,
+            message="Persisted replay state has an invalid target cursor",
+            kind="InvalidReplayCursor",
+        )
+
+    # Load persisted identity metadata before any execution gate. A cursor
+    # written against a retired catalog must be remapped or rejected before a
+    # handler can observe the request.
+    explicit_resume = resume_cursor is not None
+    persisted: JSONDocument | None = None
+    if persist_state:
+        try:
+            persisted = load_state(config, op_id)
+        except InvalidReplayStateError as exc:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=str(exc),
+                kind="InvalidReplayState",
+            )
+
+    pending_specs = resolved_specs
+    completed_targets: tuple[str, ...] = ()
+    target_history = resolved_names
+    receipt_started_at: str | None = None
+    prior_results: list[JSONDocument] = []
+    prior_failures: list[FailureSample] = []
+    prior_failures_truncated = False
+    prior_repaired_total = 0
+    prior_metrics: dict[str, float] = {}
+    prior_metrics_are_authoritative = True
+    if persisted is not None:
+        prior_metrics_are_authoritative = _has_persisted_metric_aggregate(persisted)
+        (
+            receipt_started_at,
+            prior_results,
+            prior_failures,
+            prior_failures_truncated,
+            prior_repaired_total,
+            prior_metrics,
+            receipt_error,
+        ) = _hydrate_persisted_receipt(persisted)
+        if receipt_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=receipt_error,
+                kind="InvalidReplayState",
+            )
+        context_error = _validate_replay_context(
+            persisted,
+            dry_run=dry_run,
+            scope_filter=effective_filter,
+        )
+        if context_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=context_error,
+                kind="ReplayContextMismatch",
+            )
+
+    target_history = resolved_names
+    if persisted is not None:
+        if "targets" not in persisted:
+            if not explicit_resume:
+                return _failed_replay_state(
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    scope_filter=effective_filter,
+                    message="Persisted replay state has no valid target identity list",
+                    kind="IncompatibleReplayState",
+                )
+        else:
+            raw_history = persisted.get("targets")
+            if isinstance(raw_history, list) and all(isinstance(name, str) for name in raw_history):
+                history_names = cast(list[str], raw_history)
+                target_history = tuple(dict.fromkeys((*history_names, *resolved_names)))
+            cursor_value = resume_cursor if explicit_resume else persisted.get("cursor")
+            mapped_pending, completed_targets, resume_error = _resume_pending_specs(
+                resolved_specs,
+                persisted,
+                cursor_override=cursor_value if isinstance(cursor_value, str) else None,
+            )
+            if resume_error is not None or mapped_pending is None:
+                message = resume_error or "Persisted replay state is incompatible with the current target catalog"
+                logger.error(
+                    "replay_state_incompatible",
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    error=message,
+                )
+                return _failed_replay_state(
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    scope_filter=effective_filter,
+                    message=message,
+                    kind="InvalidReplayCursor" if "cursor" in message.lower() else "IncompatibleReplayState",
+                )
+            assert mapped_pending is not None
+            pending_specs = mapped_pending
+            # The cursor has been translated by identity. The remaining tuple
+            # is a fresh positional work list for this run.
+            resume_cursor = _encode_cursor(0)
+    elif not explicit_resume:
+        resume_cursor = None
+
+    # A state carrying target identities validates an explicit cursor against
+    # that historical coordinate system in ``_resume_pending_specs`` above.
+    # For a fresh operation (or a legacy state without identities), validate
+    # its range here, still before the offline blocker can produce a receipt.
+    if requested_resume_cursor is not None and (persisted is None or "targets" not in persisted):
+        _, cursor_range_error = _strict_cursor(requested_resume_cursor, total_targets=len(resolved_names))
+        if cursor_range_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=cursor_range_error,
+                kind="InvalidReplayCursor",
+            )
 
     blockers = offline_maintenance_blockers(
         config,
@@ -526,7 +989,7 @@ def execute_replay(
         dry_run=dry_run,
         targets=resolved_names,
     )
-    if blockers:
+    if blockers and pending_specs:
         samples = tuple(
             FailureSample(
                 kind="OfflineMaintenanceBlocked",
@@ -535,38 +998,108 @@ def execute_replay(
             )
             for result in blockers
         )
-        started_at = datetime.now(timezone.utc).isoformat()
-        return BackfillOperation(
+        started_at = receipt_started_at or datetime.now(timezone.utc).isoformat()
+        blocker_state = _ReplayState(
+            operation_id=op_id,
+            targets=resolved_names,
+            target_history=target_history,
+            cursor=_encode_cursor(0),
+            started_at=started_at,
+            completed_targets=list(completed_targets),
+            attempted_count=sum(name in resolved_names for name in completed_targets),
+            results=[*prior_results, *(result.to_dict() for result in blockers)],
+            failures=[*prior_failures, *samples][:MAX_FAILURE_SAMPLES],
+            failures_truncated=prior_failures_truncated or len(prior_failures) + len(samples) > MAX_FAILURE_SAMPLES,
+            repaired_total=prior_repaired_total + sum(result.repaired_count for result in blockers),
+            metrics=prior_metrics,
+            metric_baseline_results=len(prior_results) if prior_metrics_are_authoritative else 0,
+            scope_filter=effective_filter,
+        )
+        blocker_metrics = _operation_metrics(blocker_state)
+        blocker_receipt = BackfillOperation(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
             status=OperationStatus.FAILED,
-            progress=0.0,
+            progress=sum(name in completed_targets for name in resolved_names) / len(resolved_names),
             started_at=started_at,
-            completed_at=started_at,
-            affected_rows=0,
-            results=[result.to_dict() for result in blockers],
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            affected_rows=blocker_state.repaired_total,
+            results=blocker_state.results,
             scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
             reason=InvalidationReason.UNKNOWN,
-            failure_samples=BoundedFailureSamples.from_samples(samples),
-            metrics={"repaired_count": 0.0},
+            failure_samples=BoundedFailureSamples(
+                samples=tuple(blocker_state.failures),
+                truncated=blocker_state.failures_truncated,
+            ),
+            metrics=blocker_metrics,
         )
+        if persist_state:
+            _checkpoint_state(
+                config=config,
+                operation_id=op_id,
+                state=blocker_state,
+                started_at=started_at,
+                dry_run=dry_run,
+                scope_filter=effective_filter,
+                operation_snapshot=blocker_receipt,
+            )
+        return blocker_receipt
 
-    if resume_cursor is None and persist_state:
-        persisted = load_state(config, op_id)
-        if persisted is not None:
-            cursor_value = persisted.get("cursor")
-            if isinstance(cursor_value, str):
-                resume_cursor = cursor_value
-
-    start_index = _decode_cursor(resume_cursor, total_targets=len(resolved_names))
+    start_index, cursor_error = _strict_cursor(resume_cursor, total_targets=len(pending_specs))
+    if cursor_error is not None or start_index is None:
+        return _failed_replay_state(
+            operation_id=op_id,
+            targets=resolved_names,
+            scope_filter=effective_filter,
+            message=cursor_error or "Persisted replay state has an invalid target cursor",
+            kind="InvalidReplayCursor",
+        )
+    if not completed_targets and start_index:
+        completed_targets = tuple(spec.name for spec in pending_specs[:start_index])
+    started_at = receipt_started_at or datetime.now(timezone.utc).isoformat()
     state = _ReplayState(
         operation_id=op_id,
         targets=resolved_names,
-        cursor=_encode_cursor(start_index),
+        target_history=target_history,
+        cursor=_encode_cursor(0),
+        started_at=started_at,
+        completed_targets=list(completed_targets),
+        attempted_count=sum(name in resolved_names for name in completed_targets),
+        results=prior_results,
+        failures=prior_failures,
+        failures_truncated=prior_failures_truncated,
+        repaired_total=prior_repaired_total,
+        metrics=prior_metrics,
+        metric_baseline_results=len(prior_results) if prior_metrics_are_authoritative else 0,
+        scope_filter=effective_filter,
     )
 
-    started_at = datetime.now(timezone.utc).isoformat()
+    if not pending_specs:
+        state.cursor = CURSOR_DONE
+        completed_at = datetime.now(timezone.utc).isoformat()
+        final = BackfillOperation(
+            operation_id=op_id,
+            kind=BackfillKind.DERIVED_REBUILD,
+            targets=resolved_names,
+            status=OperationStatus.COMPLETED,
+            progress=1.0,
+            started_at=started_at,
+            completed_at=completed_at,
+            affected_rows=state.repaired_total,
+            results=state.results,
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            resume_cursor=CURSOR_DONE,
+            failure_samples=BoundedFailureSamples(
+                samples=tuple(state.failures[:MAX_FAILURE_SAMPLES]),
+                truncated=state.failures_truncated or len(state.failures) > MAX_FAILURE_SAMPLES,
+            ),
+            metrics=_operation_metrics(state),
+        )
+        if persist_state:
+            clear_state(config, op_id)
+        return final
+
     logger.info(
         "replay_starting",
         operation_id=op_id,
@@ -575,10 +1108,10 @@ def execute_replay(
         dry_run=dry_run,
     )
 
-    for index in range(start_index, len(resolved_names)):
-        spec = resolved_specs[index]
+    for index in range(start_index, len(pending_specs)):
+        spec = pending_specs[index]
         target_name = spec.name
-        _run_one_target(
+        succeeded = _run_one_target(
             state,
             spec,
             config,
@@ -586,14 +1119,20 @@ def execute_replay(
             scope_filter=effective_filter,
             progress_callback=progress_callback,
             target_total=len(resolved_names),
-            processed_before_target=index - start_index,
+            processed_before_target=state.attempted_count,
         )
-        # Advance the cursor *after* the target completes (success or
-        # failure). On failure we still advance so the next resume does
-        # not re-execute the same target and stack duplicate failure
-        # samples; the bounded sample list already records the problem.
-        next_index = index + 1
-        state.cursor = CURSOR_DONE if next_index == len(resolved_names) else _encode_cursor(next_index)
+        # Every handler invocation, including a raised or reported failure, is
+        # a fully attempted target for consumer-visible progress.
+        state.attempted_count += 1
+        # Successful identities are authoritative. Failed targets remain in
+        # the pending set for the next invocation under this operation id.
+        if succeeded and target_name not in state.completed_targets:
+            state.completed_targets.append(target_name)
+        # New checkpoints always use identity completion as the coordinate.
+        # target:0 is retained only as a validated legacy field.
+        state.cursor = (
+            CURSOR_DONE if all(name in state.completed_targets for name in resolved_names) else _encode_cursor(0)
+        )
         if persist_state:
             _checkpoint_state(
                 config=config,
@@ -601,15 +1140,22 @@ def execute_replay(
                 state=state,
                 started_at=started_at,
                 dry_run=dry_run,
+                scope_filter=effective_filter,
             )
         if progress_callback is not None:
-            progress_callback(state.progress_for(target_name, processed=next_index - start_index))
+            progress_callback(
+                state.progress_for(
+                    target_name,
+                    processed=state.attempted_count,
+                )
+            )
 
     completed_at = datetime.now(timezone.utc).isoformat()
-    successful = not state.failures
+    successful = all(name in state.completed_targets for name in resolved_names)
     status = OperationStatus.COMPLETED if successful else OperationStatus.FAILED
 
-    progress = (len(resolved_names) - start_index) / len(resolved_names)
+    completed_current = sum(name in state.completed_targets for name in resolved_names)
+    progress = completed_current / len(resolved_names) if resolved_names else 1.0
     logger.info(
         "replay_completed",
         operation_id=op_id,
@@ -631,9 +1177,12 @@ def execute_replay(
         affected_rows=state.repaired_total,
         results=state.results,
         scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
-        reason=InvalidationReason.UNKNOWN if state.failures else None,
+        reason=InvalidationReason.UNKNOWN if not successful else None,
         resume_cursor=state.cursor,
-        failure_samples=BoundedFailureSamples.from_samples(state.failures),
+        failure_samples=BoundedFailureSamples(
+            samples=tuple(state.failures[:MAX_FAILURE_SAMPLES]),
+            truncated=state.failures_truncated or len(state.failures) > MAX_FAILURE_SAMPLES,
+        ),
         metrics=_operation_metrics(state),
     )
 
@@ -652,6 +1201,7 @@ def execute_replay(
                 state=state,
                 started_at=started_at,
                 dry_run=dry_run,
+                scope_filter=effective_filter,
                 operation_snapshot=final,
             )
 
@@ -676,6 +1226,11 @@ def _record_failure(
     """
 
     state.failures.append(sample)
+    # Keep the persisted and in-memory envelope bounded across retries, not
+    # merely at final receipt serialization time.
+    if len(state.failures) > MAX_FAILURE_SAMPLES:
+        state.failures_truncated = True
+        del state.failures[MAX_FAILURE_SAMPLES:]
     route_failure_sample(
         sample,
         operation_id=state.operation_id,
@@ -694,7 +1249,7 @@ def _run_one_target(
     progress_callback: ProgressCallback | None,
     target_total: int,
     processed_before_target: int,
-) -> None:
+) -> bool:
     """Execute one target, recording success or a typed failure sample."""
 
     target_name = spec.name
@@ -716,7 +1271,7 @@ def _run_one_target(
             operation_id=state.operation_id,
             target=target_name,
         )
-        return
+        return False
 
     def _emit_target_progress(amount: int, desc: str | None = None) -> None:
         if progress_callback is None:
@@ -764,7 +1319,7 @@ def _run_one_target(
             target=target_name,
             error=str(exc),
         )
-        return
+        return False
 
     state.results.append(result.to_dict())
     state.repaired_total += result.repaired_count
@@ -785,6 +1340,7 @@ def _run_one_target(
             target=target_name,
             config=config,
         )
+    return result.success
 
 
 def _checkpoint_state(
@@ -794,6 +1350,7 @@ def _checkpoint_state(
     state: _ReplayState,
     started_at: str,
     dry_run: bool,
+    scope_filter: MaintenanceScopeFilter,
     operation_snapshot: BackfillOperation | None = None,
 ) -> None:
     """Persist the running operation state so a kill-mid-run can resume.
@@ -818,14 +1375,19 @@ def _checkpoint_state(
     payload = json_document(
         {
             "operation_id": operation_id,
-            "targets": list(state.targets),
+            "targets": list(state.target_history),
+            "resolved_targets": list(state.targets),
+            "completed_targets": list(state.completed_targets),
             "cursor": state.cursor,
             "started_at": started_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "dry_run": dry_run,
+            "scope_filter": scope_filter.to_dict(),
             "repaired_count": state.repaired_total,
             "failure_count": len(state.failures),
+            "failure_samples": [sample.to_dict() for sample in state.failures],
             "results": list(state.results),
+            "metrics": _operation_metrics(state),
             "operation": snapshot.to_dict(),
         }
     )
@@ -852,13 +1414,14 @@ def _build_in_progress_snapshot(
     total = len(state.targets)
     cursor = state.cursor
     if cursor == CURSOR_DONE:
-        status = OperationStatus.FAILED if state.failures else OperationStatus.COMPLETED
+        all_completed = all(name in state.completed_targets for name in state.targets)
+        status = OperationStatus.COMPLETED if all_completed else OperationStatus.FAILED
         progress = 1.0
         completed_at: str | None = datetime.now(timezone.utc).isoformat()
     else:
         status = OperationStatus.RUNNING
-        processed = _decode_cursor(cursor, total_targets=total)
-        progress = processed / total if total > 0 else 0.0
+        processed = sum(name in state.completed_targets for name in state.targets)
+        progress = min(processed / total, 1.0) if total > 0 else 0.0
         completed_at = None
 
     return BackfillOperation(
@@ -871,9 +1434,12 @@ def _build_in_progress_snapshot(
         completed_at=completed_at,
         affected_rows=state.repaired_total,
         results=list(state.results),
-        scope=MaintenanceScope(targets=state.targets),
+        scope=MaintenanceScope(targets=state.targets, filter=state.scope_filter),
         resume_cursor=cursor,
-        failure_samples=BoundedFailureSamples.from_samples(state.failures),
+        failure_samples=BoundedFailureSamples(
+            samples=tuple(state.failures[:MAX_FAILURE_SAMPLES]),
+            truncated=state.failures_truncated or len(state.failures) > MAX_FAILURE_SAMPLES,
+        ),
         metrics=_operation_metrics(state),
     )
 
@@ -884,6 +1450,8 @@ __all__ = [
     "MaintenanceScopeFilter",
     "ProgressCallback",
     "ReplayProgress",
+    "InvalidReplayStateError",
+    "IncompatibleReplayStateError",
     "UnsupportedReplayTargetError",
     "clear_state",
     "execute_replay",

@@ -1,0 +1,132 @@
+{
+  "formula": "mol-polylogue-thematic-batch",
+  "description": "Persistent 3–5-Bead thematic implementation batch. Beads retain scope authority; this molecule tracks execution/verification/merge/disposition.",
+  "version": 1,
+  "type": "workflow",
+  "phase": "liquid",
+  "pour": true,
+  "vars": {
+    "batch": {
+      "description": "Short batch name",
+      "required": true,
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$"
+    },
+    "workstream": {
+      "description": "Owning workstream label suffix",
+      "required": true,
+      "enum": ["a", "b", "c", "d", "e", "f", "g", "h"]
+    },
+    "beads": {
+      "description": "Comma-separated authoritative member Bead ids (exactly 3-5, all in the labelled workstream)",
+      "required": true
+    },
+    "branch": {
+      "description": "Feature branch name",
+      "required": true
+    },
+    "verification": {
+      "description": "Exact focused and terminal verification commands",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "prepare",
+      "title": "Prepare {{batch}} scope and lane",
+      "type": "task",
+      "priority": 0,
+      "labels": ["campaign:reindex-2026", "campaign-role:batch", "timing:execution"],
+      "metadata": {
+        "campaign_id": "reindex-2026",
+        "formula": "mol-polylogue-thematic-batch",
+        "formula_version": 1,
+        "molecule_type": "workflow",
+        "pour_origin": "native-formula",
+        "campaign_role": "batch",
+        "campaign_timing": "execution",
+        "stage": "prepare"
+      },
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nNATIVE_BATCH_BINDING_V1 branch={{branch}}\nRead every member Bead in full; run bead-cluster; verify file ownership, blockers, non-goals, worktree isolation, and exact acceptance matrix. Do not generate a Markdown packet."
+    },
+    {
+      "id": "implement",
+      "title": "Implement {{batch}} completely",
+      "type": "task",
+      "priority": 0,
+      "needs": ["prepare"],
+      "labels": ["campaign:reindex-2026", "campaign-role:batch", "timing:execution"],
+      "metadata": {
+        "campaign_id": "reindex-2026",
+        "formula": "mol-polylogue-thematic-batch",
+        "formula_version": 1,
+        "molecule_type": "workflow",
+        "pour_origin": "native-formula",
+        "campaign_role": "batch",
+        "campaign_timing": "execution",
+        "stage": "implement"
+      },
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nNATIVE_BATCH_BINDING_V1 branch={{branch}}\nImplement the coherent thematic batch. Fix missed details on the same branch; member Beads remain the scope authority."
+    },
+    {
+      "id": "verify",
+      "title": "Adversarially verify {{batch}}",
+      "type": "task",
+      "priority": 0,
+      "needs": ["implement"],
+      "labels": ["campaign:reindex-2026", "campaign-role:batch", "timing:execution"],
+      "metadata": {
+        "campaign_id": "reindex-2026",
+        "formula": "mol-polylogue-thematic-batch",
+        "formula_version": 1,
+        "molecule_type": "workflow",
+        "pour_origin": "native-formula",
+        "campaign_role": "batch",
+        "campaign_timing": "execution",
+        "stage": "verify"
+      },
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nNATIVE_BATCH_BINDING_V1 verification={{verification}}\nRun the exact focused commands, controlled mutations/red twins, and terminal managed verification. Record receipts and resolve every substantive finding on the same branch."
+    },
+    {
+      "id": "merge",
+      "title": "Merge {{batch}} through the exact-head gate",
+      "type": "task",
+      "priority": 0,
+      "needs": ["verify"],
+      "labels": ["campaign:reindex-2026", "campaign-role:batch", "timing:execution"],
+      "metadata": {
+        "campaign_id": "reindex-2026",
+        "formula": "mol-polylogue-thematic-batch",
+        "formula_version": 1,
+        "molecule_type": "workflow",
+        "pour_origin": "native-formula",
+        "campaign_role": "batch",
+        "campaign_timing": "execution",
+        "stage": "merge"
+      },
+      "gate": {
+        "type": "human",
+        "await_id": "operator-merge-authorization"
+      },
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nPublish a truthful pr-scope carrier for all mutated Beads, clear automated review, and merge through `devtools workspace merge`. One merge-ready train maximum."
+    },
+    {
+      "id": "dispositions",
+      "title": "Execute {{batch}} Bead dispositions",
+      "type": "task",
+      "priority": 0,
+      "needs": ["merge"],
+      "labels": ["campaign:reindex-2026", "campaign-role:batch", "timing:execution"],
+      "metadata": {
+        "campaign_id": "reindex-2026",
+        "formula": "mol-polylogue-thematic-batch",
+        "formula_version": 1,
+        "molecule_type": "workflow",
+        "pour_origin": "native-formula",
+        "campaign_role": "batch",
+        "campaign_timing": "execution",
+        "stage": "dispositions"
+      },
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nRun carrier-dispositions, close only satisfied Beads, verify successors for partials, export guarded state, graph-check, and update the root/workstream epic with the receipt digest."
+    }
+  ]
+}

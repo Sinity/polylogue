@@ -335,7 +335,12 @@ RECEIPT_EXCLUDED_PATHSPECS: Final[tuple[str, ...]] = (":(exclude).beads",)
 def worktree_fingerprint(root: Path | None = None) -> str:
     """Fingerprint tracked changes plus exact non-ignored untracked content.
 
-    Excludes :data:`RECEIPT_EXCLUDED_PATHSPECS`; see that constant for why.
+    Excludes :data:`RECEIPT_EXCLUDED_PATHSPECS` from every git enumeration
+    that feeds the digest -- the tracked status/diff pair below *and* the
+    untracked-content pass -- so an untracked `.beads/` file (the common
+    shape right after `bd create`/`bd update`, before the next `bd export`
+    commit) is exactly as invisible here as an uncommitted tracked edit to
+    it. See that constant for why.
     """
     checkout_root = (root or Path.cwd()).resolve()
     digest = hashlib.sha256()
@@ -379,7 +384,16 @@ def worktree_fingerprint(root: Path | None = None) -> str:
         digest.update(b"\0")
     try:
         untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ".",
+                *RECEIPT_EXCLUDED_PATHSPECS,
+            ],
             capture_output=True,
             timeout=30,
             cwd=checkout_root,

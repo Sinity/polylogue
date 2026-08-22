@@ -421,13 +421,13 @@ _DELEGATION_EDGE_PREFIX: Final[str] = "edge:"
 
 
 def delegation_edge_object_id(parent_session_id: str, child_session_id: str) -> str:
-    """Return the deterministic edge-only delegation object id.
+    """Return the deterministic non-action delegation object id.
 
     Used when a resolved child has no discoverable parent-side dispatch
-    action to key off (``mapping_state`` ``edge_only``/``quarantined`` in
-    the ``delegations`` view) -- there is no ``instruction_tool_use_block_id``
-    to anchor identity on, so identity falls back to the resolved
-    ``session_links`` relation itself.
+    action to key off (``mapping_state`` ``edge_only``/``quarantined``/
+    ``authority-contradicted`` in the ``delegations`` view) -- there is no
+    ``instruction_tool_use_block_id`` to anchor identity on, so identity falls
+    back to the resolved ``session_links`` relation itself.
     """
 
     if not parent_session_id or not child_session_id:

@@ -217,7 +217,6 @@ def test_supported_targets_cover_ac_required_set() -> None:
     required = {
         "session_insights",
         "message_type_backfill",
-        "orphaned_blobs",
     }
     assert required.issubset(supported)
 

@@ -61,6 +61,42 @@ _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/archive/session_revision_membership.py",
 )
 _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revision_backfill.py",)
+
+
+class _ProjectionFingerprintStripper(ast.NodeTransformer):
+    """Remove declaration-only projection syntax from semantic source stamps.
+
+    ``OriginSpec`` is imported by executable source modules, so excluding the
+    module from every transitive fingerprint would also hide meaningful
+    admission/runtime changes.  Instead, normalize only the public projection
+    keyword arguments and projection helper functions; parser, detector,
+    replay, and materializer code remains in the source-AST closure.
+    """
+
+    _PROJECTION_KEYWORDS = frozenset({"display_description", "public_filter"})
+    _PROJECTION_FUNCTIONS = frozenset({"public_origin_tokens", "public_origin_meanings", "public_origin_descriptions"})
+
+    def visit_Call(self, node: ast.Call) -> ast.Call:
+        node = cast(ast.Call, self.generic_visit(node))
+        node.keywords = [keyword for keyword in node.keywords if keyword.arg not in self._PROJECTION_KEYWORDS]
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        node = cast(ast.ClassDef, self.generic_visit(node))
+        node.body = _without_leading_docstring(node.body)
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef | None:
+        if node.name in self._PROJECTION_FUNCTIONS:
+            return None
+        return cast(ast.FunctionDef, self.generic_visit(node))
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef | None:
+        if node.name in self._PROJECTION_FUNCTIONS:
+            return None
+        return cast(ast.AsyncFunctionDef, self.generic_visit(node))
+
+
 _MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/repair.py",
     "polylogue/storage/insights/session/rebuild.py",
@@ -186,6 +222,11 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], na
     for path_string, _mtime_ns, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
         normalized = _DocstringStripper().visit(tree)
+        if (
+            Path(path_string).name == "origin_specs.py"
+            and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
+        ):
+            normalized = _ProjectionFingerprintStripper().visit(normalized)
         fragments.append(
             {
                 "path": _fingerprint_path_label(Path(path_string)),
@@ -404,6 +445,10 @@ class OriginSpec:
     #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
     #: second hand-maintained per-origin description inventory.
     display_description: str
+    #: Whether this origin is offered as a public filter/completion choice.
+    #: Compatibility-only and non-session evidence origins can remain in the
+    #: authoritative enum without being advertised as query choices.
+    public_filter: bool = True
     #: Ordered executable detector claims. Parser modules keep their shape
     #: predicates; this declaration owns which predicates may classify input.
     detector_bindings: tuple[DetectorBinding, ...] = ()
@@ -919,6 +964,7 @@ def _executable_spec(
     parser_paths: tuple[str, ...],
     fixture_paths: tuple[str, ...],
     display_description: str,
+    public_filter: bool = True,
     stream_parser_path: str | None = None,
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
@@ -941,6 +987,7 @@ def _executable_spec(
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
         display_description=display_description,
+        public_filter=public_filter,
     )
 
 
@@ -1105,6 +1152,7 @@ def _beads_spec() -> OriginSpec:
         # function dispatch actually calls.
         stream_parser_path="polylogue/sources/parsers/beads.py:parse",
         display_description="Beads issue exports (non-chat work artifacts)",
+        public_filter=False,
     )
 
 
@@ -1224,6 +1272,7 @@ def _unknown_spec() -> OriginSpec:
         ),
         semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
         display_description="Unrecognized fallback exports",
+        public_filter=False,
     )
 
 
@@ -1818,6 +1867,42 @@ ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
 _ORIGIN_SPECS_BY_ORIGIN = {spec.origin: spec for spec in ORIGIN_SPECS}
 
 
+def public_origin_tokens(specs: Sequence[OriginSpec] | None = None) -> tuple[str, ...]:
+    """Return the declared public-origin filter/completion vocabulary.
+
+    ``Origin`` remains the closed public identity enum, while ``public_filter``
+    distinguishes query choices from compatibility/evidence-only origins.  A
+    caller may pass a synthetic spec tuple in tests or during rendering; this
+    keeps projections tied to declaration metadata rather than a copied list.
+    """
+    by_origin = {spec.origin: spec for spec in (ORIGIN_SPECS if specs is None else specs)}
+    return tuple(
+        origin.value for origin in Origin if (spec := by_origin.get(origin)) is not None and spec.public_filter
+    )
+
+
+def public_origin_meanings(
+    specs: Sequence[OriginSpec] | None = None, *, include_non_public: bool = False
+) -> tuple[tuple[str, str], ...]:
+    """Return public ``(Origin token, operator-facing description)`` rows.
+
+    ``include_non_public`` is reserved for the agent manual, which documents
+    the complete closed enum; completion and filter callers use the default
+    public-only projection.
+    """
+    by_origin = {spec.origin: spec for spec in (ORIGIN_SPECS if specs is None else specs)}
+    return tuple(
+        (origin.value, by_origin[origin].display_description)
+        for origin in Origin
+        if (spec := by_origin.get(origin)) is not None and (include_non_public or spec.public_filter)
+    )
+
+
+def public_origin_descriptions(specs: Sequence[OriginSpec] | None = None) -> dict[str, str]:
+    """Return public description rows for completion/help surfaces."""
+    return dict(public_origin_meanings(specs))
+
+
 @lru_cache(maxsize=8)
 def _compiled_detector_registry(specs: tuple[OriginSpec, ...]) -> CompiledDetectorRegistry:
     return compile_detector_registry(specs)
@@ -1929,6 +2014,9 @@ __all__ = [
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
+    "public_origin_descriptions",
+    "public_origin_meanings",
+    "public_origin_tokens",
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
     "schema_observed_leaf_values",

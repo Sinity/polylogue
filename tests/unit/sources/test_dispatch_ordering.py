@@ -11,10 +11,14 @@ explaining the policy rationale.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
+from polylogue.sources.detection import compile_detector_registry
 from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.origin_specs import ORIGIN_SPECS
 
 
 def _payload(obj: object) -> object:
@@ -180,6 +184,52 @@ def test_dispatch_ordering(payload: object, expected_provider: Provider, rationa
     assert result is expected_provider, (
         f"Expected {expected_provider.value} but got {result.value if result else None}.  Rationale: {rationale}"
     )
+
+
+def test_swapping_adjacent_stream_priorities_changes_real_dispatch_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declared stream precedence, rather than test-local branching, is load-bearing.
+
+    This uses the production evidence route with a temporary declaration table
+    whose adjacent Claude Code/Codex rows are swapped.  The shared ambiguous
+    fixture must then flip from Claude Code to Codex; if the dispatch path had
+    a second hand-ordered chain, changing the declaration would be inert.
+    """
+    import polylogue.sources.origin_specs as origin_specs
+
+    claude_code = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CLAUDE_CODE_SESSION)
+    codex = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    claude_stream = claude_code.detector_bindings[1]
+    codex_stream = codex.detector_bindings[1]
+    assert claude_stream.mode_rank == 0
+    assert codex_stream.mode_rank == 1
+
+    swapped_claude = replace(
+        claude_code,
+        detector_bindings=(claude_code.detector_bindings[0], replace(claude_stream, mode_rank=1)),
+    )
+    swapped_codex = replace(
+        codex,
+        detector_bindings=(codex.detector_bindings[0], replace(codex_stream, mode_rank=0)),
+    )
+    ambiguous_stream = ADVERSARIAL_CATALOG[1][0]
+    assert detect_provider(ambiguous_stream) is Provider.CLAUDE_CODE
+
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(
+            swapped_claude if spec is claude_code else swapped_codex if spec is codex else spec for spec in ORIGIN_SPECS
+        ),
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "_compiled_detector_registry",
+        lambda specs: compile_detector_registry(specs),
+    )
+
+    assert detect_provider(ambiguous_stream) is Provider.CODEX
 
 
 # ── Negative tests: unambiguous payloads must still work ────────────

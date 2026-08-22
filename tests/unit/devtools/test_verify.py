@@ -100,6 +100,11 @@ def _pytest_marker_expr(command: list[str]) -> str:
     return command[marker_indexes[-1] + 1]
 
 
+def test_verify_history_is_not_a_public_parser_option() -> None:
+    with pytest.raises(SystemExit):
+        main(["--history"])
+
+
 def test_quick_verify_omits_pytest() -> None:
     steps = build_verify_steps(quick=True, lab=False)
 
@@ -864,50 +869,6 @@ def test_run_recovers_xdist_collection_facts_after_containment_failure(tmp_path:
     assert selection["worker_id"] == "runner"
 
 
-def test_print_history_accepts_verify_and_focused_run_records(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(
-        verify,
-        "_load_history",
-        lambda: [
-            {
-                "timestamp": "2026-08-12T20:00:00+00:00",
-                "tier": "quick",
-                "git_head": "a" * 40,
-                "total_duration_s": 2.0,
-                "exit_code": 0,
-                "steps": [{"name": "ruff", "duration_s": 1.0, "exit": 0}],
-            },
-            {
-                "finished_at": "2026-08-12T20:01:00+00:00",
-                "tier": "focused-test",
-                "git_head": "b" * 40,
-                "duration_s": 3.0,
-                "exit_code": 1,
-                "steps": [{"name": "pytest focused", "duration_s": None, "exit": 1}],
-            },
-            {
-                "finished_at": "2026-08-12T20:02:00+00:00",
-                "tier": "focused-test",
-                "git_head": "c" * 40,
-                "duration_s": "invalid",
-                "exit_code": None,
-                "steps": [{"name": "pytest interrupted", "duration_s": "invalid", "exit": None}],
-            },
-        ],
-    )
-
-    verify._print_history()
-
-    output = capsys.readouterr().out
-    assert "quick" in output
-    assert "focused-" in output
-    assert "pytest focused(0s FAIL)" in output
-    assert "pytest interrupted(0s FAIL)" in output
-
-
 def test_verify_history_appends_concurrent_records_without_interleaving(tmp_path: Path) -> None:
     history = tmp_path / "state" / "verify-history.jsonl"
 
@@ -1061,6 +1022,55 @@ def test_worktree_fingerprint_hashes_untracked_file_contents(tmp_path: Path) -> 
     after = _worktree_fingerprint()
 
     assert before != after
+
+
+def test_worktree_fingerprint_ignores_untracked_beads_content(tmp_path: Path) -> None:
+    """``.beads/`` is RECEIPT_EXCLUDED_PATHSPECS's one entry -- nothing at
+    runtime reads it, so its bytes must not perturb the fingerprint whether
+    the file is *tracked-and-modified* (already excluded via the status/diff
+    commands) or, the gap this test pins, *untracked* (enumerated by the
+    separate `git ls-files --others` pass, which currently carries no
+    pathspec at all)."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+
+    before = _worktree_fingerprint()
+    beads_dir = tmp_path / ".beads"
+    beads_dir.mkdir()
+    (beads_dir / "issues.jsonl").write_text('{"id": "one"}\n')
+    after_beads = _worktree_fingerprint()
+    (beads_dir / "issues.jsonl").write_text('{"id": "one", "status": "closed"}\n')
+    after_beads_edit = _worktree_fingerprint()
+
+    assert before == after_beads == after_beads_edit
+
+
+def test_worktree_fingerprint_still_detects_untracked_nonbeads_content(tmp_path: Path) -> None:
+    """The `.beads` exclusion must stay scoped to `.beads`: an untracked file
+    anywhere else still changes the fingerprint, both on first appearance and
+    on content edits."""
+    subprocess.run(["git", "init", "-q"], check=True)
+    subprocess.run(["git", "config", "user.email", "tests@example.invalid"], check=True)
+    subprocess.run(["git", "config", "user.name", "Polylogue Tests"], check=True)
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], check=True)
+    subprocess.run(["git", "commit", "-qm", "seed"], check=True)
+
+    before = _worktree_fingerprint()
+    other = tmp_path / "other.py"
+    other.write_text("VALUE = 1\n")
+    after_created = _worktree_fingerprint()
+    other.write_text("VALUE = 2\n")
+    after_edited = _worktree_fingerprint()
+
+    assert before != after_created
+    assert after_created != after_edited
 
 
 def test_worktree_fingerprint_rejects_partial_git_output(

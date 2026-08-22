@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -73,12 +74,19 @@ class WorktreeReport:
         return [c for c in self.checks if c.severity == "advisory" and not c.ok]
 
 
+_GIT_SELECTION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
 def _git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    for name in _GIT_SELECTION_VARS:
+        env.pop(name, None)
     return subprocess.run(
         ["git", "-C", str(path), *args],
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
 

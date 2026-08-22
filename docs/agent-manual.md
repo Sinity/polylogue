@@ -16,22 +16,22 @@ This manual targets the six-tool default read surface: `query`, `read`, `get`, `
 
 ## Source coverage
 
-The authoritative `Origin` enum currently contains 11 tokens. Older plans that say ten predate `beads-issue`.
+The authoritative `Origin` enum currently contains 12 tokens. Older plans that say ten predate `beads-issue`.
 
 | Origin token | Meaning |
 |---|---|
-| `claude-code-session` | Claude Code local runtime sessions. |
-| `codex-session` | Codex CLI local runtime sessions. |
-| `gemini-cli-session` | Gemini CLI local runtime sessions. |
-| `hermes-session` | Hermes agent runtime sessions. |
-| `antigravity-session` | Antigravity local brain/session artifacts. |
-| `beads-issue` | Repository Beads issue and history records ingested as archive evidence. |
-| `grok-export` | Grok conversation exports. |
-| `chatgpt-export` | ChatGPT web/data exports. |
-| `claude-ai-export` | Claude web/data exports. |
-| `claude-design-session` | Claude Design agentic chat sessions. |
-| `aistudio-drive` | Google AI Studio or Drive/Takeout conversation exports. |
-| `unknown-export` | Imported material whose provider/source could not be classified reliably. |
+| `claude-code-session` | Claude Code local sessions (lab: Anthropic) |
+| `codex-session` | Codex CLI local sessions (lab: OpenAI) |
+| `gemini-cli-session` | Gemini CLI local sessions (lab: Google) |
+| `hermes-session` | Hermes agent sessions |
+| `antigravity-session` | Antigravity brain artifacts |
+| `beads-issue` | Beads issue exports (non-chat work artifacts) |
+| `grok-export` | Grok account-data exports (lab: xAI) |
+| `chatgpt-export` | ChatGPT web exports (lab: OpenAI) |
+| `claude-ai-export` | Claude web exports (lab: Anthropic) |
+| `claude-design-session` | Claude Design agentic sessions (lab: Anthropic) |
+| `aistudio-drive` | Google AI Studio / Drive exports (lab: Google) |
+| `unknown-export` | Unrecognized fallback exports |
 
 Coverage is not implied by token existence. `status` must report whether the requested origins are configured, ingested, fresh, converged, and suitable for the requested evidence type. State missing or stale coverage in the answer.
 

@@ -339,6 +339,12 @@ class ParsedSession(BaseModel):
     session_kind: SessionKind = SessionKind.STANDARD
     created_at: str | None = None
     updated_at: str | None = None
+    # Internal authority carrier. These fields are excluded from serialized
+    # payloads/content hashes but survive model_copy/pipeline hand-offs, so a
+    # normalization pass cannot later mistake its own derived value for
+    # producer evidence.
+    created_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
+    updated_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
     messages: list[ParsedMessage]
     active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)

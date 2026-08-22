@@ -325,7 +325,6 @@ class TestMaintenanceSelection:
         results = run_archive_cleanup(config, dry_run=False)
         assert {r.name for r in results} == {
             "empty_sessions",
-            "orphaned_blobs",
             "superseded_raw_snapshots",
         }
         assert all(r.destructive is True for r in results)

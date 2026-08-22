@@ -641,7 +641,7 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
         # table. Force that branch directly so the mutation again reproduces
         # real archive-wide work.
         monkeypatch.setattr(
-            "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+            "polylogue.storage.sqlite.archive_tiers.archive_query_reads._action_relation_for_query",
             lambda **_kwargs: (
                 f"WITH actions_global_recompute AS ({action_relation_select_sql(session_placeholders=None)})",
                 "actions_global_recompute",

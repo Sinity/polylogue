@@ -51,6 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     read_assertion_envelope,
     upsert_assertion,
 )
+from tests.infra.user_tier import connect_user_db
 
 
 def _draft_topic_schema(*, schema_id: str = "archive.topic", version: int = 1) -> AnnotationSchema:
@@ -266,8 +267,7 @@ def test_goal_events_exclude_derived_inactivity_and_remain_distinct_from_outcome
 def test_rejected_nomination_preserves_tag_and_full_bootstrap_evidence(tmp_path: Path) -> None:
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_user_db(user_db)
     try:
         source_tag_ref = _seed_tag(conn)
         nomination = _nomination(_draft_topic_schema(), source_tag_ref=source_tag_ref)
@@ -349,8 +349,7 @@ def test_rename_and_split_register_only_operator_output_schemas(
 ) -> None:
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_user_db(user_db)
     try:
         source_tag_ref = _seed_tag(conn)
         draft = _draft_topic_schema(schema_id=draft_schema_id)
@@ -408,8 +407,7 @@ def test_rename_and_split_register_only_operator_output_schemas(
 def test_governance_rolls_back_judgment_when_schema_registration_conflicts(tmp_path: Path) -> None:
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_user_db(user_db)
     try:
         source_tag_ref = _seed_tag(conn)
         draft = _draft_topic_schema(schema_id="archive.atomic-topic")
@@ -478,8 +476,7 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
     initialize_active_archive_root(tmp_path)
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_user_db(user_db)
     try:
         source_tag_ref = _seed_tag(conn)
         draft = _draft_topic_schema()
@@ -557,8 +554,7 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
     )
     assert asyncio.run(join_typed_annotations(facade, candidate_request)).joined_count == 1
 
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_user_db(user_db)
     try:
         conn.execute("BEGIN IMMEDIATE")
         judged = judge_assertion_candidate(

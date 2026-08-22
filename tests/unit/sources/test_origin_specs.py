@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -24,6 +25,9 @@ from polylogue.sources.origin_specs import (
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
+    public_origin_descriptions,
+    public_origin_meanings,
+    public_origin_tokens,
     schema_observed_leaf_values,
     undeclared_schema_values,
     validate_assembly_spec_parity,
@@ -66,6 +70,119 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_public_origin_projections_cover_declared_specs_coherently() -> None:
+    """Public vocabulary and capability projections share OriginSpec ownership."""
+    public = set(public_origin_tokens())
+    meanings = dict(public_origin_meanings())
+    descriptions = public_origin_descriptions()
+
+    assert public <= {spec.origin.value for spec in ORIGIN_SPECS}
+    assert set(meanings) == set(descriptions) == public
+    assert public == {spec.origin.value for spec in ORIGIN_SPECS if spec.public_filter}
+    assert all(description for description in descriptions.values())
+    assert all(spec.completeness_modes for spec in ORIGIN_SPECS)
+    assert all(mode.package_ref and mode.capture_mode for spec in ORIGIN_SPECS for mode in spec.completeness_modes)
+
+
+def test_projection_only_origin_spec_changes_do_not_change_lowering_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public declarations are not executable lowering semantics."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    before = lowering_fingerprint()
+    changed_specs = tuple(
+        replace(
+            spec, display_description=f"{spec.display_description} (reworded)", public_filter=not spec.public_filter
+        )
+        for spec in ORIGIN_SPECS
+    )
+    monkeypatch.setattr(origin_specs, "ORIGIN_SPECS", changed_specs)
+    origin_specs._fingerprint_sources_cached.cache_clear()
+
+    assert origin_specs.lowering_fingerprint() == before
+    target = next(spec for spec in changed_specs if spec.origin is Origin.CODEX_SESSION)
+    assert target.parser_fingerprint() == parser_fingerprint_for_origin(Origin.CODEX_SESSION)
+
+
+def test_source_ast_projection_mutation_is_closed_over_all_fingerprint_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reload-style source mutation changes only executable semantics."""
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    origin_source = source_dir / "origin_specs.py"
+    semantic_source = source_dir / "semantic.py"
+    origin_source.write_text(
+        "class OriginSpec:\n"
+        "    def __init__(self, *, display_description, public_filter):\n"
+        "        self.display_description = display_description\n"
+        "        self.public_filter = public_filter\n"
+        "DECLARATION = OriginSpec(display_description='before', public_filter=True)\n",
+        encoding="utf-8",
+    )
+    semantic_source.write_text(
+        "from .origin_specs import DECLARATION\n\n"
+        "def execute(value):\n"
+        "    return value + DECLARATION.display_description\n",
+        encoding="utf-8",
+    )
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    monkeypatch.setattr(origin_specs_module, "_REPLAY_ROUTING_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    monkeypatch.setattr(origin_specs_module, "_MATERIALIZER_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    before = (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    )
+    origin_source.write_text(
+        origin_source.read_text(encoding="utf-8").replace("before", "after").replace("True", "False"), encoding="utf-8"
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    ) == before
+
+    semantic_source.write_text(
+        semantic_source.read_text(encoding="utf-8").replace("value + DECLARATION.display_description", "value"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    ) != before
+
+
+def test_origin_spec_metadata_change_propagates_to_public_manual_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual payloads read current declaration metadata instead of a copied list."""
+    import polylogue.sources.origin_specs as origin_specs
+    from polylogue.agent_integration.spec import integration_spec_payload
+
+    target = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    changed = replace(target, display_description="Codex sessions (updated declaration)")
+    monkeypatch.setattr(
+        origin_specs, "ORIGIN_SPECS", tuple(changed if spec is target else spec for spec in ORIGIN_SPECS)
+    )
+
+    assert dict(public_origin_meanings())[target.origin.value] == "Codex sessions (updated declaration)"
+    payload = integration_spec_payload()
+    origins = cast(list[dict[str, object]], payload["origins"])
+    row = next(item for item in origins if item["token"] == target.origin.value)
+    assert row["meaning"] == "Codex sessions (updated declaration)"
 
 
 def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp_path: Path) -> None:
@@ -343,16 +460,17 @@ def test_origin_specs_are_parity_checked_against_the_live_assembly_registry() ->
 def test_every_origin_spec_declares_a_display_description() -> None:
     """Production dependency: CLI --origin shell completion derives its help text from OriginSpec.
 
-    Anti-vacuity: blanking a display_description (or dropping a spec) shrinks
-    the derived completion inventory below the full Origin vocabulary.
+    Anti-vacuity: blanking a display_description (or dropping a public spec)
+    shrinks the derived completion inventory below the accepted filter vocabulary.
     """
-    from polylogue.cli.shell_completion_values import _ORIGIN_DESCRIPTIONS
+    from polylogue.sources.origin_specs import public_origin_descriptions
 
     for spec in ORIGIN_SPECS:
         assert spec.display_description.strip(), spec.origin.value
 
-    assert set(_ORIGIN_DESCRIPTIONS) == {origin.value for origin in Origin}
-    assert all(text.strip() for text in _ORIGIN_DESCRIPTIONS.values())
+    descriptions = public_origin_descriptions()
+    assert set(descriptions) == set(public_origin_tokens())
+    assert all(text.strip() for text in descriptions.values())
 
 
 def test_dropped_value_vocabularies_match_the_real_parser_constant() -> None:

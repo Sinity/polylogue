@@ -8,6 +8,7 @@ import pytest
 from click.shell_completion import CompletionItem
 
 from polylogue.cli import shell_completion_values
+from polylogue.sources.origin_specs import public_origin_descriptions, public_origin_tokens
 
 
 def _ctx_param() -> tuple[click.Context, click.Parameter]:
@@ -39,6 +40,18 @@ def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: P
     mock_archive.stats_by.return_value = {"alpha": 7}
     items = action(mock_archive)
     assert [(item.value, item.help) for item in items] == [("alpha", "7 actions")]
+
+
+def test_origin_completion_matches_public_filter_projection() -> None:
+    ctx, param = _ctx_param()
+    items = shell_completion_values.complete_origin_values(ctx, param, "")
+    descriptions = public_origin_descriptions()
+
+    assert {item.value for item in items} == set(public_origin_tokens())
+    assert {item.value for item in items} == set(descriptions)
+    assert all(item.help == descriptions[item.value] for item in items)
+    assert "unknown-export" not in {item.value for item in items}
+    assert "beads-issue" not in {item.value for item in items}
 
 
 def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -> None:

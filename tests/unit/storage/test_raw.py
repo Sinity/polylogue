@@ -128,6 +128,73 @@ class TestRawSessionStorage:
         # Second save is ignored (same raw_id)
         assert await backend.save_raw_session(record) is False
 
+    async def test_conflicting_duplicate_is_immutable_inside_caller_transaction(
+        self,
+        backend: SQLiteBackend,
+    ) -> None:
+        """Identity conflicts fail before observations or mtime side effects."""
+        original = make_raw_session(
+            raw_id="raw-conflicting-duplicate",
+            source_name="chatgpt",
+            source_path="/exports/original.json",
+            source_index=2,
+            blob_size=11,
+            acquired_at="2026-02-02T12:00:00+00:00",
+            file_mtime="2026-01-15T08:30:00+00:00",
+        )
+        assert await backend.save_raw_session(original) is True
+
+        conflicting = original.model_copy(
+            update={
+                "source_path": "/exports/attacker.json",
+                "file_mtime": "2026-02-16T08:30:00+00:00",
+                "capture_mode": Provider.DRIVE,
+            }
+        )
+        async with backend.transaction():
+            with pytest.raises(ValueError, match="conflicting identity"):
+                await backend.save_raw_session(conflicting)
+            async with backend._get_connection() as conn:
+                raw = await (
+                    await conn.execute(
+                        "SELECT source_path, file_mtime_ms, capture_mode FROM raw_sessions WHERE raw_id = ?",
+                        (original.raw_id,),
+                    )
+                ).fetchone()
+                assert raw is not None
+                assert tuple(raw) == ("/exports/original.json", 1_768_465_800_000, None)
+                observation = await (
+                    await conn.execute(
+                        "SELECT COUNT(*) FROM raw_capture_observations WHERE raw_id = ?",
+                        (original.raw_id,),
+                    )
+                ).fetchone()
+                assert observation is not None
+                assert observation[0] == 0
+
+    async def test_duplicate_only_backfills_null_mtime(self, backend: SQLiteBackend) -> None:
+        original = make_raw_session(
+            raw_id="raw-null-mtime",
+            source_name="chatgpt",
+            source_path="/exports/same.json",
+            source_index=0,
+            blob_size=3,
+            acquired_at="2026-02-02T12:00:00+00:00",
+            file_mtime=None,
+        )
+        assert await backend.save_raw_session(original) is True
+        first_observation = original.model_copy(update={"file_mtime": "2026-01-15T08:30:00+00:00"})
+        assert await backend.save_raw_session(first_observation) is False
+        retained = await backend.get_raw_session(original.raw_id)
+        assert retained is not None
+        assert retained.file_mtime == first_observation.file_mtime
+
+        second_observation = original.model_copy(update={"file_mtime": "2026-02-16T08:30:00+00:00"})
+        assert await backend.save_raw_session(second_observation) is False
+        retained = await backend.get_raw_session(original.raw_id)
+        assert retained is not None
+        assert retained.file_mtime == first_observation.file_mtime
+
     async def test_get_raw_session(self, backend: SQLiteBackend) -> None:
         """Retrieve a saved raw session by ID."""
         original = make_raw_session(

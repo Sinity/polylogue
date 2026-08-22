@@ -80,7 +80,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 
@@ -113,6 +113,74 @@ def test_worker_normalization_preserves_raw_row_archive_origin() -> None:
     )
     assert normalized.source_name == Provider.CLAUDE_CODE
     assert parsed.source_name == Provider.CLAUDE_CODE
+
+
+def test_worker_normalization_replaces_malformed_session_timestamp_with_message_evidence() -> None:
+    parsed = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="malformed-session-time",
+        created_at="not-a-timestamp",
+        updated_at="also-not-a-timestamp",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="evidence",
+                timestamp="2026-06-01T12:00:00Z",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="evidence")],
+            )
+        ],
+    )
+
+    normalized = ingest_worker_mod._normalized_session(parsed, fallback_timestamp="2020-01-01T00:00:00Z")
+
+    assert normalized.created_at == "2026-06-01T12:00:00+00:00"
+    assert normalized.updated_at == "2026-06-01T12:00:00+00:00"
+
+
+def test_stale_observation_repair_derives_created_time_from_session_event(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="stale-event-observation",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="summary",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="summary")],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        candidate = session.model_copy(
+            update={
+                "session_events": [
+                    ParsedSessionEvent(
+                        event_type="hermes_llm_request_span",
+                        timestamp="2026-07-01T00:00:00Z",
+                    )
+                ]
+            }
+        )
+        payload = SessionWritePayload(
+            session_id=session_id,
+            content_hash="ignored",
+            parsed_session=candidate,
+            fallback_timestamp="2020-01-01T00:00:00Z",
+        )
+
+        ingest_batch_core._repair_stale_revision_observations(conn, payload)
+        row = conn.execute("SELECT created_at_ms FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == 1_782_864_000_000
 
 
 def test_parse_batch_observation_reports_unsupported_write_mode() -> None:

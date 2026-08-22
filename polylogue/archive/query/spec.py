@@ -22,8 +22,8 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
+from polylogue.sources.origin_specs import public_origin_tokens
 from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
@@ -389,6 +389,16 @@ def query_spec_has_filters(spec: SessionQuerySpec) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _public_origin_values(field: str, value: object) -> tuple[str, ...]:
+    """Normalize explicit query origin filters against public OriginSpec tokens."""
+    valid = frozenset(public_origin_tokens())
+    values = split_csv(value)
+    for token in values:
+        if token not in valid:
+            raise QuerySpecError(field, token)
+    return tuple(token for token in values)
+
+
 def build_query_spec_from_params(
     spec_cls: type[_SpecT],
     params: Mapping[str, object],
@@ -414,8 +424,8 @@ def build_query_spec_from_params(
         action_text_terms=as_tuple(params.get("action_text")),
         tool_terms=normalize_tool_terms(params.get("tool")),
         excluded_tool_terms=normalize_tool_terms(params.get("exclude_tool")),
-        origins=tuple(Origin.from_string(p).value for p in split_csv(params.get("origin"))),
-        excluded_origins=tuple(Origin.from_string(p).value for p in split_csv(params.get("exclude_origin"))),
+        origins=_public_origin_values("origin", params.get("origin")),
+        excluded_origins=_public_origin_values("exclude_origin", params.get("exclude_origin")),
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
         repo_names=split_csv(params.get("repo")),

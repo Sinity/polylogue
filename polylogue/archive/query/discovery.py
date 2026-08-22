@@ -430,7 +430,10 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
         featured=True,
     ),
     _example(
-        "session-origin", "origin:unknown-export", "sessions", "Finds sessions from the neutral unknown-export origin."
+        "session-origin",
+        "origin:antigravity-session",
+        "sessions",
+        "Finds sessions from the neutral runtime-session origin.",
     ),
     _example("session-tag", "tag:review", "sessions", "Finds sessions carrying the review tag."),
     _example("session-path", "path:src/query", "sessions", "Finds sessions that reference a query-source path."),
@@ -626,7 +629,7 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
     ),
     _example(
         "sample-origin-family",
-        "origin:(unknown-export|beads-issue)",
+        "origin:(antigravity-session|hermes-session)",
         "sessions",
         "Samples sessions from two neutral origin families.",
         result_semantics="sample",
@@ -838,7 +841,7 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
     ),
     _example(
         "events-origin-object",
-        "observed-events where session.origin:unknown-export AND object_ref:review:example",
+        "observed-events where session.origin:antigravity-session AND object_ref:review:example",
         "observed-events",
         "Returns observed events for one origin and object reference.",
         projection_columns=OBSERVED_EVENT_COLUMNS,
@@ -896,7 +899,7 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
     ),
     _example(
         "scoped-repository-messages",
-        "sessions where repo:example-repo AND origin:unknown-export | messages where role:assistant",
+        "sessions where repo:example-repo AND origin:antigravity-session | messages where role:assistant",
         "messages",
         "Returns assistant messages scoped to repository sessions from one origin.",
         projection_columns=MESSAGE_COLUMNS,
@@ -904,7 +907,7 @@ QUERY_DISCOVERY_EXAMPLES: tuple[QueryDiscoveryExample, ...] = (
     ),
     _example(
         "scoped-origin-actions",
-        "sessions where origin:(unknown-export|beads-issue) | actions where action:file_edit",
+        "sessions where origin:(antigravity-session|hermes-session) | actions where action:file_edit",
         "actions",
         "Returns file-edit actions scoped to two neutral origin families.",
         projection_columns=ACTION_COLUMNS,

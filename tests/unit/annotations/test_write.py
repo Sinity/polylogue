@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_assertion,
 )
 from tests.infra.storage_records import SessionBuilder
+from tests.infra.user_tier import connect_user_db
 
 
 def _value_dict(value: object) -> dict[str, object]:
@@ -76,7 +77,7 @@ def _registry_for(schema: AnnotationSchema) -> AnnotationSchemaRegistry:
 def user_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db)
+    conn = connect_user_db(user_db)
     yield conn
     conn.close()
 
@@ -381,7 +382,7 @@ class TestAnnotationRoundtripWithQueryAndJudge:
         ]
         target_ref = "session:codex-session:demo"
         envelopes = []
-        with sqlite3.connect(user_db) as conn:
+        with connect_user_db(user_db) as conn:
             for index, row_value in enumerate(rows):
                 envelopes.append(
                     upsert_annotation_assertion(
@@ -414,7 +415,7 @@ class TestAnnotationRoundtripWithQueryAndJudge:
             approved_rows = archive.query_assertions(approved_source.predicate, limit=100)
             assert len(approved_rows) == 2
 
-        with sqlite3.connect(user_db) as conn:
+        with connect_user_db(user_db) as conn:
             judged = judge_assertion_candidate(
                 conn,
                 candidate_ref=f"assertion:{envelopes[0].assertion_id}",
@@ -457,7 +458,7 @@ class TestAnnotationRoundtripWithQueryAndJudge:
             "null": {"probe": None},
             "missing": {"other": None},
         }
-        with sqlite3.connect(user_db) as conn:
+        with connect_user_db(user_db) as conn:
             for assertion_id, value in values.items():
                 upsert_assertion(
                     conn,
@@ -503,7 +504,7 @@ def test_upsert_annotation_freeform_note_still_works_independently_of_schema_pat
 
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    with sqlite3.connect(user_db) as conn:
+    with connect_user_db(user_db) as conn:
         envelope = upsert_annotation(conn, "session", "codex-session:demo", "a plain operator note")
         conn.commit()
     assert envelope.body == "a plain operator note"

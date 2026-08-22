@@ -93,6 +93,25 @@ def test_mcp_query_resolves_from_query_reference(mcp_server: MCPServerUnderTest,
     assert body["truncated"] is False
 
 
+def test_mcp_query_validates_public_origin_before_reference_pipeline(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """A Provider-wire token cannot bypass query validation via a durable ref."""
+    archive_root = tmp_path / "archive"
+    _seed_archive(archive_root)
+
+    with _seeded_runtime_services(archive_root):
+        response = invoke_surface(
+            mcp_server._tool_manager._tools["query"].fn,
+            expression="from query:0000000000000000000000000000000000000000000000000000000000000000",
+            origin="codex",
+        )
+
+    body = json.loads(response)
+    assert body["code"] == "invalid_argument", body
+    assert "codex" in body["message"]
+
+
 def test_mcp_query_from_unknown_query_hash_returns_typed_not_found(
     mcp_server: MCPServerUnderTest, tmp_path: Path
 ) -> None:

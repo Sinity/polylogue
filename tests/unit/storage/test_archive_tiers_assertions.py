@@ -53,13 +53,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, open_connection
 from tests.infra.identity import archive_message_id
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.USER)
-    return conn
+from tests.infra.user_tier import connect_user_tier
 
 
 def _connect_index(path: Path) -> sqlite3.Connection:
@@ -144,7 +138,7 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         assert _table_exists(conn, "assertions")
         assert _table_exists(conn, "user_settings")
@@ -168,7 +162,7 @@ def test_overlay_writers_enable_foreign_keys_before_first_transaction(tmp_path: 
     upsert_assertion chokepoint applies it before any transaction begins,
     covering every caller (direct or through a wrapper) uniformly.
     """
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 0
@@ -179,7 +173,7 @@ def test_overlay_writers_enable_foreign_keys_before_first_transaction(tmp_path: 
 
 
 def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         tables = _sqlite_objects(conn, "table")
         obsolete_overlay_tables = {
@@ -216,7 +210,7 @@ def test_fresh_user_tier_has_no_legacy_overlay_tables(tmp_path: Path) -> None:
 
 
 def test_fresh_user_tier_has_settings_table_for_non_assertion_state(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(user_settings)")}
         assert columns == {"setting_key", "value_json", "updated_at_ms", "author_ref"}
@@ -225,7 +219,7 @@ def test_fresh_user_tier_has_settings_table_for_non_assertion_state(tmp_path: Pa
 
 
 def test_assertions_have_read_path_indexes_for_overlay_and_candidate_flows(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         index_columns = {
             name: [str(row[2]) for row in conn.execute(f"PRAGMA index_info({name})")]
@@ -357,7 +351,7 @@ def test_index_json_contracts_reject_non_object_payloads(tmp_path: Path) -> None
 
 
 def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -423,7 +417,7 @@ def test_assertion_round_trip_across_kinds(tmp_path: Path) -> None:
 
 
 def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         active = upsert_assertion(
             conn,
@@ -461,7 +455,7 @@ def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> No
 
 
 def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         conn.execute(
             """
@@ -501,7 +495,7 @@ def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_p
 
 
 def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(ValueError, match="object ref must use"):
             upsert_assertion(
@@ -525,7 +519,7 @@ def test_assertion_write_rejects_unparseable_public_refs(tmp_path: Path) -> None
 
 
 def test_assertion_write_rejects_unknown_lifecycle_values(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(ValueError):
             upsert_assertion(
@@ -558,7 +552,7 @@ def test_assertion_write_rejects_unknown_lifecycle_values(tmp_path: Path) -> Non
 
 
 def test_assertion_write_normalizes_json_values_at_internal_boundary(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         with pytest.raises(TypeError, match="assertion value is not JSON-compatible"):
             upsert_assertion(
@@ -611,7 +605,7 @@ def test_assertion_write_normalizes_json_values_at_internal_boundary(tmp_path: P
 
 
 def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         first = upsert_assertion(
             conn,
@@ -641,7 +635,7 @@ def test_assertion_upsert_preserves_created_at_and_updates_fields(tmp_path: Path
 
 
 def test_supersession_and_status_persist(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -677,7 +671,7 @@ def test_supersession_and_status_persist(tmp_path: Path) -> None:
 
 
 def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -721,7 +715,7 @@ def test_list_assertions_filters_by_target_and_kind(tmp_path: Path) -> None:
 
 
 def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         assert set(ASSERTION_CLAIM_KINDS) == {
             AssertionKind.DECISION,
@@ -837,7 +831,7 @@ def test_list_assertion_claims_excludes_expired_claims_from_the_admission_read(t
     list_assertion_claims) and every other ASSERTION_CLAIM_KINDS consumer
     goes through -- no new AssertionStatus, no parallel filtered read path.
     """
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,
@@ -902,7 +896,7 @@ def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_
     read ``context/preamble.py`` uses) stops serving it, with HIGHLIGHT now a
     member of ``ASSERTION_CLAIM_KINDS``.
     """
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         candidate = upsert_assertion(
             conn,
@@ -950,7 +944,7 @@ def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_
 
 
 def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         rows = [
             ("a-mark", AssertionKind.MARK, "active", 1_700_000_001_000),
@@ -1017,7 +1011,7 @@ def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path
 
 
 def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         refs = [
             "session:abc-123",
@@ -1049,7 +1043,7 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
 
 
 def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         assert digest.decision_candidates
@@ -1139,7 +1133,7 @@ def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path
 
 
 def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1177,7 +1171,7 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
 
 
 def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1208,7 +1202,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
 
 
 def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1247,7 +1241,7 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
 
 
 def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1312,7 +1306,7 @@ def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path:
 def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -> None:
     """Only supersede may alter a candidate's promoted content."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
@@ -1335,7 +1329,7 @@ def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -
 def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlled(tmp_path: Path) -> None:
     """The real user-tier batch writer retains valid judgments around failures."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidates = upsert_transform_candidate_assertions(
@@ -1412,7 +1406,7 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
 def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-item failure must not commit judgments from earlier batch items."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         candidates = upsert_transform_candidate_assertions(
@@ -1486,7 +1480,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
 
 
 def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         digest = compile_session_digest(_recovery_candidate_session())
         duplicate_digest = digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 3})
@@ -1822,7 +1816,7 @@ def test_upsert_pathology_findings_emits_queryable_candidates(tmp_path: Path) ->
     from polylogue.core.refs import EvidenceRef
     from polylogue.insights.pathology import PathologyFinding
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         session_id = "codex-session:pathology-demo"
         findings = [
@@ -1901,7 +1895,7 @@ def test_assertion_id_for_pathology_finding_is_stable() -> None:
 
 def test_upsert_findings_reuses_candidate_lifecycle_and_evidence_refs(tmp_path: Path) -> None:
     """Real writer path: detector evidence remains reviewable and never auto-injects."""
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         finding = FindingAssertion(
             claim_key="tool-failure-rate",
@@ -1979,7 +1973,7 @@ def test_upsert_findings_reuses_candidate_lifecycle_and_evidence_refs(tmp_path: 
 
 def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_path: Path) -> None:
     """Schema validation fails before a detector can create an unauditable claim."""
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         incomplete_delta = FindingAssertion(
             claim_key="missing-baseline",
@@ -2040,7 +2034,7 @@ def _finding_with_control(**control_overrides: JSONValue) -> FindingAssertion:
 
 def test_upsert_finding_with_matched_control_stores_validated_observed_outcome(tmp_path: Path) -> None:
     """A matched-shape control that isolates the frame variable is accepted and stored (rxdo.9.7)."""
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control()
         written = upsert_findings_as_assertions(conn, [finding], now_ms=1_700_000_000_000)
@@ -2068,7 +2062,7 @@ def test_upsert_finding_with_matched_control_stores_validated_observed_outcome(t
 
 def test_upsert_finding_rejects_confounded_unrelated_cohort_control(tmp_path: Path) -> None:
     """A deliberately divergent baseline that leaves the claim's frame variable unchecked fails closed."""
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control(control_kind="unrelated_cohort", confounds_checked=[])
         with pytest.raises(ValueError, match="control rejected"):
@@ -2079,7 +2073,7 @@ def test_upsert_finding_rejects_confounded_unrelated_cohort_control(tmp_path: Pa
 
 def test_upsert_finding_rejects_control_without_matching_variables(tmp_path: Path) -> None:
     """A matched-shape control declaring no matching variables isolates nothing -- rejected, not silently stored."""
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         finding = _finding_with_control(matching_variables=[])
         with pytest.raises(ValueError, match="control rejected"):
@@ -2091,7 +2085,7 @@ def test_upsert_finding_rejects_control_without_matching_variables(tmp_path: Pat
 def test_upsert_assertion_owned_transaction_rolls_back_on_write_failure(tmp_path: Path) -> None:
     """A failed standalone upsert cannot leave an owned transaction or partial row."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         upsert_assertion(
             conn,

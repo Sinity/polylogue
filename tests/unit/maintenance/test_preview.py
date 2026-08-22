@@ -267,10 +267,7 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
     assert grouped, "no models inventoried for a non-empty archive"
 
     for model, items in grouped.items():
-        if model in {
-            "empty_sessions",
-            "orphaned_blobs",
-        }:
+        if model == "empty_sessions":
             # Archive-cleanup scopes report a single orphan_archive_row item.
             assert {item.reason for item in items} == {InvalidationReason.ORPHAN_ARCHIVE_ROW}
             continue

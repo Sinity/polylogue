@@ -71,11 +71,18 @@ class TestEverySubcommandHasHelp:
     """Every registered command path responds to ``--help`` without error."""
 
     @pytest.mark.parametrize("path", _COMMAND_PATHS, ids=_COMMAND_IDS)
-    def test_subcommand_help_exits_zero_with_no_traceback(
+    def test_subcommand_help_contract(
         self,
         path: CommandPath,
         runner: CliRunner,
     ) -> None:
+        """Every command has usable, non-empty help without a traceback.
+
+        Keep the exit/output and description assertions together because they
+        exercise one invocation of each command path; the assertions remain
+        separate so a missing command response is not confused with missing
+        documentation.
+        """
         result = runner.invoke(cli, [*path.path, "--help"])
         assert result.exit_code == 0, f"{path.display_name} --help exited {result.exit_code}: {result.output!r}"
         assert TRACEBACK_SENTINEL not in result.output, (
@@ -85,19 +92,6 @@ class TestEverySubcommandHasHelp:
         # to empty help text would fail this contract.
         assert "Usage:" in result.output, f"{path.display_name} --help missing Usage: section"
 
-    @pytest.mark.parametrize("path", _COMMAND_PATHS, ids=_COMMAND_IDS)
-    def test_subcommand_help_has_nonempty_description(
-        self,
-        path: CommandPath,
-        runner: CliRunner,
-    ) -> None:
-        """Each command must have at least one non-boilerplate help line.
-
-        A help text containing only ``Usage:`` and ``Options:`` is treated as
-        a missing description and fails this contract; commands must document
-        their purpose.
-        """
-        result = runner.invoke(cli, [*path.path, "--help"])
         # Count substantive lines: non-empty, not the Usage line, not a
         # standard section header.
         substantive: list[str] = []
@@ -133,15 +127,19 @@ class TestVersionContract:
 class TestHelpStaysOnStdout:
     """``--help`` is a successful query, not an error -> stdout, not stderr."""
 
-    def test_root_help_goes_to_stdout(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["--help"])
-        assert result.exit_code == 0
+    @pytest.mark.parametrize(
+        ("command", "label"),
+        (((), "root"), (("ops", "doctor"), "subcommand")),
+        ids=("root", "subcommand"),
+    )
+    def test_help_goes_to_stdout(
+        self,
+        command: tuple[str, ...],
+        label: str,
+        runner: CliRunner,
+    ) -> None:
+        result = runner.invoke(cli, [*command, "--help"])
+        assert result.exit_code == 0, f"{label} --help failed: {result.output!r}"
         assert "Usage:" in result.stdout
         # Click writes successful --help to stdout; stderr stays empty.
-        assert "Usage:" not in result.stderr
-
-    def test_subcommand_help_goes_to_stdout(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["ops", "doctor", "--help"])
-        assert result.exit_code == 0
-        assert "Usage:" in result.stdout
         assert "Usage:" not in result.stderr

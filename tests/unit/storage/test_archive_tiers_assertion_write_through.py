@@ -9,8 +9,6 @@ from typing import Any
 import pytest
 
 from polylogue.core.enums import AssertionStatus
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     AssertionKind,
     assertion_id_for_annotation,
@@ -38,13 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_suppression,
     upsert_workspace,
 )
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.USER)
-    return conn
+from tests.infra.user_tier import connect_user_tier
 
 
 def _assertion_count(conn: sqlite3.Connection) -> int:
@@ -52,7 +44,7 @@ def _assertion_count(conn: sqlite3.Connection) -> int:
 
 
 def test_mark_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_mark(
         conn,
@@ -77,7 +69,7 @@ def test_mark_write_through_mirrors_assertion(tmp_path: Path) -> None:
 
 
 def test_user_session_tag_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_session_tag_assertion(
         conn,
@@ -103,7 +95,7 @@ def test_user_session_tag_write_through_mirrors_assertion(tmp_path: Path) -> Non
 
 
 def test_mark_write_through_is_idempotent(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_mark(conn, "session", "session-1", "star", label="v1", now_ms=1_700_000_000_000)
     before_id = list_assertions_for_target(conn, "session:session-1", kind=AssertionKind.MARK)[0].assertion_id
@@ -121,7 +113,7 @@ def test_mark_write_through_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_annotation_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_annotation(
         conn,
@@ -147,7 +139,7 @@ def test_annotation_write_through_mirrors_assertion(tmp_path: Path) -> None:
 def test_annotation_without_explicit_id_is_retry_safe_but_append_on_change(tmp_path: Path) -> None:
     """Content-addressed annotation identity converges exact retries only."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         first = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=1_000)
         retry = upsert_annotation(conn, "message", "msg-identity", "first body", now_ms=2_000)
@@ -163,7 +155,7 @@ def test_annotation_without_explicit_id_is_retry_safe_but_append_on_change(tmp_p
 
 
 def test_block_target_overlays_mirror_to_block_assertions(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     mark = upsert_mark(
         conn,
@@ -199,7 +191,7 @@ def test_block_target_overlays_mirror_to_block_assertions(tmp_path: Path) -> Non
 
 
 def test_correction_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_correction(
         conn,
@@ -225,7 +217,7 @@ def test_correction_write_through_mirrors_assertion(tmp_path: Path) -> None:
 
 
 def test_blackboard_note_write_through_scoped_and_unscoped(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_blackboard_note(
         conn,
@@ -267,7 +259,7 @@ def test_blackboard_note_write_through_scoped_and_unscoped(tmp_path: Path) -> No
 
 
 def test_blackboard_note_assertion_metadata_is_preserved(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_blackboard_note(
         conn,
@@ -296,7 +288,7 @@ def test_blackboard_note_assertion_metadata_is_preserved(tmp_path: Path) -> None
 
 
 def test_assertion_write_boundary_normalizes_public_refs(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     env = upsert_assertion(
         conn,
@@ -330,7 +322,7 @@ def test_assertion_write_cannot_self_authorize_operator_context_trust(
     author_ref: str,
     author_kind: str,
 ) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     env = upsert_assertion(
         conn,
@@ -364,7 +356,7 @@ def test_assertion_write_boundary_rejects_untyped_or_invalid_refs(
     field: str,
     kwargs: dict[str, Any],
 ) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     payload: dict[str, Any] = {
         "assertion_id": f"assertion:invalid-{field}",
         "target_ref": "session:session-9",
@@ -378,7 +370,7 @@ def test_assertion_write_boundary_rejects_untyped_or_invalid_refs(
 
 
 def test_user_overlay_reads_project_assertion_envelopes(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     suppression = upsert_suppression(conn, "session-2", "asserted reason", mode="freeze", now_ms=1_700_000_035_000)
     mark = upsert_mark(
@@ -427,7 +419,7 @@ def test_user_overlay_reads_project_assertion_envelopes(tmp_path: Path) -> None:
 def test_recall_pack_without_explicit_id_updates_stable_name_identity(tmp_path: Path) -> None:
     """A named recall pack updates rather than appending a payload-hash sibling."""
 
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
     try:
         first = upsert_recall_pack(conn, "handoff", {"sessions": ["a"]}, now_ms=1_000)
         updated = upsert_recall_pack(conn, "handoff", {"sessions": ["a", "b"]}, now_ms=2_000)
@@ -447,7 +439,7 @@ def test_recall_pack_without_explicit_id_updates_stable_name_identity(tmp_path: 
 
 
 def test_blackboard_note_read_projects_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     note = upsert_blackboard_note(
         conn,
@@ -467,7 +459,7 @@ def test_blackboard_note_read_projects_assertion(tmp_path: Path) -> None:
 
 
 def test_blackboard_note_list_projects_assertions(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_blackboard_note(
         conn,
@@ -492,7 +484,7 @@ def test_blackboard_note_list_projects_assertions(tmp_path: Path) -> None:
 
 
 def test_suppression_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     upsert_suppression(conn, "session-2", "noise", mode="hide", now_ms=1_700_000_040_000)
 
@@ -509,7 +501,7 @@ def test_suppression_write_through_mirrors_assertion(tmp_path: Path) -> None:
 
 
 def test_saved_view_write_through_mirrors_assertion(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "user.db")
+    conn = connect_user_tier(tmp_path / "user.db")
 
     saved_view = upsert_saved_view(conn, "recent", {"limit": 10}, now_ms=1_700_000_050_000)
 

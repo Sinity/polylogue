@@ -38,6 +38,11 @@ from polylogue.archive.query.transaction import QueryCoverageClass, QueryResultS
 
 def _parse_positive(row: QueryDiscoveryExample) -> object:
     if row.parser == "session":
+        # Session expressions also traverse the same MCP query-spec builder
+        # used by a shipped surface, not only the lower-level grammar helper.
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        build_query_spec(query=row.expression)
         return compile_expression(row.expression)
     source = parse_unit_source_expression(row.expression)
     assert source is not None, f"{row.key} did not produce a terminal source"

@@ -446,10 +446,9 @@ def source_name_to_origin(source_name: object) -> str:
         return Origin.UNKNOWN_EXPORT.value
 
 
-# User-facing origin tokens for CLI/MCP/completion choices. Derived from the
-# core schema providers so the surfaced set tracks the same products, excluding
-# the internal ``unknown-export`` origin. Order-preserving and deduplicated
-# (``gemini`` and ``drive`` both collapse onto ``aistudio-drive``).
+# Compatibility export for older callers. Public filter/completion choices
+# belong to ``sources.origin_specs``; this legacy provider-derived tuple remains
+# intentionally limited to the historical schema-provider projection.
 CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = tuple(
     dict.fromkeys(origin_from_provider(Provider.from_string(token)).value for token in CORE_SCHEMA_PROVIDERS)
 )

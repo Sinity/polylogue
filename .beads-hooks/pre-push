@@ -3,8 +3,8 @@
 # integrity only when every pushed path is under .beads/. Full testmon
 # verification is expected before product pushes (see CONTRIBUTING.md).
 #
-# When `devtools verify` completed successfully at the current HEAD, the
-# stamp file at .cache/last-verify-head matches and this hook is a no-op.
+# When `devtools verify --quick` completed successfully for the exact current
+# checkout state, its receipt is reused and this hook is a no-op.
 
 set -euo pipefail
 

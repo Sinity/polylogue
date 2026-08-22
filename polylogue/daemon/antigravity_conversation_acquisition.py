@@ -34,6 +34,7 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin
+from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -171,6 +172,7 @@ def acquire_antigravity_conversations_once(archive_root: Path) -> int:
                     payload=payload,
                     source_path=source_path,
                     acquired_at_ms=acquired_at_ms,
+                    file_mtime_ms=timestamp_millis(raw_data.file_mtime) if raw_data is not None else None,
                     logical_source_key=f"{Origin.ANTIGRAVITY_SESSION.value}:{source_path}",
                     source_index=source_index,
                     blob_publication_receipt_id=(

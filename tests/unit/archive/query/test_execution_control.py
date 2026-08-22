@@ -121,6 +121,50 @@ async def test_client_disconnect_cancels_and_releases(tmp_path: Path) -> None:
     assert controller.in_flight_weight == 0
 
 
+def test_asyncio_run_shutdown_keeps_admission_until_executor_operation_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loop shutdown must not release a lease under a still-running executor call.
+
+    This uses only a fixture archive and an in-memory gate.  The main coroutine
+    returns while the archive operation is deliberately held, allowing
+    ``asyncio.run``'s shutdown cancellation to exercise the lifecycle boundary.
+    """
+    import polylogue.archive.query.execution_control as execution_control
+
+    monkeypatch.setattr(execution_control, "DISCONNECT_DRAIN_TIMEOUT_S", 0.05)
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    entered = threading.Event()
+    release_operation = threading.Event()
+    operation_finished = threading.Event()
+    ctx = QueryExecutionContext.create(query_text="fixture-shutdown", timeout_s=None)
+
+    def held_work(store: ArchiveStore) -> int:
+        entered.set()
+        try:
+            assert release_operation.wait(timeout=5)
+            return _cheap_work(store)
+        finally:
+            operation_finished.set()
+
+    async def start_and_return() -> None:
+        worker = asyncio.create_task(execute_archive_read(root, held_work, ctx=ctx, controller=controller))
+        assert await asyncio.to_thread(entered.wait, 2)
+        assert worker.done() is False
+
+    asyncio.run(start_and_return())
+    assert operation_finished.is_set() is False
+    assert controller.in_flight_weight == 1
+
+    release_operation.set()
+    assert operation_finished.wait(timeout=2)
+    deadline = time.monotonic() + 2
+    while controller.in_flight_weight != 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert controller.in_flight_weight == 0
+
+
 async def test_event_loop_stays_responsive_during_expensive_read(tmp_path: Path) -> None:
     """A blocking-scale statement must not freeze the loop: cheap awaitables
     keep their interactive latency while the worker thread grinds."""
@@ -187,10 +231,16 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
     controller = QueryAdmissionController(capacity=2, reserved_interactive=1)
     release_scans = threading.Event()
     first_scan_started = threading.Event()
+    second_scan_started = threading.Event()
     interactive_started = threading.Event()
 
     def blocking_scan(store: ArchiveStore) -> int:
         first_scan_started.set()
+        assert release_scans.wait(timeout=5)
+        return _cheap_work(store)
+
+    def second_scan_work(store: ArchiveStore) -> int:
+        second_scan_started.set()
         assert release_scans.wait(timeout=5)
         return _cheap_work(store)
 
@@ -212,7 +262,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
         assert await asyncio.to_thread(first_scan_started.wait, 2)
         second_scan_ctx = QueryExecutionContext.create(query_text="scan-2", workload_class="scan", timeout_s=5.0)
         second_scan = asyncio.create_task(
-            execute_archive_read(root, blocking_scan, ctx=second_scan_ctx, controller=controller)
+            execute_archive_read(root, second_scan_work, ctx=second_scan_ctx, controller=controller)
         )
         deadline = time.monotonic() + 2
         while controller.queue_position(second_scan_ctx) is None and time.monotonic() < deadline:
@@ -227,6 +277,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
             )
         )
         assert await asyncio.to_thread(interactive_started.wait, 1)
+        assert second_scan_started.is_set() is False
     finally:
         release_scans.set()
         await asyncio.gather(
@@ -235,6 +286,57 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
             return_exceptions=True,
         )
         adapter.close()
+    assert controller.in_flight_weight == 0
+
+
+async def test_adapter_close_releases_queued_executor_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Canceling an accepted-but-queued future must release its lease."""
+    from polylogue.storage.sqlite import async_adapter
+    from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
+
+    root = _bootstrap_archive(tmp_path)
+    adapter = ArchiveReadAsyncAdapter(max_workers=1)
+    monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
+    controller = QueryAdmissionController(capacity=2, reserved_interactive=0)
+    release_first = threading.Event()
+    first_started = threading.Event()
+    second_started = threading.Event()
+
+    def first_work(store: ArchiveStore) -> int:
+        first_started.set()
+        assert release_first.wait(timeout=5)
+        return _cheap_work(store)
+
+    def second_work(store: ArchiveStore) -> int:
+        second_started.set()
+        return _cheap_work(store)
+
+    first_ctx = QueryExecutionContext.create(query_text="adapter-close-first", timeout_s=5.0)
+    second_ctx = QueryExecutionContext.create(query_text="adapter-close-queued", timeout_s=5.0)
+    first = asyncio.create_task(execute_archive_read(root, first_work, ctx=first_ctx, controller=controller))
+    second = asyncio.create_task(execute_archive_read(root, second_work, ctx=second_ctx, controller=controller))
+    try:
+        assert await asyncio.to_thread(first_started.wait, 2)
+        deadline = time.monotonic() + 2
+        while controller.in_flight_weight != 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        assert controller.in_flight_weight == 2
+        assert second_started.is_set() is False
+
+        close_task = asyncio.create_task(asyncio.to_thread(adapter.close))
+        await asyncio.sleep(0.05)
+        release_first.set()
+        await close_task
+        await asyncio.gather(first, second, return_exceptions=True)
+    finally:
+        release_first.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        if not adapter._closed:
+            adapter.close()
+
+    assert second_started.is_set() is False
     assert controller.in_flight_weight == 0
 
 
@@ -896,7 +998,7 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     # tool_result window-function pairing across every block in the archive
     # instead of reading the materialized table. Force that branch directly.
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive._action_relation_for_query",
+        "polylogue.storage.sqlite.archive_tiers.archive_query_reads._action_relation_for_query",
         lambda **_kwargs: (
             f"WITH actions_global_recompute AS ({action_relation_select_sql(session_placeholders=None)})",
             "actions_global_recompute",

@@ -42,10 +42,7 @@ from pathlib import Path
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.message_type_backfill import count_unclassified_message_type_sync
-from polylogue.storage.repair import (
-    count_empty_sessions_sync,
-    count_orphaned_blobs_sync,
-)
+from polylogue.storage.repair import count_empty_sessions_sync
 
 
 class InvalidationReason(str, Enum):
@@ -295,7 +292,7 @@ def _archive_cleanup_items(
                 detail="Exact archive-cleanup count skipped by shallow preview",
                 truncated=True,
             )
-            for model in ("empty_sessions", "orphaned_blobs")
+            for model in ("empty_sessions",)
         ]
 
     empty_sessions = count_empty_sessions_sync(conn)
@@ -307,16 +304,6 @@ def _archive_cleanup_items(
             "sessions with no messages",
         ),
     ]
-
-    if include_expensive:
-        orphan_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
-        rows.append(
-            (
-                "orphaned_blobs",
-                orphan_blobs,
-                "content-addressed blob files with no source blob reference",
-            )
-        )
 
     items: list[StalenessItem] = []
     for model, count, label in rows:

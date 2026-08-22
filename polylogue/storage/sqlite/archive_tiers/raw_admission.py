@@ -108,6 +108,7 @@ from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
+    _backfill_raw_file_mtime,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     pending_raw_logical_source_key,
@@ -251,6 +252,7 @@ def admit_raw_observation(
     source_index: int = 0,
     payload: bytes,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     native_id: str | None = None,
     logical_source_key: str | None = None,
     prior_head: PriorRawHead | None = None,
@@ -325,6 +327,7 @@ def admit_raw_observation(
             blob_hash=blob_hash,
             blob_size=len(payload),
         ):
+            _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
             return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
         admitted_raw_id = write_source_raw_session(
             conn,
@@ -334,6 +337,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=resolved_raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -360,6 +364,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=raw_id,
             artifact=artifact,
@@ -376,6 +381,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=None,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -394,6 +400,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -445,6 +452,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -479,6 +487,7 @@ def admit_raw_observation(
             source_index=source_index,
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             native_id=native_id,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -520,6 +529,7 @@ def admit_raw_observation(
         source_index=source_index,
         payload=resolved_payload,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         native_id=native_id,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
@@ -552,6 +562,7 @@ def admit_raw_blob_observation(
     blob_hash: bytes,
     blob_size: int,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     native_id: str | None = None,
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
@@ -576,6 +587,7 @@ def admit_raw_blob_observation(
         blob_hash=blob_hash,
         blob_size=blob_size,
     ):
+        _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
         return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
     pending_key = pending_raw_logical_source_key(
         origin=origin,
@@ -592,6 +604,7 @@ def admit_raw_blob_observation(
         blob_hash=blob_hash,
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         native_id=native_id,
         raw_id=resolved_raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
@@ -617,6 +630,7 @@ def admit_raw_artifact_blob_observation(
     blob_hash: bytes,
     blob_size: int,
     acquired_at_ms: int,
+    file_mtime_ms: int | None = None,
     raw_id: str | None = None,
     classification: ArtifactClassification,
     blob_publication_receipt_id: str | None = None,
@@ -640,6 +654,7 @@ def admit_raw_artifact_blob_observation(
         blob_hash=blob_hash,
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         artifact=ArchiveSourceArtifact(
@@ -670,6 +685,7 @@ def _admit_artifact(
     source_index: int,
     payload: bytes,
     acquired_at_ms: int,
+    file_mtime_ms: int | None,
     native_id: str | None,
     raw_id: str | None,
     artifact: ArtifactClassification,
@@ -690,6 +706,7 @@ def _admit_artifact(
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         native_id=native_id,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,

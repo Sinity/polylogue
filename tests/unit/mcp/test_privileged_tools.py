@@ -8,7 +8,7 @@ mocks, matching the pattern established in ``test_envelope_contracts.py`` and
 ``test_contract_evidence.py`` (query/context/explain route through the cached
 ``_get_polylogue()`` facade, so a real runtime service scope is required).
 
-``build_server()`` must be called *before* entering ``_installed_runtime_services``
+``build_server()`` must be called *before* entering ``installed_runtime_services``
 -- it always resolves and installs its own default runtime services when not
 given one explicitly, which would otherwise clobber the seeded ones.
 """
@@ -16,15 +16,13 @@ given one explicitly, which would otherwise clobber the seeded ones.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
-from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
 def _seed_archive(archive_root: Path) -> str:
@@ -50,27 +48,6 @@ def _seed_archive(archive_root: Path) -> str:
                 ],
             )
         )
-
-
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Install real RuntimeServices for ``archive_root``, restoring whatever was active before."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
 
 
 class TestCapabilityGating:
@@ -130,7 +107,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             added = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -154,7 +131,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(write_fn, operation="add_tag", tag="reviewed"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -168,7 +145,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -189,7 +166,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(write_fn, operation="add_mark", session_id=session_id))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -203,7 +180,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(write_fn, operation="not_a_real_operation"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -217,7 +194,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(write_fn, operation="delete_session", session_id=session_id))
             assert result.get("is_error") is True
             assert "confirm" in result.get("message", "").lower()
@@ -231,7 +208,7 @@ class TestWriteTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -271,7 +248,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             added = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -303,7 +280,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             added = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="add_mark", session_id=session_id, fields={"mark_type": "star"}
@@ -340,7 +317,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             set_result = json.loads(
                 await invoke_surface_async(
                     write_fn, operation="set_metadata", session_id=session_id, key="note", value="keep"
@@ -371,7 +348,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -408,7 +385,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -434,7 +411,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -471,7 +448,7 @@ class TestWriteToolConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -681,7 +658,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
         if op_kwargs.get("session_ids", "__unset__") is None:
             op_kwargs = {**op_kwargs, "session_ids": [session_id]}
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             for setup_call in setup:
                 setup_result = json.loads(await invoke_surface_async(write_fn, session_id=session_id, **setup_call))
                 assert setup_result.get("is_error") is not True, setup_result
@@ -749,7 +726,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
 
         monkeypatch.setattr(OperationExecutor, "execute", boom)
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(write_fn, operation="add_tag", session_id=session_id, tag="reviewed")
             )
@@ -790,7 +767,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
 
         monkeypatch.setattr(OperationExecutor, "execute", boom)
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -820,7 +797,7 @@ class TestJudgeTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
         judge_fn = server._tool_manager._tools["judge"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
                 from polylogue.api import Polylogue
                 from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
@@ -883,7 +860,7 @@ class TestJudgeTool:
                 actor_ref="user:local",
             )
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
                 from polylogue.api import Polylogue
                 from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
@@ -917,7 +894,7 @@ class TestJudgeTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
         judge_fn = server._tool_manager._tools["judge"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(judge_fn))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -934,7 +911,7 @@ class TestRunTool:
         write_fn = server._tool_manager._tools["write"].fn
         run_fn = server._tool_manager._tools["run"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             saved = json.loads(
                 await invoke_surface_async(
                     write_fn,
@@ -958,7 +935,7 @@ class TestRunTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         run_fn = server._tool_manager._tools["run"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(run_fn, ref="saved-query:does-not-exist"))
             assert result.get("is_error") is True
             assert result.get("code") == "not_found"
@@ -972,7 +949,7 @@ class TestRunTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         run_fn = server._tool_manager._tools["run"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(run_fn, ref="session:not-a-saved-query"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -988,7 +965,7 @@ class TestMaintenanceTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="list"))
             assert result.get("is_error") is not True, result
             assert result["items"] == []
@@ -1003,7 +980,7 @@ class TestMaintenanceTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="status"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
@@ -1017,7 +994,7 @@ class TestMaintenanceTool:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(maintenance_fn, operation="status", operation_id="does-not-exist")
             )
@@ -1046,7 +1023,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     maintenance_fn, operation="execute", targets=["session_insights"], dry_run=False
@@ -1064,7 +1041,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     maintenance_fn, operation="execute", targets=["session_insights"], dry_run=True
@@ -1081,7 +1058,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(
                     maintenance_fn,
@@ -1102,7 +1079,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_index"))
             assert result.get("is_error") is True
             assert "confirm" in result.get("message", "").lower()
@@ -1116,7 +1093,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_index", confirm=True))
             assert result.get("is_error") is not True, result
             assert result["status"] == "ok"
@@ -1130,7 +1107,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights"))
             assert result.get("is_error") is True
             assert "confirm" in result.get("message", "").lower()
@@ -1144,7 +1121,7 @@ class TestMaintenanceConfirmGates:
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(maintenance_fn, operation="rebuild_insights", confirm=True))
             assert result.get("is_error") is not True, result
             assert result["status"] == "ok"
@@ -1160,7 +1137,7 @@ class TestQuerySessionsProjection:
         server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(
                 await invoke_surface_async(query_fn, expression="needle", projection="sessions", limit=10)
             )
@@ -1179,7 +1156,7 @@ class TestQuerySessionsProjection:
         server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="sessions", limit=10))
             assert result.get("is_error") is not True, result
             assert "items" in result
@@ -1194,7 +1171,7 @@ class TestQuerySessionsProjection:
         server = cast(MCPServerUnderTest, build_server())
         query_fn = server._tool_manager._tools["query"].fn
 
-        with _installed_runtime_services(archive_root):
+        with installed_runtime_services(archive_root):
             result = json.loads(await invoke_surface_async(query_fn, projection="sessions", continuation="bogus"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_continuation"

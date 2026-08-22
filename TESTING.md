@@ -251,9 +251,9 @@ summary to `$POLYLOGUE_VERIFY_HISTORY_PATH` when that is set, otherwise to
 recording command. The override exists so an operator can keep this history in
 a canonical data location -- it is the only verification artifact that outlives
 a checkout, and cross-worktree comparison depends on every lane appending to
-one file. `devtools verify --history` prints the recent
-cross-worktree runs. A native verify record also carries one run-level pytest
-aggregate: environment and corpus digest/count, selection mode, outcomes
+one file. `devtools why --history` reads the recent cross-worktree runs. A
+native verify record also carries one run-level pytest aggregate: environment
+and corpus digest/count, selection mode, outcomes
 across both lanes, wall and collection time, peak RSS/PSS/swap/storage,
 read/write totals, and cleanup and containment.
 Setup, call, and teardown timings come only from pytest reports in the event

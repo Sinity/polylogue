@@ -25,6 +25,7 @@ from typing import cast
 
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason, running_daemon_pid
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     DestructiveClass,
@@ -704,6 +705,7 @@ class RawAuthorityRecoveryReport:
 
 
 def _default_receipt_path(root: Path, operation_id: str) -> Path:
+    operation_id = validate_operation_id(operation_id)
     return root / ".maintenance-state" / RECOVERY_DIRNAME / f"{operation_id}.receipt.json"
 
 
@@ -920,6 +922,7 @@ def _build_plan(
     backup_manifest: Path | None,
     receipt_path: Path | None,
 ) -> RawAuthorityRecoveryPlan:
+    operation_id = validate_operation_id(operation_id)
     root = archive_root.expanduser().resolve(strict=False)
     location = ArchiveLocation.resolve(root)
     source_db = root / "source.db"
@@ -1014,10 +1017,17 @@ def inspect_raw_authority_recovery(
 ) -> RawAuthorityRecoveryPlan:
     """Build a read-only, exact plan for one recovery operation."""
     selected = RecoveryOperation(operation)
+    if operation_id is None:
+        operation_id = f"raw-authority-recovery:{uuid.uuid4().hex}"
+    else:
+        try:
+            operation_id = validate_operation_id(operation_id)
+        except ValueError as exc:
+            raise RawAuthorityRecoveryError(str(exc)) from exc
     return _build_plan(
         archive_root,
         operation=selected,
-        operation_id=operation_id or f"raw-authority-recovery:{uuid.uuid4().hex}",
+        operation_id=operation_id,
         backup_manifest=backup_manifest,
         receipt_path=receipt_path,
     )
@@ -1468,6 +1478,10 @@ def _plan_from_intent(
     operation_id: str,
     receipt_path: Path | None,
 ) -> RawAuthorityRecoveryPlan:
+    try:
+        operation_id = validate_operation_id(operation_id)
+    except ValueError as exc:
+        raise RawAuthorityRecoveryError(str(exc)) from exc
     root = archive_root.expanduser().resolve(strict=False)
     selected_receipt_path = _resolve_receipt_path(root, receipt_path or _default_receipt_path(root, operation_id))
     intent_path = _intent_path(selected_receipt_path)
@@ -1506,6 +1520,10 @@ def apply_raw_authority_recovery(
 ) -> RawAuthorityRecoveryReport:
     """Apply one exact plan through the named actuator lifecycle."""
     selected = _load_plan(plan) if isinstance(plan, Path) else plan
+    try:
+        validate_operation_id(selected.operation_id)
+    except ValueError as exc:
+        raise RawAuthorityRecoveryError(str(exc)) from exc
     _resolve_receipt_path(Path(selected.archive_root), Path(selected.receipt_path))
     if backup_manifest is not None and (
         selected.backup_authority is None

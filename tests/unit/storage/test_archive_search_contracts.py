@@ -8,11 +8,14 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import ContentHash, SessionId
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.repository.archive.search import RepositoryArchiveSearchMixin
@@ -375,6 +378,47 @@ async def test_repository_search_and_action_search_pass_ordered_ids_to_hydration
     action_result = await repo.search_actions("storage", limit=5)
     assert [str(session.id) for session in action_result] == ["conv-b", "conv-a"]
     assert repo.ordered_ids_seen == ["conv-b", "conv-a"]
+
+
+@pytest.mark.asyncio
+async def test_repository_save_reports_stale_skip_truthfully(tmp_path: Path) -> None:
+    backend = SQLiteBackend(db_path=tmp_path / "repository-save-stale.db")
+    repo = SessionRepository(backend=backend)
+
+    def parsed(title: str, timestamp: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="repository-save-stale",
+            title=title,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text=title,
+                    timestamp=timestamp,
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=title)],
+                )
+            ],
+        )
+
+    try:
+        first = parsed("new", "2026-06-02T00:00:00Z")
+        await repo.save_parsed_session(first, session_content_hash(first))
+        stale = parsed("old", "2026-06-01T00:00:00Z")
+        counts = await repo.save_parsed_session(stale, session_content_hash(stale))
+    finally:
+        await repo.close()
+
+    assert counts["sessions"] == 0
+    assert counts["skipped_sessions"] == 1
+    assert counts["stale_skipped"] == 1
+    with sqlite3.connect(backend.db_path) as conn:
+        created_at_ms = conn.execute(
+            "SELECT created_at_ms FROM sessions WHERE native_id = ?",
+            ("repository-save-stale",),
+        ).fetchone()[0]
+    assert created_at_ms == 1780272000000
 
 
 @pytest.mark.asyncio

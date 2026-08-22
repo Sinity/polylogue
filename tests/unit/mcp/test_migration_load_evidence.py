@@ -19,9 +19,9 @@ import sqlite3
 import threading
 import tracemalloc
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -38,7 +38,7 @@ from polylogue.archive.query.transaction import QueryTransaction
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
 def _seed_archive(
@@ -81,27 +81,6 @@ def _seed_archive(
         )
 
 
-@contextmanager
-def _installed_runtime_services(archive_root: Path) -> Iterator[None]:
-    """Point the real MCP facade at one isolated archive root."""
-    from polylogue.config import Config
-    from polylogue.mcp import server_support
-    from polylogue.services import RuntimeServices
-
-    services = RuntimeServices(
-        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
-    )
-    try:
-        original: RuntimeServices | None = server_support._get_runtime_services()
-    except RuntimeError:
-        original = None
-    server_support._set_runtime_services(services)
-    try:
-        yield
-    finally:
-        server_support._set_runtime_services(original)
-
-
 @pytest.mark.asyncio
 async def test_read_migration_fails_closed_without_shared_query_transaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -121,7 +100,7 @@ async def test_read_migration_fails_closed_without_shared_query_transaction(
 
     monkeypatch.setattr(QueryTransaction, "run", disabled_transaction)
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         result = json.loads(
             await invoke_surface_async(
                 query_fn,
@@ -270,7 +249,7 @@ async def test_registered_query_disconnect_drains_real_transaction(
     reset_default_admission_controller_for_tests()
     before_fds = _require_fd_probe(archive_root)
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         task = asyncio.create_task(
             invoke_surface_async(
                 query_fn,
@@ -319,7 +298,7 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         )
 
     outer_before_fds = _require_fd_probe(archive_root)
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         warm_response = json.loads(await invoke_large_query())
         assert warm_response["status"] == "response_budget_exceeded"
 
@@ -387,7 +366,7 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
     markers = tuple(f"needle-mcp-load-{index:03d}" for index in range(request_count))
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
 
-    with _installed_runtime_services(archive_root):
+    with installed_runtime_services(archive_root):
         snapshot_refs = asyncio.run(_seed_context_deliveries(server, markers))
         before_fds = _require_fd_probe(archive_root)
 
@@ -398,12 +377,20 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         capacity_barrier = threading.Barrier(DEFAULT_CAPACITY)
         barrier_participants = 0
         participant_lock = threading.Lock()
-        original_admit = QueryAdmissionController.admit_blocking
+        original_admit_async = QueryAdmissionController.admit_async
 
-        @contextmanager
-        def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> Iterator[None]:
+        @asynccontextmanager
+        async def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> AsyncIterator[None]:
+            """Observe after async admission, then synchronize admitted readers.
+
+            The consolidated MCP tools are async and therefore use
+            ``admit_async``; observing ``admit_blocking`` would never see this
+            route.  The barrier runs in a worker thread so the per-request
+            event loops can all reach the rendezvous without blocking one
+            another.
+            """
             nonlocal barrier_participants
-            with original_admit(self, ctx):
+            async with original_admit_async(self, ctx):
                 with observation_lock:
                     observed_in_flight.append(self.in_flight_weight)
                     observed_admission_owners.append(ctx.owner_ref)
@@ -412,10 +399,14 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
                     if is_participant:
                         barrier_participants += 1
                 if is_participant:
-                    capacity_barrier.wait(timeout=10)
+                    await asyncio.to_thread(capacity_barrier.wait, timeout=10)
                 yield
 
-        monkeypatch.setattr(QueryAdmissionController, "admit_blocking", observe_admission)
+        monkeypatch.setattr(QueryAdmissionController, "admit_async", observe_admission)
+
+        # The production route is async; the barrier above deliberately holds
+        # the first capacity-sized set after admission so the max-in-flight
+        # assertion measures overlapping leases rather than scheduling order.
 
         before_files = _archive_files(archive_root)
 

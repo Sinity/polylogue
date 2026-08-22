@@ -12,9 +12,9 @@ and asserts the round-trip:
   → re-detect               reports zero orphans
   → ``verify_all``           confirms the referenced blob's integrity
 
-This test guards against regressions where one of these surfaces is
-silently disconnected (e.g., maintenance target unregistered, repair
-handler routed to a stale set of orphan hashes).
+These tests guard the low-level BlobStore contract. The daemon-owned
+periodic GC route and its source-tier safety conditions are covered by
+``tests/unit/daemon/test_blob_gc_periodic.py``.
 """
 
 from __future__ import annotations
@@ -43,20 +43,6 @@ def _seed_raw_row(db_path: Path, raw_id: str, source_path: Path, blob_size: int)
             (raw_id, "unknown-export", raw_id, str(source_path), bytes.fromhex(raw_id), blob_size, 1_746_830_400_000),
         )
         conn.commit()
-
-
-def _age_blob(store: object, blob_hash: str, *, seconds: int = 3600) -> None:
-    """Backdate a blob's mtime past the GC minimum-age floor."""
-    import os
-
-    from polylogue.storage.blob_gc import MIN_AGE_S
-
-    # Derive the backdate from the file's own mtime, not the host clock: the
-    # clock guard (tests/infra/clock_guard.py) rejects direct time.time() reads
-    # from test code, and the file's stamp is the value GC actually compares.
-    path = store.blob_path(blob_hash)  # type: ignore[attr-defined]
-    aged = path.stat().st_mtime - max(seconds, MIN_AGE_S * 2)
-    os.utime(path, (aged, aged))
 
 
 class TestBlobOrphanLifecycle:
@@ -144,158 +130,3 @@ class TestBlobOrphanLifecycle:
         assert result.errors == 0
         assert result.error_details == ()
         assert result.deleted_bytes == 0
-
-
-class TestRepairOrphanedBlobsHandler:
-    """The maintenance-target wiring (`repair_orphaned_blobs`).
-
-    Pins 818-A6: ``polylogue ops doctor --repair --target orphaned_blobs``
-    must route through this handler and converge an orphaned-blob state
-    to a clean state.
-    """
-
-    def test_dry_run_then_apply_clears_orphans(self, cli_workspace: CliWorkspace) -> None:
-        from polylogue.config import get_config
-        from polylogue.storage.blob_store import get_blob_store
-        from polylogue.storage.repair import repair_orphaned_blobs
-
-        store = get_blob_store()
-        referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
-        orphan_hash, _ = store.write_from_bytes(_ORPHAN_BLOB)
-        # Blob GC will not collect anything younger than MIN_AGE_S: that floor
-        # is what bridges the acquire-blob -> commit-row window. Age the orphan
-        # rather than weakening the invariant.
-        _age_blob(store, orphan_hash)
-        _seed_raw_row(
-            cli_workspace["db_path"],
-            referenced_hash,
-            cli_workspace["inbox_dir"] / "ingested.json",
-            ref_size,
-        )
-
-        config = get_config()
-
-        # Dry-run: handler reports one would-be deletion, doesn't delete.
-        dry = repair_orphaned_blobs(config, dry_run=True)
-        assert dry.name == "orphaned_blobs"
-        assert dry.success is True
-        assert dry.repaired_count == 1
-        assert "Would: delete 1" in dry.detail
-        assert store.exists(orphan_hash) is True
-
-        # Live: handler deletes the orphan and reports it.
-        applied = repair_orphaned_blobs(config, dry_run=False)
-        assert applied.name == "orphaned_blobs"
-        assert applied.success is True
-        assert applied.repaired_count == 1
-        assert "Deleted 1" in applied.detail
-        assert store.exists(orphan_hash) is False
-        assert store.exists(referenced_hash) is True
-
-        # Subsequent run: clean state, no work.
-        clean = repair_orphaned_blobs(config, dry_run=False)
-        assert clean.name == "orphaned_blobs"
-        assert clean.success is True
-        assert clean.repaired_count == 0
-        # The no-op detail reads "Deleted 0 orphaned blobs (0 bytes)" once a
-        # generation has run; repaired_count is the contract, not the prose.
-        assert "0 orphaned blobs" in clean.detail
-
-    def test_clean_state_returns_no_op(self, cli_workspace: CliWorkspace) -> None:
-        from polylogue.config import get_config
-        from polylogue.storage.blob_store import get_blob_store
-        from polylogue.storage.repair import repair_orphaned_blobs
-
-        store = get_blob_store()
-        referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
-        _seed_raw_row(
-            cli_workspace["db_path"],
-            referenced_hash,
-            cli_workspace["inbox_dir"] / "ingested.json",
-            ref_size,
-        )
-
-        config = get_config()
-        result = repair_orphaned_blobs(config, dry_run=False)
-        assert result.name == "orphaned_blobs"
-        assert result.success is True
-        assert result.repaired_count == 0
-
-
-class TestOrphanedBlobsCatalogRouting:
-    """Pin the wiring from the maintenance-target catalog to the handler.
-
-    818-A6: ``polylogue ops doctor --repair --target orphaned_blobs`` resolves
-    via ``MaintenanceTargetCatalog`` to the ``orphaned_blobs`` spec and
-    the ``REPAIR_HANDLERS["orphaned_blobs"]`` entry. A regression that
-    deletes the spec, deletes the handler dict entry, drops the destructive
-    flag, or splits the name across the two structures would not be
-    caught by handler-only unit tests.
-    """
-
-    def test_catalog_resolves_orphaned_blobs_target(self) -> None:
-        from polylogue.maintenance.models import MaintenanceCategory
-        from polylogue.maintenance.targets import (
-            MaintenanceTargetMode,
-            build_maintenance_target_catalog,
-        )
-
-        catalog = build_maintenance_target_catalog()
-        spec = catalog.resolve_name("orphaned_blobs")
-        assert spec is not None, "orphaned_blobs target must be registered"
-        assert spec.name == "orphaned_blobs"
-        assert spec.mode is MaintenanceTargetMode.CLEANUP
-        assert spec.category is MaintenanceCategory.ARCHIVE_CLEANUP
-        assert spec.destructive is True, (
-            "blob deletion must be marked destructive so doctor requires explicit --repair / --cleanup confirmation"
-        )
-
-    def test_repair_handler_dict_routes_orphaned_blobs(self) -> None:
-        """``REPAIR_HANDLERS["orphaned_blobs"]`` must dispatch to the
-        function under test in ``TestRepairOrphanedBlobsHandler``.
-        """
-        from polylogue.storage import repair
-
-        assert "orphaned_blobs" in repair.REPAIR_HANDLERS
-        assert repair.REPAIR_HANDLERS["orphaned_blobs"] is repair.repair_orphaned_blobs
-        assert "orphaned_blobs" in repair.PREVIEW_HANDLERS
-        assert repair.PREVIEW_HANDLERS["orphaned_blobs"] is repair.preview_orphaned_blobs
-
-    def test_catalog_resolution_drives_end_to_end_cleanup(self, cli_workspace: CliWorkspace) -> None:
-        """End-to-end via catalog → handler dict → handler call.
-
-        Mirrors the doctor command's actual dispatch sequence: resolve a
-        target name through the catalog, look up the handler in the
-        repair-handler dict, invoke it against a real archive. This is
-        the routing path that was previously untested.
-        """
-        from polylogue.config import get_config
-        from polylogue.maintenance.targets import build_maintenance_target_catalog
-        from polylogue.storage import repair
-        from polylogue.storage.blob_store import get_blob_store
-
-        store = get_blob_store()
-        referenced_hash, ref_size = store.write_from_bytes(_REFERENCED_BLOB)
-        orphan_hash, _ = store.write_from_bytes(_ORPHAN_BLOB)
-        # Blob GC will not collect anything younger than MIN_AGE_S: that floor
-        # is what bridges the acquire-blob -> commit-row window. Age the orphan
-        # rather than weakening the invariant.
-        _age_blob(store, orphan_hash)
-        _seed_raw_row(
-            cli_workspace["db_path"],
-            referenced_hash,
-            cli_workspace["inbox_dir"] / "ingested.json",
-            ref_size,
-        )
-
-        catalog = build_maintenance_target_catalog()
-        spec = catalog.resolve_name("orphaned_blobs")
-        assert spec is not None
-        handler = repair.REPAIR_HANDLERS[spec.name]
-
-        result = handler(get_config(), dry_run=False)
-        assert result.name == "orphaned_blobs"
-        assert result.repaired_count == 1
-        assert result.success is True
-        assert store.exists(orphan_hash) is False
-        assert store.exists(referenced_hash) is True

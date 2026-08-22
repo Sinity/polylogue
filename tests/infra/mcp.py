@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
+from pathlib import Path
+from typing import Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 from unittest.mock import AsyncMock, MagicMock
 
 from polylogue.archive.models import Session
@@ -71,6 +73,42 @@ class MCPServerUnderTest(Protocol):
     _tool_manager: MCPToolManager
     _resource_manager: MCPResourceManager
     _prompt_manager: MCPPromptManager
+
+
+@contextmanager
+def installed_runtime_services(archive_root: Path) -> Iterator[None]:
+    """Install real MCP runtime services for a temporary archive.
+
+    MCP surface tests construct servers before entering this scope when the
+    server resolves its default services during construction. The previous
+    active services are restored on exit so tests remain isolated.
+    """
+    from polylogue.config import Config
+    from polylogue.mcp import server_support
+    from polylogue.services import RuntimeServices
+
+    services = RuntimeServices(
+        config=Config(archive_root=archive_root, render_root=archive_root.parent / "render", sources=[]),
+    )
+    try:
+        original: RuntimeServices | None = server_support._get_runtime_services()
+    except RuntimeError:
+        original = None
+    server_support._set_runtime_services(services)
+    try:
+        yield
+    finally:
+        server_support._set_runtime_services(original)
+
+
+def build_tools(
+    capabilities: MCPCapabilities = MCPCapabilities(),
+) -> dict[str, Callable[..., str | Awaitable[str]]]:
+    """Build a test MCP server and expose its registered tool callables."""
+    from polylogue.mcp.server import build_server
+
+    server = cast(MCPServerUnderTest, build_server(capabilities=capabilities))
+    return {name: tool.fn for name, tool in server._tool_manager._tools.items()}
 
 
 async def _await_surface(result: Awaitable[SurfaceResult]) -> SurfaceResult:

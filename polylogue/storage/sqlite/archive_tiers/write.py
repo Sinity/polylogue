@@ -41,6 +41,7 @@ from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import MessageOwnerResolution, attachment_message_owner_key, message_owner_resolution
@@ -252,6 +253,50 @@ class SessionEventWriteResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveWriteOutcome:
+    """Truthful result of the archive writer's precedence decision."""
+
+    session_id: str
+    wrote: bool
+    stale_skipped: bool = False
+
+
+def _repair_stale_session_observations(
+    conn: sqlite3.Connection,
+    session_id: str,
+    session: ParsedSession,
+    *,
+    fallback_timestamp: str | None = None,
+) -> None:
+    """Retain monotonic observations from a stale snapshot without replacing rows.
+
+    Freshness/content governance may reject the snapshot, but its earlier
+    creation evidence and repository observations are still legitimate evidence.
+    Keeping this at the low-level writer boundary prevents direct API and
+    revision-governance callers from silently losing the repair that batch ingest
+    performs.
+    """
+    conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
+    candidate_created_at_ms, _candidate_updated_at_ms = session_evidence_timestamps(
+        session,
+        fallback_timestamp=fallback_timestamp,
+    )
+    if candidate_created_at_ms is not None:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET created_at_ms = CASE
+                WHEN created_at_ms IS NULL THEN ?
+                ELSE MIN(created_at_ms, ?)
+            END
+            WHERE session_id = ?
+            """,
+            (candidate_created_at_ms, candidate_created_at_ms, session_id),
+        )
+    _write_repo_edges(conn, session_id, session, update_session_observations=False)
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedSessionRows:
     """Pure, off-writer-thread-computable row tuples for one session's
     full-replace write (polylogue-623q).
@@ -333,6 +378,7 @@ def write_parsed_session_to_archive(
     defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
     source_conn: sqlite3.Connection | None = None,
+    write_outcome: list[ArchiveWriteOutcome] | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
@@ -423,13 +469,12 @@ def write_parsed_session_to_archive(
     # is just the newly appended tail, so the derived max naturally advances
     # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
     # the already-set created_at_ms untouched).
-    derived_created_at_ms, derived_updated_at_ms = _derive_session_timestamps_from_messages(messages)
-    session_created_at_ms = _timestamp_ms(session.created_at)
-    if session_created_at_ms is None:
-        session_created_at_ms = derived_created_at_ms
-    session_updated_at_ms = _timestamp_ms(session.updated_at)
-    if session_updated_at_ms is None:
-        session_updated_at_ms = derived_updated_at_ms
+    # Keep the writer's effective freshness identical to ingest/replay
+    # normalization: producer fields, then authored messages, then semantic
+    # session events. No wall-clock or file-mtime fallback is available here;
+    # callers that have acquisition evidence must normalize before this point.
+    session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(session)
+    producer_created, producer_updated = producer_timestamp_flags(session)
     # incoming_freshness_ms now reflects the same fallback: previously a
     # provider that omitted both session timestamps produced
     # incoming_freshness_ms=None, which unconditionally bypassed the
@@ -448,7 +493,13 @@ def write_parsed_session_to_archive(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_ms,
         ):
+            # The stale path returns before the normal write transaction below;
+            # own a short transaction here so direct callers cannot lose repairs.
+            with conn if manage_transaction else nullcontext():
+                _repair_stale_session_observations(conn, session_id, session)
             add_timing("index.skip_stale_replace", t0)
+            if write_outcome is not None:
+                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
             return session_id
     event_duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     # Lineage normalization (#2467): when this is a prefix-sharing child whose
@@ -657,10 +708,37 @@ def write_parsed_session_to_archive(
                     -- classification, so it is correctly ratcheted once set --
                     -- included in the polylogue-0cn3 sibling audit as the one
                     -- column that legitimately never moves.
-                    created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
+                    created_at_ms = CASE
+                        -- A valid producer timestamp outranks a previously-derived
+                        -- value, even when this is the first producer-bearing
+                        -- replay. A derived observation never overwrites producer
+                        -- authority already stored on the session.
+                        WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
+                        WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
+                        ELSE sessions.created_at_ms
+                    END,
                     updated_at_ms = CASE
-                        WHEN ? THEN excluded.updated_at_ms
-                        ELSE MAX(COALESCE(sessions.updated_at_ms, 0), COALESCE(excluded.updated_at_ms, 0))
+                        -- Force replacement may replace known evidence with a newer
+                        -- producer value, but an incoming NULL is omission, never a
+                        -- command to erase an established timestamp. Keep the
+                        -- interval closed even when only one producer endpoint is
+                        -- supplied: a forced created endpoint may outrun the
+                        -- incoming update, while a forced update may precede the
+                        -- stored created endpoint.
+                        WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN
+                            CASE
+                                WHEN ? AND excluded.created_at_ms IS NOT NULL
+                                    THEN MAX(excluded.updated_at_ms, excluded.created_at_ms)
+                                WHEN sessions.created_at_ms IS NOT NULL
+                                    THEN MAX(excluded.updated_at_ms, sessions.created_at_ms)
+                                ELSE excluded.updated_at_ms
+                            END
+                        WHEN ? AND excluded.updated_at_ms IS NOT NULL
+                             AND sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+                        WHEN excluded.updated_at_ms IS NULL THEN sessions.updated_at_ms
+                        WHEN sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+                        WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
+                        ELSE sessions.updated_at_ms
                     END
                 """,
                 (
@@ -702,7 +780,13 @@ def write_parsed_session_to_archive(
                     session_content_hash,
                     session_created_at_ms,
                     session_updated_at_ms,
+                    producer_created,
                     force_replace,
+                    producer_updated,
+                    producer_created,
+                    producer_created,
+                    producer_updated,
+                    merge_append,
                 ),
             )
             add_timing("index.session_upsert", t0)
@@ -957,6 +1041,8 @@ def write_parsed_session_to_archive(
             f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
             f"origin={origin.value!r} native_id={native_id!r}: {exc}"
         ) from exc
+    if write_outcome is not None:
+        write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=True))
     return session_id
 
 
@@ -7022,25 +7108,6 @@ def _word_count(text: str | None) -> int:
 def _timestamp_ms(value: str | None) -> int | None:
     parsed = parse_timestamp(value) if value else None
     return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
-def _derive_session_timestamps_from_messages(
-    messages: Sequence[ParsedMessage],
-) -> tuple[int | None, int | None]:
-    """Fallback (created_at_ms, updated_at_ms) from message evidence (#m3p9).
-
-    Called only as a fallback when the provider payload carries no
-    session-level ``created_at``/``updated_at`` (or they fail to parse) --
-    see the call site in ``write_parsed_session_to_archive``. Returns the
-    min/max of ``ParsedMessage.occurred_at_ms`` across ``messages``, or
-    ``(None, None)`` when no message carries a timestamp either (a
-    genuinely undatable session stays NULL, it is not backdated to the
-    ingest wall clock).
-    """
-    occurred_at_ms_values = [m.occurred_at_ms for m in messages if m.occurred_at_ms is not None]
-    if not occurred_at_ms_values:
-        return None, None
-    return min(occurred_at_ms_values), max(occurred_at_ms_values)
 
 
 def _event_summary(event: ParsedSessionEvent) -> str | None:

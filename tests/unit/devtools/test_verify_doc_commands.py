@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from devtools.verify_doc_commands import check_docs, main
+from polylogue.daemon import blob_gc_periodic
+from polylogue.daemon import cli as daemon_cli
 
 
 def _write_docs(root: Path, files: dict[str, str]) -> None:
@@ -28,6 +30,49 @@ class TestCheckDocsRepoBaseline:
         errors, files_checked = check_docs()
         assert errors == [], "\n".join(errors)
         assert files_checked > 0
+
+    def test_blob_gc_recovery_documents_gated_bounded_daemon_route(self) -> None:
+        """Keep the recovery runbook aligned with the daemon's actual schedule.
+
+        This contract checks the cleanup ownership boundary as well as timing.
+        It uses the production registry and handler maps, so a stale document
+        cannot pass merely because a forbidden token was removed from prose.
+        """
+        root = Path(__file__).parents[3]
+        text = (root / "docs" / "maintenance.md").read_text()
+        cli_reference = (root / "docs" / "cli-reference.md").read_text()
+        heading = "### Recovering a corrupt blob store"
+        start = text.index(heading)
+        next_heading = text.find("\n### ", start + len(heading))
+        section = text[start:] if next_heading == -1 else text[start:next_heading]
+        lower_section = section.casefold()
+        normalized_section = " ".join(lower_section.replace("#", " ").split())
+
+        restart = section.index("systemctl --user start polylogued.service")
+        gate_timeout = f"{daemon_cli._CATCH_UP_GATE_TIMEOUT_SECONDS:g}-second gate timeout"
+        interval = f"{blob_gc_periodic.BLOB_GC_INTERVAL_SECONDS:g}-second interval"
+        max_batch = f"at most {blob_gc_periodic.BLOB_GC_MAX_BATCH} blobs"
+        first_wait = section.index(interval)
+        gate_release = lower_section.index("after the catch-up event or timeout")
+
+        from polylogue.maintenance.targets import build_maintenance_target_catalog
+        from polylogue.storage import repair
+
+        target_name = "orphaned_blobs"
+        catalog = build_maintenance_target_catalog()
+        assert catalog.resolve_name(target_name) is None
+        assert target_name not in repair.PREVIEW_HANDLERS
+        assert target_name not in repair.REPAIR_HANDLERS
+        assert target_name not in text
+        assert target_name not in cli_reference
+
+        assert gate_timeout in section
+        assert "daemon-owned blob-gc loop" in normalized_section
+        assert restart < gate_release < first_wait, "restart must precede the catch-up gate and the first periodic wait"
+        assert max_batch in section
+        assert "eligible leftovers are handled by later passes" in normalized_section
+        assert "manual orphaned-blob repair is not a supported route" in normalized_section
+        assert "reservation ttls must not be inferred" in normalized_section
 
 
 class TestCheckDocsTmpFixtures:

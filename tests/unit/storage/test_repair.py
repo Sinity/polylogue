@@ -484,7 +484,6 @@ def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_unclassified_message_type_sync", fail_unrelated)
-    monkeypatch.setattr(repair_mod, "count_orphaned_blobs_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
 
     with sqlite3.connect(":memory:") as conn:

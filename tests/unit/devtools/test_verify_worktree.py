@@ -119,6 +119,27 @@ def test_max_updated_at_skips_garbage_lines(tmp_path: Path) -> None:
     assert _max_updated_at(path) == "2026-06-01T00:00:00Z"
 
 
+def test_git_selection_environment_cannot_redirect_standalone_cli(
+    repo_pair: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, worktree = repo_pair
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    _git(attacker, "init", "-b", "attacker-branch")
+    (attacker / "other.txt").write_text("other\n")
+    _git(attacker, "add", "other.txt")
+    _git(attacker, "commit", "-m", "attacker", "--no-gpg-sign")
+    monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(attacker))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(attacker / ".git" / "index"))
+
+    assert main([str(worktree), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["branch"] == "lane-branch"
+
+
 def test_main_exit_codes_and_json(repo_pair: tuple[Path, Path], capsys: pytest.CaptureFixture[str]) -> None:
     main_repo, worktree = repo_pair
     assert main([str(worktree), "--expect-branch", "lane-branch", "--json"]) == 0

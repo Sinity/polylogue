@@ -1004,7 +1004,7 @@ evidence citation | unlocks / owning reference.
 | `index.threads.input_row_count` | KEEP | polylogue/daemon/http.py (+19 more outside-tier files) | n/a |
 | `index.threads.start_time` | KEEP | polylogue/core/metrics.py (+20 more outside-tier files) | n/a |
 | `index.threads.end_time` | KEEP | polylogue/core/metrics.py (+21 more outside-tier files) | n/a |
-| `index.threads.dominant_repo` | KEEP | polylogue/cli/shared/resume_rendering.py (+14 more outside-tier files) | n/a |
+| `index.threads.dominant_repo` | KEEP | polylogue/insights/resume.py (+14 more outside-tier files) | n/a |
 | `index.threads.session_ids_json` | KEEP | polylogue/api/archive.py (+6 more outside-tier files) | n/a |
 | `index.threads.session_count` | KEEP | devtools/daemon_workload_probe.py (+84 more outside-tier files) | n/a |
 | `index.threads.depth` | KEEP | devtools/verify_doc_commands.py (+59 more outside-tier files) | n/a |

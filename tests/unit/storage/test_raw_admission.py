@@ -66,6 +66,66 @@ def _envelope_row(conn: sqlite3.Connection, raw_id: str) -> tuple[object, ...]:
     return tuple(row)
 
 
+def test_non_post_parse_blob_ref_persists_file_mtime(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b"fixture blob-ref payload"
+    file_mtime_ms = 1_767_225_600_000
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive._blob_publisher is not None
+        blob_hash, blob_size = archive._blob_publisher.write_from_bytes(payload)
+        archive._blob_publisher.flush()
+        raw_id = archive.write_raw_blob_ref(
+            provider=Provider.CODEX,
+            blob_hash_hex=blob_hash,
+            blob_size=blob_size,
+            source_path="non-post-parse.jsonl",
+            acquired_at_ms=1,
+            file_mtime_ms=file_mtime_ms,
+            post_parse=False,
+        )
+        row = (
+            archive._ensure_source_conn()
+            .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+        assert row[0] == file_mtime_ms
+
+
+def test_same_raw_identity_fills_null_file_mtime_on_later_observation(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    payload = b"same raw identity"
+    file_mtime_ms = 1_767_225_600_000
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="same-raw.jsonl",
+            acquired_at_ms=1,
+            post_parse=False,
+        )
+        assert (
+            archive._ensure_source_conn()
+            .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()[0]
+            is None
+        )
+        same_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="same-raw.jsonl",
+            acquired_at_ms=2,
+            file_mtime_ms=file_mtime_ms,
+            post_parse=False,
+        )
+        assert same_raw_id == raw_id
+        assert (
+            archive._ensure_source_conn()
+            .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()[0]
+            == file_mtime_ms
+        )
+
+
 def test_admit_raw_observation_baseline_when_no_prior_head(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "source.db")
 

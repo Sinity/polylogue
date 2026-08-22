@@ -691,22 +691,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
+            # Validate before the reference-pipeline shortcut.  That pipeline
+            # can return a result without constructing a SessionQuerySpec, so
+            # validating only below it lets an invalid Provider-wire token
+            # bypass the public-origin boundary.
+            if origin is not None:
+                from polylogue.operations.origin_filters import public_origin_filter_tokens
+
+                choices = public_origin_filter_tokens()
+                bad_origins = [token.strip() for token in origin.split(",") if token.strip()]
+                bad_origins = [token for token in bad_origins if token not in choices]
+                if bad_origins:
+                    return hooks.error_json(
+                        f"unknown origin(s): {', '.join(bad_origins)}. Valid: {', '.join(choices)}",
+                        code="invalid_argument",
+                        tool="query",
+                    )
+
             if expression is not None:
                 reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
                 if reference_result is not None:
                     return reference_result
-
-            if origin is not None:
-                from polylogue.core.sources import CORE_SCHEMA_ORIGINS
-
-                bad_origins = [token.strip() for token in origin.split(",") if token.strip()]
-                bad_origins = [token for token in bad_origins if token not in CORE_SCHEMA_ORIGINS]
-                if bad_origins:
-                    return hooks.error_json(
-                        f"unknown origin(s): {', '.join(bad_origins)}. Valid: {', '.join(CORE_SCHEMA_ORIGINS)}",
-                        code="invalid_argument",
-                        tool="query",
-                    )
 
             if projection == "default" and sort is not None:
                 return hooks.error_json(
