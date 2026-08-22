@@ -427,7 +427,8 @@ reader with no conversation context (file paths, AC, design references).
 Full detail in `TESTING.md`. Layout: `tests/unit` (~95%), `tests/property`
 (Hypothesis), `tests/integration` (slow, protected), `tests/benchmarks`,
 `tests/fuzz`. Shared infra in `tests/infra/` (`SessionBuilder`, `make_message`,
-`corpus_seeded_db`, schema-driven strategies). `workspace_env` fixture gives
+`seeded_archive`/`named_seeded_archive`/`named_seeded_archive_ro`, schema-driven
+strategies). `workspace_env` fixture gives
 isolated XDG paths + archive root.
 
 - **Prefer `devtools test`** over raw pytest — it runs through the managed
@@ -459,8 +460,9 @@ isolated XDG paths + archive root.
   cloud `POLYLOGUE_PYTEST_BASETEMP_ROOT=/tmp/polylogue-pytest` leaked onto the
   workstation, where `/tmp` is a small tmpfs shared by every concurrent agent
   lane — that env value is now stripped before candidate selection whenever
-  `/realm/tmp` is mounted). `seeded_db`/`corpus_seeded_db` build a shared DB
-  once under a `.build.done` guard — a SIGKILL mid-build leaves a partial DB +
+  `/realm/tmp` is mounted). Seeded-archive fixtures (`seeded_archive` and its
+  `named_seeded_archive`/`named_seeded_archive_ro` derivatives) build a shared
+  DB once under a `.build.done` guard — a SIGKILL mid-build leaves a partial DB +
   set guard → `no such table: sessions`; fix with
   `rm -rf /dev/shm/pytest-polylogue-seeded-*` (and legacy
   `/realm/tmp/polylogue-pytest/pytest-polylogue-seeded-*`). Never `pkill` polylogue pytest without

@@ -847,7 +847,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    named_seeded_archive: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
@@ -859,9 +859,10 @@ def test_dynamic_completers_seeded_archive_per_shell(
     tool (which are always populated) to be non-empty, while still
     asserting the call itself succeeds for all completers.
     """
-    # The named workload is generated through the production pipeline then
-    # cloned into this test's configured archive root.
-    named_seeded_archive("completion")
+    # The named workload is generated through the production pipeline; this
+    # read-only consumer points the archive root straight at the shared
+    # immutable artifact instead of cloning it.
+    named_seeded_archive_ro("completion")
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.

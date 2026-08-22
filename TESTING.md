@@ -327,8 +327,12 @@ and call `.build()` to persist.
 **`make_message()` / `make_session()`** (`infra/storage_records.py`):
 Quick factories for creating model instances without database setup.
 
-**`corpus_seeded_db`** (`infra/corpus_fixtures.py`): Pre-populated database
-fixture using the synthetic corpus generator. For tests needing a realistic archive.
+**`seeded_archive` / `named_seeded_archive` / `named_seeded_archive_ro`**
+(`infra/corpus_fixtures.py`): Pre-populated archive fixtures using the
+synthetic corpus generator. `named_seeded_archive_ro` points the archive
+root straight at the shared immutable artifact for read-only consumers;
+`named_seeded_archive` clones a private writable copy for consumers that
+mutate the archive (ingest, insight rebuild, marks, maintenance).
 
 **Hypothesis strategies** (`infra/strategies/`): Schema-driven payload
 generators. `schema_conformant_payload(provider)` produces payloads that match

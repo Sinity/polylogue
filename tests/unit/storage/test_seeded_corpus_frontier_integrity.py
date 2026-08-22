@@ -47,10 +47,10 @@ def _snapshot(root: Path) -> RawFrontierIntegritySnapshot:
 
 
 def test_seeded_corpus_satisfies_raw_frontier_integrity(
-    named_seeded_archive: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], Path],
 ) -> None:
     """polylogue-ku00r: the corpus every snapshot test reads is production-valid."""
-    root = named_seeded_archive("cli-chatgpt").parent
+    root = named_seeded_archive_ro("cli-chatgpt").parent
 
     snapshot = _snapshot(root)
 
