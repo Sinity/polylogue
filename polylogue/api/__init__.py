@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.api.archive import PolylogueArchiveMixin
+from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.embeddings import PolylogueEmbeddingsMixin
 from polylogue.api.ingest import PolylogueIngestMixin
 from polylogue.api.insights import PolylogueInsightsMixin
@@ -135,4 +136,4 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         return f"Polylogue(archive_root={self._config.archive_root!r})"
 
 
-__all__ = ["ArchiveStats", "Polylogue", "select_pending_embedding_session_window"]
+__all__ = ["ArchiveReadCapability", "ArchiveStats", "Polylogue", "select_pending_embedding_session_window"]

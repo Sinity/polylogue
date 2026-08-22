@@ -40,6 +40,7 @@ from polylogue import Polylogue
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
+from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import (
     AssertionKind,
@@ -353,6 +354,24 @@ def _archive(tmp_path: Path) -> Polylogue:
     with ArchiveStore(tmp_path):
         pass
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
+
+
+async def test_archive_read_capability_is_the_real_facade_route(tmp_path: Path) -> None:
+    """The extracted protocol is implemented by, and exercised on, Polylogue."""
+    archive = _archive(tmp_path)
+    try:
+        assert isinstance(archive, ArchiveReadCapability)
+        assert set(ArchiveReadCapability.__dict__) >= {
+            "list_sessions",
+            "list_summaries",
+            "list_sessions_for_spec",
+            "search_session_hits",
+        }
+        assert await archive.list_sessions() == []
+        assert await archive.list_summaries() == []
+        assert (await archive.search("protocol route")).hits == ()
+    finally:
+        await archive.close()
 
 
 def _materialize_run_projection(index_db: Path) -> None:

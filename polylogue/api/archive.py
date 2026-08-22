@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
+from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.blackboard import BlackboardNote
@@ -2652,7 +2653,7 @@ def _archive_message_matches(
     return not (until_ms is not None and (occurred_ms is None or occurred_ms > until_ms))
 
 
-class PolylogueArchiveMixin:
+class PolylogueArchiveMixin(ArchiveReadCapability):
     if TYPE_CHECKING:
 
         @property

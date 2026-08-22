@@ -35,6 +35,7 @@ parallel adapter class.
 
 from __future__ import annotations
 
+from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.contracts.assertions import assert_implements
 from polylogue.api.contracts.read_surface import (
     DaemonStatusSurface,
@@ -52,5 +53,6 @@ __all__ = [
     "SessionTagsSurface",
     "DaemonStatusSurface",
     "ReadSurface",
+    "ArchiveReadCapability",
     "assert_implements",
 ]
