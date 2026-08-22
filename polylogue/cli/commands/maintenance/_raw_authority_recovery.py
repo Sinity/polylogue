@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.raw_authority_recovery import (
     RawAuthorityRecoveryError,
     RawAuthorityRecoveryPlan,
@@ -61,6 +62,8 @@ def raw_authority_recovery_command(
     """Inspect raw-authority recovery, or apply one exact guarded plan."""
     plan_obj: RawAuthorityRecoveryPlan | None = None
     try:
+        if operation_id is not None:
+            operation_id = validate_operation_id(operation_id)
         selected = RecoveryOperation(operation)
         if apply_changes:
             if plan_file is not None:

@@ -14,6 +14,7 @@ import json
 import click
 
 from polylogue.logging import configure_logging
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.paths import archive_root
 
 
@@ -52,6 +53,11 @@ def rebuild_index_status_command(
 
     configure_logging()
     root = archive_root()
+    if operation_id is not None:
+        try:
+            operation_id = validate_operation_id(operation_id)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--operation-id") from exc
     status = rebuild_status(root, operation_id=operation_id, include_daemon_bulk_rebuild=not no_daemon_fallback)
 
     if output_format == "json":

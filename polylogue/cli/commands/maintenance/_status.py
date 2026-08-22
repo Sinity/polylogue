@@ -10,6 +10,7 @@ import click
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import configure_logging
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.paths import archive_root, render_root
 
 if TYPE_CHECKING:
@@ -67,6 +68,12 @@ def status_command(
         sources=[],
     )
     registry = MaintenanceOperationRegistry(config=config)
+
+    if operation_id is not None:
+        try:
+            operation_id = validate_operation_id(operation_id)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--operation-id") from exc
 
     if operation_id is not None:
         record = registry.get_operation(operation_id)

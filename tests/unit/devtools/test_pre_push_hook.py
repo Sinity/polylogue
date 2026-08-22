@@ -134,6 +134,16 @@ def test_parse_updates_rejects_malformed_input() -> None:
         pre_push_gate.parse_updates("refs/heads/topic only-two-fields")
 
 
+def test_parse_updates_rejects_non_sha_update_fields() -> None:
+    with pytest.raises(ValueError, match="40-character hexadecimal SHA"):
+        pre_push_gate.parse_updates("refs/heads/topic not-a-sha refs/heads/topic " + ZERO_SHA)
+
+
+def test_parse_updates_accepts_full_sha_updates() -> None:
+    update = pre_push_gate.parse_updates("refs/heads/topic " + "a" * 40 + " refs/heads/topic " + ZERO_SHA)
+    assert update[0].local_sha == "a" * 40
+
+
 def _code_update(repo: Path) -> pre_push_gate.PushUpdate:
     base = _git(repo, "rev-parse", "HEAD")
     tip = _commit(repo, "polylogue/example.py", "VALUE = 1\n", "code")
