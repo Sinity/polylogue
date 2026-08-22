@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.commands.maintenance import _raw_authority_recovery as raw_module
@@ -14,7 +15,9 @@ from polylogue.cli.shared.types import AppEnv
 INVALID_OPERATION_ID = "../escape"
 
 
-def test_status_rejects_invalid_operation_id_before_registry_lookup(tmp_path: Path, monkeypatch) -> None:
+def test_status_rejects_invalid_operation_id_before_registry_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(status_module, "archive_root", lambda: tmp_path)
 
     def fail_lookup(*args: object, **kwargs: object) -> object:
@@ -33,7 +36,9 @@ def test_status_rejects_invalid_operation_id_before_registry_lookup(tmp_path: Pa
     assert result.exception is not None
 
 
-def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(tmp_path: Path, monkeypatch) -> None:
+def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(rebuild_module, "archive_root", lambda: tmp_path)
 
     def fail_status(*args: object, **kwargs: object) -> object:
@@ -52,7 +57,7 @@ def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(
 
 
 def test_raw_authority_recovery_rejects_invalid_operation_id_before_recovery(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fail_recovery(*args: object, **kwargs: object) -> object:
         raise AssertionError("recovery execution must not run for invalid operation IDs")
