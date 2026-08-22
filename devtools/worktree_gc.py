@@ -168,11 +168,18 @@ def _ref_exists(repo_root: Path, ref: str) -> bool:
 
 
 def _resolve_target(repo_root: Path, target: str | None) -> str:
+    """Resolve the merge target without silently leaving the invoking checkout.
+
+    An explicit target remains authoritative for operators who intentionally
+    classify against a base branch.  The safe default is the checkout's
+    current branch; detached checkouts use ``HEAD``.  In particular, never
+    substitute a remote base here: an active integration branch may already
+    represent lanes that have not reached ``origin/master``.
+    """
     if target:
         return target
-    if _ref_exists(repo_root, "refs/remotes/origin/master"):
-        return "origin/master"
-    return "master"
+    current_branch = _run_git_nullable(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=repo_root)
+    return current_branch or "HEAD"
 
 
 def _branch_short_name(ref: str) -> str:
@@ -1079,7 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--target",
         default=None,
-        help="Target branch for merge check (default: origin/master when available, else master).",
+        help="Explicit target for merge check (default: current branch, or HEAD when detached).",
     )
     args = parser.parse_args(argv)
 
