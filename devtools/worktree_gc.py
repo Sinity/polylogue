@@ -8,11 +8,18 @@ dirty worktrees or the main worktree.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import ctypes
+import errno
+import hashlib
 import json
+import os
+import stat
 import subprocess
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +41,9 @@ class GcCandidate:
     blocked_reason: str | None = None
     action: str | None = None
     evidence: dict[str, object] | None = None
+    # Snapshot proof captured during collection and revalidated immediately
+    # before removal.  This is separate from diagnostic patch evidence.
+    proof: dict[str, object] | None = None
 
 
 def _run_git(args: list[str], *, cwd: Path | None = None) -> str:
@@ -57,35 +67,58 @@ def _run_git_nullable(args: list[str], *, cwd: Path | None = None) -> str | None
 
 
 def parse_worktree_list(porcelain: str) -> list[WorktreeEntry]:
-    """Parse ``git worktree list --porcelain`` output."""
+    """Parse Git's porcelain records without substring-based matching."""
     entries: list[WorktreeEntry] = []
-    current: dict[str, Any] = {}
+    record: list[str] = []
     for line in porcelain.splitlines():
-        line = line.strip()
-        if not line:
-            if current:
-                entries.append(_build_entry(current))
-                current = {}
+        if line == "":
+            if record:
+                entries.append(_build_entry(record))
+                record = []
             continue
-        if " " in line:
-            key, _, value = line.partition(" ")
-            current[key] = value
-        else:
-            current[line] = True
-    if current:
-        entries.append(_build_entry(current))
+        record.append(line)
+    if record:
+        entries.append(_build_entry(record))
     return entries
 
 
-def _build_entry(raw: dict[str, Any]) -> WorktreeEntry:
+def _build_entry(record: list[str]) -> WorktreeEntry:
+    values: dict[str, str] = {}
+    flags: set[str] = set()
+    allowed_values = {"worktree", "HEAD", "branch"}
+    allowed_flags = {"bare", "detached", "locked", "prunable"}
+    for line in record:
+        key, separator, value = line.partition(" ")
+        if not key:
+            raise ValueError("malformed worktree porcelain record")
+        if key in allowed_flags and not separator:
+            if key in flags or key in values:
+                raise ValueError(f"duplicate worktree flag: {key}")
+            flags.add(key)
+            continue
+        if key in {"locked", "prunable"} and separator:
+            if key in flags or key in values:
+                raise ValueError(f"duplicate worktree field: {key}")
+            values[key] = value
+            continue
+        if key not in allowed_values or not separator or not value:
+            raise ValueError(f"unknown or malformed worktree field: {line!r}")
+        if key in values:
+            raise ValueError(f"duplicate worktree field: {key}")
+        values[key] = value
+
+    if "worktree" not in values:
+        raise ValueError("worktree porcelain record has no path")
+    if "detached" in flags and "branch" in values:
+        raise ValueError("detached worktree record has a branch")
     return WorktreeEntry(
-        path=Path(raw["worktree"]),
-        head=raw.get("HEAD", ""),
-        branch=raw.get("branch"),
-        bare="bare" in raw,
-        locked="locked" in raw,
-        detached="detached" in raw,
-        prunable="prunable" in raw,
+        path=Path(values["worktree"]),
+        head=values.get("HEAD", ""),
+        branch=values.get("branch"),
+        bare="bare" in flags,
+        locked="locked" in flags or "locked" in values,
+        detached="detached" in flags,
+        prunable="prunable" in flags or "prunable" in values,
     )
 
 
@@ -157,11 +190,24 @@ def _branch_tree_equivalent(repo_root: Path, target: str, branch: str) -> bool:
 
 
 def check_dirty(worktree_path: Path) -> bool:
-    """Return True if the worktree has uncommitted changes."""
+    """Return True for tracked, untracked, or ignored user data.
+
+    Ignored files are included deliberately: a GC candidate is only safe when
+    Git reports no filesystem state at all.  ``--untracked-files=all`` also
+    prevents a nested untracked directory from being hidden behind one line.
+    """
     if not worktree_path.exists():
         return False
-    out = _run_git_nullable(["status", "--porcelain"], cwd=worktree_path)
+    out = _run_git_nullable(
+        ["status", "--porcelain", "--untracked-files=all", "--ignored"],
+        cwd=worktree_path,
+    )
     return bool(out)
+
+
+def normalize_repo_root(repo_root: Path) -> Path:
+    """Return the canonical main-worktree identity used by helper APIs."""
+    return repo_root.expanduser().resolve()
 
 
 def classify_candidates(
@@ -173,11 +219,12 @@ def classify_candidates(
     patch_evidence: dict[str, dict[str, object]] | None = None,
 ) -> list[GcCandidate]:
     """Classify each worktree entry as a candidate or blocked."""
+    main_root = normalize_repo_root(repo_root)
     candidates: list[GcCandidate] = []
     for entry in entries:
         if entry.bare:
             continue
-        if entry.path == repo_root:
+        if entry.path.resolve() == main_root:
             continue
         candidates.append(
             _classify_one(
@@ -315,6 +362,7 @@ def _classify_one(
 
 def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[list[GcCandidate], list[WorktreeEntry]]:
     """Run git commands and return classified candidates plus all entries."""
+    repo_root = normalize_repo_root(repo_root)
     target_ref = _resolve_target(repo_root, target)
     porcelain = _run_git(["worktree", "list", "--porcelain"], cwd=repo_root)
     entries = parse_worktree_list(porcelain)
@@ -335,11 +383,365 @@ def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[l
         existing=existing,
         patch_evidence=patch_evidence,
     )
-    return candidates, entries
+    target_head = _run_git_nullable(["rev-parse", target_ref], cwd=repo_root)
+    proven: list[GcCandidate] = []
+    for candidate in candidates:
+        proof: dict[str, object] = {
+            "candidate_head": candidate.entry.head,
+            "target": target_ref,
+            "target_head": target_head,
+            "state": candidate.reason,
+        }
+        proven.append(replace(candidate, proof=proof))
+    return proven, entries
+
+
+def _owns_exact_worktree(repo_root: Path, entry: WorktreeEntry) -> bool:
+    """Prove the current porcelain record owns exactly this path and ref."""
+    try:
+        records = parse_worktree_list(_run_git(["worktree", "list", "--porcelain"], cwd=repo_root))
+    except (ValueError, subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return False
+    matches = [
+        current
+        for current in records
+        if current.path.resolve() == entry.path.resolve()
+        and current.branch == entry.branch
+        and current.detached == entry.detached
+        and current.bare == entry.bare
+    ]
+    return len(matches) == 1
+
+
+def _recheck_removal_proof(candidate: GcCandidate, *, repo_root: Path) -> str | None:
+    """Return a block reason when the collection snapshot is no longer true."""
+    proof = candidate.proof
+    if proof is None or not proof.get("candidate_head") or not proof.get("target"):
+        return "stale-proof"
+    try:
+        records = parse_worktree_list(_run_git(["worktree", "list", "--porcelain"], cwd=repo_root))
+    except (ValueError, subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return "ownership-changed"
+    expected = candidate.entry
+    identity_matches = [
+        entry
+        for entry in records
+        if entry.path.resolve() == expected.path.resolve()
+        and entry.branch == expected.branch
+        and entry.detached == expected.detached
+        and entry.bare == expected.bare
+    ]
+    if len(identity_matches) != 1:
+        return "ownership-changed"
+    current = identity_matches[0]
+    if current.head != expected.head or current.locked != expected.locked or current.prunable != expected.prunable:
+        return "stale-proof"
+
+    target = str(proof["target"])
+    target_head = _run_git_nullable(["rev-parse", target], cwd=repo_root)
+    if target_head is None or target_head != proof.get("target_head"):
+        return "stale-proof"
+
+    if candidate.entry.branch is None:
+        return None
+    if candidate.reason == "merged":
+        if candidate.entry.branch not in _merged_branches(repo_root, target=target):
+            return "stale-proof"
+    elif candidate.reason == "squash-equivalent":
+        evidence = _branch_patch_equivalence(repo_root, target, candidate.entry.branch)
+        if evidence is None or evidence.get("patch_equivalent") is not True:
+            return "stale-proof"
+    elif candidate.reason == "branch-deleted" and candidate.entry.branch in _existing_branches(repo_root):
+        return "stale-proof"
+    return None
+
+
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+if _RENAMEAT2 is not None:
+    _RENAMEAT2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    _RENAMEAT2.restype = ctypes.c_int
+
+
+def _rename_noreplace(source: Path, target: Path) -> None:
+    """Atomically rename only when target is absent (Linux renameat2)."""
+    if _RENAMEAT2 is None:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable")
+    parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        result = _RENAMEAT2(
+            parent_fd,
+            os.fsencode(source.name),
+            parent_fd,
+            os.fsencode(target.name),
+            1,
+        )
+    finally:
+        os.close(parent_fd)
+    if result != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise FileExistsError(error, os.strerror(error), target)
+        raise OSError(error, os.strerror(error), target)
+
+
+def _restore_quarantine(quarantine: Path, path: Path) -> str | None:
+    """Restore quarantine, preserving both sides when the target was replaced."""
+    if path.exists() or path.is_symlink():
+        return "restore-collision-preserved-quarantine-and-replacement"
+    try:
+        _rename_noreplace(quarantine, path)
+    except FileExistsError:
+        return "restore-collision-preserved-quarantine-and-replacement"
+    except OSError:
+        if path.exists() or path.is_symlink():
+            return "restore-collision-preserved-quarantine-and-replacement"
+        return "restore-failed-preserved-quarantine"
+    return None
+
+
+_Snapshot = tuple[int, int, int, int, str]
+
+
+def _content_digest(path: Path) -> str:
+    """Hash a regular file through an O_NOFOLLOW descriptor."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    finally:
+        os.close(fd)
+
+
+def _snapshot_worktree_files(path: Path) -> dict[str, _Snapshot]:
+    """Capture tracked file identities and content before moving the worktree."""
+    names = _run_git(["ls-files", "-z"], cwd=path).split("\0")
+    snapshot: dict[str, _Snapshot] = {}
+    for name in names:
+        if not name:
+            continue
+        try:
+            item = os.lstat(path / name)
+            digest = _content_digest(path / name)
+        except OSError:
+            continue
+        snapshot[name] = (item.st_dev, item.st_ino, item.st_mode, item.st_size, digest)
+    try:
+        item = os.lstat(path / ".git")
+        digest = _content_digest(path / ".git")
+    except OSError:
+        pass
+    else:
+        snapshot[".git"] = (item.st_dev, item.st_ino, item.st_mode, item.st_size, digest)
+    return snapshot
+
+
+def _remove_snapshot_files(root: Path, snapshot: dict[str, _Snapshot]) -> bool:
+    """Remove only unchanged files from a quarantined tree, preserving races."""
+    try:
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        parents: set[str] = set()
+        for relative, expected in sorted(snapshot.items(), key=lambda item: item[0].count("/"), reverse=True):
+            parts = relative.split("/")
+            parent_fd = root_fd
+            opened: list[int] = []
+            try:
+                for component in parts[:-1]:
+                    parent_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    opened.append(parent_fd)
+                try:
+                    item = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                try:
+                    digest = _content_digest(Path(root, *parts))
+                except OSError:
+                    continue
+                actual = (item.st_dev, item.st_ino, item.st_mode, item.st_size, digest)
+                if actual == expected:
+                    os.unlink(parts[-1], dir_fd=parent_fd)
+                    parents.update("/".join(parts[:index]) for index in range(1, len(parts)))
+            except OSError:
+                continue
+            finally:
+                for fd in reversed(opened):
+                    os.close(fd)
+        for relative in sorted(parents, key=lambda value: value.count("/"), reverse=True):
+            with contextlib.suppress(OSError):
+                os.rmdir(relative, dir_fd=root_fd)
+        return True
+    finally:
+        os.close(root_fd)
+
+
+def _remove_admin_tree(fd: int) -> None:
+    """Remove a Git worktree admin directory using only retained dirfds."""
+    for name in os.listdir(fd):
+        try:
+            child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError:
+            os.unlink(name, dir_fd=fd)
+            continue
+        try:
+            _remove_admin_tree(child_fd)
+        finally:
+            os.close(child_fd)
+        os.rmdir(name, dir_fd=fd)
+
+
+def _read_gitlink(path: Path) -> str:
+    """Read a worktree gitlink without following a replacement symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        return os.read(fd, 4096).decode("utf-8").strip()
+    finally:
+        os.close(fd)
+
+
+def _lexical_abs(path: str | Path, *, base: Path | None = None) -> str:
+    raw = os.fspath(path)
+    if not os.path.isabs(raw):
+        raw = os.path.join(os.fspath(base or Path.cwd()), raw)
+    return os.path.normpath(os.path.abspath(raw))
+
+
+def _unregister_worktree_admin(repo_root: Path, entry: WorktreeEntry, quarantine: Path) -> str | None:
+    """Unregister metadata using lexical checks, then retained no-follow fds."""
+    try:
+        # Recheck the live porcelain record immediately before mutating admin
+        # metadata.  In particular, a newly locked worktree is never removed.
+        current = parse_worktree_list(_run_git(["worktree", "list", "--porcelain"], cwd=repo_root))
+        expected_path = _lexical_abs(entry.path)
+        if not any(
+            _lexical_abs(item.path) == expected_path and item.branch == entry.branch and not item.locked
+            for item in current
+        ):
+            return "worktree-locked-or-ownership-changed-preserved-quarantine"
+
+        prefix, admin_text = _read_gitlink(quarantine / ".git").split(" ", 1)
+        if prefix != "gitdir:" or not admin_text:
+            return "invalid-worktree-gitlink-preserved-quarantine"
+        common_text = _run_git(["rev-parse", "--git-common-dir"], cwd=repo_root)
+        common = Path(_lexical_abs(common_text, base=repo_root))
+        worktrees = Path(_lexical_abs(common / "worktrees"))
+        admin = _lexical_abs(admin_text, base=quarantine)
+        worktrees_text = os.fspath(worktrees)
+        prefix_text = worktrees_text + os.sep
+        if not admin.startswith(prefix_text):
+            return "invalid-worktree-admin-path-preserved-quarantine"
+        relative_name = admin[len(prefix_text) :]
+        if not relative_name or os.sep in relative_name or relative_name in {".", ".."}:
+            return "invalid-worktree-admin-path-preserved-quarantine"
+        expected_gitdir = _lexical_abs(entry.path / ".git")
+        parent_fd = os.open(worktrees, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            admin_fd = os.open(relative_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            try:
+                try:
+                    locked_fd = os.open("locked", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=admin_fd)
+                except FileNotFoundError:
+                    pass
+                else:
+                    os.close(locked_fd)
+                    return "worktree-locked-or-ownership-changed-preserved-quarantine"
+                admin_gitdir = os.open("gitdir", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=admin_fd)
+                try:
+                    recorded_text = os.read(admin_gitdir, 4096).decode("utf-8").strip()
+                finally:
+                    os.close(admin_gitdir)
+                if _lexical_abs(recorded_text, base=worktrees) != expected_gitdir:
+                    return "worktree-admin-ownership-changed-preserved-quarantine"
+                _remove_admin_tree(admin_fd)
+                admin_stat = os.fstat(admin_fd)
+            finally:
+                os.close(admin_fd)
+            current_admin = os.stat(relative_name, dir_fd=parent_fd, follow_symlinks=False)
+            if (current_admin.st_dev, current_admin.st_ino) != (admin_stat.st_dev, admin_stat.st_ino):
+                return "worktree-admin-replaced-preserved-quarantine"
+            os.rmdir(relative_name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return "worktree-admin-unregister-failed-preserved-quarantine"
+    return None
+
+
+def _quarantine_name(path: Path) -> str:
+    return f".{path.name}.polylogue-gc-{os.getpid()}-{uuid.uuid4().hex}"
+
+
+def _rename_into_quarantine(path: Path) -> tuple[int, Path]:
+    """Rename through a retained, no-symlink parent descriptor."""
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        item = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(item.st_mode):
+            raise NotADirectoryError(path)
+        name = _quarantine_name(path)
+        os.rename(path.name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        return parent_fd, path.parent / name
+    except BaseException:
+        os.close(parent_fd)
+        raise
+
+
+def _quarantine_and_remove(entry: WorktreeEntry, *, repo_root: Path) -> tuple[bool, str | None]:
+    """Unregister a clean worktree without ever deleting its live directory.
+
+    The atomic rename closes the final inspection/removal gap: after the
+    directory is moved out of its Git-registered path, any file created in it
+    remains in the quarantine directory.  Git removes only the missing
+    worktree registration; ``rmdir`` then removes the quarantine only when it
+    is still empty, so a late ignored/untracked file is preserved.
+    """
+    path = entry.path
+    if not path.exists() or not path.is_dir():
+        return False, "missing-worktree"
+    try:
+        snapshot = _snapshot_worktree_files(path)
+    except (OSError, subprocess.CalledProcessError):
+        return False, "snapshot-failed"
+    try:
+        parent_fd, quarantine = _rename_into_quarantine(path)
+    except OSError:
+        return False, "quarantine-failed"
+
+    try:
+        if check_dirty(quarantine):
+            detail = _restore_quarantine(quarantine, path)
+            return False, detail or "dirty"
+        if not (quarantine / ".git").exists() or (quarantine / ".git").is_symlink():
+            detail = _restore_quarantine(quarantine, path)
+            return False, detail or "missing-worktree-gitlink-preserved-quarantine"
+
+        detail = _unregister_worktree_admin(repo_root, entry, quarantine)
+        if detail is not None:
+            restored = _restore_quarantine(quarantine, path)
+            return False, restored or detail
+
+        # Remove only tracked files whose device/inode/metadata/content still
+        # match the pre-quarantine snapshot.
+        if not _remove_snapshot_files(quarantine, snapshot):
+            return True, "preserved-quarantine-data"
+        try:
+            quarantine.rmdir()
+        except OSError:
+            return True, "preserved-quarantine-data"
+        return True, None
+    finally:
+        os.close(parent_fd)
 
 
 def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: bool = False) -> list[dict[str, object]]:
     """Remove safe candidates.  Returns per-entry result dicts."""
+    repo_root = normalize_repo_root(repo_root)
     results: list[dict[str, object]] = []
     removed = 0
 
@@ -349,15 +751,65 @@ def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: boo
             continue
 
         if c.safe and c.action == "remove":
-            ok = _run_git_nullable(["worktree", "remove", str(c.entry.path)], cwd=repo_root) is not None
-            results.append({"path": str(c.entry.path), "removed": ok, "reason": c.reason})
+            blocked = _recheck_removal_proof(c, repo_root=repo_root)
+            if blocked is not None:
+                results.append(
+                    {
+                        "path": str(c.entry.path),
+                        "removed": False,
+                        "reason": c.reason,
+                        "blocked": blocked,
+                    }
+                )
+                continue
+            # Re-read filesystem state after all proof checks and immediately
+            # before removal.  Collection-time cleanliness is not sufficient.
+            if check_dirty(c.entry.path):
+                results.append(
+                    {
+                        "path": str(c.entry.path),
+                        "removed": False,
+                        "reason": c.reason,
+                        "blocked": "dirty",
+                    }
+                )
+                continue
+            ok, detail = _quarantine_and_remove(c.entry, repo_root=repo_root)
+            result: dict[str, object] = {"path": str(c.entry.path), "removed": ok, "reason": c.reason}
+            if detail is not None:
+                result["detail"] = detail
+            results.append(result)
             if ok:
                 removed += 1
             continue
 
-        if force and c.action == "remove-force" and not check_dirty(c.entry.path):
-            ok = _run_git_nullable(["worktree", "remove", "--force", str(c.entry.path)], cwd=repo_root) is not None
-            results.append({"path": str(c.entry.path), "removed": ok, "reason": c.reason})
+        if force and c.action == "remove-force":
+            blocked = _recheck_removal_proof(c, repo_root=repo_root)
+            if blocked is not None:
+                results.append(
+                    {
+                        "path": str(c.entry.path),
+                        "removed": False,
+                        "reason": c.reason,
+                        "blocked": blocked,
+                    }
+                )
+                continue
+            if check_dirty(c.entry.path):
+                results.append(
+                    {
+                        "path": str(c.entry.path),
+                        "removed": False,
+                        "reason": c.reason,
+                        "blocked": "dirty",
+                    }
+                )
+                continue
+            ok, detail = _quarantine_and_remove(c.entry, repo_root=repo_root)
+            result = {"path": str(c.entry.path), "removed": ok, "reason": c.reason}
+            if detail is not None:
+                result["detail"] = detail
+            results.append(result)
             if ok:
                 removed += 1
             continue
