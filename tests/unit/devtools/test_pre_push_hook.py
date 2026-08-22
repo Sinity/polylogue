@@ -450,11 +450,12 @@ def test_main_proceeds_normally_when_already_the_lane_interpreter(
     must still parse args and run the gate exactly as before."""
     monkeypatch.setattr(pre_push_gate, "reexec_into_lane", lambda module, argv, **kwargs: None)
     observed: list[list[pre_push_gate.PushUpdate]] = []
-    monkeypatch.setattr(
-        pre_push_gate,
-        "run_gate",
-        lambda updates, cwd: observed.append(updates) or "reused",
-    )
+
+    def fake_run_gate(updates: list[pre_push_gate.PushUpdate], cwd: Path) -> str:
+        observed.append(updates)
+        return "reused"
+
+    monkeypatch.setattr(pre_push_gate, "run_gate", fake_run_gate)
 
     updates_file = tmp_path / "updates"
     updates_file.write_text("refs/heads/topic " + "a" * 40 + " refs/heads/topic " + "b" * 40 + "\n", encoding="utf-8")

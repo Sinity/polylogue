@@ -26,12 +26,16 @@ independent hand-rolled comparisons at each call site).
 
 from __future__ import annotations
 
-import subprocess
+import os
+import subprocess as _subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from devtools.checkout_guard import find_git_worktree_root
+
+subprocess: Any = _subprocess
 
 
 def lane_python_for(worktree: Path) -> Path | None:
@@ -54,17 +58,24 @@ def reexec_into_lane(module: str, argv: Sequence[str], *, cwd: Path | None = Non
     sole re-exec decision; every direct-module entry point that needs lane
     routing calls this instead of re-deriving its own comparison.
     """
+    if os.environ.get("POLYLOGUE_LANE_REEXEC_MODULE") == module:
+        return None
     worktree = find_git_worktree_root(cwd or Path.cwd())
     if worktree is None:
         return None
     lane_python = lane_python_for(worktree)
-    if lane_python is None or Path(sys.executable).absolute() == lane_python.absolute():
+    # Python may canonicalize a symlinked venv interpreter in ``sys.executable``
+    # (common for lane bootstrap's shared interpreter). Compare resolved
+    # binaries so the child does not recurse forever after a successful handoff.
+    if lane_python is None or Path(sys.executable).resolve() == lane_python.resolve():
         return None
     from devtools.lane_init import lane_command_env
 
+    child_env = lane_command_env(worktree)
+    child_env["POLYLOGUE_LANE_REEXEC_MODULE"] = module
     return subprocess.run(
         [str(lane_python), "-m", module, *argv],
         cwd=worktree,
-        env=lane_command_env(worktree),
+        env=child_env,
         check=False,
     ).returncode
