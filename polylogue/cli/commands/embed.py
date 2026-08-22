@@ -327,17 +327,16 @@ def resolve_failure_subcommand(
     embeddings_db = location.active_tier("embeddings").configured_path
     if not embeddings_db.exists():
         raise click.ClickException("embeddings.db not found")
-    from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
+    from polylogue.storage.embeddings.materialization import resolve_embedding_failure_with_lifecycle
 
     try:
-        with closing(sqlite3.connect(embeddings_db, timeout=30.0)) as conn:
-            failure = resolve_embedding_failure(
-                conn,
-                failure_id=failure_id,
-                action=cast(Literal["acknowledge", "requeue", "supersede"], resolution),
-                note=note,
-                superseded_by=superseded_by,
-            )
+        failure = resolve_embedding_failure_with_lifecycle(
+            embeddings_db,
+            failure_id=failure_id,
+            action=cast(Literal["acknowledge", "requeue", "supersede"], resolution),
+            note=note,
+            superseded_by=superseded_by,
+        )
     except KeyError as exc:
         raise click.ClickException(f"active embedding failure not found: {failure_id}") from exc
     payload = {

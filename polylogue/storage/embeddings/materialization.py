@@ -36,11 +36,43 @@ from polylogue.storage.embeddings.identity import (
 from polylogue.storage.introspection import index_exists as _index_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
+
+def ensure_embedding_lifecycle(archive_root: Path, *, active_path: Path | None = None) -> Path:
+    """Enter the archive-bound generation collector before embedding writes."""
+    from polylogue.storage.embeddings.generations import ensure_embedding_lifecycle as _ensure
+
+    return _ensure(archive_root, active_path=active_path)
+
+
+def resolve_embedding_failure_with_lifecycle(
+    embeddings_db: Path,
+    *,
+    failure_id: str,
+    action: Literal["acknowledge", "requeue", "supersede"],
+    note: str | None = None,
+    superseded_by: str | None = None,
+) -> ArchiveEmbeddingFailure:
+    """Apply a failure resolution while holding the lifecycle writer lock."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
+
+    store = EmbeddingGenerationStore(embeddings_db.parent, active_path=embeddings_db)
+    with store.writer_lock() as admitted, sqlite3.connect(admitted, timeout=30.0) as conn:
+        return resolve_embedding_failure(
+            conn,
+            failure_id=failure_id,
+            action=action,
+            note=note,
+            superseded_by=superseded_by,
+        )
+
+
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
+    from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingFailure
 
 
 EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error"]
@@ -1242,11 +1274,23 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_db_path: Path | None = None) -> None:
-    """Flag every archive session for embedding rebuild."""
+    """Flag every archive session for embedding rebuild under lifecycle admission."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
 
-    embeddings_db_path = (
+    resolved_embeddings = (
         embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
     )
+    if not resolved_embeddings.exists():
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(resolved_embeddings, ArchiveTier.EMBEDDINGS)
+    store = EmbeddingGenerationStore(resolved_embeddings.parent, active_path=resolved_embeddings)
+    with store.writer_lock() as admitted:
+        _mark_all_archive_sessions_needs_reindex(index_db_path, admitted)
+
+
+def _mark_all_archive_sessions_needs_reindex(index_db_path: Path, embeddings_db_path: Path) -> None:
     conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
     try:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
@@ -1277,6 +1321,27 @@ def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_d
 
 
 def embed_session_sync(
+    repo: _EmbedSessionStore,
+    vec_provider: VectorProvider,
+    session_id: str,
+    *,
+    fetch_title: bool = False,
+) -> EmbedSessionOutcome:
+    """Embed one session while holding the archive lifecycle writer lock."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+
+    index_path = Path(repo.backend.db_path)
+    store = EmbeddingGenerationStore(index_path.parent)
+    with store.writer_lock() as admitted:
+        outcome = _embed_session_sync(repo, vec_provider, session_id, fetch_title=fetch_title)
+        # The repository backend conventionally points at the active sibling;
+        # admission above is authoritative even when the backend was resolved
+        # through an index pointer.
+        del admitted
+        return outcome
+
+
+def _embed_session_sync(
     repo: _EmbedSessionStore,
     vec_provider: VectorProvider,
     session_id: str,
@@ -1387,6 +1452,34 @@ def _read_archive_embedding_source_snapshot(
 
 
 def embed_archive_session_sync(
+    index_db_path: Path,
+    vec_provider: VectorProvider,
+    session_id: str,
+    *,
+    embeddings_db_path: Path | None = None,
+) -> EmbedSessionOutcome:
+    """Admit and serialize the complete archive embedding write route."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+
+    resolved_embeddings = (
+        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
+    )
+    if not resolved_embeddings.exists():
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(resolved_embeddings, ArchiveTier.EMBEDDINGS)
+    store = EmbeddingGenerationStore(resolved_embeddings.parent, active_path=resolved_embeddings)
+    with store.writer_lock() as admitted:
+        return _embed_archive_session_sync(
+            index_db_path,
+            vec_provider,
+            session_id,
+            embeddings_db_path=admitted,
+        )
+
+
+def _embed_archive_session_sync(
     index_db_path: Path,
     vec_provider: VectorProvider,
     session_id: str,

@@ -191,6 +191,60 @@ def reconcile_embedding_orphans(
     now_ms: int | None = None,
     mutation_authority: EmbeddingReconcileMutationAuthority | None = None,
 ) -> EmbeddingOrphanReconcileReport:
+    """Reconcile orphan rows, admitting every mutating route to lifecycle."""
+    if dry_run:
+        return _reconcile_embedding_orphans(
+            index_db_path,
+            embeddings_db_path,
+            dry_run=True,
+            max_count=max_count,
+            sample_size=sample_size,
+            quiet_window_ms=quiet_window_ms,
+            now_ms=now_ms,
+            mutation_authority=mutation_authority,
+        )
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+
+    index_path = Path(index_db_path)
+    embeddings_path = (
+        Path(embeddings_db_path) if embeddings_db_path is not None else index_path.with_name("embeddings.db")
+    )
+    if not embeddings_path.exists():
+        return _reconcile_embedding_orphans(
+            index_path,
+            embeddings_path,
+            dry_run=False,
+            max_count=max_count,
+            sample_size=sample_size,
+            quiet_window_ms=quiet_window_ms,
+            now_ms=now_ms,
+            mutation_authority=mutation_authority,
+        )
+    store = EmbeddingGenerationStore(embeddings_path.parent, active_path=embeddings_path)
+    with store.writer_lock() as admitted:
+        return _reconcile_embedding_orphans(
+            index_path,
+            admitted,
+            dry_run=False,
+            max_count=max_count,
+            sample_size=sample_size,
+            quiet_window_ms=quiet_window_ms,
+            now_ms=now_ms,
+            mutation_authority=mutation_authority,
+        )
+
+
+def _reconcile_embedding_orphans(
+    index_db_path: str | Path,
+    embeddings_db_path: str | Path | None = None,
+    *,
+    dry_run: bool = True,
+    max_count: int | None = DEFAULT_MAX_COUNT,
+    sample_size: int = DEFAULT_SAMPLE_SIZE,
+    quiet_window_ms: int = DEFAULT_QUIET_WINDOW_MS,
+    now_ms: int | None = None,
+    mutation_authority: EmbeddingReconcileMutationAuthority | None = None,
+) -> EmbeddingOrphanReconcileReport:
     """Reconcile one bounded batch of orphan embedding rows.
 
     Idempotent and resumable: safe to call repeatedly (a clean archive
