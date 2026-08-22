@@ -18,6 +18,7 @@ import contextlib
 import os
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -182,14 +183,11 @@ def test_periodic_blob_gc_uses_daemon_write_route_and_reclaims_safely(
     delegate = DaemonWriteCoordinator()
 
     class RecordingCoordinator:
-        async def run_sync(self, actor: str, callback: object, *args: object, **kwargs: object) -> object:
+        async def run_sync(self, actor: str, callback: Any, *args: Any, **kwargs: Any) -> Any:
             coordinator_events.append(actor)
-            result = await delegate.run_sync(actor, callback, *args, **kwargs)  # type: ignore[arg-type]
+            result: Any = await delegate.run_sync(actor, callback, *args, **kwargs)
             first_run.set()
             return result
-
-        def snapshot(self) -> object:
-            return delegate.snapshot()
 
     coordinator = RecordingCoordinator()
     monkeypatch.setattr(blob_gc_periodic, "BLOB_GC_INTERVAL_SECONDS", 0)
@@ -210,7 +208,7 @@ def test_periodic_blob_gc_uses_daemon_write_route_and_reclaims_safely(
 
     assert coordinator_events == ["maintenance.blob_gc"]
     assert not blob_store.blob_path(orphan_hash).exists()
-    assert coordinator.snapshot().active_actor is None
+    assert delegate.snapshot().active_actor is None
 
 
 def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]:
