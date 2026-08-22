@@ -82,7 +82,11 @@ def clone_archive_template(template: Path, destination: Path) -> None:
             timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        shutil.copytree(template, destination, dirs_exist_ok=True, symlinks=True)
+        # ``destination`` already exists from the fast-path setup.  Reusing it
+        # makes copytree try to overwrite read-only template files before the
+        # thaw loop runs, which fails on a legitimate no-CoW filesystem.
+        shutil.rmtree(destination)
+        shutil.copytree(template, destination, symlinks=True)
     for path in destination.rglob("*"):
         if path.is_symlink():
             continue
