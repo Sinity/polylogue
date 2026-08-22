@@ -30,6 +30,7 @@ from polylogue.maintenance.replay import (
     load_state,
     state_path_for,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.storage import repair as repair_module
 from polylogue.storage.repair import RepairResult
 
@@ -469,6 +470,133 @@ def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["orphaned_blobs"] == ["live"]
     assert patched_dispatch["empty_sessions"] == ["live"]
+
+
+def test_legacy_done_cursor_uses_success_records_and_retries_failed_target(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-legacy-retry")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-legacy-retry",'
+        '"targets":["session_insights","empty_sessions"],"cursor":"done",'
+        '"results":[{"name":"session_insights","success":true,"repaired_count":1}]}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions"),
+        operation_id="op-legacy-retry",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
+
+
+def test_legacy_done_without_authoritative_success_does_not_clear_state(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-legacy-unknown")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"operation_id":"op-legacy-unknown","targets":["session_insights"],"cursor":"done"}')
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-legacy-unknown")
+
+    assert op.status is OperationStatus.FAILED
+    assert op.error == "Legacy replay state has no authoritative successful targets"
+    assert state_path_for(config, "op-legacy-unknown").exists()
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_resume_rejects_mode_and_scope_context_changes(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-context")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-context","targets":["session_insights"],'
+        '"completed_targets":[],"cursor":"target:0","dry_run":true,'
+        '"scope_filter":{"session_ids":["s-1"],"origin":null,"source_family":null,'
+        '"source_root":null,"time_range":null,"failure_kind":null,"parser_version":null}}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-context",
+        dry_run=False,
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-2",)),
+    )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.failure_samples.samples[0].kind == "ReplayContextMismatch"
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_nested_receipt_fields_do_not_double_count_metrics(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-nested-receipt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-nested-receipt","targets":["session_insights"],'
+        '"completed_targets":[],"cursor":"target:0","results":[],"metrics":{},'
+        '"operation":{"started_at":"2026-02-03T04:05:06+00:00",'
+        '"metrics":{"same":7.0},"failure_samples":{"samples":[],"truncated":false}}}'
+    )
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-nested-receipt")
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.started_at == "2026-02-03T04:05:06+00:00"
+    assert op.metrics["same"] == 7.0
+
+
+def test_blocker_receipt_retains_nested_cumulative_metrics(
+    tmp_path: Path,
+    patched_dispatch: dict[str, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-blocked-receipt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-blocked-receipt","targets":["session_insights"],'
+        '"completed_targets":[],"cursor":"target:0","metrics":{},'
+        '"operation":{"started_at":"2026-02-03T04:05:06+00:00",'
+        '"metrics":{"same":7.0},"failure_samples":{"samples":[],"truncated":false}}}'
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.replay.offline_maintenance_blockers",
+        lambda *args, **kwargs: [_ok_result("session_insights", repaired=0)],
+    )
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-blocked-receipt")
+
+    assert op.status is OperationStatus.FAILED
+    assert op.metrics["same"] == 7.0
+    assert op.metrics["repaired_count"] == 0.0
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_failure_samples_are_bounded_across_resume_retries(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-many-failures")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    samples = ",".join('{"kind":"old","locator":"target:session_insights","message":"old"}' for _ in range(75))
+    path.write_text(
+        '{"operation_id":"op-many-failures","targets":["session_insights"],'
+        '"completed_targets":[],"cursor":"target:0","failure_samples":[' + samples + "]}"
+    )
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-many-failures")
+
+    assert len(op.failure_samples.samples) <= 50
 
 
 def test_explicit_resume_cursor_overrides_persisted_state(
