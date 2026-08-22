@@ -50,10 +50,6 @@ if TYPE_CHECKING:
 
 ArchiveCompletionAction = Callable[["ArchiveStore"], list[CompletionItem]]
 
-# Compatibility export retained for tests and integrations that inspected the
-# old private map; live completion reads ``public_origin_descriptions()``.
-_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = public_origin_descriptions()
-
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]

@@ -405,13 +405,14 @@ def test_every_origin_spec_declares_a_display_description() -> None:
     Anti-vacuity: blanking a display_description (or dropping a spec) shrinks
     the derived completion inventory below the full Origin vocabulary.
     """
-    from polylogue.cli.shell_completion_values import _ORIGIN_DESCRIPTIONS
+    from polylogue.sources.origin_specs import public_origin_descriptions
 
     for spec in ORIGIN_SPECS:
         assert spec.display_description.strip(), spec.origin.value
 
-    assert set(_ORIGIN_DESCRIPTIONS) == {origin.value for origin in Origin}
-    assert all(text.strip() for text in _ORIGIN_DESCRIPTIONS.values())
+    descriptions = public_origin_descriptions()
+    assert set(descriptions) == {origin.value for origin in Origin}
+    assert all(text.strip() for text in descriptions.values())
 
 
 def test_dropped_value_vocabularies_match_the_real_parser_constant() -> None:
