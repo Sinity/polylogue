@@ -4117,6 +4117,8 @@ def test_epoch_timeline_is_authoritative_over_session_timestamp() -> None:
         provider_session_id="epoch-timeline",
         created_at="1970-01-01T00:00:01Z",
         updated_at="1970-01-01T00:00:02Z",
+        created_at_provenance="derived",
+        updated_at_provenance="derived",
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
