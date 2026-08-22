@@ -1110,11 +1110,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 is_detail = "detail" in include
                 with observe_route(
                     archive_root=hooks.get_config().archive_root,
-                    git_head_cwd=hooks.get_config().archive_root,
+                    git_head_cwd=Path.cwd(),
                     surface="mcp",
                     route="mcp.status.coordination",
                     verb="detail" if is_detail else "compact",
-                    git_head_cwd=Path.cwd(),
                 ) as obs:
                     if is_detail:
                         envelope = build_coordination_envelope(view="status", detail=True)
