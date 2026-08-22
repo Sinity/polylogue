@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Protocol
 from unittest.mock import patch
 
 from polylogue.config import Config, Source
@@ -657,42 +658,60 @@ def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
         raise
 
 
+class _DirectoryEntryIterator(Protocol):
+    def __iter__(self) -> Iterator[os.DirEntry[str]]: ...
+
+    def __next__(self) -> os.DirEntry[str]: ...
+
+    def close(self) -> None: ...
+
+
 def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
-    """Enumerate a tree from a pinned root descriptor with a hard budget."""
+    """Stream a tree from pinned descriptors with depth and node bounds."""
     if budget <= 0:
         raise ValueError("cache enumeration budget must be positive")
     root_fd = _open_pinned_dir(root)
-    stack: list[tuple[int, Path, int]] = [(root_fd, root, 0)]
     owned_fds: set[int] = {root_fd}
-    seen = 0
+    stack: list[tuple[int, Path, int, _DirectoryEntryIterator]] = []
     try:
+        stack.append((root_fd, root, 0, os.scandir(root_fd)))
+        seen = 0
         while stack:
-            fd, prefix, depth = stack.pop()
-            with os.scandir(fd) as iterator:
-                entries = list(iterator)
-            for entry in reversed(entries):
-                seen += 1
-                if seen > budget:
-                    raise RuntimeError("cache enumeration exceeded bounded node budget")
-                path = prefix / entry.name
-                info = entry.stat(follow_symlinks=False)
-                if stat.S_ISLNK(info.st_mode):
-                    raise ValueError(f"symlink node is not allowed: {path}")
-                if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-                    raise ValueError(f"unsupported cache node is not allowed: {path}")
-                if stat.S_ISDIR(info.st_mode):
-                    yield path
-                    if depth >= 256:
-                        raise RuntimeError("cache enumeration exceeded maximum tree depth")
-                    child = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
-                    owned_fds.add(child)
-                    stack.append((child, path, depth + 1))
-                else:
-                    yield path
-            if fd != root_fd:
-                os.close(fd)
-                owned_fds.discard(fd)
+            fd, prefix, depth, entries = stack[-1]
+            try:
+                entry = next(entries)
+            except StopIteration:
+                entries.close()
+                stack.pop()
+                if fd != root_fd:
+                    os.close(fd)
+                    owned_fds.discard(fd)
+                continue
+            seen += 1
+            if seen > budget:
+                raise RuntimeError("cache enumeration exceeded bounded node budget")
+            path = prefix / entry.name
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError(f"symlink node is not allowed: {path}")
+            if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError(f"unsupported cache node is not allowed: {path}")
+            yield path
+            if stat.S_ISDIR(info.st_mode):
+                if depth >= 256:
+                    raise RuntimeError("cache enumeration exceeded maximum tree depth")
+                child = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+                owned_fds.add(child)
+                try:
+                    stack.append((child, path, depth + 1, os.scandir(child)))
+                except BaseException:
+                    os.close(child)
+                    owned_fds.discard(child)
+                    raise
     finally:
+        for _, _, _, entries in stack:
+            with contextlib.suppress(OSError):
+                entries.close()
         for fd in owned_fds:
             with contextlib.suppress(OSError):
                 os.close(fd)
@@ -837,12 +856,26 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
     parent, leaf = _open_pinned_parent(path)
     original_parent_mode = os.fstat(parent).st_mode
     os.fchmod(parent, original_parent_mode | stat.S_IWUSR)
+    owned_fds: set[int] = set()
+    iterators: set[_DirectoryEntryIterator] = set()
     try:
-        stack: list[tuple[str, int, str, int, int | None]] = [("entry", parent, leaf, 0, None)]
-        owned_fds: set[int] = set()
+        stack: list[tuple[str, int, str, int, int | None, _DirectoryEntryIterator | None]] = [
+            ("entry", parent, leaf, 0, None, None)
+        ]
         inspected = 0
         while stack:
-            action, directory_fd, name, depth, child_fd = stack.pop()
+            action, directory_fd, name, depth, child_fd, entries = stack.pop()
+            if action == "scan":
+                assert child_fd is not None and entries is not None
+                try:
+                    entry = next(entries)
+                except StopIteration:
+                    entries.close()
+                    iterators.discard(entries)
+                    continue
+                stack.append(("scan", directory_fd, name, depth, child_fd, entries))
+                stack.append(("entry", child_fd, entry.name, depth + 1, None, None))
+                continue
             if action == "rmdir":
                 assert child_fd is not None
                 os.close(child_fd)
@@ -864,21 +897,23 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
                 owned_fds.add(child)
                 try:
                     os.fchmod(child, os.fstat(child).st_mode | stat.S_IWUSR)
-                    with os.scandir(child) as entries:
-                        names = [entry.name for entry in entries]
+                    child_entries = os.scandir(child)
+                    iterators.add(child_entries)
                 except BaseException:
                     os.close(child)
                     owned_fds.discard(child)
                     raise
-                stack.append(("rmdir", directory_fd, name, depth, child))
-                stack.extend(("entry", child, child_name, depth + 1, None) for child_name in reversed(names))
+                stack.append(("rmdir", directory_fd, name, depth, child, None))
+                stack.append(("scan", child, name, depth, child, child_entries))
+            elif not stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=directory_fd)
             else:
-                if stat.S_ISLNK(info.st_mode):
-                    os.unlink(name, dir_fd=directory_fd)
-                else:
-                    _chmod_at(directory_fd, name, info.st_mode | stat.S_IWUSR)
-                    os.unlink(name, dir_fd=directory_fd)
+                _chmod_at(directory_fd, name, info.st_mode | stat.S_IWUSR)
+                os.unlink(name, dir_fd=directory_fd)
     finally:
+        for entries in iterators:
+            with contextlib.suppress(OSError):
+                entries.close()
         for owned_fd in owned_fds:
             with contextlib.suppress(OSError):
                 os.close(owned_fd)
@@ -1465,7 +1500,33 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
         raise
 
 
+def _open_lock_domain(cache_root: Path) -> int:
+    locks = cache_root / ".locks"
+    _mkdir_pinned(locks)
+    fd = _open_pinned_dir(locks)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def build_seeded_archive(
+    specs: Iterable[CorpusSpec] | None = None,
+    *,
+    cache_root: Path | None = None,
+) -> SeededArchiveArtifact:
+    selected_root = (cache_root or default_cache_root()).expanduser()
+    domain_fd = _open_lock_domain(selected_root)
+    try:
+        return _build_seeded_archive_inner(specs, cache_root=selected_root)
+    finally:
+        fcntl.flock(domain_fd, fcntl.LOCK_UN)
+        os.close(domain_fd)
+
+
+def _build_seeded_archive_inner(
     specs: Iterable[CorpusSpec] | None = None,
     *,
     cache_root: Path | None = None,
@@ -1621,7 +1682,12 @@ def _copy_tree(source: Path, destination: Path) -> None:
     except BaseException:
         os.close(src_fd)
         raise
-    original_parent_mode = os.fstat(dst_parent).st_mode
+    try:
+        original_parent_mode = os.fstat(dst_parent).st_mode
+    except BaseException:
+        os.close(dst_parent)
+        os.close(src_fd)
+        raise
     dst_fd = -1
     try:
         os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
@@ -1706,9 +1772,11 @@ def _authenticate_clone_copy(
         raise ValueError("clone contains unexpected or missing files")
 
     def authenticate_pair(relative: str, size: int, digest: str) -> None:
-        source_fd = _open_file_fd(source.root / relative)
-        clone_fd = _open_file_fd(destination / relative)
+        source_fd = -1
+        clone_fd = -1
         try:
+            source_fd = _open_file_fd(source.root / relative)
+            clone_fd = _open_file_fd(destination / relative)
             source_stat = os.fstat(source_fd)
             clone_stat = os.fstat(clone_fd)
             if not stat.S_ISREG(clone_stat.st_mode) or clone_stat.st_size != size:
@@ -1718,15 +1786,19 @@ def _authenticate_clone_copy(
             if _sha256_fd(clone_fd) != digest:
                 raise ValueError(f"clone file content mismatch: {relative}")
         finally:
-            os.close(source_fd)
-            os.close(clone_fd)
+            if source_fd >= 0:
+                os.close(source_fd)
+            if clone_fd >= 0:
+                os.close(clone_fd)
 
     for relative, size, digest in expected:
         authenticate_pair(relative, size, digest)
 
-    source_manifest_fd = _open_file_fd(source.root / "manifest.json")
-    clone_manifest_fd = _open_file_fd(destination / "manifest.json")
+    source_manifest_fd = -1
+    clone_manifest_fd = -1
     try:
+        source_manifest_fd = _open_file_fd(source.root / "manifest.json")
+        clone_manifest_fd = _open_file_fd(destination / "manifest.json")
         source_manifest_stat = os.fstat(source_manifest_fd)
         clone_manifest_stat = os.fstat(clone_manifest_fd)
         if (source_manifest_stat.st_dev, source_manifest_stat.st_ino) == (
@@ -1739,11 +1811,25 @@ def _authenticate_clone_copy(
         if _read_manifest_fd(clone_manifest_fd) != manifest:
             raise ValueError("clone manifest mismatch")
     finally:
-        os.close(source_manifest_fd)
-        os.close(clone_manifest_fd)
+        if source_manifest_fd >= 0:
+            os.close(source_manifest_fd)
+        if clone_manifest_fd >= 0:
+            os.close(clone_manifest_fd)
 
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
+    _mkdir_pinned(destination.parent)
+    parent_fd = _open_pinned_dir(destination.parent)
+    try:
+        fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        return _clone_seeded_archive_inner(artifact, destination)
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+        os.close(parent_fd)
+
+
+def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     """Create a complete private writable archive clone, recording its method."""
     _assert_no_symlinks(artifact.root)
     # The in-memory dataclass is frozen, but its nested dictionaries are not.
@@ -1765,6 +1851,7 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         for path in _pinned_paths(destination):
             _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
         _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
+        _authenticate_clone_copy(artifact, destination, disk_manifest)
         bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
         if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
             from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
