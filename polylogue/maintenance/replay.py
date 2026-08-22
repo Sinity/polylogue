@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
+    MAX_FAILURE_SAMPLES,
     BackfillKind,
     BackfillOperation,
     BoundedFailureSamples,
@@ -359,11 +360,36 @@ def _resume_pending_specs(
         # identities after filtering.
         return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
 
+    # Legacy checkpoints did not persist completed identities.  Successful
+    # result records are authoritative when available; the positional cursor
+    # is retained only for the older in-progress form.  A legacy ``done``
+    # cursor is not evidence that every attempted target succeeded (a failed
+    # target used to advance it), so it must fail closed unless success
+    # records identify the completed work.
+    raw_results = persisted.get("results", [])
+    successful_from_results: list[str] = []
+    if isinstance(raw_results, list):
+        for result in raw_results:
+            if not isinstance(result, dict):
+                continue
+            name = result.get("name")
+            if isinstance(name, str) and result.get("success") is True and name in old_targets:
+                successful_from_results.append(name)
+    completed_order = tuple(dict.fromkeys(successful_from_results))
     cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
+    if cursor == CURSOR_DONE:
+        if not completed_order:
+            return None, (), "Legacy replay state has no authoritative successful targets"
+        completed = set(completed_order)
+        return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
     index, cursor_error = _strict_cursor(cursor if isinstance(cursor, str) else None, total_targets=len(old_targets))
     if cursor_error is not None or index is None:
         return None, (), cursor_error or "Persisted replay state has no valid target cursor"
-    completed_order = old_targets[:index]
+    # A non-terminal positional cursor remains compatible with historical
+    # interrupted checkpoints. Prefer explicit successful records, which also
+    # handles a cursor that was advanced past a reported failure.
+    if not completed_order:
+        completed_order = old_targets[:index]
     completed = set(completed_order)
     return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
 
@@ -514,21 +540,30 @@ def _numeric_metric(value: object) -> float | None:
 
 
 def _operation_metrics(state: _ReplayState) -> dict[str, float]:
-    metrics = dict(state.metrics)
-    metrics["repaired_count"] = float(state.repaired_total)
+    # Compute the aggregate represented by individual result rows first.  A
+    # nested legacy receipt may already contain that same aggregate; taking
+    # the larger value avoids adding an aggregate to its constituent rows
+    # twice while still incorporating newly appended result rows.
+    result_metrics: dict[str, float] = {}
     for result in state.results:
-        result_metrics = result.get("metrics")
-        if not isinstance(result_metrics, dict):
+        raw = result.get("metrics")
+        if not isinstance(raw, dict):
             continue
-        for key, value in result_metrics.items():
+        for key, value in raw.items():
             metric_value = _numeric_metric(value)
             if metric_value is None:
                 continue
             metric_key = str(key)
             if metric_key.endswith("_max_blob_bytes"):
-                metrics[metric_key] = max(metrics.get(metric_key, 0.0), metric_value)
+                result_metrics[metric_key] = max(result_metrics.get(metric_key, 0.0), metric_value)
             else:
-                metrics[metric_key] = metrics.get(metric_key, 0.0) + metric_value
+                result_metrics[metric_key] = result_metrics.get(metric_key, 0.0) + metric_value
+
+    metrics: dict[str, float] = {}
+    for key, value in state.metrics.items():
+        metrics[key] = max(value, result_metrics.pop(key, 0.0))
+    metrics.update(result_metrics)
+    metrics["repaired_count"] = float(state.repaired_total)
     return metrics
 
 
@@ -537,6 +572,9 @@ def _hydrate_persisted_receipt(
 ) -> tuple[str | None, list[JSONDocument], list[FailureSample], int, dict[str, float], str | None]:
     """Validate and hydrate cumulative receipt fields from a state file."""
     started_at = persisted.get("started_at")
+    operation = persisted.get("operation")
+    if started_at is None and isinstance(operation, dict):
+        started_at = operation.get("started_at")
     if started_at is not None and not isinstance(started_at, str):
         return None, [], [], 0, {}, "Persisted replay state has invalid started_at"
 
@@ -569,14 +607,20 @@ def _hydrate_persisted_receipt(
                 message=cast(str, item["message"]),
             )
         )
+    failures = list(BoundedFailureSamples.from_samples(failures).samples)
 
     raw_repaired = persisted.get("repaired_count", 0)
     if not isinstance(raw_repaired, (int, float)) or isinstance(raw_repaired, bool):
         return None, [], [], 0, {}, "Persisted replay state has invalid repaired count"
     raw_metrics = persisted.get("metrics")
+    # Older registry snapshots may carry an empty top-level metrics object
+    # while the nested operation snapshot has the cumulative aggregate.
+    if (raw_metrics is None or raw_metrics == {}) and isinstance(operation, dict):
+        nested_metrics = operation.get("metrics")
+        if nested_metrics is not None:
+            raw_metrics = nested_metrics
     if raw_metrics is None:
-        operation = persisted.get("operation")
-        raw_metrics = operation.get("metrics", {}) if isinstance(operation, dict) else {}
+        raw_metrics = {}
     if not isinstance(raw_metrics, dict):
         return None, [], [], 0, {}, "Persisted replay state has invalid metrics"
     metrics: dict[str, float] = {}
@@ -585,6 +629,30 @@ def _hydrate_persisted_receipt(
             return None, [], [], 0, {}, "Persisted replay state has invalid metrics"
         metrics[str(key)] = float(value)
     return started_at, results, failures, int(raw_repaired), metrics, None
+
+
+def _validate_replay_context(
+    persisted: JSONDocument,
+    *,
+    dry_run: bool,
+    scope_filter: MaintenanceScopeFilter,
+) -> str | None:
+    """Reject a resume whose execution authority changed mid-operation."""
+    persisted_mode = persisted.get("dry_run")
+    if persisted_mode is not None and (not isinstance(persisted_mode, bool) or persisted_mode != dry_run):
+        return "Persisted replay execution mode does not match the requested mode"
+
+    persisted_scope = persisted.get("scope_filter")
+    if persisted_scope is not None:
+        if not isinstance(persisted_scope, dict):
+            return "Persisted replay state has invalid scope filter"
+        try:
+            stored_filter = MaintenanceScopeFilter.from_dict(persisted_scope)
+        except Exception as exc:
+            return f"Persisted replay state has invalid scope filter: {exc}"
+        if stored_filter.to_dict() != scope_filter.to_dict():
+            return "Persisted replay scope does not match the requested scope"
+    return None
 
 
 def execute_replay(
@@ -701,6 +769,19 @@ def execute_replay(
                 scope_filter=effective_filter,
                 message=receipt_error,
                 kind="InvalidReplayState",
+            )
+        context_error = _validate_replay_context(
+            persisted,
+            dry_run=dry_run,
+            scope_filter=effective_filter,
+        )
+        if context_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=context_error,
+                kind="ReplayContextMismatch",
             )
 
     target_history = resolved_names
@@ -865,6 +946,7 @@ def execute_replay(
                 state=state,
                 started_at=started_at,
                 dry_run=dry_run,
+                scope_filter=effective_filter,
             )
         if progress_callback is not None:
             progress_callback(
@@ -922,6 +1004,7 @@ def execute_replay(
                 state=state,
                 started_at=started_at,
                 dry_run=dry_run,
+                scope_filter=effective_filter,
                 operation_snapshot=final,
             )
 
@@ -946,6 +1029,10 @@ def _record_failure(
     """
 
     state.failures.append(sample)
+    # Keep the persisted and in-memory envelope bounded across retries, not
+    # merely at final receipt serialization time.
+    if len(state.failures) > MAX_FAILURE_SAMPLES:
+        del state.failures[MAX_FAILURE_SAMPLES:]
     route_failure_sample(
         sample,
         operation_id=state.operation_id,
@@ -1065,6 +1152,7 @@ def _checkpoint_state(
     state: _ReplayState,
     started_at: str,
     dry_run: bool,
+    scope_filter: MaintenanceScopeFilter,
     operation_snapshot: BackfillOperation | None = None,
 ) -> None:
     """Persist the running operation state so a kill-mid-run can resume.
@@ -1096,6 +1184,7 @@ def _checkpoint_state(
             "started_at": started_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "dry_run": dry_run,
+            "scope_filter": scope_filter.to_dict(),
             "repaired_count": state.repaired_total,
             "failure_count": len(state.failures),
             "failure_samples": [sample.to_dict() for sample in state.failures],
@@ -1133,7 +1222,7 @@ def _build_in_progress_snapshot(
         completed_at: str | None = datetime.now(timezone.utc).isoformat()
     else:
         status = OperationStatus.RUNNING
-        processed = len(state.completed_targets)
+        processed = sum(name in state.completed_targets for name in state.targets)
         progress = min(processed / total, 1.0) if total > 0 else 0.0
         completed_at = None
 

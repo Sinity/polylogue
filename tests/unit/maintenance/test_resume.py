@@ -275,7 +275,11 @@ def test_all_completed_identity_remap_returns_completed_noop(
     path.write_text(
         '{"operation_id":"op-all-done",'
         '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
-        '"cursor":"done"}'
+        '"cursor":"done",'
+        '"results":[{"name":"session_insights","success":true},'
+        '{"name":"message_type_backfill","success":true},'
+        '{"name":"empty_sessions","success":true},'
+        '{"name":"orphaned_blobs","success":true}]}'
     )
 
     op = execute_replay(
