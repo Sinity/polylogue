@@ -147,7 +147,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools demo real-slice-screen` | Read-only extraction + privacy screening of a candidate real-archive session slice. |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace agent-meta-sidecar-purge-apply` | Purge agent-*.meta.json subagent-sidecar phantom sessions from index.db. |
 | `devtools workspace agent-meta-sidecar-sweep` | Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0). |
@@ -164,10 +163,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
-| `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace integrate` | Apply an ordered list of lane commits to a clean linked integration worktree. |
 | `devtools workspace lane-init` | Provision a lane worktree with an isolated, guard-verified interpreter. |
-| `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, then records the carrier attestation in the merge ledger. |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
 | `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |

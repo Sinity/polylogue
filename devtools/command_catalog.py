@@ -15,7 +15,6 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "generated surfaces",
     "release",
     "verification",
-    "verification",
     "benchmarking",
     "workspace",
 )
@@ -370,21 +369,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace index-fast-forward",
-        "workspace",
-        "Plan and prove a declared index fast-forward against retained raw replay.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
-            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
-            "the production parser/materializer route, then atomically activates the proven generation."
-        ),
-        examples=(
-            "devtools workspace index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json",
-        ),
-    ),
-    CommandSpec(
         "workspace integrate",
         "workspace",
         "Apply an ordered list of lane commits to a clean linked integration worktree.",
@@ -585,25 +569,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace bead-reimport-guard reconcile .beads/issues.jsonl",
             "devtools workspace bead-reimport-guard export /tmp/issues-snapshot.jsonl",
-        ),
-    ),
-    CommandSpec(
-        "demo real-slice-screen",
-        "workspace",
-        "Read-only extraction + privacy screening of a candidate real-archive session slice.",
-        "devtools.proof_world_real_slice",
-        use_when=(
-            "Assembling a candidate real-archive slice for the shared demo proof world "
-            "(polylogue-212.11): pulls sessions read-only via the Polylogue API, flattens them "
-            "to text, and screens for secret/credential and PII-adjacent patterns before any "
-            "operator decides to fold the slice into a shared fixture. Never mutates the source "
-            "archive and never writes into polylogue/scenarios/ on its own."
-        ),
-        examples=(
-            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
-            "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
-            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
-            "--refs-file refs.txt --out .agent/scratch/real-slice",
         ),
     ),
     CommandSpec(
@@ -1124,22 +1089,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace unknown-export-reclassification-apply --json",
             "devtools workspace unknown-export-reclassification-apply --apply "
             "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
-        ),
-    ),
-    CommandSpec(
-        "workspace lineage-validation",
-        "workspace",
-        "Validate lineage-count evidence before citing archive counts externally.",
-        "devtools.lineage_validation",
-        use_when=(
-            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
-            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
-            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
-        ),
-        examples=(
-            "devtools workspace lineage-validation --json",
-            "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
-            "devtools workspace lineage-validation --out-dir .local/evidence/lineage-validation/current",
         ),
     ),
     CommandSpec(
