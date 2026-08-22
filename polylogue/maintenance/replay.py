@@ -545,7 +545,15 @@ def _hydrate_persisted_receipt(
         return None, [], [], 0, {}, "Persisted replay state has invalid results"
     results = cast(list[JSONDocument], raw_results)
 
-    raw_failures = persisted.get("failure_samples", [])
+    raw_failures = persisted.get("failure_samples")
+    if raw_failures is None:
+        operation = persisted.get("operation")
+        if isinstance(operation, dict):
+            nested = operation.get("failure_samples")
+            if isinstance(nested, dict):
+                raw_failures = nested.get("samples", [])
+    if raw_failures is None:
+        raw_failures = []
     if not isinstance(raw_failures, list):
         return None, [], [], 0, {}, "Persisted replay state has invalid failure samples"
     failures: list[FailureSample] = []
@@ -565,7 +573,10 @@ def _hydrate_persisted_receipt(
     raw_repaired = persisted.get("repaired_count", 0)
     if not isinstance(raw_repaired, (int, float)) or isinstance(raw_repaired, bool):
         return None, [], [], 0, {}, "Persisted replay state has invalid repaired count"
-    raw_metrics = persisted.get("metrics", {})
+    raw_metrics = persisted.get("metrics")
+    if raw_metrics is None:
+        operation = persisted.get("operation")
+        raw_metrics = operation.get("metrics", {}) if isinstance(operation, dict) else {}
     if not isinstance(raw_metrics, dict):
         return None, [], [], 0, {}, "Persisted replay state has invalid metrics"
     metrics: dict[str, float] = {}
@@ -753,21 +764,21 @@ def execute_replay(
             )
             for result in blockers
         )
-        started_at = datetime.now(timezone.utc).isoformat()
+        started_at = receipt_started_at or datetime.now(timezone.utc).isoformat()
         return BackfillOperation(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
             status=OperationStatus.FAILED,
-            progress=0.0,
+            progress=sum(name in completed_targets for name in resolved_names) / len(resolved_names),
             started_at=started_at,
-            completed_at=started_at,
-            affected_rows=0,
-            results=[result.to_dict() for result in blockers],
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            affected_rows=prior_repaired_total,
+            results=[*prior_results, *(result.to_dict() for result in blockers)],
             scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
             reason=InvalidationReason.UNKNOWN,
-            failure_samples=BoundedFailureSamples.from_samples(samples),
-            metrics={"repaired_count": 0.0},
+            failure_samples=BoundedFailureSamples.from_samples([*prior_failures, *samples]),
+            metrics={**prior_metrics, "repaired_count": float(prior_repaired_total)},
         )
 
     start_index, cursor_error = _strict_cursor(resume_cursor, total_targets=len(pending_specs))
