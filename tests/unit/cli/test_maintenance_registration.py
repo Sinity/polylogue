@@ -6,6 +6,12 @@ import click
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli as root_cli
+from polylogue.cli.commands.maintenance._blob_integrity import (
+    blob_reference_prune_orphans_command,
+    blob_reference_prune_orphans_preview_command,
+    blob_reference_replace_from_source_command,
+    blob_reference_replace_from_source_preview_command,
+)
 from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._hook_payload_ref_reconciliation import hook_payload_ref_reconcile_command
 from polylogue.cli.commands.maintenance._plan import plan_command
@@ -115,6 +121,31 @@ def test_hook_payload_reconcile_is_click_command() -> None:
 
 def test_blob_reference_closure_is_click_command() -> None:
     assert isinstance(blob_reference_closure_command, click.Command)
+
+
+def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -> None:
+    """The real Click registry exposes diagnostic and write commands separately."""
+
+    for command in (
+        blob_reference_replace_from_source_preview_command,
+        blob_reference_prune_orphans_preview_command,
+    ):
+        assert isinstance(command, click.Command)
+        assert "--apply" not in {option.name for option in command.params}
+
+    for command in (
+        blob_reference_replace_from_source_command,
+        blob_reference_prune_orphans_command,
+    ):
+        assert isinstance(command, click.Command)
+
+    maintenance_group = _registered_maintenance_command()
+    ctx = click.Context(maintenance_group)
+    commands = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
+    assert "blob-reference-replace-from-source-preview" in commands
+    assert "blob-reference-replace-from-source" in commands
+    assert "blob-reference-prune-orphans-preview" in commands
+    assert "blob-reference-prune-orphans" in commands
 
 
 def test_maintenance_group_has_status() -> None:

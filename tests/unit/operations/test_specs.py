@@ -98,6 +98,19 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     assert specs["mutate-import-annotation-batch"].executor_status == "executor-routed"
 
 
+def test_maintenance_target_operation_contract_preserves_split_routes() -> None:
+    """The typed operation keeps preview and apply as explicit maintenance routes."""
+
+    spec = build_runtime_operation_catalog().by_name()["mutate-maintenance-target-run"]
+
+    assert spec.surfaces == ("cli", "mcp", "daemon")
+    assert spec.mutates_state is True
+    assert spec.previewable is True
+    assert spec.resumable is True
+    assert spec.executor_status == "declared-not-routed"
+    assert "confirmed_before_execute" in spec.safety_guards
+
+
 def test_runtime_operation_catalog_has_declared_surfaces() -> None:
     for spec in build_runtime_operation_catalog().specs:
         assert spec.surfaces
