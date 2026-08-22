@@ -23,6 +23,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from itertools import chain
 from pathlib import Path
 from typing import Protocol
@@ -32,7 +33,7 @@ from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.scenarios.workload import (
     WorkloadEnvelopeSpec,
     WorkloadInputRef,
@@ -394,13 +395,140 @@ def named_corpus_specs(name: str) -> tuple[CorpusSpec, ...]:
     )
 
 
-def _recipe_id(providers: Iterable[str] = ()) -> str:
-    """Fingerprint the generation/materialization dependency and input closure.
+class BenchmarkWorkloadTier(str, Enum):
+    """Semantic benchmark projections backed by the shared archive artifact."""
 
-    Only route-owned Python modules and runtime schema/config inputs participate.
-    In particular, this must not become a repository-wide ``*.py`` fingerprint:
-    an unrelated surface edit is not a semantic change to a seeded archive.
+    SMOKE = "smoke"
+    REPRESENTATIVE = "representative"
+    ARCHIVE_SCALE = "archive-scale"
+    STRESS = "stress"
+
+
+@dataclass(frozen=True)
+class BenchmarkWorkloadProfile:
+    """A deterministic mixed-origin benchmark projection.
+
+    The target is expressed as messages because benchmark operations scale with
+    indexed message and block populations. The tier name records why the
+    projection exists, rather than treating an arbitrary row count as its
+    identity.
     """
+
+    tier: BenchmarkWorkloadTier
+    target_messages: int
+    provider_session_counts: tuple[tuple[str, int], ...]
+    messages_per_session: int = 10
+
+    def __post_init__(self) -> None:
+        if self.target_messages < 1 or self.messages_per_session < 1:
+            raise ValueError("benchmark workload dimensions must be positive")
+        if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
+            raise ValueError("benchmark workload requires every configured provider to have sessions")
+        if (
+            sum(count for _provider, count in self.provider_session_counts) * self.messages_per_session
+            != self.target_messages
+        ):
+            raise ValueError("benchmark workload session composition must exactly produce target_messages")
+
+
+_BENCHMARK_PROVIDER_MIX = (
+    ("claude-code", 80),
+    ("codex", 15),
+    ("chatgpt", 2),
+    ("claude-ai", 1),
+    ("gemini", 2),
+)
+
+BENCHMARK_WORKLOAD_PROFILES = (
+    BenchmarkWorkloadProfile(BenchmarkWorkloadTier.SMOKE, 1_000, _BENCHMARK_PROVIDER_MIX),
+    BenchmarkWorkloadProfile(
+        BenchmarkWorkloadTier.REPRESENTATIVE,
+        5_000,
+        tuple((provider, count * 5) for provider, count in _BENCHMARK_PROVIDER_MIX),
+    ),
+    BenchmarkWorkloadProfile(
+        BenchmarkWorkloadTier.ARCHIVE_SCALE,
+        10_000,
+        tuple((provider, count * 10) for provider, count in _BENCHMARK_PROVIDER_MIX),
+    ),
+    BenchmarkWorkloadProfile(
+        BenchmarkWorkloadTier.STRESS,
+        50_000,
+        tuple((provider, count * 50) for provider, count in _BENCHMARK_PROVIDER_MIX),
+    ),
+)
+
+
+def benchmark_workload_profile(tier: BenchmarkWorkloadTier | str) -> BenchmarkWorkloadProfile:
+    """Resolve one named benchmark workload without exposing round-count labels."""
+    resolved = BenchmarkWorkloadTier(tier)
+    return next(profile for profile in BENCHMARK_WORKLOAD_PROFILES if profile.tier is resolved)
+
+
+def benchmark_workload_tier(target_messages: int) -> BenchmarkWorkloadTier:
+    """Map the former direct-seeder message targets to their semantic tiers."""
+    for profile in BENCHMARK_WORKLOAD_PROFILES:
+        if profile.target_messages == target_messages:
+            return profile.tier
+    supported = ", ".join(str(profile.target_messages) for profile in BENCHMARK_WORKLOAD_PROFILES)
+    raise ValueError(f"no named benchmark workload for {target_messages} messages; supported targets: {supported}")
+
+
+def benchmark_corpus_specs(
+    tier: BenchmarkWorkloadTier | str,
+    *,
+    seed: int = 42,
+) -> tuple[CorpusSpec, ...]:
+    """Build provider-native corpus specs for a semantic benchmark tier."""
+    profile = benchmark_workload_profile(tier)
+    corpus_profile = CorpusProfile(
+        family_ids=("benchmark-archive",),
+        profile_tokens=(profile.tier.value, "mixed-origin", "provider-native"),
+        artifact_kind="archive",
+    )
+    specs: list[CorpusSpec] = []
+    for provider, count in profile.provider_session_counts:
+        # Keep a bounded tail in every tier. The former direct generator sampled
+        # a six-bucket session-depth distribution; these three deterministic
+        # depths preserve the short, ordinary, and tail activation conditions
+        # while retaining an exact message target for reproducible benchmarks.
+        shapes: tuple[tuple[int, int], ...]
+        if provider == "claude-code":
+            multiplier, remainder = divmod(count, 80)
+            if remainder:
+                raise ValueError("benchmark Claude Code composition must retain the 80-session provider mix")
+            shapes = ((50 * multiplier, 2), (25 * multiplier, 8), (5 * multiplier, 100))
+        else:
+            shapes = ((count, profile.messages_per_session),)
+        for shape_count, messages_per_session in shapes:
+            specs.append(
+                CorpusSpec.for_provider(
+                    provider,
+                    count=shape_count,
+                    messages_min=messages_per_session,
+                    messages_max=messages_per_session,
+                    seed=seed + len(specs),
+                    style="tool-heavy",
+                    profile=corpus_profile,
+                    origin=f"generated.benchmark-{profile.tier.value}",
+                    tags=("synthetic", "benchmark", profile.tier.value),
+                )
+            )
+    return tuple(specs)
+
+
+def build_benchmark_archive(
+    tier: BenchmarkWorkloadTier | str,
+    *,
+    seed: int = 42,
+    cache_root: Path | None = None,
+) -> SeededArchiveArtifact:
+    """Build or reuse a benchmark archive through the shared production route."""
+    return build_seeded_archive(benchmark_corpus_specs(tier, seed=seed), cache_root=cache_root)
+
+
+def _recipe_id(providers: Iterable[str] = ()) -> str:
+    """Fingerprint the generation/materialization dependency and input closure."""
     digest = hashlib.sha256()
     files: set[Path] = set()
     safe_providers = tuple(_validate_provider(provider) for provider in providers)
@@ -2297,16 +2425,21 @@ def _clone_seeded_archive_inner(
 
 __all__ = [
     "ImmutableTreeArtifact",
+    "BENCHMARK_WORKLOAD_PROFILES",
+    "BenchmarkWorkloadProfile",
+    "BenchmarkWorkloadTier",
     "SeededArchiveArtifact",
     "build_immutable_tree",
     "clone_immutable_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",
     "SeededArchiveManifest",
-    "build_immutable_tree",
+    "benchmark_corpus_specs",
+    "benchmark_workload_profile",
+    "benchmark_workload_tier",
+    "build_benchmark_archive",
     "build_seeded_archive",
     "c03_semantic_corpus_spec",
-    "clone_immutable_tree",
     "clone_seeded_archive",
     "default_cache_root",
     "named_corpus_specs",

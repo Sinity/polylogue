@@ -23,12 +23,17 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
+    BENCHMARK_WORKLOAD_PROFILES,
+    BenchmarkWorkloadTier,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _open_no_follow,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
     _recover_stale_staging,
+    benchmark_corpus_specs,
+    benchmark_workload_profile,
+    benchmark_workload_tier,
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
@@ -36,6 +41,41 @@ from tests.infra.workload_artifacts import (
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+def test_benchmark_profiles_are_semantic_mixed_origin_exact_message_projections() -> None:
+    """Benchmark targets are named workload contracts, not direct index seeds.
+
+    Replacing the catalog with one provider or a round-count-only map makes the
+    provider and exact-message assertions fail before any benchmark runs.
+    """
+    assert tuple(profile.tier for profile in BENCHMARK_WORKLOAD_PROFILES) == (
+        BenchmarkWorkloadTier.SMOKE,
+        BenchmarkWorkloadTier.REPRESENTATIVE,
+        BenchmarkWorkloadTier.ARCHIVE_SCALE,
+        BenchmarkWorkloadTier.STRESS,
+    )
+    assert tuple(profile.target_messages for profile in BENCHMARK_WORKLOAD_PROFILES) == (1_000, 5_000, 10_000, 50_000)
+    for profile in BENCHMARK_WORKLOAD_PROFILES:
+        specs = benchmark_corpus_specs(profile.tier)
+        assert sum(spec.count * spec.messages_min for spec in specs) == profile.target_messages
+        assert {spec.provider for spec in specs} == {"chatgpt", "claude-ai", "claude-code", "codex", "gemini"}
+        assert {spec.messages_min for spec in specs} == {2, 8, profile.messages_per_session, 100}
+        assert {spec.messages_max for spec in specs} == {2, 8, profile.messages_per_session, 100}
+        assert {spec.profile.primary_family_id for spec in specs} == {"benchmark-archive"}
+        assert {profile.tier.value for spec in specs if profile.tier.value in spec.tags} == {profile.tier.value}
+
+
+def test_benchmark_profile_selection_is_deterministic_and_rejects_legacy_ad_hoc_targets() -> None:
+    """The adapter has one stable corpus identity per supported semantic tier."""
+    first = benchmark_corpus_specs(BenchmarkWorkloadTier.REPRESENTATIVE, seed=91)
+    second = benchmark_corpus_specs("representative", seed=91)
+
+    assert first == second
+    assert benchmark_workload_tier(5_000) is BenchmarkWorkloadTier.REPRESENTATIVE
+    assert benchmark_workload_profile("representative").target_messages == 5_000
+    with pytest.raises(ValueError, match="no named benchmark workload"):
+        benchmark_workload_tier(7_500)
 
 
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_path: Path) -> None:
