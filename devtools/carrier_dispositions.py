@@ -309,6 +309,51 @@ def _assert_existing_receipt_matches_result(
         raise DispositionError("existing disposition receipt does not match the current batch result")
 
 
+def apply_live_dispositions(
+    pr: int,
+    *,
+    scope: pr_scope.ScopeVerdict,
+    head_sha: str,
+    merge_sha: str,
+    attestation: str,
+    cwd: Path,
+) -> Path | None:
+    """Execute a validated carrier immediately after a successful merge.
+
+    This is deliberately a post-merge operation: failure is reported to the
+    caller with recovery commands and never attempts to roll back GitHub.
+    ``issues.jsonl`` is exported only after the guarded Beads transaction.
+    """
+    if scope.scope_kind is pr_scope.ScopeKind.SELF_CONTAINED:
+        print(f"PR #{pr}: self-contained carrier; no Beads disposition is required")
+        return None
+    if scope.scope_kind is not pr_scope.ScopeKind.BEAD or not scope.dispositions:
+        raise DispositionError(f"PR #{pr} has no executable Bead disposition scope")
+    real_bd = str(bd_guard._validated_real_bd_path(os.environ.get("POLYLOGUE_BD_REAL", "bd")))
+    env = os.environ.copy()
+    env["BD_IMPORT_AUTO"] = "false"
+    live = bd_guard._export_live_state(bd_command=real_bd, env=env, cwd=cwd)
+    marker = _marker(
+        execution_id=_execution_id(pr=pr, head_sha=head_sha, merge_sha=merge_sha, attestation=attestation),
+        pr=pr,
+        merge_sha=merge_sha,
+    )
+    _validate_live_plan(scope, live, marker=marker)
+    selected = set(scope.assigned_beads)
+    before, after = bd_guard.run_guarded_batch(
+        expected_ids=selected,
+        prepare=lambda current: _validate_live_plan(scope, current, marker=marker),
+        cwd=cwd,
+    )
+    changed = _changed_ids(before, after)
+    if not changed.issubset(selected):
+        raise DispositionError("guarded merge-boundary batch changed rows outside its typed carrier scope")
+    output = cwd / ".beads" / "issues.jsonl"
+    bd_guard.atomic_write_jsonl(output, after)
+    print(f"applied carrier dispositions for PR #{pr}; exported {output}")
+    return output
+
+
 def cmd_apply(
     pr: int, *, base_export: Path, output: Path, dry_run: bool, recover_unledgered_merge: bool = False
 ) -> int:

@@ -554,7 +554,7 @@ Core loop:
   it. A `[type-only]` module reaches production **only** through a
   `TYPE_CHECKING` import: reported for a human, never failed, and never proof
   of dead code.
-- `devtools workspace …` — task history, worktree-gc, evidence.
+- `devtools workspace …` — task history, worktree-gc, evidence; `workspace merge` executes the validated carrier dispositions after a successful squash and exports `.beads/issues.jsonl`, with loud recovery diagnostics on failure.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
