@@ -310,6 +310,33 @@ def _encode_cursor(next_target_index: int) -> str:
     return f"{_CURSOR_TARGET_PREFIX}{next_target_index}"
 
 
+_INVALID_CURSOR_MESSAGE = "Persisted replay state has an invalid target cursor"
+_INCOMPATIBLE_CURSOR_MESSAGE = "Persisted replay state has an incompatible target cursor"
+
+
+def _cursor_syntax_error(cursor: object) -> str | None:
+    """Validate explicit cursor syntax without requiring a target catalog.
+
+    Range validation is deliberately separate: an explicit cursor must be
+    rejected before target resolution, blocker checks, or state hydration, but
+    ``target:N`` cannot be range-checked until the current target set is known.
+    """
+    if not isinstance(cursor, str) or cursor == "":
+        return _INVALID_CURSOR_MESSAGE
+    if cursor == CURSOR_DONE:
+        return None
+    if not cursor.startswith(_CURSOR_TARGET_PREFIX):
+        return _INVALID_CURSOR_MESSAGE
+    head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
+    try:
+        index = int(head)
+    except ValueError:
+        return _INVALID_CURSOR_MESSAGE
+    if index < 0:
+        return _INVALID_CURSOR_MESSAGE
+    return None
+
+
 def _strict_cursor(cursor: str | None, *, total_targets: int) -> tuple[int | None, str | None]:
     """Parse a cursor without converting corruption into a destructive run.
 
@@ -320,19 +347,16 @@ def _strict_cursor(cursor: str | None, *, total_targets: int) -> tuple[int | Non
     """
     if cursor is None:
         return 0, None
-    if cursor == "":
-        return None, "Persisted replay state has an invalid target cursor"
+    syntax_error = _cursor_syntax_error(cursor)
+    if syntax_error is not None:
+        return None, syntax_error
+    assert isinstance(cursor, str)
     if cursor == CURSOR_DONE:
         return total_targets, None
-    if not cursor.startswith(_CURSOR_TARGET_PREFIX):
-        return None, "Persisted replay state has an invalid target cursor"
     head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
-    try:
-        index = int(head)
-    except ValueError:
-        return None, "Persisted replay state has an invalid target cursor"
-    if index < 0 or index > total_targets:
-        return None, "Persisted replay state has an incompatible target cursor"
+    index = int(head)
+    if index > total_targets:
+        return None, _INCOMPATIBLE_CURSOR_MESSAGE
     return index, None
 
 
@@ -794,6 +818,22 @@ def execute_replay(
     """
 
     op_id = str(uuid.uuid4()) if operation_id is None else validate_operation_id(operation_id)
+    effective_filter = scope_filter or MaintenanceScopeFilter()
+
+    # Explicit cursors are request validation, not resumable state. Reject
+    # malformed values before catalog resolution, state hydration, and the
+    # offline blocker check so daemon state can never change their typed error
+    # or cause a state-file write.
+    cursor_syntax_error = _cursor_syntax_error(resume_cursor) if resume_cursor is not None else None
+    if cursor_syntax_error is not None:
+        return _failed_replay_state(
+            operation_id=op_id,
+            targets=(),
+            scope_filter=effective_filter,
+            message=cursor_syntax_error,
+            kind="InvalidReplayCursor",
+        )
+
     catalog = build_maintenance_target_catalog()
     # Empty ``targets`` means "no explicit scope" and expands to the
     # documented run-all set (every catalog target); an explicit but
@@ -802,7 +842,17 @@ def execute_replay(
     # resolve to zero targets and report ``status=failed``).
     resolved_specs = catalog.resolve_or_default(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
-    effective_filter = scope_filter or MaintenanceScopeFilter()
+
+    if resume_cursor is not None and resolved_names:
+        _, cursor_range_error = _strict_cursor(resume_cursor, total_targets=len(resolved_names))
+        if cursor_range_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=cursor_range_error,
+                kind="InvalidReplayCursor",
+            )
 
     if not resolved_names:
         return BackfillOperation(

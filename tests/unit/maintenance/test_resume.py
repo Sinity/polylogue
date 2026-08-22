@@ -742,12 +742,14 @@ def test_empty_persisted_cursor_fails_closed_instead_of_replaying(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"operation_id":"op-empty-cursor","targets":["session_insights"],"cursor":""}')
 
+    original = path.read_text()
     op = execute_replay(config, targets=("session_insights",), operation_id="op-empty-cursor")
 
     assert op.status is OperationStatus.FAILED
     assert op.error == "Persisted replay state has an invalid target cursor"
     assert op.failure_samples.samples[0].kind == "InvalidReplayCursor"
     assert patched_dispatch["session_insights"] == []
+    assert path.read_text() == original
 
 
 def test_progress_processed_is_monotonic_through_failure_and_inner_progress(
