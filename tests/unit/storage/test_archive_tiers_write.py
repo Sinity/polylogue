@@ -18,6 +18,7 @@ from polylogue.core.enums import (
     TitleSource,
     WebConstructType,
 )
+from polylogue.core.timestamp_authority import normalize_session_timestamps, producer_timestamp_flags
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -38,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionPhase,
     ArchiveSessionTag,
     ArchiveSessionWorkEvent,
+    ArchiveWriteOutcome,
     read_archive_session_envelope,
     read_archive_session_page,
     read_insight_materialization,
@@ -4109,6 +4111,157 @@ def _session_timestamps(conn: sqlite3.Connection, session_id: str) -> sqlite3.Ro
     return row
 
 
+def test_fallback_normalization_remains_derived_when_newer_timeline_arrives() -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="fallback-then-timeline",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="first", position=0)],
+    )
+    normalized = normalize_session_timestamps(session, fallback_timestamp="2026-01-01T00:00:00Z")
+    assert normalized.created_at_provenance == "fallback"
+    assert normalized.updated_at_provenance == "fallback"
+
+    with_timeline = normalized.model_copy(
+        update={
+            "messages": [
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="first",
+                    timestamp="2026-02-01T00:00:00Z",
+                    position=0,
+                )
+            ]
+        }
+    )
+    renormalized = normalize_session_timestamps(with_timeline, fallback_timestamp="2026-01-01T00:00:00Z")
+    assert renormalized.created_at == "2026-02-01T00:00:00+00:00"
+    assert renormalized.updated_at == "2026-02-01T00:00:00+00:00"
+    assert renormalized.created_at_provenance == "derived"
+    assert renormalized.updated_at_provenance == "derived"
+    assert producer_timestamp_flags(renormalized) == (False, False)
+
+
+def test_normalized_derived_repeat_cannot_promote_to_producer_on_force_replace(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    producer = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="producer-provenance",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:01:00Z",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="producer", position=0)],
+    )
+    normalized_producer = normalize_session_timestamps(producer)
+    session_id = write_parsed_session_to_archive(conn, normalized_producer, raw_id="producer")
+    derived = normalized_producer.model_copy(
+        update={
+            "created_at": None,
+            "updated_at": None,
+            "messages": [
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="derived",
+                    timestamp="2027-01-01T00:00:00Z",
+                    position=0,
+                )
+            ],
+        }
+    )
+    normalized_derived = normalize_session_timestamps(derived)
+    assert producer_timestamp_flags(normalized_derived) == (False, False)
+    write_parsed_session_to_archive(conn, normalized_derived, raw_id="derived", force_replace=True)
+    row = _session_timestamps(conn, session_id)
+    assert row["created_at_ms"] == 1767225600000
+    assert row["updated_at_ms"] == 1767225660000
+
+
+def test_producer_timestamp_supersedes_derived_and_force_keeps_interval_order(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    derived = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="producer-after-derived",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="derived",
+                timestamp="2026-06-01T00:00:00Z",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="derived")],
+            )
+        ],
+    )
+    session_id = write_parsed_session_to_archive(conn, derived, raw_id="derived")
+    producer = derived.model_copy(
+        update={
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+        }
+    )
+    write_parsed_session_to_archive(conn, producer, raw_id="producer", force_replace=True)
+    row = _session_timestamps(conn, session_id)
+    assert row["created_at_ms"] == 1767225600000
+    assert row["updated_at_ms"] == 1767312000000
+    inverted = producer.model_copy(
+        update={
+            "created_at": "2026-02-02T00:00:00Z",
+            "updated_at": "2026-02-01T00:00:00Z",
+        }
+    )
+    write_parsed_session_to_archive(conn, inverted, raw_id="inverted", force_replace=True)
+    row = _session_timestamps(conn, session_id)
+    assert row["created_at_ms"] <= row["updated_at_ms"]
+
+
+def test_force_one_sided_producer_timestamp_keeps_interval_closed(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    established = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="one-sided-force",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-02T00:00:00Z",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="old", position=0)],
+    )
+    session_id = write_parsed_session_to_archive(conn, established, raw_id="old")
+    forced = established.model_copy(
+        update={
+            "created_at": "2027-01-01T00:00:00Z",
+            "updated_at": None,
+        }
+    )
+    write_parsed_session_to_archive(conn, forced, raw_id="forced", force_replace=True)
+    row = _session_timestamps(conn, session_id)
+    assert row["created_at_ms"] <= row["updated_at_ms"]
+    assert row["created_at_ms"] == row["updated_at_ms"] == 1798761600000
+
+
+def test_direct_writer_repairs_created_observation_on_stale_skip(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    established = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="direct-stale-observation",
+        created_at="2026-06-01T00:00:00Z",
+        updated_at="2026-06-02T00:00:00Z",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="new", position=0)],
+    )
+    session_id = write_parsed_session_to_archive(conn, established, raw_id="new")
+    stale = established.model_copy(
+        update={
+            "created_at": None,
+            "updated_at": None,
+            "messages": [ParsedMessage(provider_message_id="m1", role=Role.USER, text="old", position=0)],
+            "session_events": [ParsedSessionEvent(event_type="older-observation", timestamp="2026-01-01T00:00:00Z")],
+        }
+    )
+    outcomes: list[ArchiveWriteOutcome] = []
+    write_parsed_session_to_archive(conn, stale, raw_id="old", write_outcome=outcomes)
+    row = _session_timestamps(conn, session_id)
+    assert outcomes and outcomes[0].stale_skipped
+    assert row["created_at_ms"] == 1767225600000
+    assert row["updated_at_ms"] == 1780358400000
+
+
 def test_writer_derives_session_timestamps_from_message_evidence_when_provider_omits_them(
     tmp_path: Path,
 ) -> None:
@@ -4205,6 +4358,117 @@ def test_writer_does_not_override_provider_supplied_session_timestamps_with_deri
     assert row["created_at_ms"] == 1_577_836_800_000  # 2020-01-01T00:00:00Z
     assert row["updated_at_ms"] == 1_577_836_805_000  # 2020-01-01T00:00:05Z
     assert row["sort_key_ms"] == 1_577_836_805_000
+
+
+def test_writer_uses_event_timestamps_after_message_evidence_is_absent(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id="event-only-timestamps",
+        title="event timestamps",
+        messages=[
+            ParsedMessage(
+                provider_message_id="summary",
+                role=Role.SYSTEM,
+                text="summary",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="summary")],
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(event_type="hermes_llm_request_span", timestamp="2026-04-01T10:00:00Z"),
+            ParsedSessionEvent(event_type="hermes_tool_execution_span", timestamp="2026-04-01T10:04:30Z"),
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    row = _session_timestamps(conn, session_id)
+
+    assert row["created_at_ms"] == 1_775_037_600_000
+    assert row["updated_at_ms"] == 1_775_037_870_000
+    assert row["sort_key_ms"] == 1_775_037_870_000
+
+
+def test_writer_reports_deep_stale_skip_to_callers(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+
+    def session(text: str, timestamp: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="deep-stale-outcome",
+            title=text,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text=text,
+                    timestamp=timestamp,
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                )
+            ],
+        )
+
+    write_parsed_session_to_archive(conn, session("new", "2026-04-01T10:00:00Z"), raw_id="new")
+    outcomes: list[ArchiveWriteOutcome] = []
+    write_parsed_session_to_archive(
+        conn,
+        session("old", "2026-03-01T10:00:00Z"),
+        raw_id="old",
+        write_outcome=outcomes,
+    )
+
+    assert outcomes and outcomes[0].stale_skipped is True
+    row = conn.execute("SELECT title FROM sessions WHERE native_id = ?", ("deep-stale-outcome",)).fetchone()
+    assert row["title"] == "new"
+
+
+@pytest.mark.parametrize("force_replace", [False, True])
+def test_writer_preserves_existing_timestamp_when_incoming_full_snapshot_omits_it(
+    tmp_path: Path,
+    force_replace: bool,
+) -> None:
+    conn = _connect(tmp_path / f"index-{force_replace}.db")
+
+    established = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="incoming-null-timestamp",
+        title="established",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:01:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="established",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="established")],
+            )
+        ],
+    )
+    incoming = established.model_copy(
+        update={
+            "title": "incoming",
+            "created_at": None,
+            "updated_at": None,
+            "messages": [
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="incoming",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="incoming")],
+                )
+            ],
+        },
+    )
+
+    session_id = write_parsed_session_to_archive(conn, established, raw_id="established")
+    write_parsed_session_to_archive(conn, incoming, raw_id="incoming", force_replace=force_replace)
+
+    row = _session_timestamps(conn, session_id)
+    assert row["created_at_ms"] == 1_767_225_600_000
+    assert row["updated_at_ms"] == 1_767_225_660_000
 
 
 def test_writer_leaves_session_timestamps_null_when_no_timestamp_evidence_exists(

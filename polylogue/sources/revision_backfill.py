@@ -40,6 +40,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import (
@@ -3176,6 +3177,11 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     for Codex/Claude JSONL evidence.
     """
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
+
+    def normalize_replay(sessions: list[ParsedSession]) -> list[ParsedSession]:
+        return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
+
     # polylogue-u19l: an append-kind raw's own record stream may carry no
     # self-describing identity of its own (a Codex append delta has no
     # session_meta record) -- recover the identity hint recorded at write
@@ -3195,11 +3201,31 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
-                return _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+                return normalize_replay(
+                    _parse_stream(provider, payload, stream_path, fallback_id_override=fallback_id_override)
+                )
         _require_bounded_provider(provider, source_path)
         _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
         payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
-        return _parse_one(
+        return normalize_replay(
+            _parse_one(
+                provider,
+                eager_payload,
+                source_path,
+                payload_path=payload_path,
+                archive_root=archive.archive_root,
+                fallback_id_override=fallback_id_override,
+            )
+        )
+    if is_stream_record_provider(source_path, str(provider)):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+            return normalize_replay(
+                _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
+            )
+    _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
+    payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
+    return normalize_replay(
+        _parse_one(
             provider,
             eager_payload,
             source_path,
@@ -3207,18 +3233,6 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             archive_root=archive.archive_root,
             fallback_id_override=fallback_id_override,
         )
-    if is_stream_record_provider(source_path, str(provider)):
-        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
-            return _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
-    _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
-    payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
-    return _parse_one(
-        provider,
-        eager_payload,
-        source_path,
-        payload_path=payload_path,
-        archive_root=archive.archive_root,
-        fallback_id_override=fallback_id_override,
     )
 
 

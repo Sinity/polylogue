@@ -218,6 +218,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_payload_sizes,
     raw_revision_acquired_at_ms,
     raw_revision_descriptor,
+    raw_revision_file_mtime,
     raw_revision_head_raw_id,
     raw_revision_material,
     raw_revision_observation_order,
@@ -294,6 +295,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
+    ArchiveWriteOutcome,
     PreparedSessionRows,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -1066,6 +1068,34 @@ class ArchiveStore:
         self._consume_index_blob_receipts()
         return session_id
 
+    def write_parsed_result(self, session: ParsedSession, *, content_hash: str | None = None) -> dict[str, int]:
+        """Write a parsed session and report whether precedence skipped it."""
+        self._require_writable("write index.db")
+        acquired, refs = self._preacquire_attachment_blobs(
+            session,
+            source_path=f"session:{session.provider_session_id}",
+            acquired_at_ms=int(time.time() * 1000),
+        )
+        if self._blob_publisher is not None:
+            self._blob_publisher.flush()
+        outcomes: list[ArchiveWriteOutcome] = []
+        write_parsed_session_to_archive(
+            self._conn,
+            session,
+            content_hash=content_hash,
+            preacquired_attachment_blobs=acquired,
+            source_conn=self._optional_source_conn(),
+            write_outcome=outcomes,
+        )
+        self._pending_index_blob_receipts.extend(
+            (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
+        )
+        self._consume_index_blob_receipts()
+        stale_skipped = bool(outcomes and outcomes[0].stale_skipped)
+        counts = self._skipped_counts(session) if stale_skipped else self._write_counts(session)
+        counts["stale_skipped"] = int(stale_skipped)
+        return counts
+
     def _consume_index_blob_receipts(self) -> None:
         """Consume receipts only after index attachment rows are committed."""
         if not self._pending_index_blob_receipts:
@@ -1208,6 +1238,7 @@ class ArchiveStore:
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         source_index: int = 0,
         raw_id: str | None = None,
         stage_timings_s: dict[str, float] | None = None,
@@ -1223,6 +1254,7 @@ class ArchiveStore:
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             source_index=source_index,
             raw_id=raw_id,
             stage_timings_s=stage_timings_s,
@@ -1240,6 +1272,7 @@ class ArchiveStore:
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         source_index: int = 0,
         raw_id: str | None = None,
         native_id: str | None = None,
@@ -1255,6 +1288,7 @@ class ArchiveStore:
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             source_index=source_index,
             raw_id=raw_id,
             native_id=native_id,
@@ -1323,6 +1357,7 @@ class ArchiveStore:
         blob_size: int,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         source_index: int = 0,
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
@@ -1338,6 +1373,7 @@ class ArchiveStore:
             blob_size=blob_size,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             source_index=source_index,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
@@ -1369,6 +1405,7 @@ class ArchiveStore:
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
         source_index: int = 0,
         raw_id: str | None = None,
@@ -1385,6 +1422,7 @@ class ArchiveStore:
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             classification=classification,
             source_index=source_index,
             raw_id=raw_id,
@@ -1399,6 +1437,7 @@ class ArchiveStore:
         blob_size: int,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         classification: ArtifactClassification,
         source_index: int = 0,
         raw_id: str | None = None,
@@ -1413,6 +1452,7 @@ class ArchiveStore:
             blob_size=blob_size,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             classification=classification,
             source_index=source_index,
             raw_id=raw_id,
@@ -1667,6 +1707,9 @@ class ArchiveStore:
     def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
         return raw_revision_acquired_at_ms(self, raw_id)
 
+    def raw_revision_file_mtime(self, raw_id: str) -> str | None:
+        return raw_revision_file_mtime(self, raw_id)
+
     def raw_revision_observed_at_ms(self, raw_id: str) -> int:
         return raw_revision_observed_at_ms(self, raw_id)
 
@@ -1855,6 +1898,7 @@ class ArchiveStore:
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         source_index: int = 0,
         raw_id: str | None = None,
         stage_timings_s: dict[str, float] | None = None,
@@ -1870,6 +1914,7 @@ class ArchiveStore:
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             source_index=source_index,
             raw_id=raw_id,
             stage_timings_s=stage_timings_s,
@@ -1886,6 +1931,7 @@ class ArchiveStore:
         payload: bytes,
         source_path: str,
         acquired_at_ms: int,
+        file_mtime_ms: int | None = None,
         logical_source_key: str,
         source_index: int = 0,
         raw_id: str | None = None,
@@ -1910,6 +1956,7 @@ class ArchiveStore:
             payload=payload,
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
             logical_source_key=logical_source_key,
             source_index=source_index,
             raw_id=raw_id,

@@ -62,6 +62,7 @@ from polylogue.core.raw_failure_evidence import (
     RawFailureEvidenceKind,
 )
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -2612,6 +2613,7 @@ class LiveBatchProcessor:
                             # kind back onto a shared content hash.
                             raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
+                            file_mtime_ms=timestamp_millis(record.file_mtime),
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
                             post_parse=True,
                         )
@@ -2624,6 +2626,7 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
+                            file_mtime_ms=timestamp_millis(record.file_mtime),
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
                             post_parse=True,
                         )
@@ -4157,6 +4160,8 @@ class LiveBatchProcessor:
         through the full route on the next batch.
         """
         latest_stat: os.stat_result | None = None
+        final_stat: os.stat_result | None = None
+        tail_hash: str | None = None
         expected_observation = (
             plan.st_dev,
             plan.st_ino,
@@ -4187,6 +4192,15 @@ class LiveBatchProcessor:
                 raise ValueError("accepted append bytes changed")
             if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
                 raise ValueError("accepted append tail changed")
+        except FileNotFoundError:
+            # The append payload was already admitted before the source can be
+            # removed by a live writer. Preserve that per-plan success and use
+            # the plan-time authority; there is no safe post-admission stat or
+            # tail read left to perform. The next watcher observation will
+            # re-establish the source identity through normal full planning.
+            logger.info("live.watcher: source disappeared after append persistence: %s", plan.path)
+            payload_hash = plan.payload_hash
+            tail_hash = plan.accepted_tail_hash or plan.payload_hash
         except (EOFError, OSError, ValueError) as exc:
             logger.warning(
                 "live.watcher: source changed after append persistence; cursor invalidated for full retry: %s: %s",
@@ -4206,11 +4220,12 @@ class LiveBatchProcessor:
                 ),
             )
             return False
-        if _file_observation(final_stat) != expected_observation:
+        if final_stat is not None and _file_observation(final_stat) != expected_observation:
             logger.info(
                 "live.watcher: source changed after append persistence; retained proven append frontier: %s",
                 plan.path,
             )
+        assert tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         stored_tail_hash = (
             encode_cursor_hash_authority(

@@ -45,10 +45,13 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.config import Source
+from polylogue.core.enums import BlockType, Provider
+from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.sources.parsers.base import ParsedSession, RawSessionData
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -448,6 +451,57 @@ async def test_archive_ingest_path_classified_zip_json_record_array_reaches_pars
 
 
 @pytest.mark.asyncio
+async def test_archive_ingest_normalizes_file_mtime_before_archive_writer(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "synthetic-codex.json"
+    source_path.write_bytes(b"synthetic raw")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="archive-ingest-mtime-fallback",
+        title="mtime fallback",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="synthetic",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="synthetic")],
+            )
+        ],
+    )
+    raw = RawSessionData(
+        raw_bytes=b"synthetic raw",
+        source_path=str(source_path),
+        source_index=0,
+        file_mtime="2026-05-01T10:00:00Z",
+    )
+
+    def synthetic_iter(*_args: object, **_kwargs: object) -> Iterator[tuple[RawSessionData, ParsedSession]]:
+        yield raw, session
+
+    monkeypatch.setattr(archive_ingest, "iter_source_sessions_with_raw", synthetic_iter)
+    result = await parse_sources_archive(archive_root, [Source(name="codex", path=tmp_path)], parse_workers=1)
+
+    assert result.counts["sessions"] == 1
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        row = conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE native_id = ?",
+            ("archive-ingest-mtime-fallback",),
+        ).fetchone()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        raw_mtime_ms = conn.execute(
+            "SELECT file_mtime_ms FROM raw_sessions WHERE source_path = ?",
+            (str(source_path),),
+        ).fetchone()[0]
+    assert row[0] is not None
+    assert row[0] == row[1]
+    assert raw_mtime_ms == timestamp_millis(raw.file_mtime)
+
+
 async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """Two sessions split from ONE Claude Code file's bytes must NOT produce
     two raw_sessions rows for that file -- the specific bug behind

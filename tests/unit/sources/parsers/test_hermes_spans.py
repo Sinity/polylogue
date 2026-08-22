@@ -92,6 +92,26 @@ def test_dispatch_detects_and_parses_atif_trace_through_the_real_pipeline() -> N
     assert len(session.messages[0].text or "") < 500
 
 
+def test_atif_step_timestamp_reaches_session_events_through_dispatch() -> None:
+    payload = {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "timestamped-session",
+        "agent": {"model_name": "hermes"},
+        "steps": [
+            {
+                "source": "agent",
+                "timestamp": "2026-08-21T12:34:56.000Z",
+                "message": "<redacted>",
+            }
+        ],
+    }
+
+    session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
+
+    event = next(event for event in session.session_events if event.event_type == "hermes_llm_request_span")
+    assert event.timestamp == "2026-08-21T12:34:56.000Z"
+
+
 def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     """A redacted live export guards the actual wire shape, not a synthetic marker."""
 

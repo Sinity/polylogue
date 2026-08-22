@@ -26,8 +26,14 @@ from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.raw_admission import admit_raw_blob_observation, admit_raw_observation
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
-from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision, write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    bind_source_raw_revision,
+    deterministic_blob_hash,
+    write_source_raw_session,
+    write_source_raw_session_blob_ref,
+)
 
 
 def _payload_opener(payload: bytes) -> Callable[[], BinaryIO]:
@@ -344,6 +350,149 @@ def test_unenveloped_raw_write_is_quarantined() -> None:
     assert conn.execute(
         "SELECT revision_kind, revision_authority FROM raw_sessions WHERE raw_id = ?", (raw_id,)
     ).fetchone() == ("unknown", "quarantined")
+
+
+@pytest.mark.parametrize("write_mode", ["payload", "blob-ref"])
+def test_raw_id_conflict_rejects_before_adding_blob_reference(write_mode: str) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SOURCE_DDL)
+    payload = b"stable-payload"
+    blob_hash = deterministic_blob_hash(payload)
+    if write_mode == "payload":
+        write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+            raw_id="raw-conflict",
+        )
+
+        def conflicting() -> str:
+            return write_source_raw_session(
+                conn,
+                origin=Origin.CODEX_SESSION,
+                source_path="/capture/session.jsonl",
+                source_index=0,
+                payload=b"different-payload",
+                acquired_at_ms=2,
+                raw_id="raw-conflict",
+                file_mtime_ms=123,
+                manage_transaction=False,
+            )
+    else:
+        write_source_raw_session_blob_ref(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=len(payload),
+            acquired_at_ms=1,
+            raw_id="raw-conflict",
+        )
+
+        def conflicting() -> str:
+            return write_source_raw_session_blob_ref(
+                conn,
+                origin=Origin.CODEX_SESSION,
+                source_path="/capture/session.jsonl",
+                source_index=0,
+                blob_hash=deterministic_blob_hash(b"different-payload"),
+                blob_size=len(b"different-payload"),
+                acquired_at_ms=2,
+                raw_id="raw-conflict",
+                file_mtime_ms=123,
+                manage_transaction=False,
+            )
+
+    with pytest.raises(ValueError, match="different acquisition evidence"):
+        conflicting()
+    assert conn.execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", ("raw-conflict",)).fetchone() == (
+        None,
+    )
+    assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?", ("raw-conflict",)).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("write_mode", ["payload", "blob-ref"])
+def test_post_parse_duplicate_backfills_only_unknown_file_mtime(write_mode: str) -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SOURCE_DDL)
+    payload = b"post-parse-payload"
+    raw_id = "raw-post-parse"
+    if write_mode == "payload":
+        first = admit_raw_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=None,
+            post_parse=True,
+        )
+        second = admit_raw_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=456,
+            post_parse=True,
+        )
+        admit_raw_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=789,
+            post_parse=True,
+        )
+    else:
+        digest = deterministic_blob_hash(payload)
+        first = admit_raw_blob_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            blob_hash=digest,
+            blob_size=len(payload),
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=None,
+        )
+        second = admit_raw_blob_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            blob_hash=digest,
+            blob_size=len(payload),
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=456,
+        )
+        admit_raw_blob_observation(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/capture/session.jsonl",
+            source_index=0,
+            blob_hash=digest,
+            blob_size=len(payload),
+            acquired_at_ms=1,
+            raw_id=raw_id,
+            file_mtime_ms=789,
+        )
+    assert first.raw_id == second.raw_id == raw_id
+    assert conn.execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (456,)
+    assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?", (raw_id,)).fetchone() == (1,)
 
 
 def test_raw_revision_material_preserves_capture_mode(tmp_path: Path) -> None:

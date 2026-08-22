@@ -13,6 +13,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.timestamp_authority import normalize_session_timestamps, timestamp_millis
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.pipeline.services.process_pool import (
@@ -156,6 +157,10 @@ async def parse_sources_archive(
             raw_data: RawSessionData | None,
             session: ParsedSession,
         ) -> None:
+            session = normalize_session_timestamps(
+                session,
+                fallback_timestamp=raw_data.file_mtime if raw_data is not None else None,
+            )
             payload = _archive_raw_payload(raw_data, session, blob_root=blob_root)
             source_path = _archive_raw_source_path(raw_data, source)
             source_index = _archive_raw_source_index(raw_data)
@@ -218,6 +223,7 @@ async def parse_sources_archive(
                         payload=payload,
                         source_path=source_path,
                         acquired_at_ms=acquired_at_ms,
+                        file_mtime_ms=timestamp_millis(raw_data.file_mtime) if raw_data is not None else None,
                         source_index=source_index,
                         raw_id=raw_id,
                         shared_raw=shared_key is not None,

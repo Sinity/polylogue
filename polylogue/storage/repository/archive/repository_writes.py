@@ -26,18 +26,9 @@ class RepositoryWriteMixin:
 
         db_path = Path(self._backend.db_path)
         with ArchiveStore(db_path.parent) as archive:
-            archive.write_parsed(session, content_hash=content_hash)
+            counts = archive.write_parsed_result(session, content_hash=content_hash)
         invalidate_search_cache()
-        return {
-            "sessions": 1,
-            "messages": len(session.messages),
-            "attachments": len(session.attachments),
-            "session_events": len(session.session_events),
-            "skipped_sessions": 0,
-            "skipped_messages": 0,
-            "skipped_attachments": 0,
-            "skipped_session_events": 0,
-        }
+        return counts
 
     async def get_metadata(self, session_id: str) -> JSONDocument:
         async with self._backend.connection() as conn:

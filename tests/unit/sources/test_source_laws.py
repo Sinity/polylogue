@@ -1614,6 +1614,28 @@ def test_claude_code_stream_chunk_merge_preserves_git_branch_from_either_chunk()
     assert session_one.git_branch == "feature/perf/pipeline-quality-consolidation"
 
 
+def test_merge_parsed_session_chunks_orders_timestamp_values_chronologically() -> None:
+    earlier = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="timestamp-chunks",
+        created_at="2026-10-01T00:30:00Z",
+        updated_at="2026-10-01T00:30:00Z",
+        messages=[],
+    )
+    later = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="timestamp-chunks",
+        created_at="2026-09-30T23:00:00-02:00",
+        updated_at="2026-09-30T23:00:00-02:00",
+        messages=[],
+    )
+
+    merged = merge_parsed_session_chunks([earlier, later])[0]
+
+    assert merged.created_at == "2026-10-01T00:30:00Z"
+    assert merged.updated_at == "2026-09-30T23:00:00-02:00"
+
+
 def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_chunk() -> None:
     """bd polylogue-t5lg: a huge Claude Code session split across streamed
     chunks must not freeze a weakly-resolved title (the first-human-message

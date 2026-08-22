@@ -14,6 +14,7 @@ from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
 from polylogue.core.payload_coercion import optional_string
+from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import get_logger
 
 from .decoders import _decode_json_bytes, _iter_json_stream
@@ -695,6 +696,18 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
 
         created_values = [value for value in (existing.created_at, session.created_at) if value]
         updated_values = [value for value in (existing.updated_at, session.updated_at) if value]
+
+        def chronological(values: list[str], *, newest: bool) -> str | None:
+            if not values:
+                return None
+            parseable = [(value, timestamp_millis(value)) for value in values]
+            valid = [(value, millis) for value, millis in parseable if millis is not None]
+            if valid:
+                return (max if newest else min)(valid, key=lambda item: item[1])[0]
+            # Preserve the old deterministic behavior only when every producer
+            # value is malformed; valid evidence must never be ordered lexically.
+            return (max if newest else min)(values)
+
         # bd polylogue-t5lg: pick the chunk with the stronger title EVIDENCE
         # (title_source/title_confidence, ranked identically to the
         # single-pass parser's own precedence), not merely "whichever chunk
@@ -713,12 +726,12 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "title_source": title_winner.title_source,
                 "title_ref": title_winner.title_ref,
                 "title_confidence": title_winner.title_confidence,
-                "created_at": min(created_values) if created_values else None,
+                "created_at": chronological(created_values, newest=False),
                 "parent_session_provider_id": (
                     existing.parent_session_provider_id or session.parent_session_provider_id
                 ),
                 "branch_type": existing.branch_type or session.branch_type,
-                "updated_at": max(updated_values) if updated_values else None,
+                "updated_at": chronological(updated_values, newest=True),
                 "messages": messages,
                 "active_leaf_message_provider_id": active_leaf_message_provider_id,
                 "attachments": [*existing.attachments, *session.attachments],

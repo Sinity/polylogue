@@ -1094,7 +1094,9 @@ def _step_usage_evidence(step: JSONDocument, extra: JSONDocument) -> dict[str, o
     return evidence
 
 
-def _tool_availability_events(extra: JSONDocument, index: int, step_id: object) -> list[ParsedSessionEvent]:
+def _tool_availability_events(
+    extra: JSONDocument, index: int, step_id: object, timestamp: str | None
+) -> list[ParsedSessionEvent]:
     """The tool-definition schema offered to the model at an llm-request step.
 
     Materially distinct from ``hermes_tool_execution_span`` (a tool the model
@@ -1130,7 +1132,7 @@ def _tool_availability_events(extra: JSONDocument, index: int, step_id: object) 
     reasoning_effort = json_document(llm_request.get("reasoning")).get("effort")
     if isinstance(reasoning_effort, str) and reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
-    return [ParsedSessionEvent(event_type="hermes_tool_availability_span", payload=payload)]
+    return [ParsedSessionEvent(event_type="hermes_tool_availability_span", timestamp=timestamp, payload=payload)]
 
 
 def _atif_document_evidence(payload: JSONDocument, agent: JSONDocument) -> dict[str, object]:
@@ -1159,6 +1161,10 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
     observation = step.get("observation")
     extra = json_document(step.get("extra"))
     step_id = step.get("step_id")
+    # ATIF v1.7 defines step.timestamp as an ISO-8601 producer timestamp.
+    # Numeric invocation telemetry is deliberately not promoted to session
+    # time: it is a different field with a different contract.
+    timestamp = _optional_str(step.get("timestamp"))
     observation_results = _observation_results(observation)
     events: list[ParsedSessionEvent] = []
     skipped = 0
@@ -1187,8 +1193,10 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
             if position < len(observation_results):
                 payload.update(_observation_result_evidence(observation_results[position]))
             payload.update(_step_ancestry_evidence(extra))
-            events.append(ParsedSessionEvent(event_type="hermes_tool_execution_span", payload=payload))
-        events.extend(_tool_availability_events(extra, index, step_id))
+            events.append(
+                ParsedSessionEvent(event_type="hermes_tool_execution_span", timestamp=timestamp, payload=payload)
+            )
+        events.extend(_tool_availability_events(extra, index, step_id, timestamp))
         return events, skipped
 
     if isinstance(message, str) and message:
@@ -1202,8 +1210,8 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
         payload.update(_step_ancestry_evidence(extra))
         payload.update(_step_invocation_evidence(extra))
         payload.update(_step_usage_evidence(step, extra))
-        events.append(ParsedSessionEvent(event_type="hermes_llm_request_span", payload=payload))
-        events.extend(_tool_availability_events(extra, index, step_id))
+        events.append(ParsedSessionEvent(event_type="hermes_llm_request_span", timestamp=timestamp, payload=payload))
+        events.extend(_tool_availability_events(extra, index, step_id, timestamp))
         return events, skipped
 
     if observation is not None:
@@ -1211,7 +1219,7 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
         if step_id is not None:
             payload["step_id"] = step_id
         payload.update(_step_ancestry_evidence(extra))
-        events.append(ParsedSessionEvent(event_type="hermes_observer_span", payload=payload))
+        events.append(ParsedSessionEvent(event_type="hermes_observer_span", timestamp=timestamp, payload=payload))
         return events, skipped
 
     # No recognized shape (no tool_calls, no message, no observation): ambiguous
@@ -1220,7 +1228,7 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
     if step_id is not None:
         payload["step_id"] = step_id
     payload.update(_step_ancestry_evidence(extra))
-    events.append(ParsedSessionEvent(event_type="hermes_observer_span", payload=payload))
+    events.append(ParsedSessionEvent(event_type="hermes_observer_span", timestamp=timestamp, payload=payload))
     return events, skipped
 
 

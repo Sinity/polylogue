@@ -31,7 +31,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1635,10 +1635,85 @@ def test_real_append_fold_proof_mutations_roll_back(
         assert state(archive) == before
 
 
+def test_write_raw_and_parsed_persists_file_mtime_across_reopen(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    file_mtime_ms = 1_767_225_600_000
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="wrapper-mtime",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="no timeline")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id, _session_id = archive.write_raw_and_parsed(
+            session,
+            payload=b"wrapper raw",
+            source_path="wrapper-mtime.jsonl",
+            acquired_at_ms=1,
+            file_mtime_ms=file_mtime_ms,
+        )
+        row = (
+            archive._ensure_source_conn()
+            .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+        assert row[0] == file_mtime_ms
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        row = (
+            archive._ensure_source_conn()
+            .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+        assert row[0] == file_mtime_ms
+
+
+def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    file_mtime_ms = 1_767_225_600_000
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="mtime-replay",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="no timeline")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"retained raw",
+            source_path="mtime-replay.jsonl",
+            acquired_at_ms=1,
+            file_mtime_ms=file_mtime_ms,
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                "codex:session",
+                RawRevisionKind.FULL,
+                "mtime-revision",
+                1,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            plan_revision_replay([_candidate(raw_id, RawRevisionKind.FULL, 1, size=len(b"retained raw"))]),
+            {raw_id: session},
+            acquired_at_ms=0,
+        )
+        timestamp_row = archive._conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
+            ("codex-session:mtime-replay",),
+        ).fetchone()
+        assert tuple(timestamp_row) == (file_mtime_ms, file_mtime_ms)
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        timestamp_row = archive._conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
+            ("codex-session:mtime-replay",),
+        ).fetchone()
+        assert tuple(timestamp_row) == (file_mtime_ms, file_mtime_ms)
+
+
 def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 
-    def parsed(*messages: tuple[str, str]) -> ParsedSession:
+    def parsed(*messages: tuple[str, str], event_timestamp: str | None = None) -> ParsedSession:
         return ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id="session",
@@ -1646,6 +1721,11 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
                 ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)
                 for message_id, text in messages
             ],
+            session_events=(
+                [ParsedSessionEvent(event_type="replay-evidence", timestamp=event_timestamp)]
+                if event_timestamp is not None
+                else []
+            ),
         )
 
     def write_full(archive: ArchiveStore, label: str, generation: int) -> str:
@@ -1687,7 +1767,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
         )
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        base_session = parsed(("m0", "zero"))
+        base_session = parsed(("m0", "zero"), event_timestamp="2026-07-01T00:00:00Z")
         base = write_full(archive, "base", 1)
         archive.apply_raw_membership_classification(
             "codex:session",
@@ -1696,6 +1776,11 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             {base: session_revision_projection(base_session)},
             acquired_at_ms=0,
         )
+        timestamp_row = archive._conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE session_id = ?",
+            ("codex-session:session",),
+        ).fetchone()
+        assert tuple(timestamp_row) == (1_782_864_000_000, 1_782_864_000_000)
 
         later_session = parsed(("m0", "zero"), ("m1", "one"), ("m2", "two"))
         later = write_full(archive, "later", 2)

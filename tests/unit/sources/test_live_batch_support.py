@@ -7,6 +7,7 @@ import os
 import sqlite3
 import zipfile
 from dataclasses import replace
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -560,6 +562,20 @@ def test_live_full_replay_streams_retained_jsonl_raw(
 
     assert result.succeeded == [path]
     assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as source_conn, sqlite3.connect(index_db) as index_conn:
+        mtimes = [
+            row[0]
+            for row in source_conn.execute(
+                "SELECT file_mtime_ms FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms",
+                (str(path),),
+            ).fetchall()
+        ]
+        timestamp_row = index_conn.execute(
+            "SELECT created_at_ms, updated_at_ms FROM sessions WHERE native_id = 'streamed-full'"
+        ).fetchone()
+    assert len(mtimes) >= 2
+    assert all(mtime is not None for mtime in mtimes)
+    assert timestamp_row in {(mtime, mtime) for mtime in mtimes}
 
 
 def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
@@ -2908,6 +2924,48 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
     assert next_plan.payload == second_chunk
 
 
+def test_append_cursor_survives_source_disappearing_after_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    path.write_bytes(original + b'{"b":2}\n')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="chatgpt", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    stat = path.stat()
+    processor._cursor.set(
+        path,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(original),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+
+    def missing(_self: Path) -> os.stat_result:
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(Path, "stat", missing)
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_offset == plan.last_complete_newline
+
+
 def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
@@ -3933,17 +3991,22 @@ def test_live_append_chain_survives_post_ingest_compaction(
         source_path=str(path),
     )
     assert len(expected_sessions) == 1
-    expected_session_hash = bytes.fromhex(session_content_hash(expected_sessions[0]))
     with sqlite3.connect(source_db) as conn:
         raw_rows = conn.execute(
             """SELECT raw_id, revision_kind, predecessor_raw_id, baseline_raw_id,
-                      parsed_at_ms, parse_error
+                      parsed_at_ms, parse_error, file_mtime_ms
                FROM raw_sessions ORDER BY acquisition_generation"""
         ).fetchall()
         assert len(raw_rows) == 4
         assert [row[1] for row in raw_rows] == ["full", "append", "append", "append"]
         assert all(row[4] is not None and row[5] is None for row in raw_rows)
         raw_by_id = {str(row[0]): row for row in raw_rows}
+    final_file_mtime = datetime.fromtimestamp(raw_rows[-1][6] / 1000, UTC).isoformat()
+    expected_session = normalize_session_timestamps(expected_sessions[0], fallback_timestamp=final_file_mtime)
+    expected_session = expected_session.model_copy(
+        update={"updated_at": final_file_mtime, "updated_at_provenance": "fallback"}
+    )
+    expected_session_hash = bytes.fromhex(session_content_hash(expected_session))
     with sqlite3.connect(index_db) as conn:
         session_native_id, session_hash = conn.execute("SELECT native_id, content_hash FROM sessions").fetchone()
         assert session_native_id == "append-v1"
