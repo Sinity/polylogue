@@ -206,6 +206,95 @@ def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
     return aggregate if isinstance(aggregate, dict) else {}
 
 
+def _load_history_run(run_id: str) -> dict[str, Any] | None:
+    """Load one durable history row by its stable run identifier."""
+    if not VERIFY_HISTORY_PATH.is_file():
+        return None
+    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and str(entry.get("run_id") or "") == run_id:
+                return entry
+    return None
+
+
+def _cost_comparison(baseline_id: str, candidate_id: str) -> dict[str, Any]:
+    """Compare only measured durable cost fields; missing evidence stays explicit."""
+    baseline = _load_history_run(baseline_id)
+    candidate = _load_history_run(candidate_id)
+    if baseline is None or candidate is None:
+        missing = []
+        if baseline is None:
+            missing.append("baseline")
+        if candidate is None:
+            missing.append("candidate")
+        return {
+            "status": "insufficient_evidence",
+            "reason": f"no durable history row for {', '.join(missing)} run",
+            "baseline_run": baseline_id,
+            "candidate_run": candidate_id,
+        }
+
+    def telemetry(entry: Mapping[str, Any]) -> Mapping[str, Any]:
+        value = entry.get("cost_telemetry")
+        return value if isinstance(value, Mapping) else {}
+
+    before = telemetry(baseline)
+    after = telemetry(candidate)
+    fields = (
+        "wall_s",
+        "read_bytes",
+        "write_bytes",
+        "peak_basetemp_bytes",
+        "write_amplification_ratio",
+        "peak_tree_rss_kb",
+        "peak_tree_pss_kb",
+        "selected_count",
+        "terminal_count",
+    )
+    measured: dict[str, dict[str, float | int | None]] = {}
+    for field in fields:
+        old = before.get(field)
+        new = after.get(field)
+        delta = new - old if isinstance(old, (int, float)) and isinstance(new, (int, float)) else None
+        measured[field] = {"baseline": old, "candidate": new, "delta": delta}
+    missing_fields = [field for field, values in measured.items() if values["delta"] is None]
+    return {
+        "status": "comparable" if not missing_fields else "partial_evidence",
+        "baseline_run": baseline_id,
+        "candidate_run": candidate_id,
+        "same_tier": baseline.get("tier") == candidate.get("tier"),
+        "baseline_tier": baseline.get("tier"),
+        "candidate_tier": candidate.get("tier"),
+        "metrics": measured,
+        "missing_metrics": missing_fields,
+        "interpretation": "Measured deltas only; no improvement or regression verdict is inferred.",
+    }
+
+
+def _render_cost_comparison(baseline_id: str, candidate_id: str, stream: Any, *, json_output: bool = False) -> int:
+    result = _cost_comparison(baseline_id, candidate_id)
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True), file=stream)
+        return 0
+    print(f"cost comparison: {result['status']}", file=stream)
+    if result.get("reason"):
+        print(f"reason: {result['reason']}", file=stream)
+        return 0
+    print(f"baseline: {result['baseline_run']} ({result['baseline_tier']})", file=stream)
+    print(f"candidate: {result['candidate_run']} ({result['candidate_tier']})", file=stream)
+    print(f"same tier: {'yes' if result['same_tier'] else 'no'}", file=stream)
+    for field, values in result["metrics"].items():
+        print(f"  {field}: {values['baseline']} -> {values['candidate']} (delta {values['delta']})", file=stream)
+    if result["missing_metrics"]:
+        print("missing measured metrics: " + ", ".join(result["missing_metrics"]), file=stream)
+    print(result["interpretation"], file=stream)
+    return 0
+
+
 def _render_history(hours: float, stream: Any) -> int:
     """Answer "where did the time go" from the durable cross-checkout history.
 
@@ -296,6 +385,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Explain the most recent verification run.")
     parser.add_argument("--run", help="Explain a specific run id instead of the most recent.")
     parser.add_argument(
+        "--compare-cost",
+        nargs=2,
+        metavar=("BASELINE_RUN", "CANDIDATE_RUN"),
+        help="Compare measured durable cost telemetry for two run ids.",
+    )
+    parser.add_argument(
         "--history",
         nargs="?",
         type=float,
@@ -305,6 +400,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Emit the receipt as JSON.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.compare_cost is not None:
+        return _render_cost_comparison(
+            baseline_id=args.compare_cost[0],
+            candidate_id=args.compare_cost[1],
+            stream=sys.stdout,
+            json_output=args.json,
+        )
 
     if args.history is not None:
         return _render_history(args.history, sys.stdout)

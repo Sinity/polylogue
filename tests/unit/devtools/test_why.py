@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.why import _EXPLANATIONS, _latest_run, _render
+from devtools.why import _EXPLANATIONS, _cost_comparison, _latest_run, _render
 
 
 def _write_run(root: Path, run_id: str, payload: dict[str, object]) -> Path:
@@ -104,6 +104,66 @@ def test_import_mismatch_remedy_warns_that_the_obvious_probe_lies() -> None:
 
     assert "cwd" in remedy
     assert "VIRTUAL_ENV" in remedy
+
+
+def test_cost_comparison_reports_measured_deltas_without_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import why
+
+    history = tmp_path / "verify-history.jsonl"
+    history.write_text(
+        "\n".join(
+            json.dumps(entry)
+            for entry in (
+                {
+                    "run_id": "baseline",
+                    "tier": "testmon",
+                    "cost_telemetry": {
+                        "wall_s": 100,
+                        "write_bytes": 1000,
+                        "peak_basetemp_bytes": 100,
+                        "write_amplification_ratio": 10.0,
+                    },
+                },
+                {
+                    "run_id": "candidate",
+                    "tier": "testmon",
+                    "cost_telemetry": {
+                        "wall_s": 90,
+                        "write_bytes": 800,
+                        "peak_basetemp_bytes": 100,
+                        "write_amplification_ratio": 8.0,
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", history)
+
+    result = _cost_comparison("baseline", "candidate")
+
+    assert result["status"] == "partial_evidence"
+    assert "read_bytes" in result["missing_metrics"]
+    assert result["metrics"]["wall_s"]["delta"] == -10
+    assert result["metrics"]["write_bytes"]["delta"] == -200
+    assert "verdict" not in result
+    assert "Measured deltas only" in result["interpretation"]
+
+
+def test_cost_comparison_is_truthful_when_a_run_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools import why
+
+    history = tmp_path / "verify-history.jsonl"
+    history.write_text(json.dumps({"run_id": "baseline"}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", history)
+
+    result = _cost_comparison("baseline", "missing")
+
+    assert result["status"] == "insufficient_evidence"
+    assert "candidate" in result["reason"]
 
 
 def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
