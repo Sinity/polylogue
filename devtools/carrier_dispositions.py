@@ -350,7 +350,27 @@ def apply_live_dispositions(
         raise DispositionError("guarded merge-boundary batch changed rows outside its typed carrier scope")
     output = cwd / ".beads" / "issues.jsonl"
     bd_guard.atomic_write_jsonl(output, after)
-    print(f"applied carrier dispositions for PR #{pr}; exported {output}")
+    execution_id = _execution_id(pr=pr, head_sha=head_sha, merge_sha=merge_sha, attestation=attestation)
+    _write_receipt(
+        _receipt_path(output, execution_id),
+        {
+            **_receipt_identity(
+                execution_id=execution_id,
+                pr=pr,
+                head_sha=head_sha,
+                merge_sha=merge_sha,
+                base_sha="merge-boundary-live",
+                attestation=attestation,
+                marker=marker,
+                scope=scope,
+            ),
+            "changed_beads": sorted(changed),
+            "changed_records": {bead_id: after[bead_id] for bead_id in sorted(changed)},
+        },
+    )
+    print(
+        f"applied carrier dispositions for PR #{pr}; exported {output} (receipt: {_receipt_path(output, execution_id)})"
+    )
     return output
 
 
