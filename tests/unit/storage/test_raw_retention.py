@@ -59,6 +59,60 @@ def test_unavailable_frontier_preserves_empty_healthy_source_reason() -> None:
     assert projection.missing_source_raw_reason == ""
 
 
+def test_scoped_terminal_authority_does_not_mask_another_source_path(tmp_path: Path) -> None:
+    """A path-scoped cleanup cannot borrow terminal authority from its siblings."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    first_path = tmp_path / "first.jsonl"
+    second_path = tmp_path / "second.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        for number, source_path in enumerate((first_path, second_path), start=1):
+            raw_id = f"raw-terminal-{number}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms
+                ) VALUES (?, 'unknown-export', ?, ?, 0, ?, 1, ?)
+                """,
+                (raw_id, raw_id, str(source_path), bytes([number]) * 32, number),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index,
+                    artifact_kind, support_status, classification_reason,
+                    parse_as_session, schema_eligible, malformed_jsonl_lines,
+                    first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'unknown-export', ?, 0, 'workflow_journal',
+                          'unknown', 'terminal', 0, 0, 0, ?, ?)
+                """,
+                (f"artifact-{number}", raw_id, str(source_path), number, number),
+            )
+        conn.commit()
+
+    with sqlite3.connect(source_db) as conn:
+        authority = active_raw_retention_authority(
+            conn,
+            index_db_path=index_db,
+            terminal_source_paths=(first_path,),
+        )
+
+    assert authority == RawRetentionAuthority(
+        protected_raw_ids=frozenset({"raw-terminal-1"}),
+        eligible_raw_ids=frozenset(),
+    )
+
+    with sqlite3.connect(source_db) as conn, pytest.raises(RawRetentionSafetyError, match="index has no raw authority"):
+        active_raw_retention_authority(
+            conn,
+            index_db_path=index_db,
+            terminal_source_paths=(first_path, second_path),
+        )
+
+
 def _ensure_archive_source_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """CREATE TABLE raw_sessions (
