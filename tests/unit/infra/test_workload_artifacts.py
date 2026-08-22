@@ -23,7 +23,9 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
+    _assert_lock_identity,
     _journal_mode_delete_with_retry,
+    _open_no_follow,
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
@@ -91,6 +93,71 @@ def test_seeded_archive_clone_rejects_symlink_inside_published_tree(tmp_path: Pa
 
     with pytest.raises(ValueError, match="symlink"):
         clone_seeded_archive(artifact, tmp_path / "clone")
+
+
+def test_lock_inode_replacement_is_detected_after_flock(tmp_path: Path) -> None:
+    import fcntl
+
+    lock = tmp_path / "lock"
+    lock.write_text("owner", encoding="utf-8")
+    fd = _open_no_follow(lock, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        replacement = tmp_path / "replacement"
+        replacement.write_text("attacker", encoding="utf-8")
+        os.replace(replacement, lock)
+        with pytest.raises(OSError, match="lock pathname was replaced"):
+            _assert_lock_identity(fd, lock)
+    finally:
+        os.close(fd)
+
+
+def test_seeded_archive_rejects_unsupported_cache_node_and_rebuilds(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    original = build_seeded_archive(cache_root=cache_root)
+    original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
+    hostile = original.root / "u"
+    os.mkfifo(hostile)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    rebuilt = build_seeded_archive(cache_root=cache_root)
+    assert not (rebuilt.root / "u").exists()
+
+
+def test_clone_cleans_partial_output_after_short_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    destination = tmp_path / "partial-clone"
+
+    def fail_write(fd: int, data: bytes) -> None:
+        raise OSError("injected short write")
+
+    monkeypatch.setattr(artifacts, "_write_all", fail_write)
+    with pytest.raises(OSError, match="short write"):
+        clone_seeded_archive(artifact, destination)
+    assert not destination.exists()
+
+
+def test_clone_rejects_tampered_copy_and_cleans_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    destination = tmp_path / "tampered-clone"
+    original_copy = artifacts._copy_tree
+
+    def tamper(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        tampered = target.joinpath("source.db")
+        tampered.chmod(tampered.stat().st_mode | stat.S_IWUSR)
+        original_bytes = tampered.read_bytes()
+        tampered.write_bytes(bytes((original_bytes[0] ^ 1,)) + original_bytes[1:])
+
+    monkeypatch.setattr(artifacts, "_copy_tree", tamper)
+    with pytest.raises(ValueError, match="content mismatch"):
+        clone_seeded_archive(artifact, destination)
+    assert not destination.exists()
 
 
 def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -341,8 +408,12 @@ def test_publish_attempts_rename_with_a_sealed_staging_root(
     staging.joinpath("payload").write_text("payload", encoding="utf-8")
     observed_modes: list[int] = []
 
-    def reject_rename(source: str | bytes | os.PathLike[str] | os.PathLike[bytes], destination: object) -> None:
-        observed_modes.append(Path(os.fsdecode(source)).stat().st_mode)
+    def reject_rename(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: object,
+        **kwargs: object,
+    ) -> None:
+        observed_modes.append(os.stat(source, dir_fd=kwargs.get("src_dir_fd"), follow_symlinks=False).st_mode)
         raise PermissionError("injected sealed rename failure")
 
     monkeypatch.setattr(os, "replace", reject_rename)
@@ -370,15 +441,17 @@ def test_sealed_fallback_publishes_only_sealed_final_tree(
     def fail_once_then_replace(
         source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        **kwargs: object,
     ) -> None:
         nonlocal calls
         calls += 1
-        source_path = Path(os.fsdecode(source))
+        source_path = Path(os.readlink(f"/proc/self/fd/{kwargs['src_dir_fd']}")) / os.fsdecode(source)
+        destination_path = Path(os.readlink(f"/proc/self/fd/{kwargs['dst_dir_fd']}")) / os.fsdecode(destination)
         observed.append((source_path, bool(source_path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))))
         if calls == 1:
             raise PermissionError("injected first rename failure")
-        assert not Path(os.fsdecode(destination)).exists()
-        real_replace(source, destination)
+        assert not destination_path.exists()
+        real_replace(source, destination, **kwargs)
 
     monkeypatch.setattr(os, "replace", fail_once_then_replace)
     artifacts._publish_sealed_staging(staging, final_root)
@@ -404,7 +477,7 @@ def test_sealed_fallback_kill_injection_leaves_no_visible_final(
     staging.joinpath("payload").write_text("payload", encoding="utf-8")
     calls = 0
 
-    def fail_then_interrupt(source: object, destination: object) -> None:
+    def fail_then_interrupt(source: object, destination: object, **kwargs: object) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:

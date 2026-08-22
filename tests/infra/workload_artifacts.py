@@ -599,15 +599,21 @@ def _safe_replace(source: Path, destination: Path) -> None:
     src_parent, src_leaf = _open_pinned_parent(source)
     dst_parent, dst_leaf = _open_pinned_parent(destination)
     try:
-        try:
-            os.replace(src_leaf, dst_leaf, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
-        except TypeError:
-            # Compatibility with tests that inject a legacy two-argument
-            # rename shim; production always takes the descriptor route.
-            os.replace(source, destination)
+        os.replace(src_leaf, dst_leaf, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
     finally:
         os.close(src_parent)
         os.close(dst_parent)
+
+
+def _assert_lock_identity(fd: int, path: Path) -> None:
+    parent, leaf = _open_pinned_parent(path)
+    try:
+        named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+    opened = os.fstat(fd)
+    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        raise OSError("lock pathname was replaced while lock was held")
 
 
 def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
@@ -622,15 +628,11 @@ def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
     try:
         operation = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
         fcntl.flock(fd, operation)
-        parent, leaf = _open_pinned_parent(path)
         try:
-            named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
-        finally:
-            os.close(parent)
-        opened = os.fstat(fd)
-        if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+            _assert_lock_identity(fd, path)
+        except OSError:
             fcntl.flock(fd, fcntl.LOCK_UN)
-            raise OSError("lock pathname was replaced while acquiring lock")
+            raise
         return fd
     except BaseException:
         with contextlib.suppress(OSError):
@@ -656,6 +658,8 @@ def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
                     raise ValueError(f"symlink node is not allowed: {path}")
+                if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                    raise ValueError(f"unsupported cache node is not allowed: {path}")
                 yield path
                 if stat.S_ISDIR(info.st_mode):
                     child = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
@@ -862,9 +866,12 @@ def _recover_stale_staging(*, staging_root: Path, artifact_name: str) -> tuple[s
         try:
             if not stat.S_ISDIR(_safe_stat(candidate).st_mode):
                 continue
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
             continue
-        _remove_tree(candidate)
+        try:
+            _remove_tree(candidate)
+        except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
+            continue
         removed.append(candidate.name)
     return tuple(removed)
 
@@ -920,8 +927,12 @@ def _bounded_cache_candidates(
 
         def scan(*, after_cursor: bool) -> list[Path]:
             selected: list[Path] = []
+            inspected = 0
             with os.scandir(directory_fd) as entries:
                 for candidate in entries:
+                    inspected += 1
+                    if inspected > budget:
+                        break
                     if len(selected) >= budget:
                         break
                     if after_cursor and cursor and candidate.name <= cursor:
@@ -976,6 +987,7 @@ def _recover_obsolete_staging(
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
+        _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         candidates = _bounded_cache_candidates(staging_root, cursor=cursor, budget=budget)
         inspected = 0
@@ -995,6 +1007,7 @@ def _recover_obsolete_staging(
                 lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
                     try:
+                        _assert_lock_identity(handle.fileno(), lock_path)
                         _remove_tree(candidate)
                         removed.append(candidate.name)
                     finally:
@@ -1028,6 +1041,7 @@ def _recover_stale_handoffs(
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
+        _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         candidates = _bounded_cache_candidates(artifacts_root, cursor=cursor, budget=budget, suffix=".handoff")
         inspected = 0
@@ -1053,6 +1067,7 @@ def _recover_stale_handoffs(
                 lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
                     try:
+                        _assert_lock_identity(handle.fileno(), lock_path)
                         _remove_tree(candidate)
                         removed.append(candidate.name)
                     finally:
@@ -1423,7 +1438,8 @@ def build_seeded_archive(
     lock_path = locks / f"{final_root.name}.lock"
 
     lock_fd = _open_authenticated_lock(lock_path)
-    with os.fdopen(lock_fd, "a+", encoding="utf-8"):
+    with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_handle:
+        _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
         _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
         _recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts)
@@ -1518,10 +1534,23 @@ def build_seeded_archive(
         return artifact
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short cache write")
+        view = view[written:]
+
+
 def _copy_tree(source: Path, destination: Path) -> None:
     """Copy a tree through pinned directory descriptors, never shutil/pathname walks."""
     src_fd = _open_pinned_dir(source)
-    dst_parent, dst_leaf = _open_pinned_parent(destination, create=True)
+    try:
+        dst_parent, dst_leaf = _open_pinned_parent(destination, create=True)
+    except BaseException:
+        os.close(src_fd)
+        raise
     original_parent_mode = os.fstat(dst_parent).st_mode
     os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
     try:
@@ -1541,7 +1570,11 @@ def _copy_tree(source: Path, destination: Path) -> None:
                     if stat.S_ISDIR(info.st_mode):
                         os.mkdir(entry.name, (info.st_mode & 0o777) | stat.S_IWUSR, dir_fd=dst)
                         child_src = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=src)
-                        child_dst = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst)
+                        try:
+                            child_dst = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst)
+                        except BaseException:
+                            os.close(child_src)
+                            raise
                         try:
                             copy_dir(child_src, child_dst)
                             os.fchmod(child_dst, info.st_mode & 0o777)
@@ -1550,18 +1583,22 @@ def _copy_tree(source: Path, destination: Path) -> None:
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
                         in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
-                        out_fd = os.open(
-                            entry.name,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
-                            info.st_mode & 0o777,
-                            dir_fd=dst,
-                        )
+                        try:
+                            out_fd = os.open(
+                                entry.name,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
+                                info.st_mode & 0o777,
+                                dir_fd=dst,
+                            )
+                        except BaseException:
+                            os.close(in_fd)
+                            raise
                         try:
                             while True:
                                 chunk = os.read(in_fd, 1024 * 1024)
                                 if not chunk:
                                     break
-                                os.write(out_fd, chunk)
+                                _write_all(out_fd, chunk)
                             os.fchmod(out_fd, info.st_mode & 0o777)
                         finally:
                             os.close(in_fd)
@@ -1576,6 +1613,34 @@ def _copy_tree(source: Path, destination: Path) -> None:
         with contextlib.suppress(OSError):
             os.fchmod(dst_parent, original_parent_mode)
         os.close(dst_parent)
+
+
+def _authenticate_clone_copy(
+    source: SeededArchiveArtifact,
+    destination: Path,
+    manifest: SeededArchiveManifest,
+) -> None:
+    expected = _manifest_file_entries(manifest.files)
+    expected_paths = {relative for relative, _, _ in expected}
+    actual_paths: set[str] = set()
+    for path in _pinned_paths(destination):
+        if _is_regular(path) and not _is_reserved_root_file(path, destination):
+            actual_paths.add(str(path.relative_to(destination)))
+    if actual_paths != expected_paths:
+        raise ValueError("clone contains unexpected or missing files")
+    for relative, size, digest in expected:
+        source_path = source.root / relative
+        clone_path = destination / relative
+        source_stat = _safe_stat(source_path)
+        clone_stat = _safe_stat(clone_path)
+        if not stat.S_ISREG(clone_stat.st_mode) or clone_stat.st_size != size:
+            raise ValueError(f"clone file metadata mismatch: {relative}")
+        if (source_stat.st_dev, source_stat.st_ino) == (clone_stat.st_dev, clone_stat.st_ino):
+            raise ValueError(f"clone file inode was not detached: {relative}")
+        if _sha256(clone_path) != digest:
+            raise ValueError(f"clone file content mismatch: {relative}")
+    if _read_manifest(destination / "manifest.json") != manifest:
+        raise ValueError("clone manifest mismatch")
 
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
@@ -1594,20 +1659,22 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
     _mkdir_pinned(destination.parent)
     try:
         _copy_tree(artifact.root, destination)
+        _authenticate_clone_copy(artifact, destination, disk_manifest)
         method = "copy"
-    except OSError:
-        _remove_tree(destination)
-        raise
-    _assert_no_symlinks(destination)
-    for path in _pinned_paths(destination):
-        _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
-    _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
-        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+        _assert_no_symlinks(destination)
+        for path in _pinned_paths(destination):
+            _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
+        _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
+        bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+        if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
+            from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
 
-        _safe_unlink(bootstrap_marker)
-        _record_fresh_durable_bootstrap(destination)
+            _safe_unlink(bootstrap_marker)
+            _record_fresh_durable_bootstrap(destination)
+    except BaseException:
+        with contextlib.suppress(BaseException):
+            _remove_tree(destination)
+        raise
     return SeededArchiveClone(
         root=destination,
         source_manifest_id=source_manifest_id,
