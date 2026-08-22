@@ -165,6 +165,54 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
     assert blob_store.blob_path(reserved_hash).exists()
 
 
+def test_periodic_blob_gc_uses_daemon_write_route_and_reclaims_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The scheduled loop must invoke the coordinator, not bypass it."""
+    db_path = tmp_path / "source.db"
+    _make_source_db(db_path)
+    blob_dir = tmp_path / "blob"
+    blob_store = BlobStore(blob_dir)
+    orphan_hash, _ = blob_store.write_from_bytes(b"orphan blob via periodic route")
+    _backdate(blob_store, orphan_hash)
+
+    coordinator_events: list[str] = []
+    first_run = asyncio.Event()
+    delegate = DaemonWriteCoordinator()
+
+    class RecordingCoordinator:
+        async def run_sync(self, actor: str, callback: object, *args: object, **kwargs: object) -> object:
+            coordinator_events.append(actor)
+            result = await delegate.run_sync(actor, callback, *args, **kwargs)  # type: ignore[arg-type]
+            first_run.set()
+            return result
+
+        def snapshot(self) -> object:
+            return delegate.snapshot()
+
+    coordinator = RecordingCoordinator()
+    monkeypatch.setattr(blob_gc_periodic, "BLOB_GC_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("polylogue.paths.source_db_path", lambda: db_path)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", lambda: coordinator)
+
+    async def run() -> None:
+        task = asyncio.create_task(blob_gc_periodic.periodic_blob_gc_check())
+        try:
+            await asyncio.wait_for(first_run.wait(), timeout=2.0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+    assert coordinator_events == ["maintenance.blob_gc"]
+    assert not blob_store.blob_path(orphan_hash).exists()
+    assert coordinator.snapshot().active_actor is None
+
+
 def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]:
     from polylogue.core.enums import Origin
     from polylogue.storage.blob_publication import ArchiveBlobPublisher

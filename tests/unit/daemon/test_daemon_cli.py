@@ -4445,6 +4445,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
         stack.enter_context(
             patch(
+                "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+                lambda **_kwargs: fake_loop("blob-gc"),
+            )
+        )
+        stack.enter_context(
+            patch(
                 "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
                 lambda **_kwargs: fake_loop("blob-publication-reconciliation"),
             )
@@ -4505,6 +4511,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
+    assert "blob-gc" in events
     assert "blob-publication-reconciliation" in events
     # Drive catch-up is background work: it must never gate the watcher or
     # the local convergence loops on serial network I/O.
