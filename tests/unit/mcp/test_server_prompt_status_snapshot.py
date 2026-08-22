@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from polylogue.mcp.server_prompts import register_prompts
@@ -13,8 +14,8 @@ class _PromptServer:
     def __init__(self) -> None:
         self.prompts: dict[str, object] = {}
 
-    def prompt(self):
-        def decorate(function):
+    def prompt(self) -> Any:
+        def decorate(function: Any) -> Any:
             self.prompts[function.__name__] = function
             return function
 
