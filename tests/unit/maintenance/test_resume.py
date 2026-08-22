@@ -337,6 +337,140 @@ def test_explicit_resume_cursor_remaps_against_persisted_identities(
     assert patched_dispatch["orphaned_blobs"] == ["live"]
 
 
+def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+
+    def reported_failure(_config: Config, _dry_run: bool) -> RepairResult:
+        return RepairResult(
+            name="orphaned_blobs",
+            category=MaintenanceCategory.ARCHIVE_CLEANUP,
+            destructive=True,
+            repaired_count=3,
+            success=False,
+            detail="retry me",
+            metrics={"attempted": 3.0},
+        )
+
+    with patch.object(
+        repair_module,
+        "REPAIR_HANDLERS",
+        {
+            "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
+            "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
+            "orphaned_blobs": reported_failure,
+        },
+    ):
+        first = execute_replay(
+            config,
+            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            operation_id="op-retry",
+        )
+
+    assert first.status is OperationStatus.FAILED
+    checkpoint = load_state(config, "op-retry")
+    assert checkpoint is not None
+    assert checkpoint["completed_targets"] == ["session_insights", "empty_sessions"]
+    assert checkpoint["cursor"] == "target:0"
+
+    second = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        operation_id="op-retry",
+    )
+
+    assert second.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == ["live"]
+    assert patched_dispatch["empty_sessions"] == ["live"]
+    assert patched_dispatch["orphaned_blobs"] == ["live"]
+
+
+def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-receipt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-receipt",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
+        '"completed_targets":["session_insights"],"cursor":"target:99",'
+        '"started_at":"2026-01-01T00:00:00+00:00",'
+        '"results":[{"name":"session_insights","repaired_count":4,"success":true}],'
+        '"repaired_count":4,"failure_count":1,'
+        '"failure_samples":[{"kind":"old","locator":"target:message_type_backfill","message":"old"}],'
+        '"metrics":{"prior":2.0}}'
+    )
+    snapshots: list[ReplayProgress] = []
+
+    op = execute_replay(
+        config,
+        targets=("orphaned_blobs", "empty_sessions"),
+        operation_id="op-receipt",
+        progress_callback=snapshots.append,
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.started_at == "2026-01-01T00:00:00+00:00"
+    assert len(op.results) == 3
+    assert op.affected_rows == 6
+    assert op.metrics["prior"] == 2.0
+    assert op.failure_samples.samples[0].kind == "old"
+    assert snapshots and {snapshot.total for snapshot in snapshots} == {2}
+    assert [snapshot.target for snapshot in snapshots] == ["orphaned_blobs", "empty_sessions"]
+
+
+def test_fresh_explicit_done_and_malformed_cursor_are_typed_noops_or_failures(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+
+    done = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-fresh-done",
+        resume_cursor=CURSOR_DONE,
+    )
+    malformed = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-fresh-malformed",
+        resume_cursor="not-a-cursor",
+    )
+
+    assert done.status is OperationStatus.COMPLETED
+    assert done.progress == 1.0
+    assert malformed.status is OperationStatus.FAILED
+    assert malformed.failure_samples.samples[0].kind == "InvalidReplayCursor"
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-reorder")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-reorder",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
+        '"completed_targets":["session_insights"],"cursor":"target:0"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("orphaned_blobs", "empty_sessions"),
+        operation_id="op-reorder",
+        resume_cursor="target:99",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["orphaned_blobs"] == ["live"]
+    assert patched_dispatch["empty_sessions"] == ["live"]
+
+
 def test_explicit_resume_cursor_overrides_persisted_state(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
