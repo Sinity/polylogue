@@ -1331,7 +1331,13 @@ def embed_session_sync(
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
 
     index_path = Path(repo.backend.db_path)
-    store = EmbeddingGenerationStore(index_path.parent)
+    active_path = index_path.with_name("embeddings.db")
+    # Unit/legacy providers may use an isolated vector database that is not
+    # the archive's managed split-tier sibling. Preserve that explicit route;
+    # archive-owned embeddings are admitted through the generation lifecycle.
+    if not active_path.exists() and not (index_path.parent / ".embeddings-generations").exists():
+        return _embed_session_sync(repo, vec_provider, session_id, fetch_title=fetch_title)
+    store = EmbeddingGenerationStore(index_path.parent, active_path=active_path)
     with store.writer_lock() as admitted:
         outcome = _embed_session_sync(repo, vec_provider, session_id, fetch_title=fetch_title)
         # The repository backend conventionally points at the active sibling;
