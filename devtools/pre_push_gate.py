@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -31,6 +32,15 @@ class PushUpdate:
     remote_sha: str
 
 
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _validate_sha(value: str, *, field: str) -> str:
+    if not _SHA_RE.fullmatch(value):
+        raise ValueError(f"malformed pre-push {field}: expected a 40-character hexadecimal SHA")
+    return value
+
+
 def parse_updates(text: str) -> list[PushUpdate]:
     updates: list[PushUpdate] = []
     for number, line in enumerate(text.splitlines(), start=1):
@@ -39,7 +49,15 @@ def parse_updates(text: str) -> list[PushUpdate]:
         parts = line.split()
         if len(parts) != 4:
             raise ValueError(f"malformed pre-push update on line {number}: expected four fields")
-        updates.append(PushUpdate(*parts))
+        local_ref, local_sha, remote_ref, remote_sha = parts
+        updates.append(
+            PushUpdate(
+                local_ref,
+                _validate_sha(local_sha, field="local SHA"),
+                remote_ref,
+                _validate_sha(remote_sha, field="remote SHA"),
+            )
+        )
     return updates
 
 
