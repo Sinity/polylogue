@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -57,5 +58,5 @@ def test_daemon_status_rejects_url_decoded_hostile_id() -> None:
     handler = Handler()
     handle_status(handler, "../escape")  # type: ignore[arg-type]
     assert handler.error is not None
-    assert handler.error[0].value == 400
+    assert handler.error[0] is HTTPStatus.BAD_REQUEST
     assert handler.error[1] == "invalid_operation_id"
