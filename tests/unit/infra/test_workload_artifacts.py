@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainErro
 from tests.infra.workload_artifacts import (
     _journal_mode_delete_with_retry,
     build_seeded_archive,
+    c03_semantic_corpus_spec,
     clone_seeded_archive,
     seeded_archive_key,
 )
@@ -55,6 +56,41 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_pat
     with pytest.raises(PermissionError):
         lock_path.touch()
     assert not lock_path.exists()
+
+
+def test_seeded_archive_rejects_unsafe_or_unknown_provider_before_recipe_path_use() -> None:
+    import dataclasses
+
+    base = c03_semantic_corpus_spec()
+    for provider in ("../outside", "chatgpt/escape", "unknown-provider"):
+        forged = dataclasses.replace(base, provider=provider)
+        with pytest.raises(ValueError, match="provider"):
+            seeded_archive_key((forged,))
+
+
+def test_seeded_archive_rejects_symlinked_cache_ancestor(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    (cache_root / "artifacts").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        build_seeded_archive(cache_root=cache_root)
+    assert not (outside / "artifacts").exists()
+
+
+def test_seeded_archive_clone_rejects_symlink_inside_published_tree(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
+    link = artifact.root / "hostile-link"
+    link.symlink_to(tmp_path / "outside")
+    artifacts._VALIDATED_ARTIFACTS.clear()
+
+    with pytest.raises(ValueError, match="symlink"):
+        clone_seeded_archive(artifact, tmp_path / "clone")
 
 
 def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.MonkeyPatch) -> None:

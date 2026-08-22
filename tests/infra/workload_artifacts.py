@@ -15,7 +15,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -105,6 +104,16 @@ _RECIPE_INPUT_ROOTS = (
 _RECIPE_PROVIDER_ROOT = _REPOSITORY_ROOT / "polylogue" / "schemas" / "providers"
 _ARCHIVE_DB_NAMES = ("source.db", "index.db", "user.db", "ops.db", "embeddings.db")
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
+_KNOWN_PROVIDERS = frozenset(SyntheticCorpus.available_providers())
+_PROVIDER_COMPONENT = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
+def _validate_provider(provider: object) -> str:
+    if not isinstance(provider, str) or not _PROVIDER_COMPONENT.fullmatch(provider):
+        raise ValueError("corpus provider must be one safe path component")
+    if provider not in _KNOWN_PROVIDERS:
+        raise ValueError(f"unknown corpus provider: {provider!r}")
+    return provider
 
 
 @dataclass(frozen=True)
@@ -244,15 +253,16 @@ def _recipe_id(providers: Iterable[str] = ()) -> str:
     """
     digest = hashlib.sha256()
     files: set[Path] = set()
-    provider_roots = tuple(_RECIPE_PROVIDER_ROOT / provider for provider in sorted(set(providers)))
+    safe_providers = tuple(_validate_provider(provider) for provider in providers)
+    provider_roots = tuple(_RECIPE_PROVIDER_ROOT / provider for provider in sorted(set(safe_providers)))
     for root in (*_SOURCE_DEPENDENCY_ROOTS, *_RECIPE_INPUT_ROOTS, *provider_roots):
         if root.is_file():
             files.add(root)
             continue
-        if not root.is_dir():
+        if not stat.S_ISDIR(_safe_stat(root).st_mode):
             continue
-        for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {
+        for path in _pinned_paths(root):
+            if _is_regular(path) and path.suffix.lower() in {
                 ".py",
                 ".json",
                 ".gz",
@@ -412,7 +422,7 @@ def _profile_id(key: SeededArchiveKey) -> str:
 
 def seeded_archive_key(specs: Iterable[CorpusSpec]) -> SeededArchiveKey:
     selected_specs = tuple(specs)
-    providers = tuple(spec.provider for spec in selected_specs)
+    providers = tuple(_validate_provider(spec.provider) for spec in selected_specs)
     return SeededArchiveKey(
         spec_payload={"corpus_specs": [spec.to_payload() for spec in selected_specs]},
         artifact_protocol_version=_ARTIFACT_PROTOCOL_VERSION,
@@ -464,65 +474,217 @@ def _is_symlink_node(path: Path) -> bool:
         return False
 
 
-def _assert_no_symlink_ancestors(path: Path, *, allow_missing_leaf: bool = True) -> None:
-    """Reject symlinks in every existing ancestor before a path operation.
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
-    ``Path.is_file``/``open`` perform a second pathname walk after a check;
-    this guard is intentionally paired with descriptor-based opens for reads
-    and lock files.  It still closes the common parent-substitution hole for
-    operations that must use a pathname (rename and mkdir), and callers fail
-    closed when an ancestor disappears during the operation.
+
+def _components(path: Path) -> tuple[bool, tuple[str, ...]]:
+    raw = os.fspath(path)
+    absolute = os.path.isabs(raw)
+    parts = tuple(part for part in raw.split(os.sep) if part not in ("", "."))
+    if any(part == ".." for part in parts):
+        raise ValueError(f"parent traversal is not allowed: {path}")
+    return absolute, parts
+
+
+def _open_pinned_dir(path: Path, *, allow_missing: bool = False) -> int:
+    """Open a directory and every ancestor with openat/O_NOFOLLOW.
+
+    Once returned, callers use this descriptor as their capability.  No later
+    pathname walk can be redirected by replacing an ancestor or inserting a
+    symlink; each component is opened relative to the already pinned parent.
     """
-    absolute = path.absolute()
-    current = absolute if not (allow_missing_leaf and not absolute.exists()) else absolute.parent
-    while True:
-        try:
-            mode = os.lstat(current).st_mode
-        except FileNotFoundError:
-            if current == absolute.parent or allow_missing_leaf:
-                current = current.parent
-                if current == current.parent:
-                    break
-                continue
-            raise
-        if stat.S_ISLNK(mode):
-            raise ValueError(f"symlink ancestor is not allowed: {current}")
-        if current.parent == current:
-            break
-        current = current.parent
+    absolute, parts = _components(path)
+    fd = os.open(os.sep if absolute else ".", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+    try:
+        for part in parts:
+            try:
+                next_fd = os.open(part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if allow_missing:
+                    return fd
+                raise
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
 
 
-def _open_no_follow(path: Path, flags: int, mode: int = 0o600) -> int:
-    """Open one filesystem node without following a symlink at any level."""
-    _assert_no_symlink_ancestors(path)
-    return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), mode)
+def _assert_no_symlink_ancestors(path: Path, *, allow_missing_leaf: bool = True) -> None:
+    fd = _open_pinned_dir(path, allow_missing=allow_missing_leaf)
+    os.close(fd)
+
+
+def _open_pinned_parent(path: Path, *, create: bool = False) -> tuple[int, str]:
+    absolute, parts = _components(path)
+    if not parts:
+        raise ValueError(f"path has no leaf: {path}")
+    parent_parts, leaf = parts[:-1], parts[-1]
+    parent = Path(os.sep if absolute else ".", *parent_parts)
+    if create:
+        _mkdir_pinned(parent)
+    return _open_pinned_dir(parent), leaf
+
+
+def _mkdir_pinned(path: Path, mode: int = 0o700) -> None:
+    absolute, parts = _components(path)
+    fd = os.open(os.sep if absolute else ".", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, mode, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _open_no_follow(path: Path, flags: int, mode: int = 0o600, *, create_parent: bool = False) -> int:
+    parent, leaf = _open_pinned_parent(path, create=create_parent)
+    try:
+        return os.open(leaf, flags | _O_NOFOLLOW, mode, dir_fd=parent)
+    finally:
+        os.close(parent)
 
 
 def _safe_stat(path: Path) -> os.stat_result:
-    _assert_no_symlink_ancestors(path)
-    return os.stat(path, follow_symlinks=False)
+    parent, leaf = _open_pinned_parent(path)
+    try:
+        return os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    finally:
+        os.close(parent)
 
 
 def _safe_chmod(path: Path, mode: int) -> None:
-    _assert_no_symlink_ancestors(path)
-    os.chmod(path, mode, follow_symlinks=False)
+    parent, leaf = _open_pinned_parent(path)
+    try:
+        os.chmod(leaf, mode, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+
+
+def _is_regular(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(_safe_stat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _safe_exists(path: Path) -> bool:
+    try:
+        _safe_stat(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _safe_unlink(path: Path) -> None:
+    parent, leaf = _open_pinned_parent(path)
+    try:
+        os.unlink(leaf, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+def _safe_replace(source: Path, destination: Path) -> None:
+    src_parent, src_leaf = _open_pinned_parent(source)
+    dst_parent, dst_leaf = _open_pinned_parent(destination)
+    try:
+        try:
+            os.replace(src_leaf, dst_leaf, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
+        except TypeError:
+            # Compatibility with tests that inject a legacy two-argument
+            # rename shim; production always takes the descriptor route.
+            os.replace(source, destination)
+    finally:
+        os.close(src_parent)
+        os.close(dst_parent)
+
+
+def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
+    """Open and flock a lock inode, rejecting pathname replacement.
+
+    A flock authenticates an inode, not a pathname.  Comparing the opened
+    descriptor's identity with the directory entry after flock prevents a
+    regular-file replacement from turning the caller into the owner of a new,
+    unrelated lock inode.
+    """
+    fd = _open_no_follow(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        operation = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+        fcntl.flock(fd, operation)
+        parent, leaf = _open_pinned_parent(path)
+        try:
+            named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        finally:
+            os.close(parent)
+        opened = os.fstat(fd)
+        if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            raise OSError("lock pathname was replaced while acquiring lock")
+        return fd
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
+    """Enumerate a tree from a pinned root descriptor with a hard budget."""
+    if budget <= 0:
+        raise ValueError("cache enumeration budget must be positive")
+    root_fd = _open_pinned_dir(root)
+    seen = 0
+
+    def walk(fd: int, prefix: Path) -> Iterator[Path]:
+        nonlocal seen
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                seen += 1
+                if seen > budget:
+                    raise RuntimeError("cache enumeration exceeded bounded node budget")
+                path = prefix / entry.name
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError(f"symlink node is not allowed: {path}")
+                yield path
+                if stat.S_ISDIR(info.st_mode):
+                    child = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+                    try:
+                        yield from walk(child, path)
+                    finally:
+                        os.close(child)
+
+    try:
+        yield from walk(root_fd, root)
+    finally:
+        os.close(root_fd)
 
 
 def _archive_files(root: Path) -> tuple[dict[str, object], ...]:
     if _is_symlink_node(root):
         raise ValueError(f"cannot archive symlink root: {root}")
     entries = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(_pinned_paths(root)):
         if _is_symlink_node(path):
             raise ValueError(f"cannot archive symlink node: {path}")
-        if not path.is_file():
+        if not _is_regular(path):
             continue
         if _is_reserved_root_file(path, root):
             continue
         entries.append(
             {
                 "path": str(path.relative_to(root)),
-                "size": path.stat().st_size,
+                "size": _safe_stat(path).st_size,
                 "sha256": _sha256(path),
             }
         )
@@ -608,56 +770,99 @@ def _sqlite_integrity(root: Path) -> None:
     the way a bare ``with sqlite3.connect(...) as conn:`` would leave it.
     """
     checked: list[str] = []
+    read_only = not (_safe_stat(root).st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
     for name in _ARCHIVE_DB_NAMES:
         path = root / name
-        if _is_symlink_node(path):
-            raise RuntimeError(f"seeded archive tier is a symlink: {name}")
-        if not path.exists():
+        try:
+            db_fd = _open_no_follow(path, os.O_RDONLY)
+        except FileNotFoundError:
             continue
-        with contextlib.closing(sqlite3.connect(path)) as conn, conn:
-            quick = conn.execute("PRAGMA quick_check").fetchone()
-            foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if quick != ("ok",) or foreign:
-                raise RuntimeError(f"invalid seeded archive tier {name}")
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            _journal_mode_delete_with_retry(conn, name=name)
+        try:
+            connection = sqlite3.connect(f"file:/proc/self/fd/{db_fd}?mode={'ro' if read_only else 'rw'}", uri=True)
+            with contextlib.closing(connection) as conn, conn:
+                quick = conn.execute("PRAGMA quick_check").fetchone()
+                foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if quick != ("ok",) or foreign:
+                    raise RuntimeError(f"invalid seeded archive tier {name}")
+                if not read_only:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    _journal_mode_delete_with_retry(conn, name=name)
+        finally:
+            os.close(db_fd)
         checked.append(name)
     for name in checked:
         for suffix in ("-wal", "-shm"):
             sidecar = root / f"{name}{suffix}"
-            if sidecar.exists():
-                sidecar.unlink()
+            try:
+                _safe_unlink(sidecar)
+            except FileNotFoundError:
+                pass
 
 
-def _remove_tree(path: Path) -> None:
-    """Remove a locally-owned stale artifact without following symlinks."""
-    _assert_no_symlink_ancestors(path.parent, allow_missing_leaf=False)
-    if _is_symlink_node(path) or path.is_file():
-        path.unlink(missing_ok=True)
-        return
-    if not path.exists():
-        return
-    for candidate in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
-        if _is_symlink_node(candidate):
-            candidate.unlink(missing_ok=True)
-            continue
+_MAX_DELETE_NODES = 10_000
+
+
+def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
+    """Delete a locally-owned tree using one pinned parent capability.
+
+    The walk never reconstructs a pathname beneath a directory that was
+    checked earlier.  It also has a hard node budget so a malformed cache
+    cannot turn a build into unbounded destructive work.
+    """
+    if budget <= 0:
+        raise ValueError("cache deletion budget must be positive")
+    parent, leaf = _open_pinned_parent(path)
+    original_parent_mode = os.fstat(parent).st_mode
+    os.fchmod(parent, original_parent_mode | stat.S_IWUSR)
+    try:
         try:
-            _safe_chmod(candidate, _safe_stat(candidate).st_mode | stat.S_IWUSR)
+            os.lstat(leaf, dir_fd=parent)
         except FileNotFoundError:
-            continue
-    _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
-    shutil.rmtree(path)
+            return
+        remaining = budget
+
+        def remove_entry(dir_fd: int, name: str) -> None:
+            nonlocal remaining
+            remaining -= 1
+            if remaining < 0:
+                raise RuntimeError("cache deletion exceeded bounded node budget")
+            info = os.lstat(name, dir_fd=dir_fd)
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dir_fd)
+                try:
+                    os.fchmod(child, os.fstat(child).st_mode | stat.S_IWUSR)
+                    with os.scandir(child) as entries:
+                        for entry in entries:
+                            remove_entry(child, entry.name)
+                finally:
+                    os.close(child)
+                os.chmod(name, info.st_mode | stat.S_IWUSR, dir_fd=dir_fd, follow_symlinks=False)
+                os.rmdir(name, dir_fd=dir_fd)
+            else:
+                os.chmod(name, info.st_mode | stat.S_IWUSR, dir_fd=dir_fd, follow_symlinks=False)
+                os.unlink(name, dir_fd=dir_fd)
+
+        remove_entry(parent, leaf)
+    finally:
+        with contextlib.suppress(OSError):
+            os.fchmod(parent, original_parent_mode)
+        os.close(parent)
 
 
 def _recover_stale_staging(*, staging_root: Path, artifact_name: str) -> tuple[str, ...]:
     """Remove crash-left staging trees while never racing an active builder."""
     removed: list[str] = []
-    for candidate in sorted(staging_root.glob(f"{artifact_name}.*")):
+    for candidate in _bounded_cache_candidates(
+        staging_root, cursor="", budget=_MAX_DELETE_NODES, prefix=f"{artifact_name}."
+    ):
         if _is_symlink_node(candidate):
             _remove_tree(candidate)
             removed.append(candidate.name)
             continue
-        if not candidate.is_dir():
+        try:
+            if not stat.S_ISDIR(_safe_stat(candidate).st_mode):
+                continue
+        except FileNotFoundError:
             continue
         _remove_tree(candidate)
         removed.append(candidate.name)
@@ -699,42 +904,44 @@ def _write_private_text(path: Path, text: str) -> None:
         raise
 
 
-def _bounded_cache_candidates(directory: Path, *, cursor: str, budget: int, suffix: str | None = None) -> list[Path]:
-    """Enumerate at most ``budget`` candidates, without sorting the directory."""
+def _bounded_cache_candidates(
+    directory: Path,
+    *,
+    cursor: str,
+    budget: int,
+    suffix: str | None = None,
+    prefix: str | None = None,
+) -> list[Path]:
+    """Enumerate at most ``budget`` candidates from one pinned directory."""
     if budget <= 0:
         return []
-    _assert_no_symlink_ancestors(directory, allow_missing_leaf=False)
-    selected: list[Path] = []
-    for candidate in os.scandir(directory):
-        if len(selected) >= budget:
-            break
-        if cursor and candidate.name <= cursor:
-            continue
-        if suffix is not None and not candidate.name.endswith(suffix):
-            continue
-        if "." not in candidate.name and suffix is None:
-            continue
-        if suffix is None and not (
-            candidate.is_dir(follow_symlinks=False) or stat.S_ISLNK(candidate.stat(follow_symlinks=False).st_mode)
-        ):
-            continue
-        selected.append(Path(candidate.path))
-    if selected or not cursor:
-        return selected
-    # A cursor can point past all current entries.  Wrap once, still bounded.
-    for candidate in os.scandir(directory):
-        if len(selected) >= budget:
-            break
-        if suffix is not None and not candidate.name.endswith(suffix):
-            continue
-        if "." not in candidate.name and suffix is None:
-            continue
-        if suffix is None and not (
-            candidate.is_dir(follow_symlinks=False) or stat.S_ISLNK(candidate.stat(follow_symlinks=False).st_mode)
-        ):
-            continue
-        selected.append(Path(candidate.path))
-    return selected
+    directory_fd = _open_pinned_dir(directory)
+    try:
+
+        def scan(*, after_cursor: bool) -> list[Path]:
+            selected: list[Path] = []
+            with os.scandir(directory_fd) as entries:
+                for candidate in entries:
+                    if len(selected) >= budget:
+                        break
+                    if after_cursor and cursor and candidate.name <= cursor:
+                        continue
+                    if prefix is not None and not candidate.name.startswith(prefix):
+                        continue
+                    if suffix is not None and not candidate.name.endswith(suffix):
+                        continue
+                    info = candidate.stat(follow_symlinks=False)
+                    if suffix is None and "." not in candidate.name:
+                        continue
+                    if suffix is None and not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                        continue
+                    selected.append(directory / candidate.name)
+            return selected
+
+        selected = scan(after_cursor=True)
+        return selected if selected or not cursor else scan(after_cursor=False)
+    finally:
+        os.close(directory_fd)
 
 
 def _recover_obsolete_staging(
@@ -764,12 +971,12 @@ def _recover_obsolete_staging(
         return ()
     removed: list[str] = []
     try:
-        lock_fd = _open_no_follow(cleanup_lock, os.O_RDWR | os.O_CREAT, 0o600)
+        lock_fd = _open_authenticated_lock(cleanup_lock)
     except OSError:
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
-        cursor = _read_private_text(cursor_path).strip() if cursor_path.exists() else ""
+        cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         candidates = _bounded_cache_candidates(staging_root, cursor=cursor, budget=budget)
         inspected = 0
         last_seen = ""
@@ -785,12 +992,8 @@ def _recover_obsolete_staging(
                 # existing owner may hold the replaced inode.
                 continue
             try:
-                lock_fd = _open_no_follow(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        continue
                     try:
                         _remove_tree(candidate)
                         removed.append(candidate.name)
@@ -820,12 +1023,12 @@ def _recover_stale_handoffs(
         return ()
     removed: list[str] = []
     try:
-        lock_fd = _open_no_follow(cleanup_lock, os.O_RDWR | os.O_CREAT, 0o600)
+        lock_fd = _open_authenticated_lock(cleanup_lock)
     except OSError:
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
-        cursor = _read_private_text(cursor_path).strip() if cursor_path.exists() else ""
+        cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         candidates = _bounded_cache_candidates(artifacts_root, cursor=cursor, budget=budget, suffix=".handoff")
         inspected = 0
         last_seen = ""
@@ -847,12 +1050,8 @@ def _recover_stale_handoffs(
                 # existing owner may hold the replaced inode.
                 continue
             try:
-                lock_fd = _open_no_follow(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+                lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
-                    try:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        continue
                     try:
                         _remove_tree(candidate)
                         removed.append(candidate.name)
@@ -990,14 +1189,14 @@ def _artifact_still_placed(artifact: SeededArchiveArtifact) -> bool:
     """
     write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
     try:
-        if _is_symlink_node(artifact.root) or not artifact.root.is_dir():
+        if _is_symlink_node(artifact.root) or not stat.S_ISDIR(_safe_stat(artifact.root).st_mode):
             return False
-        paths = (artifact.root, *artifact.root.rglob("*"))
+        paths = (artifact.root, *_pinned_paths(artifact.root))
         for path in paths:
-            if _is_symlink_node(path) or path.stat().st_mode & write_bits:
+            if _is_symlink_node(path) or _safe_stat(path).st_mode & write_bits:
                 return False
         manifest_path = artifact.root / "manifest.json"
-        if _is_symlink_node(manifest_path) or not manifest_path.is_file():
+        if _is_symlink_node(manifest_path) or not _is_regular(manifest_path):
             return False
         disk_manifest = _read_manifest(manifest_path)
         if disk_manifest != artifact.manifest:
@@ -1005,18 +1204,18 @@ def _artifact_still_placed(artifact: SeededArchiveArtifact) -> bool:
         file_entries = _manifest_file_entries(artifact.manifest.files)
         expected_paths = {path for path, _, _ in file_entries}
         actual_paths: set[str] = set()
-        for path in artifact.root.rglob("*"):
+        for path in _pinned_paths(artifact.root):
             if _is_symlink_node(path):
                 return False
-            if path.is_file() and not _is_reserved_root_file(path, artifact.root):
+            if _is_regular(path) and not _is_reserved_root_file(path, artifact.root):
                 actual_paths.add(str(path.relative_to(artifact.root)))
         if actual_paths != expected_paths:
             return False
         for relative, size, digest in file_entries:
             path = artifact.root / relative
-            if _is_symlink_node(path) or not path.is_file():
+            if _is_symlink_node(path) or not _is_regular(path):
                 return False
-            if path.stat().st_size != size or _sha256(path) != digest:
+            if _safe_stat(path).st_size != size or _sha256(path) != digest:
                 return False
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -1035,10 +1234,13 @@ def _memoized_artifact(memo_key: tuple[str, str]) -> SeededArchiveArtifact | Non
 
 
 def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifact | None:
-    if _is_symlink_node(root) or not root.is_dir():
-        return None
-    manifest_path = root / "manifest.json"
-    if _is_symlink_node(manifest_path) or not manifest_path.is_file():
+    try:
+        if _is_symlink_node(root) or not stat.S_ISDIR(_safe_stat(root).st_mode):
+            return None
+        manifest_path = root / "manifest.json"
+        if _is_symlink_node(manifest_path) or not _is_regular(manifest_path):
+            return None
+    except (OSError, ValueError):
         return None
     try:
         manifest = _read_manifest(manifest_path)
@@ -1047,16 +1249,21 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
         file_entries = _manifest_file_entries(manifest.files)
         expected_paths = {path for path, _, _ in file_entries}
         actual_paths: set[str] = set()
-        for path in root.rglob("*"):
+        for path in _pinned_paths(root):
             if _is_symlink_node(path):
                 return None
-            if path.is_file() and not _is_reserved_root_file(path, root):
+            if _is_regular(path) and not _is_reserved_root_file(path, root):
                 actual_paths.add(str(path.relative_to(root)))
         if actual_paths != expected_paths:
             return None
         for relative, size, digest in file_entries:
             path = root / relative
-            if _is_symlink_node(path) or not path.is_file() or path.stat().st_size != size or _sha256(path) != digest:
+            if (
+                _is_symlink_node(path)
+                or not _is_regular(path)
+                or _safe_stat(path).st_size != size
+                or _sha256(path) != digest
+            ):
                 return None
         _sqlite_integrity(root)
         expected_facts = _canonical_facts(key)
@@ -1067,8 +1274,8 @@ def _validate_artifact(root: Path, key: SeededArchiveKey) -> SeededArchiveArtifa
         _validate_facts(root, manifest.facts)
         _validate_frontier_convergence(root)
         write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
-        for path in (root, *root.rglob("*")):
-            if _is_symlink_node(path) or path.stat().st_mode & write_bits:
+        for path in (root, *_pinned_paths(root)):
+            if _is_symlink_node(path) or _safe_stat(path).st_mode & write_bits:
                 return None
         if not _manifest_binds_to_key(manifest, root, key):
             return None
@@ -1101,7 +1308,7 @@ def _assert_no_symlinks(root: Path) -> None:
     _assert_no_symlink_ancestors(root.parent, allow_missing_leaf=False)
     if _is_symlink_node(root):
         raise ValueError(f"symlink root is not allowed: {root}")
-    for path in root.rglob("*"):
+    for path in _pinned_paths(root):
         if _is_symlink_node(path):
             raise ValueError(f"symlink node is not allowed: {path}")
 
@@ -1110,7 +1317,7 @@ def _make_read_only(root: Path) -> None:
     """Remove write permission without ever following a symlink node."""
     if _is_symlink_node(root):
         raise ValueError(f"cannot seal symlink root: {root}")
-    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+    for path in sorted(_pinned_paths(root), key=lambda item: len(item.parts), reverse=True):
         if _is_symlink_node(path):
             raise ValueError(f"cannot seal symlink node: {path}")
         mode = _safe_stat(path).st_mode
@@ -1129,7 +1336,7 @@ def _rename_sealed(source: Path, destination: Path) -> None:
                 raise ValueError(f"rename parent is a symlink: {parent}")
             original_modes[parent] = _safe_stat(parent).st_mode
             _safe_chmod(parent, original_modes[parent] | stat.S_IWUSR)
-        os.replace(source, destination)
+        _safe_replace(source, destination)
     finally:
         for parent, mode in original_modes.items():
             try:
@@ -1159,7 +1366,7 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
             # rename within the final directory's parent (the same-parent
             # operation remains atomic without reopening either tree).
             handoff = final_root.parent / f".{final_root.name}.{uuid.uuid4().hex}.handoff"
-            shutil.copytree(staging, handoff, copy_function=shutil.copy2)
+            _copy_tree(staging, handoff)
             # Seal the handoff before it can be renamed.  A killed copy can
             # leave only a private handoff; final visibility is one rename of
             # an already sealed tree, never a writable directory.
@@ -1169,11 +1376,11 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
             _remove_tree(staging)
         _make_read_only(final_root)
     except Exception:
-        if final_root.exists():
+        if _safe_exists(final_root):
             _remove_tree(final_root)
-        if handoff is not None and handoff.exists():
+        if handoff is not None and _safe_exists(handoff):
             _remove_tree(handoff)
-        if staging.exists():
+        if _safe_exists(staging):
             _remove_tree(staging)
         raise
 
@@ -1206,18 +1413,17 @@ def build_seeded_archive(
     artifacts = cache_root / "artifacts"
     locks = cache_root / ".locks"
     staging_root = cache_root / ".staging"
-    artifacts.mkdir(parents=True, exist_ok=True)
-    locks.mkdir(parents=True, exist_ok=True)
-    staging_root.mkdir(parents=True, exist_ok=True)
+    _mkdir_pinned(artifacts)
+    _mkdir_pinned(locks)
+    _mkdir_pinned(staging_root)
     _assert_no_symlink_ancestors(artifacts, allow_missing_leaf=False)
     _assert_no_symlink_ancestors(locks, allow_missing_leaf=False)
     _assert_no_symlink_ancestors(staging_root, allow_missing_leaf=False)
     final_root = artifacts / key.value.rsplit(":", 1)[-1]
     lock_path = locks / f"{final_root.name}.lock"
 
-    lock_fd = _open_no_follow(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    with os.fdopen(lock_fd, "a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    lock_fd = _open_authenticated_lock(lock_path)
+    with os.fdopen(lock_fd, "a+", encoding="utf-8"):
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
         _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
         _recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts)
@@ -1225,11 +1431,11 @@ def build_seeded_archive(
         if cached is not None:
             _VALIDATED_ARTIFACTS[memo_key] = cached
             return cached
-        if final_root.exists():
+        if _safe_exists(final_root):
             _remove_tree(final_root)
         for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
             staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
-            staging.mkdir()
+            _mkdir_pinned(staging)
             try:
                 corpus_root = staging / "wire"
                 written_batches = tuple(
@@ -1282,9 +1488,9 @@ def build_seeded_archive(
                     files=_archive_files(staging),
                     receipt=dict(receipt.to_payload()),
                 )
-                (staging / "manifest.json").write_text(
+                _write_private_text(
+                    staging / "manifest.json",
                     json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
                 )
                 _publish_sealed_staging(staging, final_root)
                 break
@@ -1312,6 +1518,66 @@ def build_seeded_archive(
         return artifact
 
 
+def _copy_tree(source: Path, destination: Path) -> None:
+    """Copy a tree through pinned directory descriptors, never shutil/pathname walks."""
+    src_fd = _open_pinned_dir(source)
+    dst_parent, dst_leaf = _open_pinned_parent(destination, create=True)
+    original_parent_mode = os.fstat(dst_parent).st_mode
+    os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
+    try:
+        os.mkdir(dst_leaf, 0o700, dir_fd=dst_parent)
+        dst_fd = os.open(dst_leaf, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst_parent)
+    except BaseException:
+        os.close(dst_parent)
+        raise
+    try:
+
+        def copy_dir(src: int, dst: int) -> None:
+            with os.scandir(src) as entries:
+                for entry in entries:
+                    info = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
+                        raise ValueError(f"cannot copy symlink node: {entry.name}")
+                    if stat.S_ISDIR(info.st_mode):
+                        os.mkdir(entry.name, (info.st_mode & 0o777) | stat.S_IWUSR, dir_fd=dst)
+                        child_src = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=src)
+                        child_dst = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst)
+                        try:
+                            copy_dir(child_src, child_dst)
+                            os.fchmod(child_dst, info.st_mode & 0o777)
+                        finally:
+                            os.close(child_src)
+                            os.close(child_dst)
+                    elif stat.S_ISREG(info.st_mode):
+                        in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
+                        out_fd = os.open(
+                            entry.name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
+                            info.st_mode & 0o777,
+                            dir_fd=dst,
+                        )
+                        try:
+                            while True:
+                                chunk = os.read(in_fd, 1024 * 1024)
+                                if not chunk:
+                                    break
+                                os.write(out_fd, chunk)
+                            os.fchmod(out_fd, info.st_mode & 0o777)
+                        finally:
+                            os.close(in_fd)
+                            os.close(out_fd)
+                    else:
+                        raise ValueError(f"unsupported cache node: {entry.name}")
+
+        copy_dir(src_fd, dst_fd)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+        with contextlib.suppress(OSError):
+            os.fchmod(dst_parent, original_parent_mode)
+        os.close(dst_parent)
+
+
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     """Create a complete private writable archive clone, recording its method."""
     _assert_no_symlinks(artifact.root)
@@ -1323,32 +1589,24 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         raise ValueError("published artifact manifest changed before clone")
     source_manifest_id = disk_manifest.manifest_id
     if _is_symlink_node(destination):
-        destination.unlink()
-    if destination.exists():
-        _remove_tree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+        _safe_unlink(destination)
+    _remove_tree(destination)
+    _mkdir_pinned(destination.parent)
     try:
-        subprocess.run(
-            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-        )
-        method = "reflink"
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        _remove_tree(destination)
-        shutil.copytree(artifact.root, destination)
+        _copy_tree(artifact.root, destination)
         method = "copy"
+    except OSError:
+        _remove_tree(destination)
+        raise
     _assert_no_symlinks(destination)
-    for path in destination.rglob("*"):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+    for path in _pinned_paths(destination):
+        _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
+    _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
     bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    if bootstrap_marker.is_file():
+    if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
         from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
 
-        bootstrap_marker.unlink()
+        _safe_unlink(bootstrap_marker)
         _record_fresh_durable_bootstrap(destination)
     return SeededArchiveClone(
         root=destination,
