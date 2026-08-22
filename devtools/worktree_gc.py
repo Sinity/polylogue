@@ -138,6 +138,31 @@ def _existing_branches(repo_root: Path) -> set[str]:
     return {line.strip() for line in out.splitlines()}
 
 
+def _lane_handoffs(repo_root: Path) -> dict[str, dict[str, object]]:
+    """Load automatic SubagentStop handoffs from the shared Git directory."""
+    raw_common = _run_git_nullable(["rev-parse", "--git-common-dir"], cwd=repo_root)
+    if not raw_common:
+        return {}
+    common = Path(raw_common)
+    if not common.is_absolute():
+        common = (repo_root / common).resolve()
+    directory = common / "polylogue" / "lane-handoffs"
+    handoffs: dict[str, dict[str, object]] = {}
+    try:
+        paths = list(directory.glob("worktree-agent-*.json"))
+    except OSError:
+        return handoffs
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        branch = payload.get("branch") if isinstance(payload, dict) else None
+        if isinstance(branch, str) and branch.startswith("worktree-agent-"):
+            handoffs[f"refs/heads/{branch}"] = payload
+    return handoffs
+
+
 def _ref_exists(repo_root: Path, ref: str) -> bool:
     return _run_git_nullable(["rev-parse", "--verify", "--quiet", ref], cwd=repo_root) is not None
 
@@ -354,6 +379,34 @@ def _classify_one(
             evidence=evidence,
         )
 
+    if evidence and evidence.get("handoff_head_matches") is True:
+        handoff_status = evidence.get("handoff_status")
+        if handoff_status == "ready-for-assimilation":
+            return GcCandidate(
+                entry=entry,
+                reason="ready-for-assimilation",
+                safe=False,
+                blocked_reason="awaiting-assimilation",
+                evidence=evidence,
+            )
+        if handoff_status == "blocked":
+            return GcCandidate(
+                entry=entry,
+                reason="blocked-handoff",
+                safe=False,
+                blocked_reason="lane-completion-blocked",
+                evidence=evidence,
+            )
+
+    if entry.branch.startswith("refs/heads/worktree-agent-") and not entry.locked:
+        return GcCandidate(
+            entry=entry,
+            reason="untracked-completion",
+            safe=False,
+            blocked_reason="missing-completion-handoff",
+            evidence=evidence,
+        )
+
     return GcCandidate(
         entry=entry,
         reason="unmerged",
@@ -379,6 +432,20 @@ def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[l
         if ref in worktree_branches
         if (evidence := _branch_patch_equivalence(repo_root, target_ref, ref)) is not None
     }
+    heads_by_branch = {entry.branch: entry.head for entry in entries if entry.branch is not None}
+    for ref, handoff in _lane_handoffs(repo_root).items():
+        if ref not in worktree_branches:
+            continue
+        evidence = patch_evidence.setdefault(ref, {})
+        evidence["handoff_status"] = handoff.get("status")
+        evidence["handoff_head"] = handoff.get("head")
+        evidence["handoff_head_matches"] = handoff.get("head") == heads_by_branch.get(ref)
+        commits = handoff.get("commits")
+        paths = handoff.get("changed_paths")
+        evidence["handoff_commits"] = commits if isinstance(commits, list) else []
+        evidence["handoff_changed_path_count"] = len(paths) if isinstance(paths, list) else 0
+        if isinstance(handoff.get("error"), str):
+            evidence["handoff_error"] = handoff["error"]
     candidates = classify_candidates(
         entries,
         repo_root=repo_root,
@@ -756,7 +823,6 @@ def _delete_completed_agent_branch(candidate: GcCandidate, *, repo_root: Path) -
 
 def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: bool = False) -> list[dict[str, object]]:
     """Remove safe candidates and completed generated lane branches."""
-    repo_root = normalize_repo_root(repo_root)
     repo_root = normalize_repo_root(repo_root)
     results: list[dict[str, object]] = []
     removed = 0

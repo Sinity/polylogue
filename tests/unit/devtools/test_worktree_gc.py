@@ -315,15 +315,9 @@ def test_apply_removes_clean_merged(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "main")
     wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
 
-    candidates: list[GcCandidate] = [
-        GcCandidate(
-            entry=WorktreeEntry(path=wt_path, head="abc", branch="refs/heads/feature/merged"),
-            reason="merged",
-            safe=True,
-            action="remove",
-        )
-    ]
-    results = apply_removals(candidates, repo_root=repo)
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
+    results = apply_removals(selected, repo_root=repo)
     assert results[0].get("removed") is True
     # prune should have been called
     assert any(r.get("prune") for r in results)
@@ -334,16 +328,10 @@ def test_apply_removes_completed_generated_lane_branch(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "main")
     branch = "worktree-agent-complete"
     wt_path = _make_worktree(repo, tmp_path / "wt-complete", branch)
-    candidates = [
-        GcCandidate(
-            entry=WorktreeEntry(path=wt_path, head="abc", branch=f"refs/heads/{branch}"),
-            reason="merged",
-            safe=True,
-            action="remove",
-        )
-    ]
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
 
-    results = apply_removals(candidates, repo_root=repo)
+    results = apply_removals(selected, repo_root=repo)
 
     assert results[0]["removed"] is True
     assert results[0]["branch_deleted"] is True
@@ -361,16 +349,10 @@ def test_apply_preserves_named_feature_branch(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path / "main")
     branch = "feature/complete"
     wt_path = _make_worktree(repo, tmp_path / "wt-complete", branch)
-    candidates = [
-        GcCandidate(
-            entry=WorktreeEntry(path=wt_path, head="abc", branch=f"refs/heads/{branch}"),
-            reason="merged",
-            safe=True,
-            action="remove",
-        )
-    ]
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
 
-    results = apply_removals(candidates, repo_root=repo)
+    results = apply_removals(selected, repo_root=repo)
 
     assert results[0]["removed"] is True
     assert results[0]["branch_deleted"] is False
@@ -405,16 +387,9 @@ def test_apply_force_removes_detached_clean(tmp_path: Path) -> None:
     # Detach HEAD
     subprocess.run(["git", "-C", str(wt_path), "checkout", "--detach"], capture_output=True)
 
-    candidates: list[GcCandidate] = [
-        GcCandidate(
-            entry=WorktreeEntry(path=wt_path, head="abc", branch=None, detached=True),
-            reason="detached",
-            safe=False,
-            action="remove-force",
-            blocked_reason="requires-force",
-        )
-    ]
-    results = apply_removals(candidates, repo_root=repo, force=True)
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
+    results = apply_removals(selected, repo_root=repo, force=True)
     assert results[0].get("removed") is True
 
 
