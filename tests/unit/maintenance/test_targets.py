@@ -98,6 +98,12 @@ def _build_run_handler(body: bytes) -> tuple[DaemonAPIHandler, list[tuple[object
 
 
 class TestCatalogReplayEquality:
+    def test_spent_message_type_backfill_has_no_generic_repair_route(self) -> None:
+        catalog = build_maintenance_target_catalog()
+        assert catalog.resolve_name("message_type_backfill") is None
+        assert "message_type_backfill" not in repair_module.REPAIR_HANDLERS
+        assert "message_type_backfill" not in repair_module.PREVIEW_HANDLERS
+
     def test_every_replayable_target_has_a_real_handler(self) -> None:
         """A target claiming ``replayable=True`` must have a real handler.
 
