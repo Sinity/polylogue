@@ -18,7 +18,7 @@ import stat
 import subprocess
 import uuid
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 
@@ -214,20 +214,77 @@ def _branch_tree_equivalent(repo_root: Path, target: str, branch: str) -> bool:
     return bool(target_tree and merged_tree and target_tree == merged_tree)
 
 
-def check_dirty(worktree_path: Path) -> bool:
-    """Return True for tracked, untracked, or ignored user data.
+@dataclass(frozen=True, slots=True)
+class WorktreeResidue:
+    """Git-visible state that decides whether a worktree may be collected."""
 
-    Ignored files are included deliberately: a GC candidate is only safe when
-    Git reports no filesystem state at all.  ``--untracked-files=all`` also
-    prevents a nested untracked directory from being hidden behind one line.
+    dirty: bool
+    disposable_paths: tuple[str, ...] = ()
+
+
+_DISPOSABLE_ROOTS = frozenset(
+    {
+        ".direnv",
+        ".hypothesis",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+    }
+)
+_DISPOSABLE_ROOT_FILES = frozenset({".dmypy.json"})
+
+
+def _is_disposable_ignored_path(relative: str) -> bool:
+    """Recognize only repository-owned generated caches and environments.
+
+    The broad ignored roots ``.cache`` and ``.local`` intentionally are not
+    disposable.  Only mypy's configured subdirectory under ``.cache`` is.
+    This keeps operator files beside generated state visible to the GC gate.
+    """
+    path = PurePosixPath(relative)
+    parts = path.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return False
+    if parts[0] in _DISPOSABLE_ROOTS or relative in _DISPOSABLE_ROOT_FILES:
+        return True
+    if len(parts) >= 2 and parts[:2] == (".cache", "mypy"):
+        return True
+    if "__pycache__" in parts:
+        return True
+    return path.suffix in {".pyc", ".pyo"}
+
+
+def inspect_residue(worktree_path: Path) -> WorktreeResidue:
+    """Classify tracked, untracked, and ignored filesystem residue.
+
+    Tracked/untracked state and every unknown ignored path block collection.
+    Known generated state is returned explicitly so the quarantine remover can
+    delete only the exact files whose identities and contents were inspected.
+    Git failures are treated as dirty rather than weakening preservation.
     """
     if not worktree_path.exists():
-        return False
-    out = _run_git_nullable(
-        ["status", "--porcelain", "--untracked-files=all", "--ignored"],
+        return WorktreeResidue(dirty=False)
+    ordinary = _run_git_nullable(
+        ["status", "--porcelain", "-z", "--untracked-files=all"],
         cwd=worktree_path,
     )
-    return bool(out)
+    ignored = _run_git_nullable(
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+        cwd=worktree_path,
+    )
+    if ordinary is None or ignored is None or ordinary:
+        return WorktreeResidue(dirty=True)
+    paths = tuple(path for path in ignored.split("\0") if path)
+    if any(not _is_disposable_ignored_path(path) for path in paths):
+        return WorktreeResidue(dirty=True)
+    return WorktreeResidue(dirty=False, disposable_paths=paths)
+
+
+def check_dirty(worktree_path: Path) -> bool:
+    """Return whether non-disposable filesystem state blocks collection."""
+    return inspect_residue(worktree_path).dirty
 
 
 def normalize_repo_root(repo_root: Path) -> Path:
@@ -588,16 +645,26 @@ def _content_digest(path: Path) -> str:
         os.close(fd)
 
 
-def _snapshot_worktree_files(path: Path) -> dict[str, _Snapshot]:
-    """Capture tracked file identities and content before moving the worktree."""
-    names = _run_git(["ls-files", "-z"], cwd=path).split("\0")
+def _path_digest(path: Path, mode: int) -> str:
+    """Hash a regular file or the lexical target of a symbolic link."""
+    if stat.S_ISREG(mode):
+        return _content_digest(path)
+    if stat.S_ISLNK(mode):
+        return hashlib.sha256(b"symlink\0" + os.fsencode(os.readlink(path))).hexdigest()
+    raise OSError(errno.EINVAL, "unsupported worktree item", path)
+
+
+def _snapshot_worktree_files(path: Path, disposable_paths: tuple[str, ...]) -> dict[str, _Snapshot]:
+    """Capture tracked and approved generated files before quarantine."""
+    names = set(_run_git(["ls-files", "-z"], cwd=path).split("\0"))
+    names.update(disposable_paths)
     snapshot: dict[str, _Snapshot] = {}
     for name in names:
         if not name:
             continue
         try:
             item = os.lstat(path / name)
-            digest = _content_digest(path / name)
+            digest = _path_digest(path / name, item.st_mode)
         except OSError:
             continue
         snapshot[name] = (item.st_dev, item.st_ino, item.st_mode, item.st_size, digest)
@@ -632,7 +699,7 @@ def _remove_snapshot_files(root: Path, snapshot: dict[str, _Snapshot]) -> bool:
                 except OSError:
                     continue
                 try:
-                    digest = _content_digest(Path(root, *parts))
+                    digest = _path_digest(Path(root, *parts), item.st_mode)
                 except OSError:
                     continue
                 actual = (item.st_dev, item.st_ino, item.st_mode, item.st_size, digest)
@@ -775,8 +842,11 @@ def _quarantine_and_remove(entry: WorktreeEntry, *, repo_root: Path) -> tuple[bo
     path = entry.path
     if not path.exists() or not path.is_dir():
         return False, "missing-worktree"
+    residue = inspect_residue(path)
+    if residue.dirty:
+        return False, "dirty"
     try:
-        snapshot = _snapshot_worktree_files(path)
+        snapshot = _snapshot_worktree_files(path, residue.disposable_paths)
     except (OSError, subprocess.CalledProcessError):
         return False, "snapshot-failed"
     try:

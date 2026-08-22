@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import devtools.worktree_gc as worktree_gc
 from devtools.worktree_gc import (
     GcCandidate,
     WorktreeEntry,
@@ -96,6 +97,39 @@ def test_check_dirty_true(tmp_path: Path) -> None:
 def test_check_dirty_missing_path(tmp_path: Path) -> None:
     """check_dirty returns False for non-existent paths (prunable)."""
     assert check_dirty(tmp_path / "nonexistent") is False
+
+
+def test_check_dirty_allows_only_known_generated_cache(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    _ignore_cache_root(repo)
+    cache_file = repo / ".cache" / "mypy" / "pycache" / "types.data.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("generated")
+
+    assert check_dirty(repo) is False
+
+
+def test_check_dirty_blocks_unknown_file_beside_generated_cache(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    _ignore_cache_root(repo)
+    cache_file = repo / ".cache" / "mypy" / "types.data.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("generated")
+    operator_file = repo / ".cache" / "operator-note.txt"
+    operator_file.write_text("keep me")
+
+    assert check_dirty(repo) is True
+
+
+def test_check_dirty_blocks_ordinary_untracked_file_with_disposable_cache(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    _ignore_cache_root(repo)
+    cache_file = repo / ".cache" / "mypy" / "types.data.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("generated")
+    (repo / "untracked.txt").write_text("keep me")
+
+    assert check_dirty(repo) is True
 
 
 def test_default_target_prefers_origin_master(tmp_path: Path) -> None:
@@ -342,6 +376,55 @@ def test_apply_removes_completed_generated_lane_branch(tmp_path: Path) -> None:
         check=True,
     ).stdout
     assert branches.strip() == ""
+
+
+def test_apply_removes_generated_lane_with_only_disposable_cache(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "main")
+    _ignore_cache_root(repo)
+    branch = "worktree-agent-generated-cache"
+    wt_path = _make_worktree(repo, tmp_path / "wt-generated-cache", branch)
+    cache_file = wt_path / ".cache" / "mypy" / "pycache" / "types.data.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("generated")
+
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
+    assert selected[0].safe is True
+
+    results = apply_removals(selected, repo_root=repo)
+
+    assert results[0]["removed"] is True
+    assert results[0]["branch_deleted"] is True
+    assert results[0].get("detail") is None
+    assert not wt_path.exists()
+
+
+def test_apply_preserves_unknown_residue_created_after_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _make_repo(tmp_path / "main")
+    _ignore_cache_root(repo)
+    wt_path = _make_worktree(repo, tmp_path / "wt-race", "worktree-agent-race")
+    candidates, _entries = collect_candidates(repo, target="master")
+    selected = [candidate for candidate in candidates if candidate.entry.path == wt_path]
+    original_remove = worktree_gc._remove_snapshot_files
+
+    def create_late_file(root: Path, snapshot: dict[str, worktree_gc._Snapshot]) -> bool:
+        late_file = root / ".cache" / "operator-note.txt"
+        late_file.parent.mkdir(parents=True)
+        late_file.write_text("created after the final dirty check")
+        return original_remove(root, snapshot)
+
+    monkeypatch.setattr(worktree_gc, "_remove_snapshot_files", create_late_file)
+
+    results = apply_removals(selected, repo_root=repo)
+
+    assert results[0]["removed"] is True
+    assert results[0]["detail"] == "preserved-quarantine-data"
+    quarantines = list(tmp_path.glob(".wt-race.polylogue-gc-*"))
+    assert len(quarantines) == 1
+    assert (quarantines[0] / ".cache" / "operator-note.txt").read_text() == "created after the final dirty check"
 
 
 def test_apply_preserves_named_feature_branch(tmp_path: Path) -> None:
@@ -671,6 +754,13 @@ def _make_repo(path: Path) -> Path:
     _run_git(["add", "README.md"], cwd=path)
     _run_git(["commit", "-m", "initial"], cwd=path)
     return path
+
+
+def _ignore_cache_root(repo: Path) -> None:
+    """Ignore the broad cache root so GC must classify its individual files."""
+    (repo / ".gitignore").write_text("/.cache/\n")
+    _run_git(["add", ".gitignore"], cwd=repo)
+    _run_git(["commit", "-m", "ignore cache"], cwd=repo)
 
 
 def _make_worktree(repo: Path, worktree_path: Path, branch: str) -> Path:
