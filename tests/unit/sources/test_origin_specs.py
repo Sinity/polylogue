@@ -6,6 +6,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -24,6 +25,9 @@ from polylogue.sources.origin_specs import (
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
+    public_origin_descriptions,
+    public_origin_meanings,
+    public_origin_tokens,
     schema_observed_leaf_values,
     undeclared_schema_values,
     validate_assembly_spec_parity,
@@ -66,6 +70,40 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_public_origin_projections_cover_declared_specs_coherently() -> None:
+    """Public vocabulary and capability projections share OriginSpec ownership."""
+    public = set(public_origin_tokens())
+    meanings = dict(public_origin_meanings())
+    descriptions = public_origin_descriptions()
+
+    assert public <= {spec.origin.value for spec in ORIGIN_SPECS}
+    assert set(meanings) == set(descriptions) == {spec.origin.value for spec in ORIGIN_SPECS}
+    assert public == {spec.origin.value for spec in ORIGIN_SPECS if spec.public_filter}
+    assert all(description for description in descriptions.values())
+    assert all(spec.completeness_modes for spec in ORIGIN_SPECS)
+    assert all(mode.package_ref and mode.capture_mode for spec in ORIGIN_SPECS for mode in spec.completeness_modes)
+
+
+def test_origin_spec_metadata_change_propagates_to_public_manual_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual payloads read current declaration metadata instead of a copied list."""
+    import polylogue.sources.origin_specs as origin_specs
+    from polylogue.agent_integration.spec import integration_spec_payload
+
+    target = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
+    changed = replace(target, display_description="Codex sessions (updated declaration)")
+    monkeypatch.setattr(
+        origin_specs, "ORIGIN_SPECS", tuple(changed if spec is target else spec for spec in ORIGIN_SPECS)
+    )
+
+    assert dict(public_origin_meanings())[target.origin.value] == "Codex sessions (updated declaration)"
+    payload = integration_spec_payload()
+    origins = cast(list[dict[str, object]], payload["origins"])
+    row = next(item for item in origins if item["token"] == target.origin.value)
+    assert row["meaning"] == "Codex sessions (updated declaration)"
 
 
 def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp_path: Path) -> None:

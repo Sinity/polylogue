@@ -404,6 +404,10 @@ class OriginSpec:
     #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
     #: second hand-maintained per-origin description inventory.
     display_description: str
+    #: Whether this origin is offered as a public filter/completion choice.
+    #: Compatibility-only and non-session evidence origins can remain in the
+    #: authoritative enum without being advertised as query choices.
+    public_filter: bool = True
     #: Ordered executable detector claims. Parser modules keep their shape
     #: predicates; this declaration owns which predicates may classify input.
     detector_bindings: tuple[DetectorBinding, ...] = ()
@@ -919,6 +923,7 @@ def _executable_spec(
     parser_paths: tuple[str, ...],
     fixture_paths: tuple[str, ...],
     display_description: str,
+    public_filter: bool = True,
     stream_parser_path: str | None = None,
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
@@ -941,6 +946,7 @@ def _executable_spec(
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
         display_description=display_description,
+        public_filter=public_filter,
     )
 
 
@@ -1105,6 +1111,7 @@ def _beads_spec() -> OriginSpec:
         # function dispatch actually calls.
         stream_parser_path="polylogue/sources/parsers/beads.py:parse",
         display_description="Beads issue exports (non-chat work artifacts)",
+        public_filter=False,
     )
 
 
@@ -1224,6 +1231,7 @@ def _unknown_spec() -> OriginSpec:
         ),
         semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
         display_description="Unrecognized fallback exports",
+        public_filter=False,
     )
 
 
@@ -1818,6 +1826,31 @@ ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
 _ORIGIN_SPECS_BY_ORIGIN = {spec.origin: spec for spec in ORIGIN_SPECS}
 
 
+def public_origin_tokens(specs: Sequence[OriginSpec] | None = None) -> tuple[str, ...]:
+    """Return the declared public-origin filter/completion vocabulary.
+
+    ``Origin`` remains the closed public identity enum, while ``public_filter``
+    distinguishes query choices from compatibility/evidence-only origins.  A
+    caller may pass a synthetic spec tuple in tests or during rendering; this
+    keeps projections tied to declaration metadata rather than a copied list.
+    """
+    by_origin = {spec.origin: spec for spec in (ORIGIN_SPECS if specs is None else specs)}
+    return tuple(
+        origin.value for origin in Origin if (spec := by_origin.get(origin)) is not None and spec.public_filter
+    )
+
+
+def public_origin_meanings(specs: Sequence[OriginSpec] | None = None) -> tuple[tuple[str, str], ...]:
+    """Return ``(Origin token, operator-facing description)`` rows from specs."""
+    by_origin = {spec.origin: spec for spec in (ORIGIN_SPECS if specs is None else specs)}
+    return tuple((origin.value, by_origin[origin].display_description) for origin in Origin if origin in by_origin)
+
+
+def public_origin_descriptions(specs: Sequence[OriginSpec] | None = None) -> dict[str, str]:
+    """Return the current description projection for completion/help surfaces."""
+    return dict(public_origin_meanings(specs))
+
+
 @lru_cache(maxsize=8)
 def _compiled_detector_registry(specs: tuple[OriginSpec, ...]) -> CompiledDetectorRegistry:
     return compile_detector_registry(specs)
@@ -1929,6 +1962,9 @@ __all__ = [
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
+    "public_origin_descriptions",
+    "public_origin_meanings",
+    "public_origin_tokens",
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
     "schema_observed_leaf_values",

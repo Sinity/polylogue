@@ -12,12 +12,14 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.core.sources import CORE_SCHEMA_ORIGINS
+from polylogue.core.sources import public_origin_tokens
 
 ClickCallable: TypeAlias = Callable[..., object]
 
-# Origins the user can filter by (excludes the internal "unknown-export").
-_CLI_ORIGIN_CHOICES: tuple[str, ...] = CORE_SCHEMA_ORIGINS
+
+def _cli_origin_choices() -> tuple[str, ...]:
+    """Read public filter choices from the current OriginSpec projection."""
+    return public_origin_tokens()
 
 
 def _lazy_shell_complete(source: str) -> Callable[..., object]:
@@ -88,11 +90,12 @@ def _validate_origin_tokens(
     if not value:
         return None
     tokens = [t.strip() for t in value.split(",") if t.strip()]
-    bad = [t for t in tokens if t not in _CLI_ORIGIN_CHOICES]
+    choices = _cli_origin_choices()
+    bad = [t for t in tokens if t not in choices]
     if bad:
         param_name = f"--{param.name.replace(chr(95), chr(45))}" if param.name else "--origin"
         raise click.BadParameter(
-            f"Unknown origin(s): {', '.join(bad)}. Valid: {', '.join(_CLI_ORIGIN_CHOICES)}",
+            f"Unknown origin(s): {', '.join(bad)}. Valid: {', '.join(choices)}",
             param_hint=param_name,
         )
     return value

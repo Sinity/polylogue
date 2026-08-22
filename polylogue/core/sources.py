@@ -33,11 +33,12 @@ from dataclasses import dataclass
 from typing import Final
 
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
+from polylogue.sources.origin_specs import public_origin_tokens
 
 __all__ = [
     "ALL_SOURCES",
     "CORE_SCHEMA_ORIGINS",
+    "public_origin_tokens",
     "Lab",
     "Source",
     "SourceFamily",
@@ -446,10 +447,7 @@ def source_name_to_origin(source_name: object) -> str:
         return Origin.UNKNOWN_EXPORT.value
 
 
-# User-facing origin tokens for CLI/MCP/completion choices. Derived from the
-# core schema providers so the surfaced set tracks the same products, excluding
-# the internal ``unknown-export`` origin. Order-preserving and deduplicated
-# (``gemini`` and ``drive`` both collapse onto ``aistudio-drive``).
-CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = tuple(
-    dict.fromkeys(origin_from_provider(Provider.from_string(token)).value for token in CORE_SCHEMA_PROVIDERS)
-)
+# Compatibility export for CLI/MCP callers. The admission declaration owns
+# which public origins are filterable; keep this name stable while deriving its
+# values from OriginSpec rather than provider-wire aliases.
+CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = public_origin_tokens()

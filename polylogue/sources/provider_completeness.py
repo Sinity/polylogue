@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.core.enums import Origin
-from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginCompletenessMode
+from polylogue.sources import origin_specs as _origin_specs
+from polylogue.sources.origin_specs import OriginCompletenessMode
 from polylogue.surfaces.payloads import (
     ProviderCompletenessItemPayload,
     ProviderCompletenessStatus,
@@ -31,11 +32,18 @@ _REQUIRED_ITEM_NAMES = (
     "generated_docs",
 )
 
-# OriginSpec owns this inventory. Keep the exported name as a projection for
-# report consumers without retaining a second admission registry.
-PACKAGE_MODE_SPECS: tuple[tuple[Origin, OriginCompletenessMode], ...] = tuple(
-    (origin_spec.origin, mode) for origin_spec in ORIGIN_SPECS for mode in origin_spec.completeness_modes
-)
+
+def _package_mode_specs() -> tuple[tuple[Origin, OriginCompletenessMode], ...]:
+    """Project the current OriginSpec completeness declarations."""
+    return tuple(
+        (origin_spec.origin, mode)
+        for origin_spec in _origin_specs.ORIGIN_SPECS
+        for mode in origin_spec.completeness_modes
+    )
+
+
+# Compatibility projection for callers that import the historical constant.
+PACKAGE_MODE_SPECS: tuple[tuple[Origin, OriginCompletenessMode], ...] = _package_mode_specs()
 
 
 def provider_package_completeness(*, origin: str | None = None) -> ProviderPackageCompletenessPayload:
@@ -43,7 +51,7 @@ def provider_package_completeness(*, origin: str | None = None) -> ProviderPacka
 
     rows = tuple(
         row
-        for row in (_row_for_spec(spec) for spec in PACKAGE_MODE_SPECS)
+        for row in (_row_for_spec(spec) for spec in _package_mode_specs())
         if origin is None or row.origin == origin or row.provider_wire == origin
     )
     return ProviderPackageCompletenessPayload(

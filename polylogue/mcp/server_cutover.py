@@ -697,13 +697,14 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return reference_result
 
             if origin is not None:
-                from polylogue.core.sources import CORE_SCHEMA_ORIGINS
+                from polylogue.core.sources import public_origin_tokens
 
+                choices = public_origin_tokens()
                 bad_origins = [token.strip() for token in origin.split(",") if token.strip()]
-                bad_origins = [token for token in bad_origins if token not in CORE_SCHEMA_ORIGINS]
+                bad_origins = [token for token in bad_origins if token not in choices]
                 if bad_origins:
                     return hooks.error_json(
-                        f"unknown origin(s): {', '.join(bad_origins)}. Valid: {', '.join(CORE_SCHEMA_ORIGINS)}",
+                        f"unknown origin(s): {', '.join(bad_origins)}. Valid: {', '.join(choices)}",
                         code="invalid_argument",
                         tool="query",
                     )

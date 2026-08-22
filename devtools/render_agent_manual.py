@@ -19,7 +19,6 @@ from polylogue.agent_integration.spec import (  # noqa: E402
     CLIENT_DELIVERIES,
     CLIENTS,
     DEFAULT_READ_TOOLS,
-    ORIGIN_MEANINGS,
     PRIVILEGED_TOOLS,
     QUERY_EXAMPLES,
     RECIPES,
@@ -27,6 +26,7 @@ from polylogue.agent_integration.spec import (  # noqa: E402
     TOOL_CONTRACT_BY_NAME,
     TOOL_CONTRACTS,
     integration_spec_payload,
+    origin_meanings,
     recipe_payload,
     tool_contract_payload,
 )
@@ -140,7 +140,7 @@ def render_standing_manual() -> str:
         "| Origin token | Meaning |",
         "|---|---|",
     ]
-    lines.extend(f"| `{item.token}` | {item.meaning} |" for item in ORIGIN_MEANINGS)
+    lines.extend(f"| `{item.token}` | {item.meaning} |" for item in origin_meanings())
     lines.extend(
         [
             "",
@@ -393,7 +393,7 @@ def render_deep_reference() -> str:
             f"- `{prompt.name}` — workflow `{prompt.workflow}`; required capability `{prompt.required_capability or 'read'}`; mutation authority `{prompt.mutation_authority}`."
         )
     lines.extend(["", "## Source origins", ""])
-    for origin in ORIGIN_MEANINGS:
+    for origin in origin_meanings():
         lines.append(f"- `{origin.token}` — {origin.meaning}")
     lines.extend(["", "## Native client delivery and deltas", ""])
     for delivery in CLIENT_DELIVERIES:

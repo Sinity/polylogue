@@ -31,6 +31,7 @@ from polylogue.mcp.declarations import (
     MCPResultSemantics,
     MCPTransactionDeclaration,
 )
+from polylogue.sources.origin_specs import public_origin_meanings
 
 ASSET_VERSION = "2026-07-17.6tool-r01"
 AgentClient = Literal["claude-code", "codex", "gemini", "hermes"]
@@ -780,20 +781,16 @@ RECIPES: tuple[Recipe, ...] = (
     ),
 )
 
-ORIGIN_MEANINGS: tuple[OriginMeaning, ...] = (
-    OriginMeaning("claude-code-session", "Claude Code local runtime sessions."),
-    OriginMeaning("codex-session", "Codex CLI local runtime sessions."),
-    OriginMeaning("gemini-cli-session", "Gemini CLI local runtime sessions."),
-    OriginMeaning("hermes-session", "Hermes agent runtime sessions."),
-    OriginMeaning("antigravity-session", "Antigravity local brain/session artifacts."),
-    OriginMeaning("beads-issue", "Repository Beads issue and history records ingested as archive evidence."),
-    OriginMeaning("grok-export", "Grok conversation exports."),
-    OriginMeaning("chatgpt-export", "ChatGPT web/data exports."),
-    OriginMeaning("claude-ai-export", "Claude web/data exports."),
-    OriginMeaning("claude-design-session", "Claude Design agentic chat sessions."),
-    OriginMeaning("aistudio-drive", "Google AI Studio or Drive/Takeout conversation exports."),
-    OriginMeaning("unknown-export", "Imported material whose provider/source could not be classified reliably."),
-)
+
+def origin_meanings() -> tuple[OriginMeaning, ...]:
+    """Project the current OriginSpec descriptions into the manual model."""
+    return tuple(OriginMeaning(token, meaning) for token, meaning in public_origin_meanings())
+
+
+# Backwards-compatible import for callers that consume the static contract.
+# Renderers and payload builders call ``origin_meanings()`` so declaration
+# metadata changes are reflected without editing this module.
+ORIGIN_MEANINGS: tuple[OriginMeaning, ...] = origin_meanings()
 if tuple(item.token for item in ORIGIN_MEANINGS) != tuple(item.value for item in Origin):
     raise RuntimeError("agent source coverage must follow the authoritative Origin enum exactly")
 
@@ -889,7 +886,7 @@ def integration_spec_payload() -> dict[str, object]:
         "mcp_capability_flags": ["write", "judge", "maintenance"],
         "guidance_modes": list(GUIDANCE_MODES),
         "capability_families": [asdict(family) for family in CAPABILITY_FAMILIES],
-        "origins": [asdict(origin) for origin in ORIGIN_MEANINGS],
+        "origins": [asdict(origin) for origin in origin_meanings()],
         "client_delivery": [asdict(delivery) for delivery in CLIENT_DELIVERIES],
         "target_tools": list(ALL_TARGET_TOOLS),
         "default_read_tools": list(DEFAULT_READ_TOOLS),
@@ -922,6 +919,7 @@ __all__ = [
     "DEFAULT_READ_TOOLS",
     "GUIDANCE_MODES",
     "ORIGIN_MEANINGS",
+    "origin_meanings",
     "PRIVILEGED_TOOLS",
     "QUERY_EXAMPLES",
     "RECIPES",

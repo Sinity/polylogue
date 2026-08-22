@@ -41,7 +41,7 @@ from polylogue.archive.query.transaction import archive_read_context
 from polylogue.cli.shell_words import completion_words
 from polylogue.core.enums import MaterialOrigin
 from polylogue.paths import archive_root
-from polylogue.sources.origin_specs import ORIGIN_SPECS
+from polylogue.sources.origin_specs import public_origin_descriptions
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.surfaces.action_affordances import InputUnit
 
@@ -50,9 +50,9 @@ if TYPE_CHECKING:
 
 ArchiveCompletionAction = Callable[["ArchiveStore"], list[CompletionItem]]
 
-# Derived from the one typed origin admission inventory; do not hand-maintain
-# a second per-origin description list here.
-_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = {spec.origin.value: spec.display_description for spec in ORIGIN_SPECS}
+# Compatibility export retained for tests and integrations that inspected the
+# old private map; live completion reads ``public_origin_descriptions()``.
+_ORIGIN_DESCRIPTIONS: Final[dict[str, str]] = public_origin_descriptions()
 
 _MAX_ID_COMPLETIONS = 24
 _MAX_VALUE_COMPLETIONS = 32
@@ -422,9 +422,10 @@ def complete_origin_values(
     del ctx, param
     prefix, current = _split_csv_incomplete(incomplete)
     current_lower = current.lower()
+    descriptions = public_origin_descriptions()
     items = [
-        CompletionItem(name, help=_ORIGIN_DESCRIPTIONS.get(name))
-        for name in _ORIGIN_DESCRIPTIONS
+        CompletionItem(name, help=descriptions.get(name))
+        for name in sorted(descriptions)
         if not current_lower or name.startswith(current_lower)
     ]
     return _with_csv_prefix(items, prefix)
