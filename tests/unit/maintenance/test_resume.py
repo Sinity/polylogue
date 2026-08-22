@@ -22,6 +22,7 @@ import pytest
 
 from polylogue.config import Config
 from polylogue.core.enums import OperationStatus
+from polylogue.maintenance import replay as replay_module
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.replay import (
     CURSOR_DONE,
@@ -650,6 +651,89 @@ def test_scoped_resume_requires_persisted_scope_identity(
     assert op.status is OperationStatus.FAILED
     assert op.failure_samples.samples[0].kind == "ReplayContextMismatch"
     assert patched_dispatch["session_insights"] == []
+
+
+def test_legacy_result_metrics_are_reconstructed_when_aggregate_is_absent(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-legacy-metrics")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-legacy-metrics",'
+        '"targets":["session_insights","empty_sessions"],"cursor":"done",'
+        '"results":[{"name":"session_insights","success":true,"metrics":{"same":7.0}}]}'
+    )
+    monkeypatch.setitem(
+        repair_module.REPAIR_HANDLERS,
+        "empty_sessions",
+        lambda _config, _dry_run: _ok_result("empty_sessions", metrics={"same": 2.0}),
+    )
+
+    op = execute_replay(config, targets=("session_insights", "empty_sessions"), operation_id="op-legacy-metrics")
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.metrics["same"] == 9.0
+
+
+def test_empty_persisted_cursor_fails_closed_instead_of_replaying(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-empty-cursor")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"operation_id":"op-empty-cursor","targets":["session_insights"],"cursor":""}')
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-empty-cursor")
+
+    assert op.status is OperationStatus.FAILED
+    assert op.error == "Persisted replay state has an invalid target cursor"
+    assert op.failure_samples.samples[0].kind == "InvalidReplayCursor"
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_progress_processed_is_monotonic_through_failure_and_inner_progress(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    progress: list[ReplayProgress] = []
+
+    def session_insights(
+        _config: Config,
+        _dry_run: bool,
+        *,
+        session_ids: tuple[str, ...] | None,
+        progress_callback: Any,
+    ) -> RepairResult:
+        del session_ids
+        progress_callback(4, "inner")
+        return _ok_result("session_insights")
+
+    def fail(_config: Config, _dry_run: bool) -> RepairResult:
+        raise RuntimeError("failed target")
+
+    monkeypatch.setattr(replay_module, "repair_session_insights", session_insights)
+    with patch.object(
+        repair_module,
+        "REPAIR_HANDLERS",
+        {
+            "session_insights": session_insights,
+            "empty_sessions": fail,
+            "orphaned_blobs": patched_dispatch_callable(patched_dispatch, "orphaned_blobs"),
+        },
+    ):
+        op = execute_replay(
+            config,
+            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            operation_id="op-progress-failure",
+            progress_callback=progress.append,
+        )
+
+    assert op.status is OperationStatus.FAILED
+    processed = [snapshot.processed for snapshot in progress]
+    assert processed == sorted(processed)
+    assert processed[-3:] == [1, 2, 3]
+    assert all(snapshot.total == 3 for snapshot in progress)
 
 
 def test_nested_metrics_add_new_results_without_double_counting_prior_rows(

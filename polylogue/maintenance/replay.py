@@ -311,9 +311,17 @@ def _encode_cursor(next_target_index: int) -> str:
 
 
 def _strict_cursor(cursor: str | None, *, total_targets: int) -> tuple[int | None, str | None]:
-    """Parse a cursor without converting corruption into a destructive run."""
-    if cursor is None or cursor == "":
+    """Parse a cursor without converting corruption into a destructive run.
+
+    ``None`` is the in-memory marker for a genuinely new operation.  An empty
+    string, by contrast, is a persisted/explicit cursor value and therefore
+    malformed state; treating it as ``target:0`` would silently turn a corrupt
+    resume into a fresh replay.
+    """
+    if cursor is None:
         return 0, None
+    if cursor == "":
+        return None, "Persisted replay state has an invalid target cursor"
     if cursor == CURSOR_DONE:
         return total_targets, None
     if not cursor.startswith(_CURSOR_TARGET_PREFIX):
@@ -539,6 +547,7 @@ class _ReplayState:
     cursor: str
     started_at: str
     completed_targets: list[str] = field(default_factory=list)
+    attempted_count: int = 0
     results: list[JSONDocument] = field(default_factory=list)
     failures: list[FailureSample] = field(default_factory=list)
     failures_truncated: bool = False
@@ -564,12 +573,10 @@ def _numeric_metric(value: object) -> float | None:
     return None
 
 
-def _operation_metrics(state: _ReplayState) -> dict[str, float]:
-    # Compute metrics only for results appended after hydration. Persisted
-    # metrics already aggregate the earlier rows, so adding those rows again
-    # would double-count them.
-    result_metrics: dict[str, float] = {}
-    for result in state.results[state.metric_baseline_results :]:
+def _aggregate_result_metrics(results: list[JSONDocument]) -> dict[str, float]:
+    """Aggregate numeric metrics from repair result rows."""
+    metrics: dict[str, float] = {}
+    for result in results:
         raw = result.get("metrics")
         if not isinstance(raw, dict):
             continue
@@ -579,11 +586,20 @@ def _operation_metrics(state: _ReplayState) -> dict[str, float]:
                 continue
             metric_key = str(key)
             if metric_key.endswith("_max_blob_bytes"):
-                result_metrics[metric_key] = max(result_metrics.get(metric_key, 0.0), metric_value)
+                metrics[metric_key] = max(metrics.get(metric_key, 0.0), metric_value)
             else:
-                result_metrics[metric_key] = result_metrics.get(metric_key, 0.0) + metric_value
+                metrics[metric_key] = metrics.get(metric_key, 0.0) + metric_value
+    return metrics
+
+
+def _operation_metrics(state: _ReplayState) -> dict[str, float]:
+    # Compute metrics only for results appended after hydration. Persisted
+    # metrics already aggregate the earlier rows, so adding those rows again
+    # would double-count them.
+    result_metrics = _aggregate_result_metrics(state.results[state.metric_baseline_results :])
 
     metrics = dict(state.metrics)
+
     for key, value in result_metrics.items():
         if key.endswith("_max_blob_bytes"):
             metrics[key] = max(metrics.get(key, 0.0), value)
@@ -657,6 +673,24 @@ def _hydrate_persisted_receipt(
             return None, [], [], False, 0, {}, "Persisted replay state has invalid metrics"
         metrics[str(key)] = float(value)
     return started_at, results, failures, failures_truncated, int(raw_repaired), metrics, None
+
+
+def _has_persisted_metric_aggregate(persisted: JSONDocument) -> bool:
+    """Return whether persisted metrics are an explicit aggregate.
+
+    Older checkpoints omitted the aggregate while still retaining metric-bearing
+    result rows.  An explicit ``metrics: {}``, however, means the writer
+    intentionally persisted an empty aggregate and must not be reconstructed
+    from those rows.
+    """
+    marker = object()
+    raw_metrics: object = persisted.get("metrics", marker)
+    operation = persisted.get("operation")
+    if (raw_metrics is marker or raw_metrics == {}) and isinstance(operation, dict):
+        nested_metrics = operation.get("metrics", marker)
+        if nested_metrics is not marker and nested_metrics is not None:
+            raw_metrics = nested_metrics
+    return raw_metrics is not marker and raw_metrics is not None
 
 
 def _scope_identity(scope_filter: MaintenanceScopeFilter) -> tuple[object, ...]:
@@ -814,7 +848,9 @@ def execute_replay(
     prior_failures_truncated = False
     prior_repaired_total = 0
     prior_metrics: dict[str, float] = {}
+    prior_metrics_are_authoritative = True
     if persisted is not None:
+        prior_metrics_are_authoritative = _has_persisted_metric_aggregate(persisted)
         (
             receipt_started_at,
             prior_results,
@@ -915,12 +951,13 @@ def execute_replay(
             cursor=_encode_cursor(0),
             started_at=started_at,
             completed_targets=list(completed_targets),
+            attempted_count=len(completed_targets),
             results=[*prior_results, *(result.to_dict() for result in blockers)],
             failures=[*prior_failures, *samples][:MAX_FAILURE_SAMPLES],
             failures_truncated=prior_failures_truncated or len(prior_failures) + len(samples) > MAX_FAILURE_SAMPLES,
             repaired_total=prior_repaired_total + sum(result.repaired_count for result in blockers),
             metrics=prior_metrics,
-            metric_baseline_results=len(prior_results),
+            metric_baseline_results=len(prior_results) if prior_metrics_are_authoritative else 0,
             scope_filter=effective_filter,
         )
         blocker_metrics = _operation_metrics(blocker_state)
@@ -973,12 +1010,13 @@ def execute_replay(
         cursor=_encode_cursor(0),
         started_at=started_at,
         completed_targets=list(completed_targets),
+        attempted_count=len(completed_targets),
         results=prior_results,
         failures=prior_failures,
         failures_truncated=prior_failures_truncated,
         repaired_total=prior_repaired_total,
         metrics=prior_metrics,
-        metric_baseline_results=len(prior_results),
+        metric_baseline_results=len(prior_results) if prior_metrics_are_authoritative else 0,
         scope_filter=effective_filter,
     )
 
@@ -1026,8 +1064,11 @@ def execute_replay(
             scope_filter=effective_filter,
             progress_callback=progress_callback,
             target_total=len(resolved_names),
-            processed_before_target=index - start_index,
+            processed_before_target=state.attempted_count,
         )
+        # Every handler invocation, including a raised or reported failure, is
+        # a fully attempted target for consumer-visible progress.
+        state.attempted_count += 1
         # Successful identities are authoritative. Failed targets remain in
         # the pending set for the next invocation under this operation id.
         if succeeded and target_name not in state.completed_targets:
@@ -1050,7 +1091,7 @@ def execute_replay(
             progress_callback(
                 state.progress_for(
                     target_name,
-                    processed=sum(name in state.completed_targets for name in resolved_names),
+                    processed=state.attempted_count,
                 )
             )
 
