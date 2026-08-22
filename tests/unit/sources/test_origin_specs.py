@@ -79,7 +79,7 @@ def test_public_origin_projections_cover_declared_specs_coherently() -> None:
     descriptions = public_origin_descriptions()
 
     assert public <= {spec.origin.value for spec in ORIGIN_SPECS}
-    assert set(meanings) == set(descriptions) == {spec.origin.value for spec in ORIGIN_SPECS}
+    assert set(meanings) == set(descriptions) == public
     assert public == {spec.origin.value for spec in ORIGIN_SPECS if spec.public_filter}
     assert all(description for description in descriptions.values())
     assert all(spec.completeness_modes for spec in ORIGIN_SPECS)
@@ -105,6 +105,64 @@ def test_projection_only_origin_spec_changes_do_not_change_lowering_fingerprint(
     assert origin_specs.lowering_fingerprint() == before
     target = next(spec for spec in changed_specs if spec.origin is Origin.CODEX_SESSION)
     assert target.parser_fingerprint() == parser_fingerprint_for_origin(Origin.CODEX_SESSION)
+
+
+def test_source_ast_projection_mutation_is_closed_over_all_fingerprint_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reload-style source mutation changes only executable semantics."""
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    origin_source = source_dir / "origin_specs.py"
+    semantic_source = source_dir / "semantic.py"
+    origin_source.write_text(
+        "class OriginSpec:\n"
+        "    def __init__(self, *, display_description, public_filter):\n"
+        "        self.display_description = display_description\n"
+        "        self.public_filter = public_filter\n"
+        "DECLARATION = OriginSpec(display_description='before', public_filter=True)\n",
+        encoding="utf-8",
+    )
+    semantic_source.write_text(
+        "from .origin_specs import DECLARATION\n\n"
+        "def execute(value):\n"
+        "    return value + DECLARATION.display_description\n",
+        encoding="utf-8",
+    )
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    monkeypatch.setattr(origin_specs_module, "_REPLAY_ROUTING_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    monkeypatch.setattr(origin_specs_module, "_MATERIALIZER_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    before = (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    )
+    origin_source.write_text(
+        origin_source.read_text(encoding="utf-8").replace("before", "after").replace("True", "False"), encoding="utf-8"
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    ) == before
+
+    semantic_source.write_text(
+        semantic_source.read_text(encoding="utf-8").replace("value + DECLARATION.display_description", "value"),
+        encoding="utf-8",
+    )
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert (
+        origin_specs_module.lowering_fingerprint(),
+        origin_specs_module.replay_routing_fingerprint(),
+        origin_specs_module.materializer_fingerprint(),
+    ) != before
 
 
 def test_origin_spec_metadata_change_propagates_to_public_manual_projection(
