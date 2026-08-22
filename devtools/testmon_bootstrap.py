@@ -818,12 +818,21 @@ def inspect_native_testmon_environment(
     # master graph and a 20,500-test rebuild). Checkpoint first so ordinary
     # crash recovery happens instead.
     if any(path.exists() for path in sidecars):
-        with contextlib.suppress(sqlite3.Error, OSError):
-            recovery = sqlite3.connect(sqlite_data_path, timeout=_remaining_timeout(deadline_monotonic, 10))
+        try:
+            # Recover the public filename family before reopening the retained
+            # descriptor alias.  SQLite derives WAL/SHM names from the opened
+            # basename, so checkpointing only the alias can leave the public
+            # WAL untouched and make a sound graph appear invalid later.
+            recovery_path = sqlite_data_path
+            recovery = sqlite3.connect(recovery_path, timeout=_remaining_timeout(deadline_monotonic, 10))
             try:
-                recovery.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                checkpoint = recovery.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             finally:
                 recovery.close()
+        except (sqlite3.Error, OSError) as exc:
+            return NativeTestmonState("invalid", f"cannot recover native testmon sidecars: {exc}")
+        if checkpoint is None or checkpoint[0] != 0:
+            return NativeTestmonState("invalid", f"native testmon sidecar checkpoint failed: {checkpoint}")
     try:
         with (
             contextlib.closing(
@@ -1188,7 +1197,7 @@ def _open_owned_testmon_child(
             _unlink_bound_entry_if_owned(
                 directory_fd,
                 private_name,
-                bound_fd if bound_fd is not None else child_fd,
+                child_fd,
             )
         if bound_fd is not None:
             os.close(bound_fd)
@@ -1200,7 +1209,7 @@ def _open_owned_testmon_child(
             _unlink_bound_entry_if_owned(
                 directory_fd,
                 private_name,
-                bound_fd if bound_fd is not None else child_fd,
+                child_fd,
             )
         if bound_fd is not None:
             os.close(bound_fd)
@@ -1239,6 +1248,26 @@ def _unlink_bound_entry_if_owned(directory_fd: int, private_name: str, retained_
         os.unlink(private_name, dir_fd=directory_fd)
 
 
+def _reclaim_stale_native_testmon_bindings(directory_fd: int, name: str) -> None:
+    """Remove crash-left aliases only when they still reference this source."""
+    try:
+        source = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        entries = os.listdir(directory_fd)
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot inspect native testmon bindings: {exc}") from exc
+    prefix = f".{name}.bound-"
+    for entry in entries:
+        if not entry.startswith(prefix) or not entry.endswith(".tmp"):
+            continue
+        try:
+            candidate = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(candidate.st_mode) and (candidate.st_dev, candidate.st_ino) == (source.st_dev, source.st_ino):
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(entry, dir_fd=directory_fd)
+
+
 @contextlib.contextmanager
 def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
     """Retain a private SQLite filename family for validation and copying."""
@@ -1251,6 +1280,7 @@ def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSour
     sidecar_descriptors: list[tuple[str, int]] = []
     try:
         directory_fd = _open_owned_testmon_directory(data_path.parent.parent.parent, create=False)
+        _reclaim_stale_native_testmon_bindings(directory_fd, data_path.name)
         child_fd, _bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
         private_names.append(private_name)
         for suffix in TESTMON_SIDECAR_SUFFIXES:
