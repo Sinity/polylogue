@@ -457,16 +457,11 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
     }
     monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
     monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
-    monkeypatch.setattr(
-        repair_mod, "count_unclassified_message_type_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
-    )
-
     debt = repair_mod.collect_archive_debt_statuses_sync(
         cast(Any, Conn()), derived_statuses=statuses, include_expensive=False, probe_only=True
     )
 
     assert debt["empty_sessions"].skipped is True
-    assert debt["message_type_backfill"].skipped is True
 
 
 def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -483,7 +478,6 @@ def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyP
         raise AssertionError("target-scoped session_insights preview must not scan unrelated maintenance debt")
 
     monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
-    monkeypatch.setattr(repair_mod, "count_unclassified_message_type_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
 
     with sqlite3.connect(":memory:") as conn:

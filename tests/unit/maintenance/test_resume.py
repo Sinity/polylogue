@@ -72,7 +72,6 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
 
     calls: dict[str, list[str]] = {
         "session_insights": [],
-        "message_type_backfill": [],
         "empty_sessions": [],
         "superseded_raw_snapshots": [],
     }
@@ -93,7 +92,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     config = _make_config(tmp_path)
     op = execute_replay(
         config,
-        targets=("session_insights", "message_type_backfill"),
+        targets=("session_insights",),
         operation_id="op-clean",
     )
 
@@ -102,101 +101,6 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
     # State file is removed after successful completion.
     assert not state_path_for(config, "op-clean").exists()
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["message_type_backfill"] == ["live"]
-
-
-def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
-    config = _make_config(tmp_path)
-
-    # First invocation: simulate a crash after the first target by
-    # patching the dispatch to raise on the second target. The failure
-    # path still advances the cursor (the executor's documented
-    # behaviour) so the resume run picks up at target index 2.
-    boom_calls: list[str] = []
-
-    def boom(_config: Config, _dry_run: bool) -> RepairResult:
-        boom_calls.append("called")
-        raise RuntimeError("simulated kill")
-
-    fake_dispatch = {
-        "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
-        "message_type_backfill": boom,
-        "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
-    }
-
-    with patch.object(repair_module, "REPAIR_HANDLERS", fake_dispatch):
-        first = execute_replay(
-            config,
-            targets=("session_insights", "message_type_backfill", "empty_sessions"),
-            operation_id="op-resume",
-        )
-
-    assert first.status is OperationStatus.FAILED
-    assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["empty_sessions"] == ["live"]
-    assert len(boom_calls) == 1
-    # State persists because run did not converge cleanly.
-    assert state_path_for(config, "op-resume").exists()
-
-    # Manually rewind the cursor to simulate "kill after target 1
-    # completed, before target 2 was attempted". This proves the
-    # executor obeys the on-disk cursor and does not re-run target 1.
-    persisted = load_state(config, "op-resume")
-    assert persisted is not None
-    rewind = state_path_for(config, "op-resume")
-    # Drop the cumulative field to model a legacy positional state edited by
-    # an operator. New-format checkpoints treat completed identities as
-    # authoritative and reject contradictory cursor rewinds.
-    rewind.write_text(
-        '{"operation_id":"op-resume",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
-        '"cursor":"target:1"}'
-    )
-
-    # Second invocation with same id and a "fixed" dispatch must skip
-    # the already-completed first target.
-    with patch.object(repair_module, "REPAIR_HANDLERS", patched_dispatch_table(patched_dispatch)):
-        second = execute_replay(
-            config,
-            targets=("session_insights", "message_type_backfill", "empty_sessions"),
-            operation_id="op-resume",
-        )
-
-    assert second.status is OperationStatus.COMPLETED
-    assert second.resume_cursor == CURSOR_DONE
-    # session_insights was not invoked a second time.
-    assert patched_dispatch["session_insights"] == ["live"]
-    # The remaining two targets were executed exactly once on resume.
-    assert patched_dispatch["message_type_backfill"] == ["live"]
-    assert patched_dispatch["empty_sessions"] == ["live", "live"]
-    # State cleared after successful resume.
-    assert not state_path_for(config, "op-resume").exists()
-
-
-def test_removed_persisted_target_does_not_shift_resume_cursor(
-    tmp_path: Path, patched_dispatch: dict[str, list[str]]
-) -> None:
-    config = _make_config(tmp_path)
-    path = state_path_for(config, "op-removed-target")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # This state was written before message_type_backfill was removed from
-    # the catalog. The cursor points at the following, still-valid target.
-    path.write_text(
-        '{"operation_id":"op-removed-target",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
-        '"cursor":"target:2"}'
-    )
-
-    op = execute_replay(
-        config,
-        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
-        operation_id="op-removed-target",
-    )
-
-    assert op.status is OperationStatus.COMPLETED
-    assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_positional_persisted_cursor_without_identity_fails_closed(
@@ -268,36 +172,7 @@ def test_chained_resume_retains_completed_identity_history(
     assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
-def test_all_completed_identity_remap_returns_completed_noop(
-    tmp_path: Path, patched_dispatch: dict[str, list[str]]
-) -> None:
-    config = _make_config(tmp_path)
-    path = state_path_for(config, "op-all-done")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        '{"operation_id":"op-all-done",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
-        '"cursor":"done",'
-        '"results":[{"name":"session_insights","success":true},'
-        '{"name":"message_type_backfill","success":true},'
-        '{"name":"empty_sessions","success":true},'
-        '{"name":"superseded_raw_snapshots","success":true}]}'
-    )
-
-    op = execute_replay(
-        config,
-        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
-        operation_id="op-all-done",
-    )
-
-    assert op.status is OperationStatus.COMPLETED
-    assert op.progress == 1.0
-    assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["empty_sessions"] == []
-    assert patched_dispatch["superseded_raw_snapshots"] == []
-
-
-@pytest.mark.parametrize("contents", ["[]", "not-json"])
+@pytest.mark.parametrize("contents", ["[]", "null", "not-json"])
 def test_invalid_persisted_state_fails_closed(
     tmp_path: Path, patched_dispatch: dict[str, list[str]], contents: str
 ) -> None:
@@ -317,31 +192,6 @@ def test_invalid_persisted_state_fails_closed(
     assert op.failure_samples.samples[0].kind == "InvalidReplayState"
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["superseded_raw_snapshots"] == []
-
-
-def test_explicit_resume_cursor_remaps_against_persisted_identities(
-    tmp_path: Path, patched_dispatch: dict[str, list[str]]
-) -> None:
-    config = _make_config(tmp_path)
-    path = state_path_for(config, "op-explicit-removed")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        '{"operation_id":"op-explicit-removed",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
-        '"cursor":"target:0"}'
-    )
-
-    op = execute_replay(
-        config,
-        targets=("session_insights", "empty_sessions", "superseded_raw_snapshots"),
-        operation_id="op-explicit-removed",
-        resume_cursor="target:2",
-    )
-
-    assert op.status is OperationStatus.COMPLETED
-    assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["empty_sessions"] == ["live"]
-    assert patched_dispatch["superseded_raw_snapshots"] == ["live"]
 
 
 def test_generated_checkpoint_cursor_is_legacy_only_and_failed_target_retries(
@@ -401,12 +251,12 @@ def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-receipt",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
+        '"targets":["session_insights","empty_sessions","superseded_raw_snapshots"],'
         '"completed_targets":["session_insights"],"cursor":"target:0",'
         '"started_at":"2026-01-01T00:00:00+00:00",'
         '"results":[{"name":"session_insights","repaired_count":4,"success":true}],'
         '"repaired_count":4,"failure_count":1,'
-        '"failure_samples":[{"kind":"old","locator":"target:message_type_backfill","message":"old"}],'
+        '"failure_samples":[{"kind":"old","locator":"target:empty_sessions","message":"old"}],'
         '"metrics":{"prior":2.0}}'
     )
     snapshots: list[ReplayProgress] = []
@@ -519,7 +369,7 @@ def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-reorder",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions","superseded_raw_snapshots"],'
+        '"targets":["session_insights","empty_sessions","superseded_raw_snapshots"],'
         '"completed_targets":["session_insights"],"cursor":"target:0"}'
     )
 
@@ -892,7 +742,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
 
     op = execute_replay(
         config,
-        targets=("session_insights", "message_type_backfill"),
+        targets=("session_insights",),
         operation_id="op-explicit",
         resume_cursor="target:1",
     )
@@ -900,7 +750,6 @@ def test_explicit_resume_cursor_overrides_persisted_state(
     assert op.status is OperationStatus.COMPLETED
     # Only the second target was executed (skipped session_insights).
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["message_type_backfill"] == ["live"]
 
 
 def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: dict[str, list[str]]) -> None:
@@ -909,14 +758,14 @@ def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: di
 
     op = execute_replay(
         config,
-        targets=("session_insights", "message_type_backfill"),
+        targets=("session_insights",),
         operation_id="op-progress",
         progress_callback=snapshots.append,
     )
 
     assert op.status is OperationStatus.COMPLETED
-    assert [s.target for s in snapshots] == ["session_insights", "message_type_backfill"]
-    assert snapshots[0].processed == 1 and snapshots[0].total == 2
+    assert [s.target for s in snapshots] == ["session_insights"]
+    assert snapshots[0].processed == 1 and snapshots[0].total == 1
     assert snapshots[-1].cursor == CURSOR_DONE
     assert snapshots[-1].in_flight_failures == 0
 

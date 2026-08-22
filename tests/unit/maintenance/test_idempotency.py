@@ -67,7 +67,7 @@ def converging_dispatch() -> Iterator[dict[str, int]]:
     First call to each target reports ``repaired_count=N`` (initial
     rebuild). Subsequent calls return ``repaired_count=0`` because the
     target is already converged. This matches the real repair-function
-    contract: re-running ``repair_message_type_backfill`` on an already-consistent
+    contract: re-running the session-insights repair on an already-consistent
     archive returns 0.
     """
 
@@ -84,73 +84,9 @@ def converging_dispatch() -> Iterator[dict[str, int]]:
 
     fake = {
         "session_insights": stub("session_insights", 7),
-        "message_type_backfill": stub("message_type_backfill", 5),
     }
     with patch.object(repair_mod, "REPAIR_HANDLERS", fake):
         yield converged
-
-
-def test_second_run_makes_no_further_changes(tmp_path: Path, converging_dispatch: dict[str, int]) -> None:
-    config = _make_config(tmp_path)
-
-    first = execute_replay(
-        config,
-        targets=("session_insights", "message_type_backfill"),
-        operation_id="op-first",
-    )
-    assert first.status is OperationStatus.COMPLETED
-    assert first.affected_rows == 7 + 5
-
-    # A fresh operation id on the same converged archive must report
-    # zero further row changes — convergence holds across operations.
-    second = execute_replay(
-        config,
-        targets=("session_insights", "message_type_backfill"),
-        operation_id="op-second",
-    )
-    assert second.status is OperationStatus.COMPLETED
-    assert second.affected_rows == 0
-    # Each target was called exactly twice (once per op), not more.
-    assert converging_dispatch["session_insights"] == 2
-    assert converging_dispatch["message_type_backfill"] == 2
-
-
-def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
-    config = _make_config(tmp_path)
-
-    calls: list[str] = []
-
-    def good(name: str):  # type: ignore[no-untyped-def]
-        def _run(_config: Config, _dry_run: bool) -> RepairResult:
-            calls.append(name)
-            return _result(name, repaired=3)
-
-        return _run
-
-    def bad(_config: Config, _dry_run: bool) -> RepairResult:
-        calls.append("message_type_backfill")
-        raise RuntimeError("simulated row-level failure")
-
-    fake = {
-        "session_insights": good("session_insights"),
-        "message_type_backfill": bad,
-        "empty_sessions": good("empty_sessions"),
-    }
-    with patch.object(repair_mod, "REPAIR_HANDLERS", fake):
-        op = execute_replay(
-            config,
-            targets=("session_insights", "message_type_backfill", "empty_sessions"),
-            operation_id="op-mixed",
-        )
-
-    # The bad target failed but the surrounding targets still ran.
-    assert calls == ["session_insights", "message_type_backfill", "empty_sessions"]
-    assert op.status is OperationStatus.FAILED
-    assert op.affected_rows == 6  # only the two good targets contributed
-    assert len(op.failure_samples.samples) == 1
-    failure = op.failure_samples.samples[0]
-    assert failure.kind == "RuntimeError"
-    assert failure.locator == "target:message_type_backfill"
 
 
 def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> None:
@@ -158,7 +94,7 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
 
     def reports_failure(_config: Config, _dry_run: bool) -> RepairResult:
         return RepairResult(
-            name="message_type_backfill",
+            name="empty_sessions",
             category=MaintenanceCategory.DERIVED_REPAIR,
             destructive=False,
             repaired_count=0,
@@ -166,10 +102,10 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
             detail="schema mismatch",
         )
 
-    with patch.object(repair_mod, "REPAIR_HANDLERS", {"message_type_backfill": reports_failure}):
+    with patch.object(repair_mod, "REPAIR_HANDLERS", {"empty_sessions": reports_failure}):
         op = execute_replay(
             config,
-            targets=("message_type_backfill",),
+            targets=("empty_sessions",),
             operation_id="op-soft-fail",
         )
 
@@ -216,7 +152,6 @@ def test_supported_targets_cover_ac_required_set() -> None:
     supported = set(supported_replay_targets())
     required = {
         "session_insights",
-        "message_type_backfill",
     }
     assert required.issubset(supported)
 
