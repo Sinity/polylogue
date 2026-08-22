@@ -162,6 +162,32 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     assert not state_path_for(config, "op-resume").exists()
 
 
+def test_removed_persisted_target_does_not_shift_resume_cursor(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-removed-target")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # This state was written before message_type_backfill was removed from
+    # the catalog. The cursor points at the following, still-valid target.
+    path.write_text(
+        '{"operation_id":"op-removed-target",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"cursor":"target:2"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        operation_id="op-removed-target",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
+    assert patched_dispatch["orphaned_blobs"] == ["live"]
+
+
 def test_explicit_resume_cursor_overrides_persisted_state(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
