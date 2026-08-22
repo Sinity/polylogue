@@ -65,6 +65,21 @@ class TestRawSessionStorage:
             row = await cursor.fetchone()
             assert row is not None
             assert row[0] == 1
+            cursor = await conn.execute(
+                """
+                SELECT logical_source_key, revision_kind, source_revision,
+                       acquisition_generation, revision_authority
+                FROM raw_sessions WHERE raw_id = ?
+                """,
+                (record.raw_id,),
+            )
+            admitted = await cursor.fetchone()
+            assert admitted is not None
+            assert admitted[0].startswith("pending:")
+            assert admitted[1] == "full"
+            assert admitted[2] is not None
+            assert admitted[3] == 0
+            assert admitted[4] == RawRevisionAuthority.QUARANTINED.value
 
     async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
         initialize_active_archive_root(tmp_path)

@@ -6,6 +6,7 @@ import hashlib
 
 import aiosqlite
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import RawSessionRecord
@@ -32,6 +33,23 @@ async def save_raw_session(
         blob_hash = blob_hash_hex.encode("utf-8")
     if len(blob_hash) != 32:
         blob_hash = hashlib.sha256(blob_hash).digest()
+
+    # This compatibility/API route is still a production acquisition writer,
+    # so it must enter the same typed raw-admission state machine as the sync
+    # daemon routes. Older callers do not provide a revision envelope because
+    # they persist bytes before parsing; preserve that contract by assigning
+    # the explicit pending arm rather than inserting a nullable/unknown row.
+    # A supplied envelope is retained for replay/append callers whose byte
+    # relation was already adjudicated by their owning acquisition planner.
+    revision = record.revision or RawRevisionEnvelope(
+        logical_source_key=(
+            f"pending:{origin.value}:{record.source_path}:{int(record.source_index or 0)}:{record.raw_id}"
+        ),
+        kind=RawRevisionKind.FULL,
+        source_revision=blob_hash.hex(),
+        acquisition_generation=0,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
 
     acquired_at_ms = _timestamp_ms(record.acquired_at) or 0
     file_mtime_ms = _timestamp_ms(record.file_mtime)
@@ -64,9 +82,9 @@ async def save_raw_session(
             int(record.blob_size),
         ):
             raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
-        # A legacy retry may carry no revision envelope of its own. In that
-        # case the retained envelope is authoritative and must be preserved;
-        # a supplied envelope, however, is acquisition identity and must match.
+        # A re-save without an envelope is a legacy retry; retained evidence
+        # remains authoritative. Only an explicitly supplied envelope can be
+        # checked for an identity conflict.
         expected_revision = record.revision
         if expected_revision is not None:
             expected_revision_values = (
@@ -115,16 +133,16 @@ async def save_raw_session(
             int(record.validation_drift_count or 0),
             record.validation_mode.value if record.validation_mode is not None else None,
             record.detection_warnings or "[]",
-            record.revision.logical_source_key if record.revision else None,
-            record.revision.kind.value if record.revision else "unknown",
-            record.revision.source_revision if record.revision else None,
-            record.revision.predecessor_source_revision if record.revision else None,
-            record.revision.predecessor_raw_id if record.revision else None,
-            record.revision.baseline_raw_id if record.revision else None,
-            record.revision.append_start_offset if record.revision else None,
-            record.revision.append_end_offset if record.revision else None,
-            record.revision.acquisition_generation if record.revision else None,
-            record.revision.authority.value if record.revision else "quarantined",
+            revision.logical_source_key,
+            revision.kind.value,
+            revision.source_revision,
+            revision.predecessor_source_revision,
+            revision.predecessor_raw_id,
+            revision.baseline_raw_id,
+            revision.append_start_offset,
+            revision.append_end_offset,
+            revision.acquisition_generation,
+            revision.authority.value,
             # revision_authority_evidence (migration 017) is never computed at
             # initial-write time -- it is only ever populated later by a
             # dedicated, explicitly operator-invoked maintenance actuator
