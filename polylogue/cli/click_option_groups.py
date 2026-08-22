@@ -12,14 +12,14 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.sources.origin_specs import public_origin_tokens
+from polylogue.operations.origin_filters import public_origin_filter_tokens
 
 ClickCallable: TypeAlias = Callable[..., object]
 
 
 def _cli_origin_choices() -> tuple[str, ...]:
     """Read public filter choices from the current OriginSpec projection."""
-    return public_origin_tokens()
+    return public_origin_filter_tokens()
 
 
 def _lazy_shell_complete(source: str) -> Callable[..., object]:
