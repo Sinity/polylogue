@@ -3181,19 +3181,39 @@ def _replace_full_session_messages_and_blocks(
     # polylogue-geop: compute the field-path union against whatever is
     # currently stored *before* any delete below removes it. Must run ahead
     # of the FTS/base-table deletes -- both messages and blocks are read here.
-    unioned_message_rows, unioned_block_rows, carry_forward = _union_with_existing_rows(
-        conn,
-        session_id,
-        list(prepared.message_rows)
-        if prepared is not None
-        else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
-        list(prepared.block_rows)
-        if prepared is not None
-        else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
-        raw_id=raw_id,
-        existing_raw_id=existing_raw_id,
-        force_replace=force_replace,
-    )
+    if not session_row_existed:
+        # A first write cannot have prior rows to reconcile.  The caller's
+        # session PK lookup already proved this session_id is absent, and all
+        # message/block rows are created together with that session row.  Skip
+        # the union helper (including its acquisition checks and potential
+        # session-scoped reads) on the from-empty rebuild path.  This is the
+        # same invariant used below to skip the delete cascade, but it also
+        # avoids paying field-path-union overhead for every new session.
+        unioned_message_rows = (
+            list(prepared.message_rows)
+            if prepared is not None
+            else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+        )
+        unioned_block_rows = (
+            list(prepared.block_rows)
+            if prepared is not None
+            else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
+        )
+        carry_forward = None
+    else:
+        unioned_message_rows, unioned_block_rows, carry_forward = _union_with_existing_rows(
+            conn,
+            session_id,
+            list(prepared.message_rows)
+            if prepared is not None
+            else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
+            list(prepared.block_rows)
+            if prepared is not None
+            else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
+            raw_id=raw_id,
+            existing_raw_id=existing_raw_id,
+            force_replace=force_replace,
+        )
     add_timing("field_path_union", t0)
     t0 = time.perf_counter()
     use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)

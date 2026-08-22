@@ -208,6 +208,33 @@ def test_valid_prepared_rows_are_used_verbatim_without_rebuilding(
         conn.close()
 
 
+def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A proven-new session must not enter the reconciliation helper.
+
+    This anti-vacuity guard exercises the production writer route on an empty
+    index tier and makes the optimization observable: if the helper is
+    consulted despite ``session_row_existed=False``, the write fails.
+    """
+    session = _synthetic_sessions()[0]
+    prepared = prepare_session_rows(session)
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise AssertionError("new sessions must bypass field-path union")
+
+    monkeypatch.setattr(archive_tier_write, "_union_with_existing_rows", _boom)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            prepared=prepared,
+        )
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
 def test_stale_prepared_rows_fall_back_to_fresh_content(tmp_path: Path) -> None:
     """The session mutates AFTER prepare_session_rows() ran (a realistic
     parse-prefetch race: the archive's raw changed between warm() and the
