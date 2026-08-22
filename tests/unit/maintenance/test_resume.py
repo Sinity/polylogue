@@ -210,6 +210,121 @@ def test_positional_persisted_cursor_without_identity_fails_closed(
     assert patched_dispatch["orphaned_blobs"] == []
 
 
+def test_chained_resume_retains_completed_identity_history(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-chained")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-chained",'
+        '"targets":["session_insights","empty_sessions","orphaned_blobs"],'
+        '"cursor":"target:1"}'
+    )
+
+    def fail_orphan(_config: Config, _dry_run: bool) -> RepairResult:
+        raise RuntimeError("interrupted")
+
+    with patch.object(
+        repair_module,
+        "REPAIR_HANDLERS",
+        {
+            "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
+            "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
+            "orphaned_blobs": fail_orphan,
+        },
+    ):
+        first = execute_replay(
+            config,
+            targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+            operation_id="op-chained",
+        )
+    assert first.status is OperationStatus.FAILED
+
+    second = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        operation_id="op-chained",
+    )
+
+    assert second.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
+    assert patched_dispatch["orphaned_blobs"] == ["live"]
+
+
+def test_all_completed_identity_remap_returns_completed_noop(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-all-done")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-all-done",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"cursor":"done"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        operation_id="op-all-done",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.progress == 1.0
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == []
+    assert patched_dispatch["orphaned_blobs"] == []
+
+
+@pytest.mark.parametrize("contents", ["[]", "not-json"])
+def test_invalid_persisted_state_fails_closed(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], contents: str
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-invalid")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents)
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "orphaned_blobs"),
+        operation_id="op-invalid",
+    )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.error == "Persisted replay state is not a JSON object"
+    assert op.failure_samples.samples[0].kind == "InvalidReplayState"
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["orphaned_blobs"] == []
+
+
+def test_explicit_resume_cursor_remaps_against_persisted_identities(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-explicit-removed")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-explicit-removed",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"cursor":"target:0"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "empty_sessions", "orphaned_blobs"),
+        operation_id="op-explicit-removed",
+        resume_cursor="target:2",
+    )
+
+    assert op.status is OperationStatus.COMPLETED
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
+    assert patched_dispatch["orphaned_blobs"] == ["live"]
+
+
 def test_explicit_resume_cursor_overrides_persisted_state(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
