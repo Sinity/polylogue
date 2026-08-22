@@ -254,8 +254,8 @@ def test_upsert_noop_contract(
 
 @pytest.mark.parametrize(
     ("source_name", "expected_provider"),
-    [("claude-ai", "claude-ai"), (None, "unknown")],
-    ids=["provider-row", "missing-provider-row"],
+    [("claude-ai", "claude-ai"), (None, "test-provider")],
+    ids=["provider-row", "missing-provider-row-uses-message-origin"],
 )
 def test_upsert_persistence_contract(
     tmp_path: Path,
