@@ -49,6 +49,7 @@ MERGE_READY_STATUSES = frozenset({"open", "in_progress"})
 KNOWN_STATUSES = frozenset({"open", "in_progress", "blocked", "deferred", "closed"})
 WIP_LIMITS = {"implementation_lane_wip": 6, "merge_train_wip": 1, "workstream_active_batch_wip": 1}
 BEAD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+BATCH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 
 
 def _source_evidence() -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
@@ -858,7 +859,15 @@ def collect_campaign_findings(
                 Finding("campaign-batch-binding", molecule_id, "batch stages do not share one identical binding")
             )
             continue
-        _batch_name, workstream, authorities = next(iter(signatures))
+        batch_name, workstream, authorities = next(iter(signatures))
+        if not BATCH_NAME_RE.fullmatch(batch_name):
+            findings.append(
+                Finding(
+                    "campaign-batch-binding",
+                    molecule_id,
+                    "batch marker must match the native formula batch variable pattern",
+                )
+            )
         members, error = _parse_authoritative_beads(authorities)
         if error:
             findings.append(Finding("campaign-batch-binding", molecule_id, error))

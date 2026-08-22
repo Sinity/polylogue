@@ -704,6 +704,14 @@ def test_campaign_projection_rejects_batch_authority_shape_and_workstream() -> N
     assert "campaign-batch-binding" in _campaign_kinds(copied_fields)
 
 
+def test_campaign_projection_rejects_invalid_native_batch_name() -> None:
+    malformed = _campaign_fixture() + _batch_group("valid")
+    for row in malformed:
+        if row.get("metadata", {}).get("stage") in verify_bead_graph.BATCH_STAGES:
+            row["description"] = row["description"].replace("batch=valid", "batch=Invalid Name")
+    assert "campaign-batch-binding" in _campaign_kinds(malformed)
+
+
 def test_campaign_projection_rejects_wip_limits() -> None:
     batches = _campaign_fixture()
     for name in "abcdefg":
