@@ -121,6 +121,49 @@ async def test_client_disconnect_cancels_and_releases(tmp_path: Path) -> None:
     assert controller.in_flight_weight == 0
 
 
+def test_asyncio_run_shutdown_keeps_admission_until_executor_operation_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A loop shutdown must not release a lease under a still-running executor call.
+
+    This uses only a fixture archive and an in-memory gate.  The main coroutine
+    returns while the archive operation is deliberately held, allowing
+    ``asyncio.run``'s shutdown cancellation to exercise the lifecycle boundary.
+    """
+    import polylogue.archive.query.execution_control as execution_control
+
+    monkeypatch.setattr(execution_control, "DISCONNECT_DRAIN_TIMEOUT_S", 0.05)
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    entered = threading.Event()
+    release_operation = threading.Event()
+    operation_finished = threading.Event()
+    ctx = QueryExecutionContext.create(query_text="fixture-shutdown", timeout_s=None)
+
+    def held_work(store: ArchiveStore) -> int:
+        entered.set()
+        try:
+            assert release_operation.wait(timeout=5)
+            return _cheap_work(store)
+        finally:
+            operation_finished.set()
+
+    async def start_and_return() -> None:
+        asyncio.create_task(execute_archive_read(root, held_work, ctx=ctx, controller=controller))
+        assert await asyncio.to_thread(entered.wait, 2)
+
+    asyncio.run(start_and_return())
+    assert operation_finished.is_set() is False
+    assert controller.in_flight_weight == 1
+
+    release_operation.set()
+    assert operation_finished.wait(timeout=2)
+    deadline = time.monotonic() + 2
+    while controller.in_flight_weight != 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert controller.in_flight_weight == 0
+
+
 async def test_event_loop_stays_responsive_during_expensive_read(tmp_path: Path) -> None:
     """A blocking-scale statement must not freeze the loop: cheap awaitables
     keep their interactive latency while the worker thread grinds."""
