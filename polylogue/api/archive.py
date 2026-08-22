@@ -5053,7 +5053,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
             archive_root = _active_archive_root(self.config)
             with suppress(ValueError, ImportError):
-                vector_provider = create_vector_provider(self.config, db_path=archive_root / "embeddings.db")
+                vector_provider = create_vector_provider(
+                    self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+                )
         sessions = await spec.list(self.config, vector_provider=vector_provider)
         if content_projection is None or not content_projection.filters_content():
             return sessions
@@ -5074,7 +5076,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
             archive_root = _active_archive_root(self.config)
             with suppress(ValueError, ImportError):
-                vector_provider = create_vector_provider(self.config, db_path=archive_root / "embeddings.db")
+                vector_provider = create_vector_provider(
+                    self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+                )
         return await search_hits_for_plan(spec.to_plan(vector_provider=vector_provider), self.config)
 
     async def diagnose_query_miss(self, spec: SessionQuerySpec, *, full: bool = False) -> QueryMissDiagnostics:
@@ -5480,7 +5484,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         archive_root = _active_archive_root(self.config)
         vector_provider = None
         with suppress(ValueError, ImportError):
-            vector_provider = create_vector_provider(self.config, db_path=archive_root / "embeddings.db")
+            vector_provider = create_vector_provider(
+                self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+            )
 
         return SessionFilter(
             archive_root=archive_root,

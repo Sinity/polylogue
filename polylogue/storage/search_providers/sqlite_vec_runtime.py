@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,10 +23,49 @@ class SqliteVecRuntimeMixin:
         dimension: int
         _vec_available: bool | None
         _tables_ensured: bool
+        archive_root: Path | None
+        _legacy_compatibility: bool
+        _admitted_db_identity: tuple[int, int] | None
+
+    def _assert_lifecycle_binding(self) -> None:
+        if getattr(self, "_legacy_compatibility", False):
+            return
+        if self.archive_root is None:
+            raise SqliteVecError("managed vector provider requires an archive root")
+        root = self.archive_root.resolve(strict=True)
+        db = self.db_path.resolve(strict=False)
+        try:
+            db.relative_to(root)
+        except ValueError as exc:
+            raise SqliteVecError("managed provider path is outside its trusted archive root") from exc
+        if db.name != "embeddings.db":
+            raise SqliteVecError("managed provider path must be archive-local embeddings.db")
+        try:
+            st = os.stat(db)
+        except FileNotFoundError:
+            raise SqliteVecError("managed embeddings database disappeared after admission") from None
+        identity: tuple[int, int] = (st.st_dev, st.st_ino)
+        bound = getattr(self, "_admitted_db_identity", None)
+        if bound is not None and identity != bound:
+            raise SqliteVecError("managed embeddings database changed after admission")
+        self._admitted_db_identity = identity
+
+    @contextmanager
+    def _lifecycle_admission(self) -> Iterator[None]:
+        """Bind managed provider use to the resolved archive path and inode."""
+        if getattr(self, "_legacy_compatibility", False):
+            yield
+            return
+        self._assert_lifecycle_binding()
+        try:
+            yield
+        finally:
+            self._admitted_db_identity = None
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get connection with sqlite-vec extension loaded if available."""
-        conn = open_connection(self.db_path)
+        self._assert_lifecycle_binding()
+        conn = open_connection(self.db_path.resolve(strict=False))
         conn.row_factory = sqlite3.Row
 
         if self._vec_available is None:
@@ -55,6 +97,13 @@ class SqliteVecRuntimeMixin:
             raise SqliteVecError("sqlite-vec extension not available. Install with: pip install sqlite-vec")
 
     def _ensure_tables(self) -> None:
+        """Create required tables under lifecycle admission for managed tiers."""
+        if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
+            self._ensure_tables_unlocked()
+            return
+        self._ensure_tables_unlocked()
+
+    def _ensure_tables_unlocked(self) -> None:
         """Create required vector and metadata tables if they don't exist.
 
         Detects dimension mismatches between the configured dimension and the

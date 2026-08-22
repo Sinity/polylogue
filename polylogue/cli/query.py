@@ -60,7 +60,7 @@ def _create_query_vector_provider(config: Config, *, db_path: Path | None = None
     from polylogue.storage.search_providers import create_vector_provider
 
     try:
-        return create_vector_provider(config, db_path=db_path or config.db_path)
+        return create_vector_provider(config, db_path=db_path or config.db_path, archive_root=config.archive_root)
     except (ValueError, ImportError):
         return None
     except Exception as exc:

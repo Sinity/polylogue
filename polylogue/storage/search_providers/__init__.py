@@ -34,6 +34,7 @@ def create_vector_provider(
     *,
     voyage_api_key: str | None = None,
     db_path: Path | None = None,
+    archive_root: Path | None = None,
     model: str | None = None,
     dimension: int | None = None,
 ) -> VectorProvider | None:
@@ -84,7 +85,23 @@ def create_vector_provider(
         SqliteVecProvider,
     )
 
-    kwargs: dict[str, object] = {"voyage_key": voyage_key, "db_path": db_path}
+    if db_path is not None and db_path.name != "embeddings.db":
+        raise SqliteVecError("public vector provider requires managed embeddings.db")
+    if config is not None and archive_root is None:
+        archive_root = config.archive_root
+    if archive_root is None:
+        from polylogue.paths import archive_root as configured_archive_root
+
+        archive_root = configured_archive_root()
+    if db_path is None and config is not None:
+        db_path = archive_root / "embeddings.db"
+    if db_path is not None:
+        try:
+            db_path.absolute().resolve(strict=False).relative_to(archive_root.absolute().resolve(strict=False))
+        except ValueError as exc:
+            raise SqliteVecError("public vector provider database is outside its trusted archive root") from exc
+
+    kwargs: dict[str, object] = {"voyage_key": voyage_key, "db_path": db_path, "archive_root": archive_root}
     if model is not None:
         kwargs["model"] = model
     if dimension is not None:

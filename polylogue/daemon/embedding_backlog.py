@@ -237,6 +237,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     vec_provider = create_vector_provider(
         voyage_api_key=str(voyage_key),
         db_path=embeddings_db,
+        archive_root=archive_root,
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
     )

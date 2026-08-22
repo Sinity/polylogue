@@ -2129,6 +2129,7 @@ def _embed_archive_sessions_sync(
     vec_provider = create_vector_provider(
         voyage_api_key=str(voyage_key),
         db_path=embeddings_db,
+        archive_root=root,
         model=cfg.embedding_model,
         dimension=cfg.embedding_dimension,
     )

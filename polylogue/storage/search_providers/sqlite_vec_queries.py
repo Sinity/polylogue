@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import AbstractContextManager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -21,8 +23,13 @@ class SqliteVecQueryMixin:
     """Vector upsert/query/stat operations."""
 
     if TYPE_CHECKING:
+        db_path: Path
+        archive_root: Path | None
+        _legacy_compatibility: bool
         model: str
         dimension: int
+
+        def _lifecycle_admission(self) -> AbstractContextManager[None]: ...
 
         def _ensure_vec_available(self) -> None: ...
 
@@ -38,7 +45,20 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
-    def upsert(self, session_id: str, messages: list[MessageRecord]) -> None:
+    def upsert(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
+        """Upsert embeddings while holding managed lifecycle admission.
+
+        ``embeddings.db`` is a split tier and intentionally has no ``sessions``
+        table.  Callers that know the archive origin should supply it; the
+        message source is the compatibility fallback for older callers.
+        """
+        if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
+            self._upsert_unlocked(session_id, messages, origin=origin)
+            return
+        with self._lifecycle_admission():
+            self._upsert_unlocked(session_id, messages, origin=origin)
+
+    def _upsert_unlocked(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
         """Upsert message embeddings into the vector store.
 
         Delegates the actual write to the canonical content-addressed
@@ -76,20 +96,23 @@ class SqliteVecQueryMixin:
 
         conn = self._get_connection()
         try:
-            origin = "unknown"
-            row = conn.execute(
-                "SELECT origin FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if row:
-                origin = row[0] or "unknown"
-
+            message_origin = origin or "unknown"
+            # Legacy arbitrary-path providers historically carried a sessions
+            # table beside vectors.  Keep that compatibility fallback isolated;
+            # canonical split embeddings.db never queries its own absent table.
+            if origin is None and self.db_path.name != "embeddings.db":
+                row = conn.execute(
+                    "SELECT origin FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row:
+                    message_origin = row[0] or message_origin
             now_ms = int(datetime.now(UTC).timestamp() * 1000)
             writes = [
                 ArchiveEmbeddingWrite(
                     message_id=msg.message_id,
                     session_id=msg.session_id,
-                    origin=origin,
+                    origin=message_origin,
                     embedding=embedding,
                     model=self.model,
                     embedded_at_ms=now_ms,
@@ -111,13 +134,18 @@ class SqliteVecQueryMixin:
                     needs_reindex = 0,
                     error_message = NULL
                 """,
-                (session_id, origin, len(embeddable), now_ms),
+                (session_id, message_origin, len(embeddable), now_ms),
             )
             conn.commit()
         finally:
             conn.close()
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        """Run the provider route under managed lifecycle admission."""
+        with self._lifecycle_admission():
+            return self._query_unlocked(text, limit)
+
+    def _query_unlocked(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Find semantically similar messages.
 
         ``message_embeddings`` is keyed by ``embedding_input_hash`` (content-
@@ -158,6 +186,11 @@ class SqliteVecQueryMixin:
             conn.close()
 
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        """Run the provider route under managed lifecycle admission."""
+        with self._lifecycle_admission():
+            return self._query_by_session_unlocked(session_id, limit)
+
+    def _query_by_session_unlocked(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         """Rank messages by similarity to a stored session's own embeddings.
 
         Fetches every stored vector for ``session_id`` and KNN-searches a bounded,
@@ -226,6 +259,11 @@ class SqliteVecQueryMixin:
             conn.close()
 
     def count_session_embeddings(self, session_id: str) -> int:
+        """Run the provider route under managed lifecycle admission."""
+        with self._lifecycle_admission():
+            return self._count_session_embeddings_unlocked(session_id)
+
+    def _count_session_embeddings_unlocked(self, session_id: str) -> int:
         """Return the number of distinct stored vectors for ``session_id``."""
         self._ensure_vec_available()
         conn = self._get_connection()
@@ -246,6 +284,16 @@ class SqliteVecQueryMixin:
             conn.close()
 
     def query_by_provider(
+        self,
+        text: str,
+        provider: str,
+        limit: int = 10,
+    ) -> list[tuple[str, float]]:
+        """Run the provider route under managed lifecycle admission."""
+        with self._lifecycle_admission():
+            return self._query_by_provider_unlocked(text, provider, limit)
+
+    def _query_by_provider_unlocked(
         self,
         text: str,
         provider: str,
@@ -292,6 +340,11 @@ class SqliteVecQueryMixin:
             conn.close()
 
     def get_embedding_stats(self) -> dict[str, int]:
+        """Run the provider route under managed lifecycle admission."""
+        with self._lifecycle_admission():
+            return self._get_embedding_stats_unlocked()
+
+    def _get_embedding_stats_unlocked(self) -> dict[str, int]:
         """Get embedding statistics."""
         conn = self._get_connection()
         try:
