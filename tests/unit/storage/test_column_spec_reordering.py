@@ -66,6 +66,17 @@ class TestColumnSpecReordering:
         # Expected GENERATED columns in blocks
         assert generated_cols == {"block_id", "tool_command", "tool_path", "search_text", "tool_detail_text"}
 
+    def test_block_query_projection_uses_canonical_table_columns(self) -> None:
+        """The compact block SELECT must name only declared storage columns."""
+        from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ARCHIVE_BLOCK_QUERY_COLUMNS
+
+        blocks_spec, _, _ = self._specs()
+        declared = {column.name for column in blocks_spec.all_columns}
+
+        assert _ARCHIVE_BLOCK_QUERY_COLUMNS
+        assert set(_ARCHIVE_BLOCK_QUERY_COLUMNS) <= declared
+        assert len(_ARCHIVE_BLOCK_QUERY_COLUMNS) == len(set(_ARCHIVE_BLOCK_QUERY_COLUMNS))
+
     def test_blocks_insert_statement_format(self) -> None:
         """Verify that the INSERT statement can be correctly formatted."""
         blocks_spec, _, _ = self._specs()

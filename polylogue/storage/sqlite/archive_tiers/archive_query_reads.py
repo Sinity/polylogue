@@ -33,6 +33,7 @@ from polylogue.core.refs import delegation_edge_object_id
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
 from polylogue.storage.sqlite.archive_tiers.types import (
     DelegationMappingState,
     DelegationResultStatus,
@@ -804,19 +805,31 @@ def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["A
     return "DESC" if direction == "desc" else "ASC"
 
 
-_ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = (
-    "block_id",
-    "message_id",
-    "block_type",
-    "text",
-    "tool_name",
-    "tool_id",
-    "semantic_type",
-    "tool_input",
-    "language",
-    "tool_result_is_error",
-    "tool_result_exit_code",
+# ArchiveBlockRow is intentionally a compact read model rather than a full
+# blocks-table row.  Keep its curated projection tied to the canonical table
+# declaration: adding or renaming a storage column cannot leave this SELECT's
+# spelling silently stale.  The order follows BLOCKS_SPEC; sqlite3.Row
+# hydration is name-based, so this does not impose a positional contract.
+_ARCHIVE_BLOCK_QUERY_ROW_FIELDS: frozenset[str] = frozenset(
+    {
+        "block_id",
+        "message_id",
+        "block_type",
+        "text",
+        "tool_name",
+        "tool_id",
+        "semantic_type",
+        "tool_input",
+        "language",
+        "tool_result_is_error",
+        "tool_result_exit_code",
+    }
 )
+_ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = tuple(
+    column.name for column in BLOCKS_SPEC.all_columns if column.name in _ARCHIVE_BLOCK_QUERY_ROW_FIELDS
+)
+if set(_ARCHIVE_BLOCK_QUERY_COLUMNS) != _ARCHIVE_BLOCK_QUERY_ROW_FIELDS:
+    raise RuntimeError("ArchiveBlockRow projection is not covered by BLOCKS_SPEC")
 
 
 def _hydrate_archive_block_row(row: sqlite3.Row) -> ArchiveBlockRow:
