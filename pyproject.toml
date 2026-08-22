@@ -141,6 +141,7 @@ plog = "polylogue.cli:main"
 polylogue-hook = "polylogue.hooks:hook_main"
 polylogued = "polylogue.daemon.cli:main"
 polylogue-mcp = "polylogue.mcp.cli:main"
+polylogue-agentctl-adapter = "polylogue.agent_integration.agentctl_adapter:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["polylogue", "devtools"]
