@@ -130,9 +130,17 @@ class EmbeddingGenerationStore:
         self.active_path = (Path(active_path) if active_path is not None else root / "embeddings.db").absolute()
         if not _under(root, self.active_path) or self.active_path.name != "embeddings.db":
             raise EmbeddingGenerationError("embedding active path must be archive-local embeddings.db")
+        if self.root.exists() and (self.root.is_symlink() or not self.root.is_dir()):
+            raise EmbeddingGenerationError("embedding generation root is not an owned directory")
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.root.is_symlink() or not self.root.is_dir():
+            raise EmbeddingGenerationError("embedding generation root is not an owned directory")
         self.receipts = self.root / _RECEIPTS
+        if self.receipts.exists() and (self.receipts.is_symlink() or not self.receipts.is_dir()):
+            raise EmbeddingGenerationError("embedding receipt root is not an owned directory")
         self.receipts.mkdir(parents=True, exist_ok=True)
+        if self.receipts.is_symlink() or not self.receipts.is_dir():
+            raise EmbeddingGenerationError("embedding receipt root is not an owned directory")
         self.lock_path = self.root / ".lifecycle.lock"
 
     @contextmanager
@@ -212,7 +220,7 @@ class EmbeddingGenerationStore:
     def _generations(self) -> list[EmbeddingGeneration]:
         result: list[EmbeddingGeneration] = []
         for child in self.root.iterdir():
-            if child.name in {_RECEIPTS, ".lifecycle.lock"}:
+            if child.name in {_RECEIPTS, ".lifecycle.lock"} or child.name.startswith("retired-"):
                 continue
             if child.is_symlink() or not child.is_dir():
                 raise EmbeddingGenerationError(f"unexpected embedding generation child: {child}")
@@ -345,22 +353,21 @@ class EmbeddingGenerationStore:
                 elif active is None and generation.predecessor_generation_id is None:
                     # Adoption intent was durable before the pointer swap.  Complete
                     # it rather than creating a second owner for the legacy file.
-                    if _regular_file(self.active_path):
-                        temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
-                        temporary.symlink_to(candidate)
-                        os.replace(temporary, self.active_path)
-                        _fsync_dir(self.active_path.parent)
-                        self._write_generation(
-                            EmbeddingGeneration(
-                                **{
-                                    **asdict(generation),
-                                    "state": "active",
-                                    "promoted_at_ns": generation.promoted_at_ns or self._next_ns(),
-                                }
-                            )
+                    if self.active_path.exists() and not _regular_file(self.active_path):
+                        raise EmbeddingGenerationError("embedding active path is not a regular file")
+                    temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
+                    temporary.symlink_to(candidate)
+                    os.replace(temporary, self.active_path)
+                    _fsync_dir(self.active_path.parent)
+                    self._write_generation(
+                        EmbeddingGeneration(
+                            **{
+                                **asdict(generation),
+                                "state": "active",
+                                "promoted_at_ns": generation.promoted_at_ns or self._next_ns(),
+                            }
                         )
-                    else:
-                        self._write_generation(EmbeddingGeneration(**{**asdict(generation), "state": "retained"}))
+                    )
                 else:
                     shutil.rmtree(candidate.parent)
             _fsync_dir(self.root)
@@ -543,6 +550,8 @@ class EmbeddingGenerationStore:
         _atomic_json(self.receipts / f"{receipt.promoted_generation_id}.json", asdict(receipt))
 
     def load_receipt(self, generation_id: str) -> EmbeddingPromotionReceipt:
+        if not _ID.fullmatch(generation_id):
+            raise EmbeddingGenerationError("invalid embedding generation identity")
         return self._validate_receipt(self.receipts / f"{generation_id}.json")
 
 
