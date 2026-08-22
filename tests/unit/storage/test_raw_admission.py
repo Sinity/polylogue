@@ -126,6 +126,31 @@ def test_same_raw_identity_fills_null_file_mtime_on_later_observation(tmp_path: 
         )
 
 
+def test_revision_bearing_raw_payload_uses_typed_admission(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    envelope = RawRevisionEnvelope(
+        logical_source_key="codex-session:revision-bearing",
+        kind=RawRevisionKind.FULL,
+        source_revision=hashlib.sha256(b"revision-bearing payload").hexdigest(),
+        acquisition_generation=0,
+        authority=RawRevisionAuthority.ASSERTED,
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b"revision-bearing payload",
+            source_path="revision-bearing.jsonl",
+            acquired_at_ms=1,
+            revision=envelope,
+            post_parse=False,
+        )
+        row = _row(archive._ensure_source_conn(), raw_id)
+
+    assert row[7] == envelope.logical_source_key
+    assert row[0] == envelope.kind.value
+    assert row[1] == envelope.authority.value
+
+
 def test_admit_raw_observation_baseline_when_no_prior_head(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "source.db")
 

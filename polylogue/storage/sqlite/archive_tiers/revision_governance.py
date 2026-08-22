@@ -675,6 +675,27 @@ def write_raw_payload(
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse raw admission arm: {admission.arm!r}")
         return admission.raw_id
+    if revision is not None:
+        # Revision-bearing calls are production admissions, rather than fixture
+        # seeding. Establish the row through the typed authority, then bind the
+        # caller's already-proven envelope through the source-tier API.
+        admission = admit_raw_observation(
+            store._ensure_source_conn(),
+            origin=origin_from_provider(provider),
+            capture_mode=capture_mode or provider,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            native_id=native_id,
+            raw_id=raw_id,
+            logical_source_key=revision.logical_source_key,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            manage_transaction=True,
+        )
+        bind_source_raw_revision(store._ensure_source_conn(), admission.raw_id, revision)
+        return admission.raw_id
     return write_source_raw_session(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
