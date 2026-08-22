@@ -5268,7 +5268,13 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
+        lambda: SimpleNamespace(
+            raw_authority_whale_payload_bytes=None,
+            daemon_parse_stage_workers=1,
+            daemon_parse_stage_max_inflight_bytes=1_000_000,
+            daemon_parse_stage_warm_timeout_seconds=1.0,
+            daemon_parse_stage_max_cached_tree_bytes=1_000_000,
+        ),
     )
     monkeypatch.setattr(
         "polylogue.product.raw_authority.whale_pass_candidate",
@@ -5279,10 +5285,15 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
 
     async def fake_run_sync(actor: str, func: object, *_args: object, **_kwargs: object) -> object:
         partial = cast("functools.partial[object]", func)
+        assert partial.keywords["prefetch_cache"] is not None
         run_sync_calls.append((actor, partial.keywords["raw_artifact_id"], partial.keywords["max_payload_bytes"]))
         return SimpleNamespace(success=True, repaired_count=3, detail="whale converged")
 
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync_with_completion=fake_run_sync),
+    )
 
     attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
 
@@ -5305,7 +5316,542 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
         "success": True,
         "repaired_count": 3,
         "detail": "whale converged",
+        "candidate_count": 0,
+        "selected_count": 0,
+        "executed_count": 0,
+        "resource_blocked_count": 0,
+        "remaining_candidates": 0,
+        "status": "success",
+        "fenced": False,
+        "cancelled": False,
+        "census_pending": False,
+        "census_incomplete_count": 0,
+        "continuation": False,
     }
+
+
+def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Startup recovery delivers a readable quarantine receipt before removing it."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import whale_outbox
+
+    tmp_path.chmod(0o700)
+    target = whale_outbox.enqueue(
+        kind="whale.recovery",
+        idempotency_key="recovery-receipt",
+        operation_id="operation-recovery",
+        payload={"status": "completed"},
+        root=tmp_path,
+    )
+    recovery = target.with_name(f"{target.name}.recovery.0123456789abcdef0123456789abcdef.json")
+    target.rename(recovery)
+    assert whale_outbox.list_pending(root=tmp_path)[0]["_name"] == recovery.name
+
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
+    )
+
+    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
+        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
+        assert callback_result is None
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
+    delivered = asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path))
+
+    assert delivered == 1
+    assert published == [("whale.recovery", {"status": "completed"})]
+    assert not recovery.exists()
+    assert whale_outbox.list_pending(root=tmp_path) == []
+
+
+def test_second_order_recovery_race_remains_startup_drainable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A recovery receipt acknowledged during a second race remains recoverable."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import whale_outbox
+
+    tmp_path.chmod(0o700)
+    canonical = whale_outbox.enqueue(
+        kind="whale.recovery",
+        idempotency_key="second-order",
+        operation_id="operation-second-order",
+        payload={"status": "completed"},
+        root=tmp_path,
+    )
+    target = canonical.with_name(f"{canonical.name}.recovery.0123456789abcdef0123456789abcdef.json")
+    canonical.rename(target)
+    record = whale_outbox.list_pending(root=tmp_path)[0]
+    real_move = whale_outbox._rename_noreplace
+    real_rename = os.rename
+    replaced = False
+    inserted = False
+
+    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
+        nonlocal replaced
+        if not replaced and source == target.name:
+            target.unlink()
+            target.write_bytes(
+                b'{"kind":"whale.recovery","idempotency_key":"second-order",'
+                b'"operation_id":"operation-second-order","payload":{"status":"replacement"}}'
+            )
+            target.chmod(0o600)
+            replaced = True
+        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    def insert_before_restore(source: str, destination: str, *, directory_fd: int) -> None:
+        nonlocal inserted
+        if not inserted and source.endswith(".ack"):
+            target.write_bytes(b"replacement-at-restore")
+            target.chmod(0o600)
+            inserted = True
+        real_move(source, destination, directory_fd=directory_fd)
+
+    monkeypatch.setattr(os, "rename", replace_before_move)
+    monkeypatch.setattr(whale_outbox, "_rename_noreplace", insert_before_restore)
+    whale_outbox.acknowledge(record)
+    pending = whale_outbox.list_pending(root=tmp_path)
+    assert len(pending) == 1
+    assert pending[0]["_name"].startswith("second-order.json.recovery.")
+
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
+    )
+
+    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
+        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
+        assert callback_result is None
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
+    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
+    assert published == [("whale.recovery", {"status": "replacement"})]
+    assert whale_outbox.list_pending(root=tmp_path) == []
+
+
+def test_recovery_name_exhaustion_leaves_fallback_receipt_startup_drainable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Forced recovery-name exhaustion keeps a valid fallback drainable."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import whale_outbox
+
+    tmp_path.chmod(0o700)
+    target = whale_outbox.enqueue(
+        kind="whale.recovery",
+        idempotency_key="exhaustion",
+        operation_id="operation-exhaustion",
+        payload={"status": "completed"},
+        root=tmp_path,
+    )
+    replacement = (
+        b'{"kind":"whale.recovery","idempotency_key":"exhaustion",'
+        b'"operation_id":"operation-exhaustion","payload":{"status":"fallback"}}'
+    )
+    real_rename = os.rename
+    replaced = False
+
+    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
+        nonlocal replaced
+        if not replaced and source == target.name:
+            target.unlink()
+            target.write_bytes(replacement)
+            target.chmod(0o600)
+            replaced = True
+        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    def exhausted(_source: str, _destination: str, *, directory_fd: int) -> None:
+        raise FileExistsError("forced recovery allocation exhaustion")
+
+    monkeypatch.setattr(os, "rename", replace_before_move)
+    monkeypatch.setattr(whale_outbox, "_rename_noreplace", exhausted)
+    record = whale_outbox.list_pending(root=tmp_path)[0]
+    whale_outbox.acknowledge(record)
+    pending = whale_outbox.list_pending(root=tmp_path)
+    assert len(pending) == 1
+    assert pending[0]["_name"].endswith(".ack")
+
+    published: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
+    )
+
+    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
+        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
+        assert callback_result is None
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
+    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
+    assert published == [("whale.recovery", {"status": "fallback"})]
+    assert whale_outbox.list_pending(root=tmp_path) == []
+
+
+def test_whale_worker_timeout_fences_before_coordinator_acquisition(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A live timed-out worker yields no coordinator acquired event or lease."""
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    coordinator_calls: list[str] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(
+            raw_authority_whale_payload_bytes=None,
+            daemon_parse_stage_warm_timeout_seconds=0.01,
+        ),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: "blocked-seed",
+    )
+
+    class BlockedStage:
+        cache = SimpleNamespace()
+
+        def writer_admission_ready(self) -> bool:
+            return False
+
+        def wait_until_idle(self, *, timeout: float) -> bool:
+            return False
+
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage_singleton", BlockedStage())
+
+    async def fake_warm(**_kwargs: object) -> tuple[object, int]:
+        return SimpleNamespace(), 0
+
+    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", fake_warm)
+
+    async def unexpected_run_sync(*_args: object, **_kwargs: object) -> object:
+        coordinator_calls.append("acquired")
+        raise AssertionError("coordinator must not be acquired while worker remains alive")
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=unexpected_run_sync))
+    assert asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass()) is True
+    assert coordinator_calls == []
+    from polylogue.daemon import whale_outbox
+
+    pending = whale_outbox.list_pending(root=tmp_path)
+    assert len(pending) == 1
+    completed = cast(dict[str, object], pending[0]["payload"])
+    assert completed["status"] == "fenced"
+    assert completed["fenced"] is True
+    assert completed["remaining_candidates"] == 0
+
+
+def test_whale_completion_accounts_for_census_pending_debt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A successful replay with incomplete census is reported as pending debt."""
+    from polylogue.daemon import cli as daemon_cli
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None, daemon_parse_stage_warm_timeout_seconds=1.0),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: "census-seed",
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_daemon_parse_stage_singleton",
+        SimpleNamespace(cache=SimpleNamespace(), writer_admission_ready=lambda: True),
+    )
+
+    async def fake_warm(**_kwargs: object) -> tuple[object, int]:
+        return SimpleNamespace(), 0
+
+    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", fake_warm)
+
+    async def fake_run_sync(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            success=True,
+            repaired_count=2,
+            detail="census incomplete",
+            metrics={
+                "raw_materialization_candidate_count": 7,
+                "raw_materialization_selected_count": 1,
+                "raw_materialization_executed_count": 1,
+                "raw_materialization_remaining_candidate_count": 3,
+                "raw_materialization_census_incomplete_raw_count": 2,
+            },
+        )
+
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync_with_completion=fake_run_sync),
+    )
+    assert asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass()) is True
+    completed = next(payload for kind, payload in events if kind == "raw_materialization_whale_pass_completed")
+    assert completed["status"] == "census_pending"
+    assert completed["success"] is False
+    assert completed["census_pending"] is True
+    assert completed["census_incomplete_count"] == 2
+    assert completed["remaining_candidates"] == 5
+
+
+def test_whale_cancellation_after_admission_records_continuation_then_real_completion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Shielded coordinator work gets a ledger continuation and real counters."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import events as daemon_events
+    from polylogue.daemon.events import query_daemon_events
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda **_kwargs: SimpleNamespace(
+            archive_root=tmp_path,
+            render_root=tmp_path / "render",
+            raw_authority_whale_payload_bytes=None,
+            daemon_parse_stage_warm_timeout_seconds=1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: "cancelled-seed",
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_maybe_warm_raw_materialization_parse_stage",
+        lambda **_kwargs: asyncio.sleep(0, result=(SimpleNamespace(), 0)),
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_daemon_parse_stage_singleton",
+        SimpleNamespace(writer_admission_ready=lambda: True),
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_repair(**_kwargs: object) -> object:
+        started.set()
+        release.wait(timeout=5)
+        return SimpleNamespace(
+            success=True,
+            repaired_count=4,
+            detail="eventual coordinator result",
+            metrics={
+                "raw_materialization_candidate_count": 4,
+                "raw_materialization_selected_count": 2,
+                "raw_materialization_executed_count": 2,
+                "raw_materialization_remaining_candidate_count": 1,
+            },
+        )
+
+    monkeypatch.setattr(daemon_cli, "_run_raw_materialization_whale_pass_once", blocked_repair)
+    coordinator = DaemonWriteCoordinator()
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
+    real_emit = daemon_events.emit_daemon_event
+    failed_terminal_writes = 0
+
+    def flaky_emit(kind: str, **kwargs: Any) -> None:
+        nonlocal failed_terminal_writes
+        payload = kwargs.get("payload")
+        if (
+            kind == "raw_materialization_whale_pass_completed"
+            and isinstance(payload, dict)
+            and payload.get("status") == "cancelled"
+            and failed_terminal_writes < 2
+        ):
+            failed_terminal_writes += 1
+            raise OSError("transient ops ledger lock")
+        real_emit(kind, **kwargs)
+
+    monkeypatch.setattr(daemon_events, "emit_daemon_event", flaky_emit)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(daemon_cli._maybe_run_raw_materialization_whale_pass())
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        # Shutdown must drain both the shielded writer and its managed
+        # terminal-receipt retry task before this event loop can close.
+        assert await coordinator.shutdown(timeout=2) is True
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+    assert failed_terminal_writes >= 1
+    completions = query_daemon_events(kind="raw_materialization_whale_pass_completed", limit=10)
+    payloads = [cast(dict[str, object], event["payload"]) for event in completions]
+    statuses = [payload["status"] for payload in payloads]
+    if len(statuses) >= 2:
+        assert statuses[:2] == ["cancelled", "in_progress"]
+        final = payloads[0]
+        assert final["repaired_count"] == 4
+        assert final["candidate_count"] == 4
+        assert final["remaining_candidates"] == 1
+        assert final["continuation"] is False
+    else:
+        # Shutdown may close coordinator admission while the managed retry is
+        # still running. The filesystem-first receipt is then intentionally
+        # left pending for the next startup rather than executing an
+        # uncancelable SQLite thread after the deadline.
+        from polylogue.daemon import whale_outbox
+
+        pending = whale_outbox.list_pending(root=tmp_path)
+        assert any(record["idempotency_key"].endswith(":terminal") for record in pending)
+
+
+def test_whale_callback_runs_real_coordinator_product_repair_and_census(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Production whale route consumes the warmed cache and materializes one component."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
+
+    raw_ids = build_revision_chain_corpus(tmp_path, superseded_count=7, final_payload_bytes=2_000)
+    ordinary_limit = daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
+    whale_limit = 1_000_000_000
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
+            [((ordinary_limit // len(raw_ids)) + 1, raw_id) for raw_id in raw_ids],
+        )
+        conn.commit()
+    from polylogue.config import Config
+    from polylogue.storage import repair as repair_mod
+
+    blocked = repair_mod.repair_raw_materialization(
+        Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
+        raw_artifact_id=raw_ids[0],
+        max_payload_bytes=ordinary_limit,
+    )
+    assert blocked.success is False
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(
+            raw_authority_whale_payload_bytes=whale_limit,
+            daemon_parse_stage_workers=1,
+            daemon_parse_stage_max_inflight_bytes=whale_limit,
+            daemon_parse_stage_warm_timeout_seconds=10.0,
+            daemon_parse_stage_max_cached_tree_bytes=whale_limit,
+            raw_authority_commit_batch_size=None,
+        ),
+    )
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr(
+        "polylogue.daemon.events.emit_daemon_event",
+        lambda kind, *, payload: events.append((kind, payload)),
+    )
+    coordinator = DaemonWriteCoordinator()
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage_singleton", None)
+
+    cache_pops = 0
+    original_pop = RawParsePrefetchCache.pop
+
+    def counting_pop(cache: RawParsePrefetchCache, raw_id: str) -> object:
+        nonlocal cache_pops
+        value = original_pop(cache, raw_id)
+        if value is not None:
+            cache_pops += 1
+        return value
+
+    monkeypatch.setattr(RawParsePrefetchCache, "pop", counting_pop)
+    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
+    assert attempted is True
+    assert cache_pops >= 1
+    completed = next(payload for kind, payload in events if kind == "raw_materialization_whale_pass_completed")
+    assert raw_ids[0] == completed["seed_raw_id"]
+    # Materialization candidates contain only the accepted head; parser census
+    # still covers every member of the eight-raw authority component below.
+    assert completed["candidate_count"] == 1
+    assert completed["selected_count"] == 1
+    assert completed["executed_count"] == 1
+    assert completed["resource_blocked_count"] == 0
+    assert completed["remaining_candidates"] == 0
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        census_count = conn.execute("SELECT COUNT(*) FROM raw_authority_parser_census").fetchone()[0]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    assert census_count == len(raw_ids)
+    assert session_count == 1
+    assert asyncio.run(coordinator.shutdown(timeout=2.0)) is True
+
+
+def test_maybe_run_raw_materialization_whale_pass_interruption_is_pre_hold(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cancellation during whale warming cannot mutate durable archive state."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    before = {name: hashlib.sha256((tmp_path / name).read_bytes()).digest() for name in ("source.db", "index.db")}
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda **_kwargs: SimpleNamespace(
+            archive_root=tmp_path,
+            render_root=tmp_path / "render",
+            raw_authority_whale_payload_bytes=None,
+        ),
+    )
+    monkeypatch.setattr(
+        "polylogue.product.raw_authority.whale_pass_candidate",
+        lambda _config, **_kwargs: "whale-seed-raw-id",
+    )
+
+    async def cancel_warm(**_kwargs: object) -> tuple[object, int]:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(daemon_cli, "_maybe_warm_raw_materialization_parse_stage", cancel_warm)
+
+    def fail_coordinator() -> object:
+        pytest.fail("writer hold must not be requested after warm interruption")
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", fail_coordinator)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
+
+    after = {name: hashlib.sha256((tmp_path / name).read_bytes()).digest() for name in ("source.db", "index.db")}
+    assert after == before
+    from polylogue.daemon import whale_outbox
+
+    pending = whale_outbox.list_pending(root=tmp_path)
+    assert len(pending) == 1
+    payload = cast(dict[str, object], pending[0]["payload"])
+    assert payload["status"] == "cancelled"
+    assert payload["candidate_count"] == 0
+    assert payload["remaining_candidates"] == 0
 
 
 def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
@@ -5324,7 +5870,13 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
+        lambda: SimpleNamespace(
+            raw_authority_whale_payload_bytes=None,
+            daemon_parse_stage_workers=1,
+            daemon_parse_stage_max_inflight_bytes=1_000_000,
+            daemon_parse_stage_warm_timeout_seconds=1.0,
+            daemon_parse_stage_max_cached_tree_bytes=1_000_000,
+        ),
     )
     monkeypatch.setattr(
         "polylogue.product.raw_authority.whale_pass_candidate",

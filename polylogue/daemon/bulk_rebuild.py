@@ -148,6 +148,25 @@ DAEMON_BULK_REBUILD_OPERATION_ID = "daemon-bulk-rebuild"
 #: writer actors between passes.
 DAEMON_BULK_REBUILD_BATCH_SIZE = 500
 
+
+async def _await_parse_stage_writer_admission(parse_stage: DaemonParseStage) -> bool:
+    """Prove the bulk parse stage is idle before any coordinator admission.
+
+    ``warm_raw_ids`` may outlive its cancelled ``to_thread`` caller. Every
+    coordinator request in this pass therefore checks the worker fence first;
+    repeated calls remain blocked until the same workers really finish.
+    """
+    if parse_stage.writer_admission_ready():
+        return True
+    idle = await asyncio.to_thread(
+        parse_stage.wait_until_idle,
+        timeout=parse_stage.warm_timeout_seconds,
+    )
+    if not idle:
+        logger.warning("bulk-rebuild: deferring coordinator admission while parse-stage worker(s) remain active")
+    return bool(idle)
+
+
 #: Transaction statuses that mean "not resumable, retire and start fresh at
 #: the same well-known operation id": ``promoted`` (a prior build already
 #: succeeded and is now the active index), ``promoted-attestation-failed`` (a
@@ -406,6 +425,11 @@ async def run_daemon_bulk_rebuild_pass(
         if os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
         else None
     )
+    # Admission is deliberately before transaction resolution: even a
+    # read-mostly/resumed admission acquires the coordinator, and a timed-out
+    # parse worker remains alive after its to_thread caller is cancelled.
+    if not await _await_parse_stage_writer_admission(parse_stage):
+        return None
     transaction = await daemon_write_coordinator().run_sync(
         "maintenance.bulk_rebuild_admission",
         resolve_or_start_daemon_bulk_rebuild_transaction,
@@ -444,6 +468,19 @@ async def run_daemon_bulk_rebuild_pass(
                 warmed,
                 len(raw_ids),
             )
+        # A timed-out warm caller can return while its executor worker is
+        # still parsing. Do not queue the actual bulk writer until the shared
+        # parse-stage admission has drained; this mirrors the ordinary and
+        # whale repair routes without touching the live watcher path.
+
+    if not parse_stage.writer_admission_ready():
+        idle = await asyncio.to_thread(
+            parse_stage.wait_until_idle,
+            timeout=parse_stage.warm_timeout_seconds,
+        )
+        if not idle:
+            logger.warning("bulk-rebuild: deferring writer admission while parse-stage worker(s) remain active")
+            return None
 
     request = RebuildIndexRequest(
         archive_root=root,

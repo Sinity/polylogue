@@ -47,13 +47,19 @@ deploy (phase (b), polylogue-m6tp).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import sqlite3
 import threading
+import time
+import weakref
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import thread as _thread_impl
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.config import Config
@@ -99,6 +105,49 @@ _MAX_MAX_INFLIGHT_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 # this bound can fix -- the bound's job is only to stop the CONVEYOR LOOP
 # from waiting on it forever, which it does.
 _DEFAULT_WARM_TIMEOUT_SECONDS = 300.0
+
+
+class _ProcessBoundedThreadPoolExecutor(ThreadPoolExecutor):
+    """Thread pool whose wedged workers cannot keep daemon process exit alive.
+
+    ``ThreadPoolExecutor.shutdown(wait=False)`` stops admission but leaves a
+    running worker alive until it returns; standard executor workers are
+    non-daemon and therefore can still hold interpreter shutdown hostage. The
+    parse stage only performs graceful-degradation work, so its workers are
+    explicitly daemon threads. The coordinator and durable outbox remain the
+    authority for all SQLite work and are unaffected by this containment.
+    """
+
+    def _adjust_thread_count(self) -> None:  # pragma: no cover - exercised by submit
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_worker_reference: object, queue: Any = self._work_queue) -> None:
+            queue.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads >= self._max_workers:
+            return
+        thread_name = f"{self._thread_name_prefix or self}_{num_threads}"
+        worker = threading.Thread(
+            name=thread_name,
+            target=_thread_impl._worker,
+            args=(
+                weakref.ref(self, weakref_cb),
+                self._create_worker_context(),  # type: ignore[attr-defined]
+                self._work_queue,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        self._threads.add(worker)  # type: ignore[attr-defined]
+        _thread_impl._threads_queues[worker] = self._work_queue  # type: ignore[index]
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        """Stop admission without registering running daemon workers for join."""
+        super().shutdown(wait=wait, cancel_futures=cancel_futures)
+        for worker in tuple(self._threads):
+            _thread_impl._threads_queues.pop(worker, None)  # type: ignore[attr-defined]
 
 
 def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> dict[str, str | None]:
@@ -247,7 +296,7 @@ class CensusParseStage:
         warm_timeout_seconds: float | None = None,
         max_cached_tree_bytes: int | None = None,
     ) -> None:
-        self._executor = ThreadPoolExecutor(
+        self._executor = _ProcessBoundedThreadPoolExecutor(
             max_workers=max_workers if max_workers is not None else daemon_parse_stage_worker_count(),
             thread_name_prefix="polylogue-parse-stage",
         )
@@ -256,6 +305,26 @@ class CensusParseStage:
                 max_inflight_bytes if max_inflight_bytes is not None else daemon_parse_stage_max_inflight_bytes()
             )
         )
+        # A cancelled ``asyncio.to_thread(stage.warm, ...)`` cannot cancel a
+        # running parse worker.  Track the whole warm operation so daemon
+        # writer admission can reject while an orphaned worker still owns
+        # parse resources, rather than assuming the caller's cancellation
+        # released the executor.
+        self._warm_state_lock = threading.Lock()
+        self._stop_requested = threading.Event()
+        self._active_warm_operations = 0
+        self._warm_idle = threading.Event()
+        self._warm_idle.set()
+        self._writer_admission_ready = threading.Event()
+        self._writer_admission_ready.set()
+        self._background_workers: set[Future[object]] = set()
+        # Admission is global to this stage, not just to one ``warm`` call.
+        # A timed-out thread cannot be cancelled, and its future can remain in
+        # the executor queue (or occupy a worker) after the caller returns.
+        # Reserve its source-payload bytes until that exact future completes so
+        # retries neither duplicate raw ids nor grow an unbounded queue.
+        self._pending_payload_by_raw_id: dict[str, int] = {}
+        self._pending_payload_bytes = 0
         self._warm_timeout_seconds = (
             warm_timeout_seconds if warm_timeout_seconds is not None else daemon_parse_stage_warm_timeout_seconds()
         )
@@ -273,6 +342,101 @@ class CensusParseStage:
         self._tree_bytes_lock = threading.Lock()
         self._tree_bytes_by_raw_id: dict[str, int] = {}
         self._cached_tree_bytes_total = 0
+
+    def _refresh_lifecycle_state_locked(self) -> None:
+        """Publish the single state transition for completed warm work."""
+        if self._active_warm_operations != 0 or self._background_workers or self._pending_payload_by_raw_id:
+            return
+        self._warm_idle.set()
+        if not self._stop_requested.is_set():
+            self._writer_admission_ready.set()
+
+    def _begin_warm_operation(self) -> None:
+        with self._warm_state_lock:
+            self._active_warm_operations += 1
+            self._warm_idle.clear()
+            if not self._stop_requested.is_set():
+                self._writer_admission_ready.clear()
+
+    def _end_warm_operation(self) -> None:
+        with self._warm_state_lock:
+            self._active_warm_operations -= 1
+            self._refresh_lifecycle_state_locked()
+
+    def _track_background_workers(self, futures: Sequence[Future[Any]]) -> None:
+        pending = [future for future in futures if not future.done()]
+        if not pending:
+            return
+        with self._warm_state_lock:
+            self._background_workers.update(pending)
+            self._warm_idle.clear()
+        for future in pending:
+            future.add_done_callback(self._background_worker_done)
+
+    def _background_worker_done(self, future: Future[object]) -> None:
+        with self._warm_state_lock:
+            self._background_workers.discard(future)
+            self._refresh_lifecycle_state_locked()
+
+    def _release_pending_payload(self, raw_id: str, _future: Future[Any] | None) -> None:
+        """Release one global source-payload reservation after completion."""
+        with self._warm_state_lock:
+            reserved = self._pending_payload_by_raw_id.get(raw_id)
+            if reserved is None:
+                return
+            self._pending_payload_by_raw_id.pop(raw_id, None)
+            self._pending_payload_bytes -= reserved
+            self._refresh_lifecycle_state_locked()
+
+    def _discard_future_result(self, future: Future[Any], *, raw_id: str) -> None:
+        """Consume/discard one result before releasing its payload reservation."""
+        with contextlib.suppress(BaseException):
+            future.result()
+        self._release_pending_payload(raw_id, future)
+
+    def _retain_cleanup_callbacks(self, futures: dict[Future[Any], str]) -> None:
+        """Cancel queued work and drain every admitted future exactly once."""
+        for future in futures:
+            future.cancel()
+        for future, raw_id in futures.items():
+            if future.done():
+                self._discard_future_result(future, raw_id=raw_id)
+                continue
+
+            def discard(done: Future[Any], *, rid: str = raw_id) -> None:
+                self._discard_future_result(done, raw_id=rid)
+
+            future.add_done_callback(discard)
+        self._track_background_workers(list(futures))
+
+    def _reserve_pending_payload(self, raw_id: str, payload_bytes: int) -> bool:
+        """Atomically admit a raw against cache plus all outstanding workers."""
+        with self._warm_state_lock:
+            if raw_id in self._pending_payload_by_raw_id or self.cache.contains(raw_id):
+                return False
+            if self.cache.inflight_bytes + self._pending_payload_bytes + payload_bytes > self.cache.max_inflight_bytes:
+                return False
+            self._pending_payload_by_raw_id[raw_id] = payload_bytes
+            self._pending_payload_bytes += payload_bytes
+            self._warm_idle.clear()
+            return True
+
+    def writer_admission_ready(self) -> bool:
+        """Whether the writer may proceed despite an invalidated warm worker."""
+        return self._writer_admission_ready.is_set()
+
+    def wait_until_idle(self, *, timeout: float | None = None) -> bool:
+        """Wait for all warm callers and their parse workers to finish."""
+        return self._warm_idle.wait(timeout)
+
+    @property
+    def warm_timeout_seconds(self) -> float:
+        """Return the bounded wait used for worker admission and warm()."""
+        return self._warm_timeout_seconds
+
+    def max_inflight_bytes(self) -> int:
+        """Return the source-payload admission budget for warm workers."""
+        return self.cache.max_inflight_bytes
 
     @property
     def cached_tree_bytes_total(self) -> int:
@@ -340,8 +504,88 @@ class CensusParseStage:
                 tree_bytes,
             )
 
-    def warm(self, config: Config, *, limit: int, max_payload_bytes: int) -> int:
-        """Pre-parse up to ``limit`` pending census candidates outside any writer hold.
+    def request_stop(self) -> None:
+        """Invalidate warm controllers and restore writer admission immediately."""
+        self._stop_requested.set()
+        self._writer_admission_ready.set()
+
+    async def warm_async(
+        self,
+        config: Config,
+        *,
+        limit: int,
+        max_payload_bytes: int,
+        raw_artifact_id: str | None = None,
+    ) -> int:
+        """Run blocking warm orchestration on a daemon controller thread."""
+        loop = asyncio.get_running_loop()
+        result: asyncio.Future[int] = loop.create_future()
+
+        def complete_exception(exc: BaseException) -> None:
+            if not result.done():
+                result.set_exception(exc)
+
+        def complete_result(value: int) -> None:
+            if not result.done():
+                result.set_result(value)
+
+        def run() -> None:
+            try:
+                value = self.warm(
+                    config,
+                    limit=limit,
+                    max_payload_bytes=max_payload_bytes,
+                    raw_artifact_id=raw_artifact_id,
+                )
+            except BaseException as exc:
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(complete_exception, exc)
+            else:
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(complete_result, value)
+
+        threading.Thread(target=run, name="polylogue-parse-warm-controller", daemon=True).start()
+        try:
+            return await result
+        except asyncio.CancelledError:
+            self.request_stop()
+            raise
+
+    def warm(
+        self,
+        config: Config,
+        *,
+        limit: int,
+        max_payload_bytes: int,
+        raw_artifact_id: str | None = None,
+    ) -> int:
+        """Run one tracked off-writer warm operation."""
+        self._begin_warm_operation()
+        try:
+            return self._warm_impl(
+                config,
+                limit=limit,
+                max_payload_bytes=max_payload_bytes,
+                raw_artifact_id=raw_artifact_id,
+            )
+        finally:
+            self._end_warm_operation()
+
+    def _warm_impl(
+        self,
+        config: Config,
+        *,
+        limit: int,
+        max_payload_bytes: int,
+        raw_artifact_id: str | None = None,
+    ) -> int:
+        """Pre-parse pending census candidates outside any writer hold.
+
+        When ``raw_artifact_id`` is supplied, discovery is narrowed to the
+        authority component containing that seed.  The daemon's whale path
+        uses this candidate-specific scope rather than reusing the ordinary
+        archive-wide preview; the default keeps the ordinary conveyor
+        contract unchanged.
 
         Returns the number of raws newly admitted to the cache. Read-only
         end to end: candidate discovery and descriptor lookup both open
@@ -353,11 +597,22 @@ class CensusParseStage:
         writes to source.db, index.db, or takes the daemon's writer lease.
         """
         candidate_raw_ids = raw_materialization_pending_census_raw_ids(
-            config, limit=limit, max_payload_bytes=max_payload_bytes
+            config,
+            limit=limit,
+            max_payload_bytes=max_payload_bytes,
+            raw_artifact_id=raw_artifact_id,
         )
-        return self.warm_raw_ids(config, raw_ids=candidate_raw_ids, max_payload_bytes=max_payload_bytes)
+        return self._warm_raw_ids_impl(config, raw_ids=candidate_raw_ids, max_payload_bytes=max_payload_bytes)
 
     def warm_raw_ids(self, config: Config, *, raw_ids: Sequence[str], max_payload_bytes: int) -> int:
+        """Pre-parse explicit raws under the same admission fence as ``warm``."""
+        self._begin_warm_operation()
+        try:
+            return self._warm_raw_ids_impl(config, raw_ids=raw_ids, max_payload_bytes=max_payload_bytes)
+        finally:
+            self._end_warm_operation()
+
+    def _warm_raw_ids_impl(self, config: Config, *, raw_ids: Sequence[str], max_payload_bytes: int) -> int:
         """Pre-parse an explicit ``raw_ids`` list outside any writer hold.
 
         Same read-only, graceful-degradation contract as :meth:`warm`, but
@@ -384,87 +639,107 @@ class CensusParseStage:
         ]
         native_ids = _resolve_readonly_native_ids(archive_root, append_raw_ids)
 
-        futures = {}
-        for raw_id in raw_ids:
-            descriptor = descriptors.get(raw_id)
-            if descriptor is None:
-                continue
-            provider, blob_hash, source_path, kind, _size = descriptor
-            native_id = native_ids.get(raw_id) if kind is RawRevisionKind.APPEND else None
-            future = self._executor.submit(
-                revision_backfill.census_parse_worker,
-                raw_id,
-                provider.value,
-                blob_hash,
-                source_path,
-                is_stream_record_provider(source_path, str(provider)),
-                blob_root_str,
-                source_db_path_str,
-                kind.value,
-                native_id,
-            )
-            futures[future] = raw_id
+        # Source descriptors provide the only safe pre-parse size proof.
+        # Select a deterministic subset whose aggregate payload bytes fit the
+        # cache's remaining admission budget before submitting any worker.
+        # This bounds concurrent full-payload decodes; a raw that is too large
+        # for the remaining budget is left for the writer-held fallback path.
+        futures: dict[Future[Any], str] = {}
+        payload_budget = self.cache.max_inflight_bytes
+        try:
+            for raw_id in raw_ids:
+                if self._stop_requested.is_set():
+                    break
+                descriptor = descriptors.get(raw_id)
+                if descriptor is None:
+                    continue
+                provider, blob_hash, source_path, kind, payload_size = descriptor
+                if payload_size > payload_budget or not self._reserve_pending_payload(raw_id, payload_size):
+                    continue
+                if self._stop_requested.is_set():
+                    self._release_pending_payload(raw_id, None)
+                    break
+                native_id = native_ids.get(raw_id) if kind is RawRevisionKind.APPEND else None
+                try:
+                    future = self._executor.submit(
+                        revision_backfill.census_parse_worker,
+                        raw_id,
+                        provider.value,
+                        blob_hash,
+                        source_path,
+                        is_stream_record_provider(source_path, str(provider)),
+                        blob_root_str,
+                        source_db_path_str,
+                        kind.value,
+                        native_id,
+                    )
+                except BaseException:
+                    self._release_pending_payload(raw_id, None)
+                    raise
+                futures[future] = raw_id
+        except BaseException:
+            # A failed mid-batch submit may leave a mix of queued and running
+            # workers. Cancel queued futures, consume completed results, and
+            # retain callbacks for running futures before the warm operation
+            # releases its active-operation marker.
+            self._retain_cleanup_callbacks(futures)
+            raise
 
         warmed = 0
         completed = 0
-        try:
-            for future in as_completed(futures, timeout=self._warm_timeout_seconds):
+        consumed: set[Future[Any]] = set()
+        remaining = set(futures)
+        deadline = time.monotonic() + self._warm_timeout_seconds
+        while remaining:
+            if self._stop_requested.is_set():
+                break
+            wait_timeout = min(0.1, max(0.0, deadline - time.monotonic()))
+            if wait_timeout <= 0:
+                break
+            done, _ = wait(remaining, timeout=wait_timeout)
+            if not done:
+                continue
+            for future in done:
+                remaining.discard(future)
                 completed += 1
+                consumed.add(future)
                 raw_id = futures[future]
                 try:
-                    _raw_id, sessions, error = future.result()
-                except Exception:
-                    logger.warning("parse-stage prefetch: worker failed for raw_id=%s", raw_id, exc_info=True)
-                    continue
-                if error is not None or sessions is None:
-                    # Parse failures are intentionally NOT cached: the writer-held
-                    # pass reparses (and correctly quarantines/records) this raw
-                    # exactly as it would with the flag off. Prefetch only ever
-                    # shortcuts the happy path.
-                    continue
-                _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
-                # polylogue-xb4i: estimate the PARSED TREE size (not payload
-                # size) before ever admitting to the cache. A tree bigger
-                # than the whole tree-bytes budget is never retained at all
-                # -- it does not even occupy a payload-bytes admission slot
-                # -- so one whale raw can never pin gigabytes of resident
-                # memory regardless of how much inflight-bytes headroom it
-                # happened to fit under pre-parse. This is the fix for the
-                # 2026-07-20 earlyoom kills: the inflight clamp bounded
-                # PAYLOAD bytes in flight, but the cache retained whatever
-                # trees resulted from that payload with no size check at all.
-                tree_bytes = estimate_parsed_tree_bytes(sessions)
-                if tree_bytes > self._max_cached_tree_bytes:
-                    logger.warning(
-                        "parse-stage prefetch: raw_id=%s estimated parsed-tree bytes %d exceed the "
-                        "whole cache budget %d bytes; never retained -- the writer-held pass reparses "
-                        "it normally, identical to any other prefetch miss",
-                        raw_id,
-                        tree_bytes,
-                        self._max_cached_tree_bytes,
-                    )
-                    continue
-                if self.cache.try_admit(raw_id, sessions, payload_bytes=payload_size, revision_kind=kind):
-                    self._register_cached_tree_bytes(raw_id, tree_bytes)
-                    warmed += 1
-        except TimeoutError:
-            # Bounds the CONVEYOR LOOP's wait, not the worker itself -- a
-            # ThreadPoolExecutor cannot forcibly kill a running thread, so a
-            # genuinely wedged worker keeps occupying one pool slot until it
-            # eventually returns (see _DEFAULT_WARM_TIMEOUT_SECONDS). Every raw
-            # not yet completed is simply left uncached: the writer-held pass
-            # reparses it normally, identical to any other prefetch miss.
-            pending = len(futures) - completed
+                    try:
+                        _raw_id, sessions, error = future.result()
+                    except Exception:
+                        logger.warning("parse-stage prefetch: worker failed for raw_id=%s", raw_id, exc_info=True)
+                        continue
+                    if error is not None or sessions is None:
+                        continue
+                    _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+                    tree_bytes = estimate_parsed_tree_bytes(sessions)
+                    if tree_bytes > self._max_cached_tree_bytes:
+                        logger.warning(
+                            "parse-stage prefetch: raw_id=%s estimated parsed tree exceeds cache budget; "
+                            "leaving it uncached for the writer-held fallback",
+                            raw_id,
+                        )
+                        continue
+                    if self.cache.try_admit(raw_id, sessions, payload_bytes=payload_size, revision_kind=kind):
+                        self._register_cached_tree_bytes(raw_id, tree_bytes)
+                        warmed += 1
+                finally:
+                    self._release_pending_payload(raw_id, future)
+
+        if remaining:
+            self._retain_cleanup_callbacks({future: futures[future] for future in remaining})
+            pending = len(remaining)
+            reason = "stop requested" if self._stop_requested.is_set() else "warm timeout"
             logger.warning(
-                "parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d worker(s); "
-                "leaving unfinished raw(s) uncached for the writer-held pass to reparse normally",
-                self._warm_timeout_seconds,
+                "parse-stage prefetch: %s; leaving %d unfinished raw(s) uncached",
+                reason,
                 pending,
-                len(futures),
             )
         return warmed
 
     def shutdown(self) -> None:
+        self.request_stop()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
 

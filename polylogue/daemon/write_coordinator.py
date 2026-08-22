@@ -220,7 +220,14 @@ class DaemonWriteCoordinator:
             detached_writer_failures_by_actor=tuple(sorted(self._detached_writer_failures_by_actor.items())),
         )
 
-    async def run(self, actor: str, operation: Callable[[], Awaitable[T]]) -> T:
+    async def run(
+        self,
+        actor: str,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        on_complete: Callable[[asyncio.Task[object]], None] | None = None,
+        on_admit: Callable[[], None] | None = None,
+    ) -> T:
         """Run one async write operation under the process-wide gate."""
         actor_label = actor.strip()
         if not actor_label:
@@ -254,10 +261,10 @@ class DaemonWriteCoordinator:
         )
 
         execution = asyncio.create_task(
-            self._execute(request, operation),
+            self._execute(request, operation, on_admit),
             name=f"polylogue-writer:{actor}:{request.sequence}",
         )
-        self._track_execution(execution, actor=actor)
+        self._track_execution(execution, actor=actor, on_complete=on_complete, request=request)
         try:
             return await asyncio.shield(execution)
         except asyncio.CancelledError:
@@ -268,7 +275,12 @@ class DaemonWriteCoordinator:
                     await asyncio.shield(execution)
             raise
 
-    async def _execute(self, request: _WriteRequest, operation: Callable[[], Awaitable[T]]) -> T:
+    async def _execute(
+        self,
+        request: _WriteRequest,
+        operation: Callable[[], Awaitable[T]],
+        on_admit: Callable[[], None] | None = None,
+    ) -> T:
         try:
             await self._lock.acquire(_actor_priority(request.actor))
         except BaseException:
@@ -289,6 +301,13 @@ class DaemonWriteCoordinator:
                 wait_seconds=wait_seconds,
             )
         )
+        if on_admit is not None:
+            try:
+                on_admit()
+            except BaseException:
+                self._active_actor = None
+                self._lock.release()
+                raise
         owner = asyncio.current_task()
         if owner is None:  # pragma: no cover - asyncio always owns created tasks
             self._lock.release()
@@ -332,7 +351,31 @@ class DaemonWriteCoordinator:
 
     async def run_sync(self, actor: str, function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run blocking writer work without making process exit unbounded."""
+        return await self._run_sync(actor, function, None, None, *args, **kwargs)
 
+    async def run_sync_with_completion(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        on_complete: Callable[[asyncio.Task[object]], None],
+        on_admit: Callable[[], None] | None = None,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run sync work and observe its coordinator-owned completion task."""
+        return await self._run_sync(actor, function, on_complete, on_admit, *args, **kwargs)
+
+    async def _run_sync(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        on_complete: Callable[[asyncio.Task[object]], None] | None,
+        on_admit: Callable[[], None] | None,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
         async def operation() -> T:
             return await _run_in_daemon_thread(
                 function,
@@ -341,7 +384,7 @@ class DaemonWriteCoordinator:
                 **kwargs,
             )
 
-        return await self.run(actor, operation)
+        return await self.run(actor, operation, on_complete=on_complete, on_admit=on_admit)
 
     async def shutdown(self, *, timeout: float) -> bool:
         """Stop admission and wait at most ``timeout`` seconds for real idle.
@@ -361,7 +404,14 @@ class DaemonWriteCoordinator:
             return False
         return True
 
-    def _track_execution(self, execution: asyncio.Task[T], *, actor: str) -> None:
+    def _track_execution(
+        self,
+        execution: asyncio.Task[T],
+        *,
+        actor: str,
+        on_complete: Callable[[asyncio.Task[object]], None] | None = None,
+        request: _WriteRequest | None = None,
+    ) -> None:
         task = execution  # preserve the concrete result type for ``run``
         self._executions.add(task)
         self._idle.clear()
@@ -387,9 +437,14 @@ class DaemonWriteCoordinator:
 
         def completed(done: asyncio.Task[object]) -> None:
             self._executions.discard(done)
-            if not self._executions:
-                self._idle.set()
             if done.cancelled():
+                if on_complete is not None and (request is None or request.acquired):
+                    try:
+                        on_complete(done)
+                    except BaseException:
+                        logger.error("daemon writer completion callback failed actor=%s", actor, exc_info=True)
+                if not self._executions:
+                    self._idle.set()
                 return
             try:
                 exception = done.exception()
@@ -405,8 +460,28 @@ class DaemonWriteCoordinator:
                 if exception is not None:
                     record_failure()
                     logger.warning("detached daemon writer failed actor=%s: %s", actor, exception)
+            if on_complete is not None and (request is None or request.acquired):
+                try:
+                    on_complete(done)
+                except BaseException:
+                    # Completion publication must never interfere with writer
+                    # lifecycle accounting. Callers that need durable retry
+                    # should enqueue a coordinator-managed task.
+                    logger.error("daemon writer completion callback failed actor=%s", actor, exc_info=True)
+            if not self._executions:
+                self._idle.set()
 
         task.add_done_callback(completed)
+
+    def create_managed_task(self, operation: Awaitable[object], *, actor: str) -> asyncio.Task[object]:
+        """Track post-write lifecycle work so shutdown drains it before loop close."""
+
+        async def managed_operation() -> object:
+            return await operation
+
+        task: asyncio.Task[object] = asyncio.create_task(managed_operation(), name=f"polylogue-managed:{actor}")
+        self._track_execution(task, actor=actor)
+        return task
 
     def _remove_queued(self, sequence: int) -> None:
         self._queued = [item for item in self._queued if item[0] != sequence]

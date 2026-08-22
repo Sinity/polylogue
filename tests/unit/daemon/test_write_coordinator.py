@@ -987,3 +987,39 @@ def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default() -> N
     finally:
         loop.call_soon_threadsafe(loop.stop)
         loop_thread.join(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_queued_cancellation_never_invokes_admitted_completion_callback() -> None:
+    """A queued cancellation has one pre-admission outcome, never a continuation."""
+    coordinator = DaemonWriteCoordinator()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    callback_tasks: list[asyncio.Task[object]] = []
+
+    async def admitted_operation() -> str:
+        entered.set()
+        await release.wait()
+        return "done"
+
+    async def queued_operation() -> str:
+        raise AssertionError("queued cancellation must not execute")
+
+    first = asyncio.create_task(coordinator.run("maintenance.whale", admitted_operation))
+    await entered.wait()
+    second = asyncio.create_task(
+        coordinator.run(
+            "maintenance.whale",
+            queued_operation,
+            on_complete=callback_tasks.append,
+        )
+    )
+    await asyncio.sleep(0)
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert callback_tasks == []
+
+    release.set()
+    assert await first == "done"
+    assert await coordinator.shutdown(timeout=1.0) is True

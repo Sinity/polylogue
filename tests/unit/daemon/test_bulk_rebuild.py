@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -125,6 +126,73 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def test_bulk_rebuild_fences_timed_out_parse_worker_before_bulk_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live timed-out bulk parse cannot acquire the bulk writer actor."""
+    import polylogue.daemon.write_coordinator as write_coordinator_module
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources import revision_backfill
+
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / "bulk-timeout-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    started = threading.Event()
+    release = threading.Event()
+    real_worker: Any = revision_backfill.census_parse_worker
+
+    def blocked_worker(*args: object, **kwargs: object) -> object:
+        started.set()
+        release.wait(timeout=5)
+        return real_worker(*args, **kwargs)
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
+    coordinator_events: list[object] = []
+    coordinator = DaemonWriteCoordinator(observer=coordinator_events.append)
+    monkeypatch.setattr(write_coordinator_module, "daemon_write_coordinator", lambda: coordinator)
+    parse_stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.01)
+    try:
+        receipt = asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=parse_stage,
+                batch_size=1,
+                max_payload_bytes=10_000_000,
+            )
+        )
+        assert receipt is None
+        assert started.wait(timeout=2)
+        # A second caller sees the same still-running worker and must be
+        # fenced again; no retry may reach coordinator admission by assuming
+        # the first cancelled caller released the executor.
+        events_before_retry = len(coordinator_events)
+        assert (
+            asyncio.run(
+                run_daemon_bulk_rebuild_pass(
+                    config=_config(tmp_path),
+                    parse_stage=parse_stage,
+                    batch_size=1,
+                    max_payload_bytes=10_000_000,
+                )
+            )
+            is None
+        )
+        assert not any(
+            getattr(event, "phase", None) == "acquired"
+            and getattr(event, "actor", None)
+            in {
+                "maintenance.bulk_rebuild_admission",
+                "maintenance.bulk_rebuild",
+            }
+            for event in coordinator_events[events_before_retry:]
+        )
+    finally:
+        release.set()
+        assert parse_stage.wait_until_idle(timeout=5)
+        parse_stage.shutdown()
+        assert asyncio.run(coordinator.shutdown(timeout=2)) is True
 
 
 def test_daemon_bulk_rebuild_refuses_unexplained_failures_before_generation_or_page_selection(

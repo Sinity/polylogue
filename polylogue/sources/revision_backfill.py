@@ -851,6 +851,17 @@ class RawParsePrefetchCache:
         self._content_entries: OrderedDict[ContentCacheKey, _PrefetchedParse] = OrderedDict()
         self._content_bytes = 0
 
+    @property
+    def max_inflight_bytes(self) -> int:
+        """Maximum source-payload bytes admitted across warm results."""
+        return self._max_inflight_bytes
+
+    @property
+    def inflight_bytes(self) -> int:
+        """Current source-payload bytes retained in raw-id cache entries."""
+        with self._lock:
+            return self._inflight_bytes
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._entries)

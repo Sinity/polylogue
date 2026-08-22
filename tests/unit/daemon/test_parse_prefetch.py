@@ -14,10 +14,13 @@ Production dependencies exercised here:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import sys
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
 
 import pytest
@@ -91,6 +94,329 @@ def test_warm_parses_pending_candidates_off_writer_hold(tmp_path: Path) -> None:
         sessions, payload_bytes, _kind = stage.cache.pop(raw_id)  # type: ignore[misc]
         assert len(sessions) == 1
         assert payload_bytes > 0
+
+
+def test_warm_candidate_scope_excludes_ordinary_queue_members(tmp_path: Path) -> None:
+    """Whale warming discovers only the selected authority component.
+
+    This drives the production ``DaemonParseStage.warm`` route with two
+    independent raw rows.  A global preview would admit both rows, while the
+    candidate-specific scope used by the whale daemon route admits only the
+    selected seed and leaves the ordinary-pass row for its own conveyor.
+    """
+    _seed_raws(
+        tmp_path,
+        {
+            "whale-seed.jsonl": _codex_payload("whale-seed", "warm whale"),
+            "ordinary.jsonl": _codex_payload("ordinary", "ordinary queue"),
+        },
+    )
+    with sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = dict(conn.execute("SELECT source_path, raw_id FROM raw_sessions"))
+    seed = str(rows["whale-seed.jsonl"])
+    ordinary = str(rows["ordinary.jsonl"])
+
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    try:
+        warmed = stage.warm(
+            _config(tmp_path),
+            limit=10,
+            max_payload_bytes=10_000_000,
+            raw_artifact_id=seed,
+        )
+        assert warmed == 1
+        assert stage.cache.contains(seed)
+        assert not stage.cache.contains(ordinary)
+    finally:
+        stage.shutdown()
+
+
+def test_writer_admission_rejects_until_cancelled_parse_worker_drains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled caller cannot make an active parse worker writer-safe."""
+    import threading
+
+    _seed_raws(tmp_path, {"blocked.jsonl": _codex_payload("blocked", "drain me")})
+    started = threading.Event()
+    release = threading.Event()
+    real_worker = __import__(
+        "polylogue.sources.revision_backfill", fromlist=["census_parse_worker"]
+    ).census_parse_worker
+
+    def blocked_worker(*args: object, **kwargs: object) -> object:
+        started.set()
+        release.wait(timeout=5)
+        return real_worker(*args, **kwargs)
+
+    monkeypatch.setattr("polylogue.sources.revision_backfill.census_parse_worker", blocked_worker)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    thread = threading.Thread(
+        target=lambda: stage.warm(_config(tmp_path), limit=1, max_payload_bytes=10_000_000),
+        daemon=True,
+    )
+    thread.start()
+    assert started.wait(timeout=2)
+    assert stage.writer_admission_ready() is False
+    assert stage.wait_until_idle(timeout=0.01) is False
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert stage.writer_admission_ready() is True
+    assert stage.wait_until_idle(timeout=0) is True
+    stage.shutdown()
+
+
+def test_shutdown_is_process_bounded_with_wedged_parse_worker(tmp_path: Path) -> None:
+    """A wedged prefetch worker cannot extend daemon process shutdown."""
+    initialize_active_archive_root(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def wedged_worker() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=100)
+    future = stage._executor.submit(wedged_worker)
+    try:
+        assert started.wait(timeout=2)
+        started_shutdown = time.perf_counter()
+        stage.shutdown()
+        elapsed = time.perf_counter() - started_shutdown
+        assert elapsed < 0.5
+        assert all(thread.daemon for thread in stage._executor._threads)
+        assert not future.done()
+    finally:
+        release.set()
+        future.result(timeout=2)
+
+
+def test_warm_async_cancellation_does_not_join_default_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production async warm route is cancellation-safe around a wedged worker."""
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources import census_parse_stage, revision_backfill
+
+    initialize_active_archive_root(tmp_path)
+    descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
+    monkeypatch.setattr(
+        census_parse_stage,
+        "raw_materialization_pending_census_raw_ids",
+        lambda *_args, **_kwargs: ["raw-67"],
+    )
+    monkeypatch.setattr(
+        census_parse_stage,
+        "raw_materialization_readonly_descriptors",
+        lambda *_args: {"raw-67": descriptor},
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_worker(raw_id: str, *args: object) -> object:
+        started.set()
+        release.wait(timeout=5)
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=1_000, warm_timeout_seconds=300)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            stage.warm_async(_config(tmp_path), limit=1, max_payload_bytes=100, raw_artifact_id="raw-67")
+        )
+        assert await asyncio.to_thread(started.wait, 2)
+        started_at = time.perf_counter()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.perf_counter() - started_at < 0.5
+        assert stage.writer_admission_ready()
+        assert not stage.wait_until_idle(timeout=0.01)
+        release.set()
+        assert stage.wait_until_idle(timeout=5)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+        stage.shutdown()
+
+
+def test_warm_source_payload_admission_bounds_submitted_full_parses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker submission set respects the source-payload budget, not count alone."""
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources import census_parse_stage, revision_backfill
+
+    initialize_active_archive_root(tmp_path)
+    raw_ids = ["raw-a", "raw-b", "raw-c"]
+    descriptors = dict.fromkeys(raw_ids, (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 60))
+    submitted: list[str] = []
+
+    def fake_worker(raw_id: str, *args: object) -> object:
+        submitted.append(raw_id)
+        return raw_id, [], None
+
+    monkeypatch.setattr(census_parse_stage, "raw_materialization_readonly_descriptors", lambda *_args: descriptors)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
+    stage = DaemonParseStage(max_workers=3, max_inflight_bytes=100, max_cached_tree_bytes=10_000_000)
+    try:
+        stage.warm_raw_ids(_config(tmp_path), raw_ids=raw_ids, max_payload_bytes=100)
+    finally:
+        stage.shutdown()
+
+    assert submitted == ["raw-a"]
+
+
+def test_completed_result_retains_payload_reservation_until_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed executor result cannot admit a duplicate before consumption."""
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources import census_parse_stage, revision_backfill
+
+    initialize_active_archive_root(tmp_path)
+    descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
+    monkeypatch.setattr(
+        census_parse_stage,
+        "raw_materialization_readonly_descriptors",
+        lambda *_args: {"raw-67": descriptor},
+    )
+    submitted: list[str] = []
+    worker_done = threading.Event()
+    result_consumption_started = threading.Event()
+    release_result = threading.Event()
+    real_result = Future.result
+    result_gate_used = threading.Event()
+
+    def completed_worker(raw_id: str, *args: object) -> object:
+        submitted.append(raw_id)
+        worker_done.set()
+        return raw_id, [], None
+
+    def gated_result(self: Future[object], timeout: float | None = None) -> object:
+        if not result_gate_used.is_set():
+            result_gate_used.set()
+            result_consumption_started.set()
+            assert release_result.wait(timeout=5)
+        return real_result(self, timeout)
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", completed_worker)
+    monkeypatch.setattr(Future, "result", gated_result)
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=100, warm_timeout_seconds=1)
+    first = threading.Thread(
+        target=lambda: stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100),
+        daemon=True,
+    )
+    first.start()
+    try:
+        assert worker_done.wait(timeout=2)
+        assert result_consumption_started.wait(timeout=2)
+        # The worker has completed, but its parsed result is still resident in
+        # the Future. A second warm must not submit another full payload.
+        assert stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100) == 0
+        assert submitted == ["raw-67"]
+        release_result.set()
+        first.join(timeout=5)
+        assert not first.is_alive()
+    finally:
+        release_result.set()
+        first.join(timeout=5)
+        stage.shutdown()
+
+
+def test_submit_failure_cleans_every_admitted_future_and_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-batch submit error cannot strand prior futures or byte reservations."""
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources import census_parse_stage, revision_backfill
+
+    initialize_active_archive_root(tmp_path)
+    descriptors = dict.fromkeys(
+        ("raw-a", "raw-b", "raw-c"),
+        (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 60),
+    )
+    monkeypatch.setattr(census_parse_stage, "raw_materialization_readonly_descriptors", lambda *_args: descriptors)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_worker(raw_id: str, *args: object) -> object:
+        started.set()
+        release.wait(timeout=5)
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=300)
+    real_submit = stage._executor.submit
+    submit_count = 0
+
+    def fail_second_submit(function: Callable[..., object], *args: object, **kwargs: object) -> Future[object]:
+        nonlocal submit_count
+        submit_count += 1
+        if submit_count == 2:
+            raise RuntimeError("synthetic submit failure")
+        return real_submit(function, *args, **kwargs)
+
+    monkeypatch.setattr(stage._executor, "submit", fail_second_submit)
+    try:
+        with pytest.raises(RuntimeError, match="synthetic submit failure"):
+            stage.warm_raw_ids(_config(tmp_path), raw_ids=list(descriptors), max_payload_bytes=300)
+        assert started.wait(timeout=2)
+        release.set()
+        assert stage.wait_until_idle(timeout=5)
+        assert stage.writer_admission_ready()
+        assert stage._pending_payload_bytes == 0
+        assert stage._pending_payload_by_raw_id == {}
+    finally:
+        release.set()
+        stage.shutdown()
+
+
+def test_consecutive_timeout_retries_share_global_payload_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed-out raw remains admitted globally until its worker completes."""
+    from polylogue.archive.revision_authority import RawRevisionKind
+    from polylogue.sources import census_parse_stage, revision_backfill
+
+    initialize_active_archive_root(tmp_path)
+    descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
+    monkeypatch.setattr(
+        census_parse_stage,
+        "raw_materialization_readonly_descriptors",
+        lambda *_args: {"raw-67": descriptor},
+    )
+    started = threading.Event()
+    release = threading.Event()
+    submitted: list[str] = []
+
+    def blocked_worker(raw_id: str, *args: object) -> object:
+        submitted.append(raw_id)
+        started.set()
+        release.wait(timeout=5)
+        return raw_id, [], None
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=100, warm_timeout_seconds=0.01)
+    try:
+        assert stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100) == 0
+        assert started.wait(timeout=2)
+        assert stage.writer_admission_ready() is False
+        # The second call sees the timed-out worker's 67-byte reservation;
+        # it cannot enqueue a duplicate despite the cache still being empty.
+        assert stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100) == 0
+        assert submitted == ["raw-67"]
+    finally:
+        release.set()
+        assert stage.wait_until_idle(timeout=5)
+        assert stage.writer_admission_ready()
+        stage.shutdown()
 
 
 def test_warm_parses_indexed_raw_with_missing_parser_receipt(tmp_path: Path) -> None:

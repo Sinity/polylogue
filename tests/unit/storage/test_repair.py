@@ -4986,9 +4986,48 @@ def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_
     )
     assert seed is not None
 
-    converged = repair_mod.repair_raw_materialization(config, raw_artifact_id=seed, max_payload_bytes=whale_limit)
+    # Exercise the daemon's production prefetch contract at the repair
+    # boundary: warm only this whale component off the writer hold, pass the
+    # same cache into raw authority, and prove census consumed its entry.
+    from polylogue.daemon.parse_prefetch import DaemonParseStage
+    from polylogue.sources.revision_backfill import RawParsePrefetchCache
+
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=whale_limit)
+    cache_pops = 0
+    original_pop = RawParsePrefetchCache.pop
+
+    def counting_pop(cache: RawParsePrefetchCache, raw_id: str) -> object:
+        nonlocal cache_pops
+        value = original_pop(cache, raw_id)
+        if cache is stage.cache and value is not None:
+            cache_pops += 1
+        return value
+
+    try:
+        warmed = stage.warm(
+            config,
+            limit=64,
+            max_payload_bytes=whale_limit,
+            raw_artifact_id=seed,
+        )
+        assert warmed >= 1
+        assert stage.cache.contains(seed)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(RawParsePrefetchCache, "pop", counting_pop)
+            converged = repair_mod.repair_raw_materialization(
+                config,
+                raw_artifact_id=seed,
+                max_payload_bytes=whale_limit,
+                prefetch_cache=stage.cache,
+            )
+    finally:
+        stage.shutdown()
+
+    assert cache_pops >= 1
 
     assert converged.success is True
+    assert converged.metrics["raw_materialization_candidate_count"] >= 1
+    assert converged.metrics["raw_materialization_executed_count"] >= 1
     assert converged.repaired_count >= 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         row = conn.execute(

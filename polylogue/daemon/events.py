@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS daemon_events (
     ts_ms INTEGER NOT NULL,
     kind TEXT NOT NULL,
     operation_id TEXT,
+    idempotency_key TEXT,
     payload_json TEXT NOT NULL
  ) STRICT;
 """
@@ -58,6 +59,14 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
         _CONVERGED_EVENT_DBS.add(path)
     conn = open_daemon_connection(path)
     conn.executescript(_DAEMON_EVENTS_DDL)
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daemon_events)")}
+    if "idempotency_key" not in columns:
+        conn.execute("ALTER TABLE daemon_events ADD COLUMN idempotency_key TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_daemon_events_idempotency "
+        "ON daemon_events(kind, idempotency_key) WHERE idempotency_key IS NOT NULL"
+    )
+    conn.commit()
     return conn
 
 
@@ -131,6 +140,7 @@ def emit_daemon_event(
     kind: str,
     *,
     operation_id: str | None = None,
+    idempotency_key: str | None = None,
     payload: dict[str, object] | None = None,
     archive_root_path: Path | None = None,
     observed_at_ms: int | None = None,
@@ -167,11 +177,14 @@ def emit_daemon_event(
                     ),
                 )
         conn.execute(
-            "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, ?)",
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
             (
                 current_epoch_ms() if observed_at_ms is None else observed_at_ms,
                 kind,
                 operation_id,
+                idempotency_key,
                 json.dumps(payload or {}),
             ),
         )

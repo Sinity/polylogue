@@ -13,11 +13,13 @@ import sqlite3
 import sys
 import threading
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
+from uuid import uuid4
 
 import click
 
@@ -84,6 +86,7 @@ if TYPE_CHECKING:
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
 logger = get_logger(__name__)
+_WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 # Rows per bounded writer-held pass. This is now a PURE writer-hold-duration
@@ -111,6 +114,10 @@ _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 # -- consuming a prefetch hit costs a receipt write, not a reparse, so this
 # does not meaningfully extend the writer hold.
 _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
+# Whale warming is deliberately bounded independently of the ordinary pass.
+# A component can contain hundreds of stream records; the repair census still
+# falls back to its normal parser for anything the cache budget cannot admit.
+_RAW_MATERIALIZATION_WHALE_PARSE_STAGE_WARM_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES
 # polylogue-de2a: declared, enforced ceiling on how long ONE ordinary trickle
 # pass may hold the process-wide writer coordinator. Live evidence showed
@@ -218,7 +225,12 @@ def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
     return _daemon_bulk_rebuild_parse_stage_singleton
 
 
-async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> tuple[RawParsePrefetchCache | None, int]:
+async def _maybe_warm_raw_materialization_parse_stage(
+    *,
+    limit: int,
+    raw_artifact_id: str | None = None,
+    max_payload_bytes: int | None = None,
+) -> tuple[RawParsePrefetchCache | None, int]:
     """Pre-parse this pass's census candidates outside the writer hold.
 
     polylogue-m6tp phase (a). Always runs -- there is no correctness reason
@@ -242,19 +254,75 @@ async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> tuple[Ra
 
     stage = _daemon_parse_stage()
     config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+    effective_max_payload_bytes = (
+        max_payload_bytes if max_payload_bytes is not None else _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
+    )
     try:
-        warmed = await asyncio.to_thread(
-            stage.warm,
-            config,
-            limit=limit,
-            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-        )
+        warm_async = getattr(stage, "warm_async", None)
+        warm_runner = warm_async if callable(warm_async) else stage.warm
+        if raw_artifact_id is None:
+            if callable(warm_async):
+                warmed = await cast(Callable[..., Awaitable[int]], warm_async)(
+                    config,
+                    limit=limit,
+                    max_payload_bytes=effective_max_payload_bytes,
+                )
+            else:
+                warmed = await asyncio.to_thread(
+                    warm_runner,
+                    config,
+                    limit=limit,
+                    max_payload_bytes=effective_max_payload_bytes,
+                )
+        else:
+            if callable(warm_async):
+                warmed = await cast(Callable[..., Awaitable[int]], warm_async)(
+                    config,
+                    limit=limit,
+                    max_payload_bytes=effective_max_payload_bytes,
+                    raw_artifact_id=raw_artifact_id,
+                )
+            else:
+                warmed = await asyncio.to_thread(
+                    warm_runner,
+                    config,
+                    limit=limit,
+                    max_payload_bytes=effective_max_payload_bytes,
+                    raw_artifact_id=raw_artifact_id,
+                )
+    except asyncio.CancelledError:
+        request_stop = getattr(stage, "request_stop", None)
+        if callable(request_stop):
+            request_stop()
+        raise
     except Exception:
         logger.warning("raw materialization: parse-stage prefetch failed; falling back to in-hold parse", exc_info=True)
         return stage.cache, 0
     if warmed:
         logger.info("raw materialization: parse-stage prefetch warmed %d raw(s) off the writer hold", warmed)
     return stage.cache, warmed
+
+
+async def _await_parse_stage_writer_admission() -> bool:
+    """Drain off-writer parse workers before asking the coordinator for a lease.
+
+    A timed-out ``to_thread(stage.warm, ...)`` cannot stop its executor worker.
+    The coordinator is therefore never even queued until the stage proves idle;
+    a bounded wait defers this tick without cancelling the real worker.
+    """
+    stage = _daemon_parse_stage()
+    writer_ready = getattr(stage, "writer_admission_ready", None)
+    wait_idle = getattr(stage, "wait_until_idle", None)
+    # Tiny test doubles and legacy embedders predate the admission protocol;
+    # their warm() call is synchronous, so there is no outstanding worker to
+    # fence. The real CensusParseStage always supplies both methods.
+    if writer_ready is None or wait_idle is None or writer_ready():
+        return True
+    timeout = float(getattr(stage, "warm_timeout_seconds", 300.0))
+    idle = bool(await asyncio.to_thread(wait_idle, timeout=timeout))
+    if not idle:
+        logger.warning("raw materialization: deferring writer admission while parse-stage worker(s) remain active")
+    return idle
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -1114,6 +1182,12 @@ async def _periodic_raw_materialization_convergence(
                     _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
                     min(warmed_count, _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT),
                 )
+                if not await _await_parse_stage_writer_admission():
+                    # Do not queue, acquire, or even attempt a coordinator
+                    # lease while a timed-out parse worker still owns source
+                    # payload admission. The worker remains alive and will
+                    # release its reservation when it naturally completes.
+                    break
                 materialized = await daemon_write_coordinator().run_sync(
                     "maintenance.raw_materialization",
                     functools.partial(
@@ -1284,6 +1358,8 @@ def _drain_raw_materialization_once(
     )
     generation_pin_refused = False
     frontier_repaired = 0
+    if prefetch_cache is not None and not _daemon_parse_stage().writer_admission_ready():
+        raise RuntimeError("raw materialization writer admission refused while parse-stage warm is active")
     with contextlib.ExitStack() as lease_stack:
         try:
             index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
@@ -1347,8 +1423,10 @@ def _raw_materialization_counts(result: Any, *, executed_plans: int = 0) -> RawM
 
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
-    if remaining == 0:
-        remaining = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
+    # Parser-census debt is not part of the replay candidate count, but it is
+    # still unfinished work. Keep it in scheduling counters so a census-pending
+    # pass cannot be mistaken for quiescence.
+    remaining += int(metrics.get("raw_materialization_census_incomplete_raw_count", 0))
     return raw_authority.RawMaterializationCounts(
         repaired_sessions=result.repaired_count,
         executed_plans=executed_plans,
@@ -1369,7 +1447,12 @@ def _resolve_raw_materialization_whale_blob_limit_bytes() -> int:
     return configured
 
 
-def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payload_bytes: int) -> Any:
+def _run_raw_materialization_whale_pass_once(
+    *,
+    raw_artifact_id: str,
+    max_payload_bytes: int,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+) -> Any:
     """Run one bounded, single-component whale pass under the writer hold.
 
     polylogue-t93b. Mirrors ``_drain_raw_materialization_once`` but scoped to
@@ -1399,6 +1482,8 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
 
     archive = archive_root()
     config = Config(archive_root=archive, render_root=render_root(), sources=[])
+    if not _daemon_parse_stage().writer_admission_ready():
+        raise RuntimeError("raw whale writer admission refused while parse-stage warm is active")
     with contextlib.ExitStack() as lease_stack:
         try:
             index_db = lease_stack.enter_context(raw_authority.materialization_generation_lease(config))
@@ -1414,6 +1499,7 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
                     dry_run=False,
                     raw_artifact_limit=1,
                     max_payload_bytes=max_payload_bytes,
+                    prefetch_cache=prefetch_cache,
                     raw_artifact_id=raw_artifact_id,
                 )
             finally:
@@ -1422,6 +1508,226 @@ def _run_raw_materialization_whale_pass_once(*, raw_artifact_id: str, max_payloa
     if not result.success:
         logger.warning("raw materialization: whale pass for %s incomplete: %s", raw_artifact_id, result.detail)
     return result
+
+
+def _raw_materialization_whale_completion_payload(
+    seed_raw_id: str,
+    *,
+    status: str,
+    receipt_id: str | None = None,
+    success: bool,
+    detail: str,
+    repaired_count: int = 0,
+    metrics: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Build one complete, truthful whale completion event payload."""
+    values = metrics or {}
+
+    def count(name: str) -> int:
+        value = values.get(name, 0)
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
+    census_incomplete = count("raw_materialization_census_incomplete_raw_count")
+    remaining = count("raw_materialization_remaining_candidate_count") + census_incomplete
+    payload = {
+        "seed_raw_id": seed_raw_id,
+        "status": status,
+        "success": success,
+        "fenced": status == "fenced",
+        "cancelled": status == "cancelled",
+        "census_pending": status == "census_pending",
+        "continuation": status == "in_progress",
+        "repaired_count": repaired_count,
+        "detail": detail,
+        "candidate_count": count("raw_materialization_candidate_count"),
+        "selected_count": count("raw_materialization_selected_count"),
+        "executed_count": count("raw_materialization_executed_count"),
+        "resource_blocked_count": count("raw_materialization_resource_blocked_count"),
+        "census_incomplete_count": census_incomplete,
+        "remaining_candidates": remaining,
+    }
+    return payload
+
+
+async def _publish_whale_receipt(
+    *,
+    kind: str,
+    idempotency_key: str,
+    operation_id: str,
+    payload: dict[str, object],
+    root: Path | None = None,
+    publish: bool = True,
+) -> None:
+    """Durably enqueue and boundedly publish one idempotent receipt."""
+    from polylogue.daemon import whale_outbox
+    from polylogue.daemon.events import emit_daemon_event
+
+    effective_root = root if root is not None else _WHALE_RECEIPT_ROOT
+    # The filesystem commit is the recovery boundary.  SQLite publication is
+    # deliberately off the event loop: a locked ops database must not extend
+    # the caller's shutdown wait, and the outbox remains available to startup
+    # recovery when the worker is interrupted.
+    target, target_identity = await asyncio.to_thread(
+        whale_outbox.enqueue_with_identity,
+        kind=kind,
+        idempotency_key=idempotency_key,
+        operation_id=operation_id,
+        payload=payload,
+        root=effective_root,
+    )
+    if not publish:
+        return
+
+    async def publish_event(*event_args: object, **event_kwargs: object) -> None:
+        # SQLite publication belongs to the daemon's coordinator-owned
+        # execution set. Unlike a bare ``asyncio.to_thread`` call, cancellation
+        # of this await leaves a tracked completion that shutdown can drain (or
+        # report as undrained) without allowing an executor-backed SQLite write
+        # to outlive the daemon deadline. Observation test doubles from older
+        # callers may only expose the previous to_thread-shaped seam.
+        coordinator = daemon_write_coordinator()
+        run_sync = getattr(coordinator, "run_sync", None)
+        if callable(run_sync):
+            await run_sync("whale.receipt", emit_daemon_event, *event_args, **event_kwargs)
+        else:
+            await asyncio.to_thread(cast(Any, emit_daemon_event), *event_args, **event_kwargs)
+
+    try:
+        await publish_event(
+            kind,
+            operation_id=operation_id,
+            idempotency_key=idempotency_key,
+            payload=payload,
+        )
+    except TypeError as exc:
+        # Narrow compatibility for injected observation doubles; the real
+        # emitter always receives the idempotency key above.
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        await publish_event(kind, payload=payload)
+    except Exception:
+        logger.warning("raw materialization: whale receipt publication deferred", exc_info=True)
+        return
+    await asyncio.to_thread(
+        whale_outbox.acknowledge,
+        {
+            "_path": target,
+            "_name": target.name,
+            "kind": kind,
+            "idempotency_key": idempotency_key,
+            "operation_id": operation_id,
+            "payload": payload,
+            "_identity": target_identity,
+        },
+    )
+
+
+async def _drain_whale_receipt_outbox(*, root: Path | None = None) -> int:
+    """Retry all durable whale receipts once; later ticks retry remaining rows."""
+    from polylogue.daemon import whale_outbox
+    from polylogue.daemon.events import emit_daemon_event
+
+    effective_root = root if root is not None else _WHALE_RECEIPT_ROOT
+    delivered = 0
+    for record in whale_outbox.list_pending(root=effective_root):
+        try:
+            coordinator = daemon_write_coordinator()
+            run_sync = getattr(coordinator, "run_sync", None)
+            event_args = (str(record["kind"]),)
+            event_kwargs = {
+                "operation_id": str(record["operation_id"]),
+                "idempotency_key": str(record["idempotency_key"]),
+                "payload": record["payload"],
+            }
+            if callable(run_sync):
+                await run_sync("whale.receipt.recovery", emit_daemon_event, *event_args, **event_kwargs)
+            else:
+                await asyncio.to_thread(
+                    emit_daemon_event,
+                    str(record["kind"]),
+                    operation_id=str(record["operation_id"]),
+                    idempotency_key=str(record["idempotency_key"]),
+                    payload=cast(dict[str, object], record["payload"]),
+                )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            await asyncio.to_thread(
+                emit_daemon_event,
+                str(record["kind"]),
+                payload=cast(dict[str, object], record["payload"]),
+            )
+        except Exception:
+            logger.warning("raw materialization: whale receipt recovery deferred", exc_info=True)
+            continue
+        await asyncio.to_thread(whale_outbox.acknowledge, record)
+        delivered += 1
+    return delivered
+
+
+async def _emit_whale_completion_after_admission(
+    candidate: str,
+    completion: asyncio.Task[object],
+    receipt_id: str,
+) -> None:
+    """Publish one terminal event, retrying transient ledger failures."""
+    try:
+        result: Any = completion.result()
+    except BaseException as exc:
+        payload = _raw_materialization_whale_completion_payload(
+            candidate,
+            status="error",
+            receipt_id=receipt_id,
+            success=False,
+            detail=f"coordinator operation failed after caller cancellation: {exc}",
+        )
+    else:
+        if result is None:
+            payload = _raw_materialization_whale_completion_payload(
+                candidate,
+                status="error",
+                receipt_id=receipt_id,
+                success=False,
+                detail="coordinator operation ended without a result",
+            )
+        else:
+            metrics = dict(getattr(result, "metrics", {}))
+            payload = _raw_materialization_whale_completion_payload(
+                candidate,
+                status="cancelled",
+                receipt_id=receipt_id,
+                success=False,
+                detail=f"caller cancelled; coordinator completed: {result.detail}",
+                repaired_count=int(result.repaired_count),
+                metrics=metrics,
+            )
+
+    # Keep the outbox row when bounded immediate retries are exhausted. Startup
+    # and every convergence tick drain it, so no terminal state is silently
+    # lost merely because the disposable ops tier was locked.
+    delays = (0.0, 0.05, 0.2, 0.5, 1.0)
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await _publish_whale_receipt(
+                kind="raw_materialization_whale_pass_completed",
+                idempotency_key=f"{receipt_id}:terminal",
+                operation_id=receipt_id,
+                payload=payload,
+            )
+            from polylogue.daemon import whale_outbox
+
+            if not any(
+                record.get("idempotency_key") == f"{receipt_id}:terminal"
+                for record in whale_outbox.list_pending(root=_WHALE_RECEIPT_ROOT)
+            ):
+                return
+        except Exception:
+            logger.error(
+                "raw materialization: terminal receipt attempt %d/%d failed", attempt, len(delays), exc_info=True
+            )
+    logger.error("raw materialization: terminal whale receipt deferred to durable outbox recovery")
 
 
 async def _maybe_run_raw_materialization_whale_pass() -> bool:
@@ -1444,8 +1750,11 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
     from polylogue.product import raw_authority
 
     root = archive_root()
+    global _WHALE_RECEIPT_ROOT
+    _WHALE_RECEIPT_ROOT = root
     config = Config(archive_root=root, render_root=render_root(), sources=[])
     whale_limit = _resolve_raw_materialization_whale_blob_limit_bytes()
+    await _drain_whale_receipt_outbox()
     try:
         candidate = await asyncio.to_thread(
             raw_authority.whale_pass_candidate,
@@ -1458,49 +1767,203 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
         return False
     if candidate is None:
         return False
+    receipt_id = f"whale:{candidate}:{uuid4().hex}"
+    # Warm only this candidate's authority component before entering the
+    # writer coordinator.  The existing bounded parse-stage cache is reused
+    # so the whale path adds no second adaptive memory budget; its discovery
+    # scope is explicit and cannot accidentally pull ordinary-pass candidates.
+    try:
+        prefetch_cache, warmed_count = await _maybe_warm_raw_materialization_parse_stage(
+            limit=_RAW_MATERIALIZATION_WHALE_PARSE_STAGE_WARM_LIMIT,
+            raw_artifact_id=candidate,
+            max_payload_bytes=whale_limit,
+        )
+        if not await _await_parse_stage_writer_admission():
+            await _publish_whale_receipt(
+                kind="raw_materialization_whale_pass_completed",
+                idempotency_key=f"{receipt_id}:terminal",
+                operation_id=receipt_id,
+                payload=_raw_materialization_whale_completion_payload(
+                    candidate,
+                    status="fenced",
+                    receipt_id=receipt_id,
+                    success=False,
+                    detail="parse-stage worker remained active; writer admission fenced",
+                ),
+                publish=False,
+            )
+            return True
+    except asyncio.CancelledError as exc:
+        await _publish_whale_receipt(
+            kind="raw_materialization_whale_pass_completed",
+            idempotency_key=f"{receipt_id}:terminal",
+            operation_id=receipt_id,
+            payload=_raw_materialization_whale_completion_payload(
+                candidate,
+                status="cancelled",
+                receipt_id=receipt_id,
+                success=False,
+                detail=str(exc) or "whale prefetch/admission caller cancelled",
+            ),
+            publish=False,
+        )
+        raise
     logger.info(
-        "raw materialization: starting whale pass for component seeded by %s (envelope=%d bytes)",
+        "raw materialization: starting whale pass for component seeded by %s (envelope=%d bytes, warmed=%d)",
         candidate,
         whale_limit,
+        warmed_count,
     )
     emit_daemon_event(
         "raw_materialization_whale_pass_started",
         payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
     )
+    operation_started = False
+    admitted_by_coordinator = False
+    publication_requested = False
+    publication_scheduled = False
+    completed_task: asyncio.Task[object] | None = None
+
+    operation = functools.partial(
+        _run_raw_materialization_whale_pass_once,
+        raw_artifact_id=candidate,
+        max_payload_bytes=whale_limit,
+        prefetch_cache=prefetch_cache,
+    )
+
+    def tracked_whale_pass() -> Any:
+        nonlocal operation_started
+        operation_started = True
+        return operation()
+
+    # Preserve the partial's introspection seam used by coordinator-route
+    # tests and diagnostics. Completion publication is attached to the
+    # coordinator-owned task, not a free-floating asyncio task.
+    cast(Any, tracked_whale_pass).keywords = operation.keywords
+    coordinator = daemon_write_coordinator()
+
+    def mark_admitted() -> None:
+        nonlocal admitted_by_coordinator
+        admitted_by_coordinator = True
+
+    def schedule_completion(done: asyncio.Task[object]) -> None:
+        nonlocal completed_task, publication_scheduled
+        completed_task = done
+        if publication_requested and not publication_scheduled:
+            publication_scheduled = True
+            _ = coordinator.create_managed_task(
+                _emit_whale_completion_after_admission(candidate, done, receipt_id),
+                actor="maintenance.raw_materialization_whale.receipt",
+            )
+
     try:
-        result = await daemon_write_coordinator().run_sync(
+        run_with_completion = getattr(coordinator, "run_sync_with_completion", None)
+        if not callable(run_with_completion):
+            raise RuntimeError(
+                "whale route requires DaemonWriteCoordinator.run_sync_with_completion; "
+                "embedder compatibility contract is fail-closed"
+            )
+        result = await run_with_completion(
             "maintenance.raw_materialization_whale",
-            functools.partial(
-                _run_raw_materialization_whale_pass_once,
-                raw_artifact_id=candidate,
-                max_payload_bytes=whale_limit,
-            ),
+            tracked_whale_pass,
+            schedule_completion,
+            mark_admitted,
         )
     except sqlite3.OperationalError as exc:
         if is_transient_sqlite_lock(exc):
             logger.info("raw materialization: whale pass deferred, archive busy: %s", exc)
         else:
             logger.warning("raw materialization: whale pass failed", exc_info=True)
-        emit_daemon_event(
-            "raw_materialization_whale_pass_completed",
-            payload={"seed_raw_id": candidate, "success": False, "detail": str(exc)},
+        await _publish_whale_receipt(
+            kind="raw_materialization_whale_pass_completed",
+            idempotency_key=f"{receipt_id}:terminal",
+            operation_id=receipt_id,
+            payload=_raw_materialization_whale_completion_payload(
+                candidate,
+                status="error",
+                receipt_id=receipt_id,
+                success=False,
+                detail=str(exc),
+            ),
         )
         return True
+    except asyncio.CancelledError as exc:
+        admitted = operation_started or admitted_by_coordinator or completed_task is not None
+        if admitted:
+            # ``run_sync`` shields an admitted operation and lets its writer
+            # task finish after this caller is cancelled. Publish a truthful
+            # continuation record now, then exactly one terminal event from
+            # the coordinator-owned completion task with actual counters.
+            # Request publication before attempting continuation delivery: a
+            # transient ops-db failure must not suppress
+            # the terminal receipt.
+            publication_requested = True
+            try:
+                await _publish_whale_receipt(
+                    kind="raw_materialization_whale_pass_completed",
+                    idempotency_key=f"{receipt_id}:continuation",
+                    operation_id=receipt_id,
+                    payload=_raw_materialization_whale_completion_payload(
+                        candidate,
+                        status="in_progress",
+                        receipt_id=receipt_id,
+                        success=False,
+                        detail=str(exc) or "caller cancelled; coordinator operation continues",
+                    ),
+                )
+            except Exception as receipt_exc:
+                logger.error("raw materialization: whale continuation outbox commit failed", exc_info=True)
+                raise RuntimeError("whale continuation could not enter durable outbox") from receipt_exc
+            if completed_task is not None and not publication_scheduled:
+                publication_scheduled = True
+                _ = coordinator.create_managed_task(
+                    _emit_whale_completion_after_admission(candidate, completed_task, receipt_id),
+                    actor="maintenance.raw_materialization_whale.receipt",
+                )
+        else:
+            await _publish_whale_receipt(
+                kind="raw_materialization_whale_pass_completed",
+                idempotency_key=f"{receipt_id}:terminal",
+                operation_id=receipt_id,
+                payload=_raw_materialization_whale_completion_payload(
+                    candidate,
+                    status="cancelled",
+                    receipt_id=receipt_id,
+                    success=False,
+                    detail=str(exc) or "whale pass caller cancelled",
+                ),
+            )
+        raise
     except Exception as exc:
         logger.warning("raw materialization: whale pass failed", exc_info=True)
-        emit_daemon_event(
-            "raw_materialization_whale_pass_completed",
-            payload={"seed_raw_id": candidate, "success": False, "detail": str(exc)},
+        await _publish_whale_receipt(
+            kind="raw_materialization_whale_pass_completed",
+            idempotency_key=f"{receipt_id}:terminal",
+            operation_id=receipt_id,
+            payload=_raw_materialization_whale_completion_payload(
+                candidate,
+                status="error",
+                receipt_id=receipt_id,
+                success=False,
+                detail=str(exc),
+            ),
         )
         return True
-    emit_daemon_event(
-        "raw_materialization_whale_pass_completed",
-        payload={
-            "seed_raw_id": candidate,
-            "success": bool(result.success),
-            "repaired_count": int(result.repaired_count),
-            "detail": str(result.detail),
-        },
+    metrics = dict(getattr(result, "metrics", {}))
+    census_pending = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0)) > 0
+    await _publish_whale_receipt(
+        kind="raw_materialization_whale_pass_completed",
+        idempotency_key=f"{receipt_id}:terminal",
+        operation_id=receipt_id,
+        payload=_raw_materialization_whale_completion_payload(
+            candidate,
+            status="census_pending" if census_pending else ("success" if result.success else "error"),
+            receipt_id=receipt_id,
+            success=bool(result.success) and not census_pending,
+            detail=str(result.detail),
+            repaired_count=int(result.repaired_count),
+            metrics=metrics,
+        ),
     )
     return True
 
@@ -2514,6 +2977,15 @@ async def _run_daemon_services_under_active_writer_lease(
             archive_owner.release()
         _daemon_lifecycle = None
         raise
+
+    # Whale receipts are durable filesystem-first recovery records. Drain them
+    # before any watcher catch-up gate or schema-dependent maintenance loop so a
+    # restart does not leave terminal lifecycle state parked behind initial
+    # source ingestion. This is deliberately outside the ``watcher_blocked``
+    # branch: the outbox is independent of derived-tier readiness.
+    global _WHALE_RECEIPT_ROOT
+    _WHALE_RECEIPT_ROOT = archive_root_path
+    await _drain_whale_receipt_outbox(root=archive_root_path)
 
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
