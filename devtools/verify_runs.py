@@ -180,11 +180,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         peak_storage = max_optional(peak_storage, storage_values.get("basetemp_allocated_bytes_max"))
         for sample_key, reducer in (("used_kb", "max"), ("free_kb", "min")):
             shm = resource_values.get("shm")
-            value = (
-                shm.get(sample_key) * 1024
-                if isinstance(shm, Mapping) and isinstance(shm.get(sample_key), int)
-                else None
-            )
+            raw_value = shm.get(sample_key) if isinstance(shm, Mapping) else None
+            value = raw_value * 1024 if isinstance(raw_value, int) and not isinstance(raw_value, bool) else None
             if reducer == "max":
                 peak_shm_used = max_optional(peak_shm_used, value)
             else:
