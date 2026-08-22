@@ -740,7 +740,7 @@ def test_unresolved_targets_short_circuit(tmp_path: Path) -> None:
     "operation_id",
     ("", False, 0, "/tmp/escape", "../escape", "nested/escape", "nested\\\\escape", "/", ".."),
 )
-def test_operation_ids_reject_falsey_and_path_traversal_before_state_path(tmp_path: Path, operation_id: object) -> None:
+def test_operation_ids_reject_falsey_and_path_traversal_before_state_path(tmp_path: Path, operation_id: Any) -> None:
     config = _make_config(tmp_path)
 
     with pytest.raises(ValueError, match="operation_id"):
