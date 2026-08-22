@@ -1330,9 +1330,9 @@ def _recover_stale_handoffs(
     cleanup_lock = cache_root / ".cleanup.lock"
     cursor_path = cache_root / ".handoff.cursor"
     if _is_symlink_node(cleanup_lock):
-        cleanup_lock.unlink()
+        _remove_tree(cleanup_lock)
     if _is_symlink_node(cursor_path):
-        cursor_path.unlink()
+        _remove_tree(cursor_path)
     removed: list[str] = []
     with cleanup_lock.open("a+") as cleanup_handle:
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
@@ -1359,7 +1359,7 @@ def _recover_stale_handoffs(
                 continue
             lock_path = locks_root / f"{parts[0]}.lock"
             if _is_symlink_node(lock_path):
-                lock_path.unlink()
+                _remove_tree(lock_path)
                 continue
             try:
                 with lock_path.open("a+") as handle:
@@ -1376,8 +1376,8 @@ def _recover_stale_handoffs(
                 continue
         if candidates and last_seen:
             cursor_path.write_text(last_seen + "\\n", encoding="utf-8")
-        elif cursor_path.exists():
-            cursor_path.unlink()
+        elif _safe_exists(cursor_path):
+            _remove_tree(cursor_path)
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
     return tuple(removed)
 
