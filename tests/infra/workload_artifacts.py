@@ -20,7 +20,7 @@ import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass
 from itertools import chain
 from pathlib import Path
@@ -1073,6 +1073,33 @@ def _bounded_scan_last_name(directory: Path, *, cursor: str, budget: int) -> str
         os.close(directory_fd)
 
 
+def _seen_cleanup_name(path: Path, name: str) -> bool:
+    try:
+        fd = _open_no_follow(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8", closefd=True) as handle:
+            return any(line.rstrip("\n") == name for line in handle)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _mark_cleanup_name(path: Path, name: str) -> None:
+    fd = _open_no_follow(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=True) as handle:
+            handle.write(name + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+
+
 def _recover_obsolete_staging(
     *,
     cache_root: Path,
@@ -1107,37 +1134,48 @@ def _recover_obsolete_staging(
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
-        candidates = _bounded_cache_candidates(staging_root, cursor=cursor, budget=budget)
+        seen_path = cache_root / ".cleanup.seen"
+        if _is_symlink_node(seen_path):
+            return ()
+        staging_fd = _open_pinned_dir(staging_root)
         inspected = 0
         last_seen = ""
-        blocked = False
-        for inspected, candidate in enumerate(candidates, start=1):
-            if inspected > budget:
-                break
-            artifact_name = candidate.name.split(".", 1)[0]
-            lock_path = locks_root / f"{artifact_name}.lock"
-            if _is_symlink_node(lock_path):
-                # Keep the blocked candidate before the cursor for retry.
-                blocked = True
-                break
-            try:
-                lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
-                with os.fdopen(lock_fd, "a+") as handle:
+        try:
+            with os.scandir(staging_fd) as entries:
+                for entry in entries:
+                    if _seen_cleanup_name(seen_path, entry.name):
+                        continue
+                    inspected += 1
+                    if inspected > budget:
+                        break
+                    last_seen = entry.name
+                    candidate = staging_root / entry.name
+                    info = entry.stat(follow_symlinks=False)
+                    if "." not in entry.name or not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+                        _mark_cleanup_name(seen_path, entry.name)
+                        continue
+                    artifact_name = entry.name.split(".", 1)[0]
+                    lock_path = locks_root / f"{artifact_name}.lock"
+                    if _is_symlink_node(lock_path):
+                        break
                     try:
-                        _assert_lock_identity(handle.fileno(), lock_path)
-                        _remove_tree(candidate)
-                        removed.append(candidate.name)
-                        last_seen = candidate.name
-                    finally:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                blocked = True
-                break
-        if not blocked and not candidates:
-            last_seen = _bounded_scan_last_name(staging_root, cursor=cursor, budget=budget)
+                        lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
+                        with os.fdopen(lock_fd, "a+") as handle:
+                            try:
+                                _assert_lock_identity(handle.fileno(), lock_path)
+                                _remove_tree(candidate)
+                                removed.append(entry.name)
+                                _mark_cleanup_name(seen_path, entry.name)
+                            finally:
+                                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        break
+        finally:
+            os.close(staging_fd)
         if last_seen and last_seen != cursor:
             _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
+
     return tuple(removed)
 
 
@@ -1164,44 +1202,56 @@ def _recover_stale_handoffs(
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
-        candidates = _bounded_cache_candidates(artifacts_root, cursor=cursor, budget=budget, suffix=".handoff")
+        seen_path = cache_root / ".handoff.seen"
+        if _is_symlink_node(seen_path):
+            return ()
+        artifacts_fd = _open_pinned_dir(artifacts_root)
         inspected = 0
         last_seen = ""
-        blocked = False
-        for inspected, candidate in enumerate(candidates, start=1):
-            if inspected > budget:
-                break
-            if _is_symlink_node(candidate):
-                _remove_tree(candidate)
-                removed.append(candidate.name)
-                last_seen = candidate.name
-                continue
-            parts = candidate.name.removeprefix(".").split(".", 1)
-            if len(parts) != 2:
-                last_seen = candidate.name
-                continue
-            lock_path = locks_root / f"{parts[0]}.lock"
-            if _is_symlink_node(lock_path):
-                blocked = True
-                break
-            try:
-                lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
-                with os.fdopen(lock_fd, "a+") as handle:
-                    try:
-                        _assert_lock_identity(handle.fileno(), lock_path)
+        try:
+            with os.scandir(artifacts_fd) as entries:
+                for entry in entries:
+                    if _seen_cleanup_name(seen_path, entry.name):
+                        continue
+                    inspected += 1
+                    if inspected > budget:
+                        break
+                    last_seen = entry.name
+                    candidate = artifacts_root / entry.name
+                    info = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
                         _remove_tree(candidate)
-                        removed.append(candidate.name)
-                        last_seen = candidate.name
-                    finally:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                blocked = True
-                break
-        if not blocked and not candidates:
-            last_seen = _bounded_scan_last_name(artifacts_root, cursor=cursor, budget=budget)
+                        removed.append(entry.name)
+                        _mark_cleanup_name(seen_path, entry.name)
+                        continue
+                    if not stat.S_ISDIR(info.st_mode):
+                        _mark_cleanup_name(seen_path, entry.name)
+                        continue
+                    parts = entry.name.removeprefix(".").split(".", 1)
+                    if len(parts) != 2:
+                        _mark_cleanup_name(seen_path, entry.name)
+                        continue
+                    lock_path = locks_root / f"{parts[0]}.lock"
+                    if _is_symlink_node(lock_path):
+                        break
+                    try:
+                        lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
+                        with os.fdopen(lock_fd, "a+") as handle:
+                            try:
+                                _assert_lock_identity(handle.fileno(), lock_path)
+                                _remove_tree(candidate)
+                                removed.append(entry.name)
+                                _mark_cleanup_name(seen_path, entry.name)
+                            finally:
+                                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        break
+        finally:
+            os.close(artifacts_fd)
         if last_seen and last_seen != cursor:
             _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
+
     return tuple(removed)
 
 
@@ -1533,24 +1583,22 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
 
 @dataclass(frozen=True)
 class _LockDomain:
+    ancestor_fd: int
+    ancestor_mode: int
     root_fd: int
-    locks_fd: int
     root_mode: int
+    locks_fd: int
 
 
-def _assert_directory_identity(fd: int, path: Path) -> None:
-    parent, leaf = _open_pinned_parent(path)
-    try:
-        named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
-    finally:
-        os.close(parent)
-    opened = os.fstat(fd)
+def _assert_named_directory(fd: int, name: str, opened_fd: int) -> None:
+    named = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    opened = os.fstat(opened_fd)
     if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
         raise OSError("lock domain pathname was replaced while locked")
 
 
 def _open_lock_domain(cache_root: Path) -> _LockDomain:
-    """Pin the cache root and lock directory for the entire critical section."""
+    """Pin and protect a stable ancestor, cache root, and ``.locks``."""
     locks = cache_root / ".locks"
     _mkdir_pinned(cache_root / "artifacts")
     _mkdir_pinned(locks)
@@ -1559,41 +1607,86 @@ def _open_lock_domain(cache_root: Path) -> _LockDomain:
         cache_root / ".cleanup.lock",
         cache_root / ".cleanup.cursor",
         cache_root / ".handoff.cursor",
+        cache_root / ".cleanup.seen",
+        cache_root / ".handoff.seen",
     ):
         fd = _open_no_follow(control_file, os.O_RDWR | os.O_CREAT, 0o600)
         os.close(fd)
-    root_fd = _open_pinned_dir(cache_root)
+
+    ancestor_fd, root_name = _open_pinned_parent(cache_root)
+    root_fd = -1
     locks_fd = -1
+    ancestor_mode = 0
     root_mode = 0
     try:
-        _assert_directory_identity(root_fd, cache_root)
+        ancestor_mode = os.fstat(ancestor_fd).st_mode
+        fcntl.flock(ancestor_fd, fcntl.LOCK_EX)
+        root_fd = os.open(root_name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=ancestor_fd)
+        _assert_named_directory(ancestor_fd, root_name, root_fd)
         fcntl.flock(root_fd, fcntl.LOCK_EX)
-        _assert_directory_identity(root_fd, cache_root)
+        _assert_named_directory(ancestor_fd, root_name, root_fd)
         locks_fd = os.open(".locks", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd)
-        named_locks = os.stat(".locks", dir_fd=root_fd, follow_symlinks=False)
-        opened_locks = os.fstat(locks_fd)
-        if (named_locks.st_dev, named_locks.st_ino) != (opened_locks.st_dev, opened_locks.st_ino):
-            raise OSError("lock domain pathname was replaced while locked")
+        _assert_named_directory(root_fd, ".locks", locks_fd)
         fcntl.flock(locks_fd, fcntl.LOCK_EX)
         root_mode = os.fstat(root_fd).st_mode
-        # Prevent replacement of cache_root/.locks while children remain writable.
+        # Prevent replacement of cache_root or cache_root/.locks while the
+        # descriptor capabilities are live. Child directories remain writable.
+        os.fchmod(ancestor_fd, ancestor_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         os.fchmod(root_fd, root_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        _assert_directory_identity(root_fd, cache_root)
-        named_locks = os.stat(".locks", dir_fd=root_fd, follow_symlinks=False)
-        if (named_locks.st_dev, named_locks.st_ino) != (opened_locks.st_dev, opened_locks.st_ino):
-            raise OSError("lock domain pathname was replaced while locked")
-        return _LockDomain(root_fd=root_fd, locks_fd=locks_fd, root_mode=root_mode)
+        _assert_named_directory(ancestor_fd, root_name, root_fd)
+        _assert_named_directory(root_fd, ".locks", locks_fd)
+        return _LockDomain(
+            ancestor_fd=ancestor_fd,
+            ancestor_mode=ancestor_mode,
+            root_fd=root_fd,
+            root_mode=root_mode,
+            locks_fd=locks_fd,
+        )
     except BaseException:
         if locks_fd >= 0:
             with contextlib.suppress(OSError):
                 fcntl.flock(locks_fd, fcntl.LOCK_UN)
             with contextlib.suppress(OSError):
                 os.close(locks_fd)
+        if root_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(root_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(root_fd)
         with contextlib.suppress(OSError):
-            fcntl.flock(root_fd, fcntl.LOCK_UN)
+            fcntl.flock(ancestor_fd, fcntl.LOCK_UN)
         with contextlib.suppress(OSError):
-            os.close(root_fd)
+            os.close(ancestor_fd)
         raise
+
+
+def _release_lock_domain(domain: _LockDomain) -> None:
+    """Restore modes while locks are held, then release and close independently."""
+    try:
+        with contextlib.suppress(OSError):
+            os.fchmod(domain.root_fd, domain.root_mode)
+        with contextlib.suppress(OSError):
+            os.fchmod(domain.ancestor_fd, domain.ancestor_mode)
+    finally:
+        try:
+            with contextlib.suppress(OSError):
+                fcntl.flock(domain.locks_fd, fcntl.LOCK_UN)
+        finally:
+            try:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(domain.root_fd, fcntl.LOCK_UN)
+            finally:
+                try:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(domain.ancestor_fd, fcntl.LOCK_UN)
+                finally:
+                    try:
+                        os.close(domain.locks_fd)
+                    finally:
+                        try:
+                            os.close(domain.root_fd)
+                        finally:
+                            os.close(domain.ancestor_fd)
 
 
 def build_seeded_archive(
@@ -1606,19 +1699,7 @@ def build_seeded_archive(
     try:
         return _build_seeded_archive_inner(specs, cache_root=selected_root)
     finally:
-        try:
-            fcntl.flock(domain.locks_fd, fcntl.LOCK_UN)
-        finally:
-            try:
-                fcntl.flock(domain.root_fd, fcntl.LOCK_UN)
-            finally:
-                try:
-                    os.fchmod(domain.root_fd, domain.root_mode)
-                finally:
-                    try:
-                        os.close(domain.locks_fd)
-                    finally:
-                        os.close(domain.root_fd)
+        _release_lock_domain(domain)
 
 
 def _build_seeded_archive_inner(
@@ -1919,24 +2000,60 @@ def _authenticate_clone_copy(
             os.close(clone_manifest_fd)
 
 
+def _authenticate_clone_at_return_boundary(
+    source: SeededArchiveArtifact,
+    destination: Path,
+    manifest: SeededArchiveManifest,
+    *,
+    ignored_relatives: frozenset[str] = frozenset(),
+    _authenticator: Callable[..., None] = _authenticate_clone_copy,
+) -> None:
+    """Authenticate through a private bound callable immediately before return."""
+    _authenticator(source, destination, manifest, ignored_relatives=ignored_relatives)
+
+
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     _mkdir_pinned(destination.parent)
-    parent_fd = _open_pinned_dir(destination.parent)
+    ancestor_fd, parent_name = _open_pinned_parent(destination.parent)
+    parent_fd = -1
+    ancestor_mode: int | None = None
     parent_mode: int | None = None
     try:
-        parent_mode = os.fstat(parent_fd).st_mode
+        ancestor_mode = os.fstat(ancestor_fd).st_mode
+        fcntl.flock(ancestor_fd, fcntl.LOCK_EX)
+        parent_fd = os.open(parent_name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=ancestor_fd)
+        _assert_named_directory(ancestor_fd, parent_name, parent_fd)
         fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        parent_mode = os.fstat(parent_fd).st_mode
+        os.fchmod(ancestor_fd, ancestor_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         os.fchmod(parent_fd, parent_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        _assert_named_directory(ancestor_fd, parent_name, parent_fd)
         return _clone_seeded_archive_inner(artifact, destination)
     finally:
+        # Restore protection while both locks are still held; only then can
+        # another holder acquire either directory capability.
         try:
-            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+            if parent_mode is not None:
+                with contextlib.suppress(OSError):
+                    os.fchmod(parent_fd, parent_mode)
+            if ancestor_mode is not None:
+                with contextlib.suppress(OSError):
+                    os.fchmod(ancestor_fd, ancestor_mode)
         finally:
             try:
-                if parent_mode is not None:
-                    os.fchmod(parent_fd, parent_mode)
+                if parent_fd >= 0:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(parent_fd, fcntl.LOCK_UN)
             finally:
-                os.close(parent_fd)
+                try:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(ancestor_fd, fcntl.LOCK_UN)
+                finally:
+                    try:
+                        if parent_fd >= 0:
+                            os.close(parent_fd)
+                    finally:
+                        os.close(ancestor_fd)
 
 
 def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
@@ -1969,7 +2086,7 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
             _record_fresh_durable_bootstrap(destination)
         # This is the final mutation and the final authentication. No
         # pathname or metadata operation occurs between this check and return.
-        _authenticate_clone_copy(
+        _authenticate_clone_at_return_boundary(
             artifact,
             destination,
             disk_manifest,
