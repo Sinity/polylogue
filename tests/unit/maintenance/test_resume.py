@@ -251,7 +251,7 @@ def test_chained_resume_retains_completed_identity_history(
     checkpoint = load_state(config, "op-chained")
     assert checkpoint is not None
     assert checkpoint["targets"] == ["session_insights", "empty_sessions", "orphaned_blobs"]
-    assert checkpoint["completed_targets"] == ["session_insights", "empty_sessions", "orphaned_blobs"]
+    assert checkpoint["completed_targets"] == ["session_insights", "orphaned_blobs"]
 
     second = execute_replay(
         config,
@@ -261,7 +261,7 @@ def test_chained_resume_retains_completed_identity_history(
 
     assert second.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["empty_sessions"] == []
+    assert patched_dispatch["empty_sessions"] == ["live"]
     assert patched_dispatch["orphaned_blobs"] == ["live"]
 
 
@@ -395,7 +395,7 @@ def test_resume_aggregates_receipt_data_and_current_progress_after_remap(
     path.write_text(
         '{"operation_id":"op-receipt",'
         '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
-        '"completed_targets":["session_insights"],"cursor":"target:99",'
+        '"completed_targets":["session_insights"],"cursor":"target:0",'
         '"started_at":"2026-01-01T00:00:00+00:00",'
         '"results":[{"name":"session_insights","repaired_count":4,"success":true}],'
         '"repaired_count":4,"failure_count":1,'
@@ -462,7 +462,7 @@ def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
         config,
         targets=("orphaned_blobs", "empty_sessions"),
         operation_id="op-reorder",
-        resume_cursor="target:99",
+        resume_cursor="target:0",
     )
 
     assert op.status is OperationStatus.COMPLETED
