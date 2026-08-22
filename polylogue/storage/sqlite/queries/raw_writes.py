@@ -53,26 +53,36 @@ async def save_raw_session(
     )
     retained = await cursor.fetchone()
     if retained is not None:
-        expected_revision = record.revision
-        expected_identity = (
-            origin.value,
+        retained_values = tuple(retained)
+        unknown_origin = "unknown-export"
+        if retained_values[0] != origin.value and unknown_origin not in (retained_values[0], origin.value):
+            raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
+        if retained_values[1:5] != (
             record.source_path,
             int(record.source_index or 0),
             blob_hash,
             int(record.blob_size),
-            expected_revision.logical_source_key if expected_revision else None,
-            expected_revision.kind.value if expected_revision else "unknown",
-            expected_revision.source_revision if expected_revision else None,
-            expected_revision.predecessor_source_revision if expected_revision else None,
-            expected_revision.predecessor_raw_id if expected_revision else None,
-            expected_revision.baseline_raw_id if expected_revision else None,
-            expected_revision.append_start_offset if expected_revision else None,
-            expected_revision.append_end_offset if expected_revision else None,
-            expected_revision.acquisition_generation if expected_revision else None,
-            expected_revision.authority.value if expected_revision else "quarantined",
-        )
-        if tuple(retained) != expected_identity:
+        ):
             raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
+        # A legacy retry may carry no revision envelope of its own. In that
+        # case the retained envelope is authoritative and must be preserved;
+        # a supplied envelope, however, is acquisition identity and must match.
+        expected_revision = record.revision
+        if expected_revision is not None:
+            expected_revision_values = (
+                expected_revision.logical_source_key,
+                expected_revision.kind.value,
+                expected_revision.source_revision,
+                expected_revision.predecessor_source_revision,
+                expected_revision.predecessor_raw_id,
+                expected_revision.baseline_raw_id,
+                expected_revision.append_start_offset,
+                expected_revision.append_end_offset,
+                expected_revision.acquisition_generation,
+                expected_revision.authority.value,
+            )
+            if retained_values[5:] != expected_revision_values:
+                raise ValueError(f"raw id is already bound to a conflicting identity: {record.raw_id}")
 
     cursor = await conn.execute(
         """
