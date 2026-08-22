@@ -537,8 +537,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "fired only if a coordinator remembered to invoke them). `merge <PR>` validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
-            "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
-            "without merging. Carrier dispositions attest the PR's whole-Bead scope; this command never mutates Beads or publishes `.beads/issues.jsonl`. Use an explicit, scoped Beads publication workflow for tracker state. `--with-verify` immediately runs and records the merge-train's "
+            "incident), then runs the actual `gh pr merge --squash`. After a successful squash, it executes the typed carrier dispositions against live Beads and writes the guarded `.beads/issues.jsonl` export; failures are loud and non-rollback. `--dry-run` runs every check without merging. `--with-verify` immediately runs and records the merge-train's "
             "terminal full-suite verify after merging; otherwise it prints a reminder. "
             "`train-status` reports (exit 1) any PRs merged since the last recorded terminal "
             "verify. The terminal step records itself: a plain `devtools verify` that earns "

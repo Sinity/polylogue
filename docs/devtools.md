@@ -168,7 +168,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace integrate` | Apply an ordered list of lane commits to a clean linked integration worktree. |
 | `devtools workspace lane-init` | Provision a lane worktree with an isolated, guard-verified interpreter. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, records the carrier attestation, then executes typed carrier dispositions after a successful squash merge. |
+| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, then records the carrier attestation in the merge ledger. |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
 | `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |

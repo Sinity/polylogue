@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from devtools import click_dispatch, merge_boundary, merge_gate, pr_scope
+from devtools import carrier_dispositions, click_dispatch, merge_boundary, merge_gate, pr_scope
 from devtools.checkout_guard import checkout_environment_fingerprint
 from tests.infra.frozen_clock import FrozenClock
 
@@ -471,11 +471,12 @@ def test_merge_executes_typed_dispositions_after_squash(monkeypatch: pytest.Monk
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(subprocess, "run", _fake_run(_base_pr_view()))
     calls: list[tuple[int, Path, Path, bool]] = []
-    monkeypatch.setattr(
-        merge_boundary.carrier_dispositions,
-        "cmd_apply",
-        lambda pr, *, base_export, output, dry_run, **_kwargs: calls.append((pr, base_export, output, dry_run)) or 0,
-    )
+
+    def apply(pr: int, *, base_export: Path, output: Path, dry_run: bool, **_kwargs: Any) -> int:
+        calls.append((pr, base_export, output, dry_run))
+        return 0
+
+    monkeypatch.setattr(carrier_dispositions, "cmd_apply", apply)
     assert (
         merge_boundary.cmd_merge(
             42,
