@@ -254,7 +254,30 @@ def normalize_verify_history_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         datetime.now(UTC).isoformat(),
     )
     normalized.setdefault("total_duration_s", normalized.get("duration_s", 0.0))
-    normalized["pytest_aggregate"] = _history_pytest_aggregate(normalized)
+    aggregate = _history_pytest_aggregate(normalized)
+    normalized["pytest_aggregate"] = aggregate
+    # Keep the regression-sized facts in the durable history row itself.  The
+    # detailed samples are intentionally checkout-local, but a compact cost
+    # envelope must survive cache pruning so later runs can be compared.
+    resources = aggregate.get("resources")
+    resource_values = resources if isinstance(resources, Mapping) else {}
+    outcomes = aggregate.get("outcomes")
+    outcome_values = outcomes if isinstance(outcomes, Mapping) else {}
+    normalized["cost_telemetry"] = {
+        "schema_version": 1,
+        "tier": normalized.get("tier"),
+        "wall_s": aggregate.get("wall_s", normalized.get("total_duration_s")),
+        "read_bytes": resource_values.get("read_bytes"),
+        "write_bytes": resource_values.get("write_bytes"),
+        "peak_basetemp_bytes": resource_values.get("peak_storage_bytes"),
+        "peak_tree_rss_kb": resource_values.get("peak_tree_rss_kb"),
+        "peak_tree_pss_kb": resource_values.get("peak_tree_pss_kb"),
+        "selected_count": aggregate.get("selected_union_count"),
+        "terminal_count": aggregate.get("terminal_union_count"),
+        "outcomes": dict(outcome_values),
+        "non_green_count": aggregate.get("non_green_count"),
+        "complete_corpus_covered": aggregate.get("complete_corpus_covered"),
+    }
     return normalized
 
 

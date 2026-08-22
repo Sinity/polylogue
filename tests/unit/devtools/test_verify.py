@@ -918,6 +918,22 @@ def test_verify_history_normalizes_focused_and_quick_runs_to_one_aggregate_schem
     assert focused_row["pytest_aggregate"]["selection_mode"] == "focused"
     assert focused_row["pytest_aggregate"]["outcomes"] == {"passed": 2}
     assert focused_row["pytest_aggregate"]["resources"]["peak_tree_rss_kb"] == 512
+    telemetry = focused_row["cost_telemetry"]
+    assert telemetry == {
+        "schema_version": 1,
+        "tier": "focused-test",
+        "wall_s": 1.25,
+        "read_bytes": 64,
+        "write_bytes": 0,
+        "peak_basetemp_bytes": None,
+        "peak_tree_rss_kb": 512,
+        "peak_tree_pss_kb": None,
+        "selected_count": 2,
+        "terminal_count": 2,
+        "outcomes": {"passed": 2},
+        "non_green_count": 0,
+        "complete_corpus_covered": False,
+    }
     assert quick_row["pytest_aggregate"]["selection_mode"] == "none"
     assert quick_row["pytest_aggregate"]["lanes"] == []
 
