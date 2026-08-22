@@ -218,6 +218,21 @@ def test_file_probe_exceptions_log_and_fail_toward_work(
     assert all(value is True for value in warning_exc_info)
 
 
+def test_polylogue_tas4_fts_check_runs_startup_repair_on_convergence_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_db = tmp_path / "index.db"
+    calls: list[Path] = []
+    monkeypatch.setattr(stages, "_active_archive_index_path", lambda _path: archive_db)
+    monkeypatch.setattr(stages, "_run_fts_readiness_repair", calls.append)
+    monkeypatch.setattr(stages, "_archive_session_ids_for_source_paths", lambda _db, paths: {p: [] for p in paths})
+
+    stage = make_fts_stage(archive_db)
+    source = tmp_path / "session.jsonl"
+    assert stage.check(source) is False
+    assert calls == [archive_db]
+
+
 def test_archive_probe_exceptions_log_and_fail_toward_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

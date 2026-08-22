@@ -1763,6 +1763,22 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
     _mark_message_fts_ready_after_targeted_repair(conn)
 
 
+def _run_fts_readiness_repair(db_path: Path) -> None:
+    """Run the bounded FTS readiness repair through the convergence stage.
+
+    This is deliberately invoked from the stage check, not from a second
+    maintenance surface.  The existing implementation is retained as a
+    compatibility shim for startup callers while the daemon's steady-state
+    route owns the invariant on every convergence cycle.
+    """
+    try:
+        from polylogue.daemon.fts_startup import ensure_fts_startup_readiness_sync
+
+        ensure_fts_startup_readiness_sync()
+    except Exception:
+        logger.warning("fts: readiness repair failed during convergence check", exc_info=True)
+
+
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
     return bool(_archive_fts_check_many(db_path, (path,)))
 
@@ -1789,6 +1805,11 @@ def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) 
 
 
 def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
+    # Startup-only FTS repair is part of this stage's check route.  The daemon
+    # owns the write coordinator, so trigger restoration, bounded drift repair,
+    # and freshness-ledger reconciliation remain serialized with convergence
+    # rather than living on a separate startup-only writer path.
+    _run_fts_readiness_repair(db_path)
     # FTS coverage is an unconditional convergence invariant: there is no state in
     # which the index is legitimately behind the blocks table. These archive-backed
     # entry points used to answer "nothing to do" (check) and "done" (execute)
