@@ -32,6 +32,7 @@ from pathlib import Path
 
 from polylogue.storage.raw_retention import RawFrontierIntegritySnapshot, raw_frontier_integrity_snapshot
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from tests.infra.workload_artifacts import SeededArchiveClone
 
 
 def _snapshot(root: Path) -> RawFrontierIntegritySnapshot:
@@ -47,10 +48,10 @@ def _snapshot(root: Path) -> RawFrontierIntegritySnapshot:
 
 
 def test_seeded_corpus_satisfies_raw_frontier_integrity(
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive: Callable[[str], SeededArchiveClone],
 ) -> None:
     """polylogue-ku00r: the corpus every snapshot test reads is production-valid."""
-    root = named_seeded_archive_ro("cli-chatgpt").parent
+    root = named_seeded_archive("cli-chatgpt").root.parent
 
     snapshot = _snapshot(root)
 
@@ -63,7 +64,7 @@ def test_seeded_corpus_satisfies_raw_frontier_integrity(
 
 
 def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
-    named_seeded_archive: Callable[[str], Path],
+    named_seeded_archive: Callable[[str], SeededArchiveClone],
 ) -> None:
     """Red twin: the invariant is not vacuously green on this corpus shape.
 
@@ -71,7 +72,7 @@ def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
     genuinely broken active chain, and the check must name it -- otherwise the
     green result above proves nothing about the corpus.
     """
-    root = named_seeded_archive("cli-chatgpt").parent
+    root = named_seeded_archive("cli-chatgpt").root.parent
 
     conn = sqlite3.connect(root / "source.db")
     with conn:

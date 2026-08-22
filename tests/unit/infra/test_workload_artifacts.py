@@ -60,6 +60,36 @@ def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.Mo
     assert first.value != second.value
 
 
+def test_clone_close_reports_mode_restore_failure_after_releasing_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    clone = artifacts.SeededArchiveClone(
+        root=tmp_path,
+        source_manifest_id="manifest",
+        clone_method="copy",
+        _ancestor_fd=fd,
+        _ancestor_mode=os.fstat(fd).st_mode,
+    )
+    real_fchmod = os.fchmod
+
+    def fail_restore(target: int, mode: int) -> None:
+        if target == fd:
+            raise OSError("restore failed")
+        real_fchmod(target, mode)
+
+    monkeypatch.setattr(os, "fchmod", fail_restore)
+    with pytest.raises(RuntimeError, match="failed to close seeded archive clone"):
+        clone.close()
+    assert clone._ancestor_fd == -1
+    with pytest.raises(OSError):
+        os.fstat(fd)
+    monkeypatch.undo()
+    tmp_path.chmod(tmp_path.stat().st_mode | stat.S_IWUSR)
+
+
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(tmp_path: Path) -> None:
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
@@ -106,7 +136,8 @@ def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: P
     cache_root = tmp_path / "cache"
     original = build_seeded_archive(cache_root=cache_root)
     index_path = original.root / "index.db"
-    index_path.chmod(index_path.stat().st_mode | os.W_OK)
+    os.chmod(original.root, 0o755)
+    os.chmod(index_path, 0o644)
     index_path.unlink()
 
     rebuilt = build_seeded_archive(cache_root=cache_root)
@@ -467,7 +498,8 @@ def test_seeded_archive_memo_is_dropped_when_the_artifact_is_unplaced(tmp_path: 
     artifacts._VALIDATED_ARTIFACTS.clear()
     original = build_seeded_archive(cache_root=cache_root)
     index_path = original.root / "index.db"
-    index_path.chmod(index_path.stat().st_mode | os.W_OK)
+    os.chmod(original.root, 0o755)
+    os.chmod(index_path, 0o644)
     index_path.unlink()
 
     rebuilt = build_seeded_archive(cache_root=cache_root)

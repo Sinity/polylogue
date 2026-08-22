@@ -30,6 +30,8 @@ from typing import cast
 import pytest
 from click.testing import CliRunner
 
+from tests.infra.workload_artifacts import SeededArchiveClone
+
 syrupy = pytest.importorskip("syrupy")
 
 from polylogue.cli.click_app import cli
@@ -85,7 +87,7 @@ def seeded_db_env(
 
 @pytest.fixture
 def postmortem_seeded_env(
-    named_seeded_archive: Callable[[str], Path],
+    named_seeded_archive: Callable[[str], SeededArchiveClone],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
     """Seed a corpus DB and materialize the session-profile insights.
@@ -98,7 +100,8 @@ def postmortem_seeded_env(
 
     from polylogue.api import Polylogue
 
-    db_path = named_seeded_archive("cli-mixed")
+    clone = named_seeded_archive("cli-mixed")
+    db_path = clone.root / "index.db"
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
     async def _rebuild() -> None:

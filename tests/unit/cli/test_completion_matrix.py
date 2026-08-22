@@ -31,6 +31,7 @@ from polylogue.archive.query.completions import query_terminal_source_candidates
 from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_sources
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
+from tests.infra.workload_artifacts import SeededArchiveClone
 
 SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
@@ -847,7 +848,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive: Callable[[str], SeededArchiveClone],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
@@ -859,10 +860,9 @@ def test_dynamic_completers_seeded_archive_per_shell(
     tool (which are always populated) to be non-empty, while still
     asserting the call itself succeeds for all completers.
     """
-    # The named workload is generated through the production pipeline; this
-    # read-only consumer points the archive root straight at the shared
-    # immutable artifact instead of cloning it.
-    named_seeded_archive_ro("completion")
+    # The named workload is generated through the production pipeline then
+    # cloned into this test's configured archive root.
+    _clone = named_seeded_archive("completion")
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.

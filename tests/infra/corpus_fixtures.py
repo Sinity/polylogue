@@ -38,7 +38,7 @@ def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Pat
 @pytest.fixture
 def named_seeded_archive(
     workspace_env: dict[str, Path],
-) -> Callable[[str], Path]:
+) -> Callable[[str], SeededArchiveClone]:
     """Clone one registered immutable workload into this test's archive root.
 
     For consumers that MUTATE the archive (ingest, insight rebuild, marks,
@@ -47,10 +47,9 @@ def named_seeded_archive(
     """
     archive_root = workspace_env["archive_root"]
 
-    def seed(name: str) -> Path:
+    def seed(name: str) -> SeededArchiveClone:
         artifact = build_seeded_archive(named_corpus_specs(name))
-        clone_seeded_archive(artifact, archive_root)
-        return archive_root / "index.db"
+        return clone_seeded_archive(artifact, archive_root)
 
     return seed
 
