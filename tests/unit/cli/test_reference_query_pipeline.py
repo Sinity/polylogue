@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
@@ -14,7 +15,9 @@ from polylogue.storage.sqlite.query_objects import QueryObject
 from tests.unit.mcp.test_reference_query_pipeline import _origin_query, _seed_archive
 
 
-def test_find_from_query_uses_canonical_planner_and_emits_lineage(tmp_path: Path, monkeypatch) -> None:
+def test_find_from_query_uses_canonical_planner_and_emits_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     archive_root = tmp_path / "archive"
     _seed_archive(archive_root)
     with sqlite3.connect(archive_root / "user.db") as conn:
