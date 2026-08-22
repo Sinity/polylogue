@@ -9,31 +9,98 @@ from collections.abc import Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.request import Request, urlopen
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
-from polylogue.insights.schema_drift import schema_drift_status
 from polylogue.logging import get_logger
-from polylogue.readiness.capability import (
-    normalize_raw_frontier_status_payload,
-    raw_frontier_integrity_is_proven_healthy,
-    raw_frontier_integrity_projection,
-    raw_frontier_integrity_summary,
-    status_snapshot_has_fresh_provenance,
-)
-from polylogue.readiness.claim_guard import derive_claim_guard
-from polylogue.storage.archive_identity import archive_file_set_root
-from polylogue.storage.archive_readiness import archive_readiness_status as _archive_readiness_status
-from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
+if TYPE_CHECKING:
+    from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
+
 logger = get_logger(__name__)
+
+
+def convergence_debt_summary_info(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def schema_drift_status(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.insights.schema_drift import schema_drift_status as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def normalize_raw_frontier_status_payload(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.capability import normalize_raw_frontier_status_payload as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def raw_frontier_integrity_is_proven_healthy(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.capability import raw_frontier_integrity_is_proven_healthy as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def raw_frontier_integrity_projection(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.capability import raw_frontier_integrity_projection as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def raw_frontier_integrity_summary(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.capability import raw_frontier_integrity_summary as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def status_snapshot_has_fresh_provenance(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.capability import status_snapshot_has_fresh_provenance as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def derive_claim_guard(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.readiness.claim_guard import derive_claim_guard as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def archive_file_set_root(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.storage.archive_identity import archive_file_set_root as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def _archive_readiness_status(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.storage.archive_readiness import archive_readiness_status as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def _raw_materialization_ready_bool(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.storage.archive_readiness import raw_materialization_ready as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def _column_exists(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.storage.introspection import column_exists as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def _table_exists(*args: Any, **kwargs: Any) -> Any:
+    from polylogue.storage.introspection import table_exists as implementation
+
+    return implementation(*args, **kwargs)
+
 
 _BUILTIN_DAEMON_URL = "http://127.0.0.1:8766"
 # Bare `polylogue` uses this as a quick probe before falling back to SQLite.
@@ -1328,7 +1395,7 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
 
 def _direct_archive_readiness_status(root: Path, *, include_archive_readiness: bool) -> dict[str, Any]:
     if include_archive_readiness:
-        return _archive_readiness_status(root)
+        return cast(dict[str, Any], _archive_readiness_status(root))
     return {
         "checked": False,
         "reason": "direct_status_default_skips_exact_archive_readiness",
@@ -1611,36 +1678,39 @@ def _direct_claim_guard(
         active_writer = bool(ingest_workload.get("actively_ingesting")) or running_count > 0
         active_writer_summary = f"{running_count} live ingest attempt(s) running" if running_count else ""
 
-    return derive_claim_guard(
-        archive_schema_ready=archive_schema_ready,
-        schema_mismatches=schema_mismatches,
-        missing_tiers=missing_tiers,
-        raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
-        raw_materialization_summary=raw_summary,
-        raw_frontier_integrity_ready=bool(frontier_ready),
-        raw_frontier_integrity_summary=frontier_summary,
-        search_ready=bool(search_ready),
-        search_summary=search_summary,
-        active_writer=active_writer,
-        active_writer_summary=active_writer_summary,
-        convergence_debt_available=convergence.available,
-        convergence_debt_pending=convergence.failed_count > 0 or convergence.deferred_count > 0,
-        convergence_debt_summary=(
-            convergence.error
-            or (
-                "convergence debt pending: "
-                + ", ".join(
-                    part
-                    for part in (
-                        f"{convergence.failed_count} failed" if convergence.failed_count else "",
-                        f"{convergence.deferred_count} deferred" if convergence.deferred_count else "",
+    return cast(
+        dict[str, Any],
+        derive_claim_guard(
+            archive_schema_ready=archive_schema_ready,
+            schema_mismatches=schema_mismatches,
+            missing_tiers=missing_tiers,
+            raw_materialization_ready=_raw_materialization_ready_bool(raw_materialization_readiness),
+            raw_materialization_summary=raw_summary,
+            raw_frontier_integrity_ready=bool(frontier_ready),
+            raw_frontier_integrity_summary=frontier_summary,
+            search_ready=bool(search_ready),
+            search_summary=search_summary,
+            active_writer=active_writer,
+            active_writer_summary=active_writer_summary,
+            convergence_debt_available=convergence.available,
+            convergence_debt_pending=convergence.failed_count > 0 or convergence.deferred_count > 0,
+            convergence_debt_summary=(
+                convergence.error
+                or (
+                    "convergence debt pending: "
+                    + ", ".join(
+                        part
+                        for part in (
+                            f"{convergence.failed_count} failed" if convergence.failed_count else "",
+                            f"{convergence.deferred_count} deferred" if convergence.deferred_count else "",
+                        )
+                        if part
                     )
-                    if part
                 )
-            )
-            or "no pending convergence debt"
-        ),
-    ).to_dict()
+                or "no pending convergence debt"
+            ),
+        ).to_dict(),
+    )
 
 
 def _direct_raw_materialization_readiness(active_root: Path) -> dict[str, Any]:
@@ -1661,7 +1731,10 @@ def _direct_raw_frontier_integrity(
 ) -> dict[str, Any]:
     """Direct fallback consuming the same canonical projection as the daemon."""
 
-    return raw_frontier_integrity_projection(active_root, raw_materialization_readiness).to_dict()
+    return cast(
+        dict[str, Any],
+        raw_frontier_integrity_projection(active_root, raw_materialization_readiness).to_dict(),
+    )
 
 
 def _direct_raw_frontier_integrity_component(integrity: dict[str, Any] | None) -> dict[str, Any]:
