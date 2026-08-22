@@ -64,7 +64,7 @@ def test_manual_contains_six_tool_continuation_role_and_origin_contract() -> Non
     assert "Never cite a continuation token" in manual
     assert "strict command floor" in manual
     assert "preview-bound confirmation" in manual
-    assert "11 tokens" in manual
+    assert "12 tokens" in manual
     for name in DEFAULT_READ_TOOLS:
         assert f"### `{name}`" in manual
     for origin in ORIGIN_MEANINGS:
