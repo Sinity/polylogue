@@ -5311,23 +5311,23 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
         "seed_raw_id": "whale-seed-raw-id",
         "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
     }
-    assert events[1][1] == {
-        "seed_raw_id": "whale-seed-raw-id",
-        "success": True,
-        "repaired_count": 3,
-        "detail": "whale converged",
-        "candidate_count": 0,
-        "selected_count": 0,
-        "executed_count": 0,
-        "resource_blocked_count": 0,
-        "remaining_candidates": 0,
-        "status": "success",
-        "fenced": False,
-        "cancelled": False,
-        "census_pending": False,
-        "census_incomplete_count": 0,
-        "continuation": False,
-    }
+    assert events[1][1]["seed_raw_id"] == "whale-seed-raw-id"
+    assert events[1][1]["success"] is True
+    assert events[1][1]["repaired_count"] == 3
+    assert events[1][1]["detail"] == "whale converged"
+    assert events[1][1]["candidate_count"] == 0
+    assert events[1][1]["selected_count"] == 0
+    assert events[1][1]["executed_count"] == 0
+    assert events[1][1]["resource_blocked_count"] == 0
+    assert events[1][1]["remaining_candidates"] == 0
+    assert events[1][1]["status"] == "success"
+    assert events[1][1]["fenced"] is False
+    assert events[1][1]["cancelled"] is False
+    assert events[1][1]["census_pending"] is False
+    assert events[1][1]["census_incomplete_count"] == 0
+    assert events[1][1]["continuation"] is False
+    assert isinstance(events[1][1]["duration_ms"], float)
+    assert events[1][1]["duration_ms"] >= 0.0
 
 
 def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(

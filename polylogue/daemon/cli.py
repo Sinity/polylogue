@@ -1546,6 +1546,8 @@ def _raw_materialization_whale_completion_payload(
         "census_incomplete_count": census_incomplete,
         "remaining_candidates": remaining,
     }
+    if "duration_ms" in values:
+        payload["duration_ms"] = float(values["duration_ms"])
     return payload
 
 
@@ -1818,6 +1820,7 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
         "raw_materialization_whale_pass_started",
         payload={"seed_raw_id": candidate, "max_payload_bytes": whale_limit},
     )
+    pass_started = time.perf_counter()
     operation_started = False
     admitted_by_coordinator = False
     publication_requested = False
@@ -1884,6 +1887,7 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
                 receipt_id=receipt_id,
                 success=False,
                 detail=str(exc),
+                metrics={"duration_ms": (time.perf_counter() - pass_started) * 1000.0},
             ),
         )
         return True
@@ -1946,10 +1950,12 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
                 receipt_id=receipt_id,
                 success=False,
                 detail=str(exc),
+                metrics={"duration_ms": (time.perf_counter() - pass_started) * 1000.0},
             ),
         )
         return True
     metrics = dict(getattr(result, "metrics", {}))
+    metrics["duration_ms"] = (time.perf_counter() - pass_started) * 1000.0
     census_pending = int(metrics.get("raw_materialization_census_incomplete_raw_count", 0)) > 0
     await _publish_whale_receipt(
         kind="raw_materialization_whale_pass_completed",
