@@ -15,12 +15,13 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import asdict, dataclass, field
 from itertools import chain
 from pathlib import Path
@@ -234,6 +235,114 @@ class SeededArchiveClone:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+@dataclass(frozen=True)
+class ImmutableTreeArtifact:
+    """An atomically published, read-only fixture tree.
+
+    The caller supplies the stable key and a builder that writes one complete
+    tree. This deliberately shares the cache/clone discipline with seeded
+    archives without pretending every fixture is a ``CorpusSpec``.
+    """
+
+    root: Path
+    key: str
+    files: tuple[dict[str, object], ...]
+
+    @property
+    def manifest_id(self) -> str:
+        payload = json.dumps({"key": self.key, "files": self.files}, sort_keys=True).encode()
+        return f"immutable-tree:sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def build_immutable_tree(
+    *,
+    cache_root: Path | None,
+    key: str,
+    builder: Callable[[Path], object],
+) -> ImmutableTreeArtifact:
+    """Build or reuse one atomically published immutable fixture tree."""
+    cache_root = (cache_root or default_cache_root()).expanduser()
+    artifacts = cache_root / "artifacts"
+    locks = cache_root / ".locks"
+    staging_root = cache_root / ".staging"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    locks.mkdir(parents=True, exist_ok=True)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(key.encode()).hexdigest()
+    final_root = artifacts / name
+    lock_path = locks / f"{name}.lock"
+
+    def load() -> ImmutableTreeArtifact | None:
+        manifest_path = final_root / "manifest.json"
+        if not manifest_path.is_file():
+            return None
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if payload.get("protocol_version") != _ARTIFACT_PROTOCOL_VERSION or payload.get("key") != key:
+                return None
+            files = tuple(payload["files"])
+            for item in files:
+                path = final_root / str(item["path"])
+                if not path.is_file() or path.stat().st_size != item["size"] or _sha256(path) != item["sha256"]:
+                    return None
+            return ImmutableTreeArtifact(root=final_root, key=key, files=files)
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        cached = load()
+        if cached is not None:
+            return cached
+        if final_root.exists():
+            _remove_tree(final_root)
+        staging = staging_root / f"{name}.{uuid.uuid4().hex}"
+        staging.mkdir()
+        try:
+            builder(staging)
+            files = _archive_files(staging)
+            manifest = {
+                "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
+                "key": key,
+                "files": files,
+            }
+            (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+            _make_read_only(staging)
+            os.replace(staging, final_root)
+        except Exception:
+            _remove_tree(staging)
+            raise
+        artifact = load()
+        if artifact is None:
+            raise RuntimeError("published immutable tree failed validation")
+        return artifact
+
+
+def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
+    """Clone an immutable tree into a private writable root."""
+    if destination.exists():
+        _remove_tree(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        method = "reflink"
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        _remove_tree(destination)
+        shutil.copytree(artifact.root, destination)
+        method = "copy"
+    for path in destination.rglob("*"):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+    (destination / "manifest.json").unlink(missing_ok=True)
+    return SeededArchiveClone(destination, artifact.manifest_id, method)
 
 
 def c03_semantic_corpus_spec() -> CorpusSpec:
@@ -2207,12 +2316,15 @@ def _clone_seeded_archive_inner(
 
 
 __all__ = [
+    "ImmutableTreeArtifact",
     "SeededArchiveArtifact",
     "SeededArchiveClone",
     "SeededArchiveKey",
     "SeededArchiveManifest",
+    "build_immutable_tree",
     "build_seeded_archive",
     "c03_semantic_corpus_spec",
+    "clone_immutable_tree",
     "clone_seeded_archive",
     "default_cache_root",
     "named_corpus_specs",

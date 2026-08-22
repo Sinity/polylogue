@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from shutil import copytree
@@ -17,6 +18,9 @@ from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
     PathologyZoo,
     build_pathology_zoo,
+    build_pathology_zoo_ro,
+    make_pathology_zoo_member_red,
+    pathology_zoo_member_ids,
 )
 
 
@@ -144,6 +148,32 @@ def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
             sessions_per_origin=1,
             pathology_session_ids=pathology_zoo.canary_session_ids,
         )
+
+
+def test_pathology_zoo_selects_members_from_one_immutable_aggregate(tmp_path: Path) -> None:
+    aggregate = build_pathology_zoo_ro(cache_root=tmp_path / "cache")
+    selected = build_pathology_zoo(
+        tmp_path / "selected",
+        member_ids=("whale-component", "hook-event"),
+        cache_root=tmp_path / "cache",
+    )
+
+    assert aggregate.is_aggregate
+    assert selected.selected_member_ids == ("whale-component", "hook-event")
+    assert {member.member_id for member in selected.manifest} == set(selected.selected_member_ids)
+    assert pathology_zoo_member_ids() == tuple(member.member_id for member in aggregate.manifest)
+    assert not (aggregate.archive_root.stat().st_mode & os.W_OK)
+
+
+def test_pathology_zoo_writable_clone_does_not_mutate_aggregate(tmp_path: Path) -> None:
+    aggregate = build_pathology_zoo_ro(cache_root=tmp_path / "cache")
+    clone = build_pathology_zoo(tmp_path / "clone", cache_root=tmp_path / "cache")
+
+    make_pathology_zoo_member_red(clone.archive_root, "whale-component")
+    with sqlite3.connect(aggregate.archive_root / "index.db") as connection:
+        assert connection.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?", ("codex-session:zoo-whale",)
+        ).fetchone() == (48,)
 
 
 def test_pathology_zoo_antigravity_member_replays_after_seed_without_language_server_patch(

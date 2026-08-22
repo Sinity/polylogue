@@ -13,6 +13,7 @@ import json
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 
 from polylogue.config import Source
@@ -32,6 +33,12 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, markdown_export_payload
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from tests.infra.workload_artifacts import (
+    ImmutableTreeArtifact,
+    build_immutable_tree,
+    clone_immutable_tree,
+    default_cache_root,
+)
 
 CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
@@ -44,9 +51,25 @@ class PathologyZoo:
 
     archive_root: Path
     manifest: tuple[PathologyZooMember, ...]
+    selected_member_ids: tuple[str, ...] = ()
 
     def members_for(self, pathology: str) -> tuple[PathologyZooMember, ...]:
         return tuple(member for member in self.manifest if member.pathology == pathology)
+
+    def member(self, member_id: str) -> PathologyZooMember:
+        """Return one selected member, failing loudly for an unknown id."""
+        for member in self.manifest:
+            if member.member_id == member_id:
+                return member
+        raise KeyError(f"unknown pathology-zoo member {member_id!r}")
+
+    @property
+    def is_aggregate(self) -> bool:
+        return len(self.manifest) == len(PRODUCTION_PATHOLOGY_ZOO_MANIFEST)
+
+    def with_members(self, member_ids: Iterable[str]) -> PathologyZoo:
+        selected = _select_members(member_ids)
+        return replace(self, manifest=selected, selected_member_ids=tuple(member.member_id for member in selected))
 
     @property
     def canary_session_ids(self) -> tuple[str, ...]:
@@ -167,6 +190,24 @@ _CODEX = "codex-session"
 _CLAUDE_AI = "claude-ai-export"
 _CLAUDE_CODE = "claude-code-session"
 _CHATGPT = "chatgpt-export"
+
+
+def _select_members(member_ids: Iterable[str] | None) -> tuple[PathologyZooMember, ...]:
+    if member_ids is None:
+        return PRODUCTION_PATHOLOGY_ZOO_MANIFEST
+    requested = tuple(dict.fromkeys(member_ids))
+    if not requested:
+        raise ValueError("pathology-zoo member selection cannot be empty")
+    known = {member.member_id for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST}
+    unknown = sorted(set(requested) - known)
+    if unknown:
+        raise ValueError(f"unknown pathology-zoo member(s): {', '.join(unknown)}")
+    return tuple(member for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST if member.member_id in requested)
+
+
+def pathology_zoo_member_ids() -> tuple[str, ...]:
+    """Stable selectable member ids from the production manifest."""
+    return tuple(member.member_id for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST)
 
 
 def _write_json(path: Path, payload: object) -> Path:
@@ -356,22 +397,6 @@ def _write_manual_members(root: Path) -> tuple[Path, ...]:
             manual / "lifecycle-new.json",
             _chatgpt_payload("zoo-lifecycle-anchor-drift", list(reversed(lifecycle_nodes))),
         ),
-        _write_json(
-            manual / "content-blocks-old.json",
-            {
-                "uuid": "zoo-content-blocks-vintage",
-                "chat_messages": [{"uuid": "content-1", "sender": "human", "text": "same content"}],
-            },
-        ),
-        _write_json(
-            manual / "content-blocks-new.json",
-            {
-                "uuid": "zoo-content-blocks-vintage",
-                "chat_messages": [
-                    {"uuid": "content-1", "sender": "human", "content": [{"type": "text", "text": "same content"}]}
-                ],
-            },
-        ),
         *write_claude_vintage_live_proof_pair(root),
         _write_json(
             manual / "attachment-metadata.json",
@@ -550,8 +575,8 @@ def _validate_manifest(root: Path, manifest: tuple[PathologyZooMember, ...]) -> 
                 )
 
 
-def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
-    """Build the v0 zoo through the production source-to-archive harness."""
+def _build_pathology_zoo_uncached(archive_root: Path) -> PathologyZoo:
+    """Build the aggregate zoo through the production source-to-archive harness."""
     wire_root = archive_root / "wire"
     _write_generated_members(wire_root, indexes=(0, 1, 3, 5, 6))
     _write_manual_members(wire_root)
@@ -593,6 +618,92 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
     return PathologyZoo(archive_root=archive_root, manifest=manifest)
 
 
+def _pathology_cache_key() -> str:
+    """Stable aggregate identity, independent of the current git commit."""
+    payload = {
+        "protocol": 1,
+        "manifest": [member.member_id for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST],
+        "fixture_source": sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    return "pathology-zoo:aggregate:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _manifest_for_root(root: Path) -> tuple[PathologyZooMember, ...]:
+    """Bind to the exact source paths retained inside the published SQLite."""
+    with sqlite3.connect(root / "source.db") as connection:
+        hook_event_path = connection.execute(
+            "SELECT source_path FROM raw_hook_events WHERE hook_event_id = 'hook:zoo-hook-event'"
+        ).fetchone()
+        if hook_event_path is None:
+            raise RuntimeError("pathology zoo cache has no durable hook event")
+        bound: list[PathologyZooMember] = []
+        for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST:
+            durable_paths: tuple[str, ...]
+            if member.member_id == "hook-event":
+                durable_paths = (str(hook_event_path[0]),)
+            elif member.member_id == "non-stream-safe":
+                row = connection.execute(
+                    "SELECT source_path FROM raw_sessions WHERE origin = 'antigravity-session' LIMIT 1"
+                ).fetchone()
+                durable_paths = () if row is None else (str(row[0]),)
+            else:
+                durable_paths = tuple(
+                    str(row[0])
+                    for raw_path in member.raw_paths
+                    for row in connection.execute(
+                        "SELECT DISTINCT source_path FROM raw_sessions WHERE source_path LIKE ? ORDER BY source_path",
+                        (f"%/{raw_path}",),
+                    )
+                )
+            if len(durable_paths) != len(set(member.raw_paths)):
+                raise RuntimeError(f"pathology zoo cache lost durable paths for {member.member_id}")
+            bound.append(replace(member, durable_paths=durable_paths))
+    return tuple(bound)
+
+
+def build_pathology_zoo_ro(*, cache_root: Path | None = None) -> PathologyZoo:
+    """Return the shared immutable aggregate; never hand it to a writer."""
+    artifact = build_immutable_tree(
+        cache_root=(cache_root or default_cache_root()) / "pathology-zoo",
+        key=_pathology_cache_key(),
+        builder=lambda root: _build_pathology_zoo_uncached(root),
+    )
+    manifest = _manifest_for_root(artifact.root)
+    return PathologyZoo(archive_root=artifact.root, manifest=manifest, selected_member_ids=pathology_zoo_member_ids())
+
+
+def build_pathology_zoo(
+    archive_root: Path,
+    *,
+    member_ids: Iterable[str] | None = None,
+    cache_root: Path | None = None,
+) -> PathologyZoo:
+    """Clone the immutable aggregate into a private writable archive.
+
+    ``member_ids`` selects the manifest view for focused tests.  The clone is
+    still sourced from the complete aggregate so production canaries and
+    aggregate verifiers never receive partial evidence by accident.
+    """
+    selected = _select_members(member_ids)
+    aggregate = build_pathology_zoo_ro(cache_root=cache_root)
+    clone = clone_immutable_tree(
+        ImmutableTreeArtifact(root=aggregate.archive_root, key=_pathology_cache_key(), files=()),
+        archive_root,
+    )
+    # clone_immutable_tree only needs the source root and manifest identity;
+    # restore the production-derived durable paths against this private root.
+    del clone
+    selected_ids = {member.member_id for member in selected}
+    return PathologyZoo(
+        archive_root=archive_root,
+        # Durable source paths intentionally retain the aggregate artifact's
+        # provenance; the clone contains those bytes but does not rewrite the
+        # source-tier receipt.
+        manifest=tuple(member for member in aggregate.manifest if member.member_id in selected_ids),
+        selected_member_ids=tuple(member.member_id for member in selected),
+    )
+
+
 def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
     """Apply only the fixture mutation for one production manifest member."""
     try:
@@ -602,4 +713,11 @@ def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
     mutation.apply(archive_root)
 
 
-__all__ = ["PathologyZoo", "PathologyZooMutation", "build_pathology_zoo", "make_pathology_zoo_member_red"]
+__all__ = [
+    "PathologyZoo",
+    "PathologyZooMutation",
+    "build_pathology_zoo",
+    "build_pathology_zoo_ro",
+    "make_pathology_zoo_member_red",
+    "pathology_zoo_member_ids",
+]

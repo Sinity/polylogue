@@ -7,11 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.pathology_zoo import (
+    PathologyZoo,
+    build_pathology_zoo,
+    build_pathology_zoo_ro,
+)
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
     build_seeded_archive,
     clone_seeded_archive,
+    default_cache_root,
     named_corpus_specs,
     schema_coverage_corpus_specs,
 )
@@ -99,3 +105,15 @@ def named_seeded_archive_ro(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], 
         return artifact.root / "index.db"
 
     return seed
+
+
+@pytest.fixture(scope="session")
+def pathology_zoo_artifact() -> PathologyZoo:
+    """Shared read-only aggregate pathology evidence."""
+    return build_pathology_zoo_ro()
+
+
+@pytest.fixture
+def pathology_zoo_writable(pathology_zoo_artifact: PathologyZoo, tmp_path: Path) -> PathologyZoo:
+    """Private writable clone; mutations never touch the aggregate cache."""
+    return build_pathology_zoo(tmp_path / "pathology-zoo", cache_root=default_cache_root())
