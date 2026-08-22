@@ -161,6 +161,7 @@ class TestRawSessionStorage:
                         (original.raw_id,),
                     )
                 ).fetchone()
+                assert raw is not None
                 assert tuple(raw) == ("/exports/original.json", 1_768_465_800_000, None)
                 observation = await (
                     await conn.execute(
@@ -168,6 +169,7 @@ class TestRawSessionStorage:
                         (original.raw_id,),
                     )
                 ).fetchone()
+                assert observation is not None
                 assert observation[0] == 0
 
     async def test_duplicate_only_backfills_null_mtime(self, backend: SQLiteBackend) -> None:
