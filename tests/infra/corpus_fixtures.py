@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -15,11 +15,13 @@ from tests.infra.pathology_zoo import (
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
+    _validate_artifact_with_retry,
     build_seeded_archive,
     clone_seeded_archive,
     default_cache_root,
     named_corpus_specs,
     schema_coverage_corpus_specs,
+    seeded_archive_key,
 )
 
 
@@ -36,9 +38,13 @@ def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArch
 
 
 @pytest.fixture
-def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Path) -> SeededArchiveClone:
+def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Path) -> Iterator[SeededArchiveClone]:
     """Private full-root clone for a mutating consumer."""
-    return clone_seeded_archive(seeded_archive, tmp_path / "seeded-archive-clone")
+    clone = clone_seeded_archive(seeded_archive, tmp_path / "seeded-archive-clone")
+    try:
+        yield clone
+    finally:
+        clone.close()
 
 
 @pytest.fixture
@@ -100,7 +106,13 @@ def named_seeded_archive_ro(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], 
     """
 
     def seed(name: str) -> Path:
-        artifact = build_seeded_archive(named_corpus_specs(name))
+        specs = named_corpus_specs(name)
+        artifact = build_seeded_archive(specs)
+        validated = _validate_artifact_with_retry(artifact.root, seeded_archive_key(specs))
+        if validated is None or validated.manifest.manifest_id != artifact.manifest.manifest_id:
+            raise RuntimeError("shared seeded archive failed query-only lease validation")
+        if artifact.root.parent.name != "artifacts":
+            raise RuntimeError("shared seeded archive is outside the authenticated artifact placement")
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
         return artifact.root / "index.db"
 

@@ -2300,86 +2300,35 @@ def _authenticate_clone_copy(
 
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
-    _mkdir_pinned(destination.parent)
-    ancestor_fd, parent_name = _open_pinned_parent(destination.parent)
-    parent_fd = -1
-    ancestor_mode: int | None = None
-    parent_mode: int | None = None
-    try:
-        ancestor_mode = os.fstat(ancestor_fd).st_mode
-        fcntl.flock(ancestor_fd, fcntl.LOCK_EX)
-        parent_fd = os.open(parent_name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=ancestor_fd)
-        _assert_named_directory(ancestor_fd, parent_name, parent_fd)
-        fcntl.flock(parent_fd, fcntl.LOCK_EX)
-        parent_mode = os.fstat(parent_fd).st_mode
-        os.fchmod(ancestor_fd, ancestor_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        os.fchmod(parent_fd, parent_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        _assert_named_directory(ancestor_fd, parent_name, parent_fd)
-        clone = _clone_seeded_archive_inner(
-            artifact,
-            destination,
-            ancestor_fd=ancestor_fd,
-            parent_fd=parent_fd,
-            ancestor_mode=ancestor_mode,
-            parent_mode=parent_mode,
-        )
-        ancestor_fd = -1
-        parent_fd = -1
-        return clone
-    finally:
-        try:
-            if parent_fd >= 0 and parent_mode is not None:
-                with contextlib.suppress(OSError):
-                    os.fchmod(parent_fd, parent_mode)
-            if ancestor_fd >= 0 and ancestor_mode is not None:
-                with contextlib.suppress(OSError):
-                    os.fchmod(ancestor_fd, ancestor_mode)
-        finally:
-            try:
-                if parent_fd >= 0:
-                    with contextlib.suppress(OSError):
-                        fcntl.flock(parent_fd, fcntl.LOCK_UN)
-            finally:
-                try:
-                    if ancestor_fd >= 0:
-                        with contextlib.suppress(OSError):
-                            fcntl.flock(ancestor_fd, fcntl.LOCK_UN)
-                finally:
-                    try:
-                        if parent_fd >= 0:
-                            os.close(parent_fd)
-                    finally:
-                        if ancestor_fd >= 0:
-                            os.close(ancestor_fd)
+    """Create an authenticated private clone with a clone-scoped capability.
 
-
-def _clone_seeded_archive_inner(
-    artifact: SeededArchiveArtifact,
-    destination: Path,
-    *,
-    ancestor_fd: int,
-    parent_fd: int,
-    ancestor_mode: int,
-    parent_mode: int,
-) -> SeededArchiveClone:
-    """Create a complete private writable archive clone, recording its method."""
+    Only the returned clone root is pinned and shared-locked.  Ancestor
+    directories remain entirely caller-owned, so closing one clone cannot
+    restore modes or release locks belonging to a sibling.
+    """
     _assert_no_symlinks(artifact.root)
-    # The in-memory dataclass is frozen, but its nested dictionaries are not.
-    # Authenticate the disk carrier immediately before copying so a caller
-    # cannot mutate ``artifact.manifest`` and obtain a false provenance link.
     disk_manifest = _read_manifest(artifact.root / "manifest.json")
     if disk_manifest != artifact.manifest:
         raise ValueError("published artifact manifest changed before clone")
-    source_manifest_id = disk_manifest.manifest_id
     if _is_symlink_node(destination):
         _safe_unlink(destination)
     _remove_tree(destination)
-    _mkdir_pinned(destination.parent)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    method = "reflink"
+    try:
+        subprocess.run(
+            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        _remove_tree(destination)
+        _copy_tree(artifact.root, destination)
+        method = "copy"
     integrity_fd = -1
     try:
-        _copy_tree(artifact.root, destination)
-        _authenticate_clone_copy(artifact, destination, disk_manifest)
-        method = "copy"
         _assert_no_symlinks(destination)
         for path in _pinned_paths(destination):
             _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
@@ -2390,10 +2339,6 @@ def _clone_seeded_archive_inner(
 
             _safe_unlink(bootstrap_marker)
             _record_fresh_durable_bootstrap(destination)
-        # This is the final mutation and the final authentication. No
-        # pathname or metadata operation occurs between this check and return.
-        # Pin the returned root before final authentication. No pathname
-        # operation occurs between authentication and returning this FD.
         integrity_fd = _open_pinned_dir(destination)
         fcntl.flock(integrity_fd, fcntl.LOCK_SH)
         _authenticate_clone_copy(
@@ -2402,8 +2347,6 @@ def _clone_seeded_archive_inner(
             disk_manifest,
             ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
         )
-        # Retain the shared integrity capability across the return boundary;
-        # callers may close it when the clone is no longer needed.
     except BaseException:
         if integrity_fd >= 0:
             with contextlib.suppress(OSError):
@@ -2413,13 +2356,9 @@ def _clone_seeded_archive_inner(
         raise
     return SeededArchiveClone(
         root=destination,
-        source_manifest_id=source_manifest_id,
+        source_manifest_id=disk_manifest.manifest_id,
         clone_method=method,
         _integrity_fd=integrity_fd,
-        _ancestor_fd=ancestor_fd,
-        _parent_fd=parent_fd,
-        _ancestor_mode=ancestor_mode,
-        _parent_mode=parent_mode,
     )
 
 
