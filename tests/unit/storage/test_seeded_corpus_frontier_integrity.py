@@ -71,7 +71,7 @@ def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
     genuinely broken active chain, and the check must name it -- otherwise the
     green result above proves nothing about the corpus.
     """
-    root = named_seeded_archive("cli-chatgpt").parent
+    root = named_seeded_archive("cli-chatgpt").root
 
     conn = sqlite3.connect(root / "source.db")
     with conn:

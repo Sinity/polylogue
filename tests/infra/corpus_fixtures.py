@@ -38,6 +38,7 @@ def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Pat
 @pytest.fixture
 def named_seeded_archive(
     workspace_env: dict[str, Path],
+    request: pytest.FixtureRequest,
 ) -> Callable[[str], SeededArchiveClone]:
     """Clone one registered immutable workload into this test's archive root.
 
@@ -46,10 +47,25 @@ def named_seeded_archive(
     :func:`named_seeded_archive_ro` instead and skip the clone entirely.
     """
     archive_root = workspace_env["archive_root"]
+    clones: list[SeededArchiveClone] = []
+
+    def close_clones() -> None:
+        errors: list[RuntimeError] = []
+        for clone in reversed(clones):
+            try:
+                clone.close()
+            except RuntimeError as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
+
+    request.addfinalizer(close_clones)
 
     def seed(name: str) -> SeededArchiveClone:
         artifact = build_seeded_archive(named_corpus_specs(name))
-        return clone_seeded_archive(artifact, archive_root)
+        clone = clone_seeded_archive(artifact, archive_root)
+        clones.append(clone)
+        return clone
 
     return seed
 
