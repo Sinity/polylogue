@@ -21,11 +21,13 @@ into a sequence of per-target executions that:
   the returned :class:`BackfillOperation`.
 
 The cursor is intentionally a small opaque string (``"target:N"``)
-encoding the index of the *next* target to run. That gives us the AC
-requirements (resume, no duplicate work, no skipped work) without
-needing storage-layer schema changes — the cursor is kept either in
-memory by the caller, or persisted to a small JSON state file under
-the configured archive root.
+encoding the index of the *next* target to run in the current work list. The
+persisted state also records that list by target identity. On resume, the
+executor translates completed identities into the current catalog before any
+handler runs, so removing or reordering a target cannot shift the cursor onto
+unrelated work. An unverifiable historical state fails closed. The cursor is
+kept either in memory by the caller, or persisted to a small JSON state file
+under the configured archive root.
 
 The state file is the only durable resume substrate this module
 introduces; it lives alongside the archive and is removed when the
@@ -300,6 +302,49 @@ def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
     return index
 
 
+def _resume_pending_specs(
+    specs: tuple[MaintenanceTargetSpec, ...],
+    persisted: JSONDocument,
+) -> tuple[tuple[MaintenanceTargetSpec, ...] | None, str | None]:
+    """Resolve a persisted cursor by target identity, never by old position.
+
+    Target catalogs can remove or reorder entries while an operation is
+    interrupted. A positional cursor from the old catalog must therefore not
+    be applied to the new tuple. Completed names are removed from the current
+    target set, while targets absent from the old state remain pending. This
+    lets a removed target disappear without shifting the cursor onto an
+    unrelated cleanup target.
+    """
+    raw_targets = persisted.get("targets")
+    cursor = persisted.get("cursor")
+    if not isinstance(raw_targets, list) or not all(isinstance(name, str) for name in raw_targets):
+        return None, "Persisted replay state has no valid target identity list"
+    old_targets = tuple(raw_targets)
+    if len(set(old_targets)) != len(old_targets):
+        return None, "Persisted replay state has duplicate target identities"
+    if not isinstance(cursor, str):
+        return None, "Persisted replay state has no valid cursor"
+
+    # Unlike _decode_cursor, an invalid upper bound is incompatible here. The
+    # normal decoder's historical clamping is safe only when the target tuple
+    # is known to be the same tuple that produced the cursor.
+    if cursor == CURSOR_DONE:
+        old_index = len(old_targets)
+    elif cursor.startswith(_CURSOR_TARGET_PREFIX):
+        head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
+        try:
+            old_index = int(head)
+        except ValueError:
+            old_index = -1
+        if old_index < 0 or old_index > len(old_targets):
+            return None, "Persisted replay state has an incompatible target cursor"
+    else:
+        return None, "Persisted replay state has an incompatible target cursor"
+
+    completed = set(old_targets[:old_index])
+    return tuple(spec for spec in specs if spec.name not in completed), None
+
+
 # ---------------------------------------------------------------------------
 # State persistence
 # ---------------------------------------------------------------------------
@@ -519,6 +564,53 @@ def execute_replay(
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
+    # Load persisted identity metadata before any execution gate. A cursor
+    # written against a retired catalog must be remapped or rejected before a
+    # handler can observe the request.
+    persisted: JSONDocument | None = None
+    if resume_cursor is None and persist_state:
+        persisted = load_state(config, op_id)
+        if persisted is not None:
+            cursor_value = persisted.get("cursor")
+            if isinstance(cursor_value, str):
+                resume_cursor = cursor_value
+
+    if persisted is not None:
+        pending_specs, resume_error = _resume_pending_specs(resolved_specs, persisted)
+        if resume_error is not None or pending_specs is None:
+            started_at = datetime.now(timezone.utc).isoformat()
+            message = resume_error or "Persisted replay state is incompatible with the current target catalog"
+            sample = FailureSample(
+                kind="IncompatibleReplayState",
+                locator=f"operation:{op_id}",
+                message=message,
+            )
+            logger.error(
+                "replay_state_incompatible",
+                operation_id=op_id,
+                targets=resolved_names,
+                error=message,
+            )
+            return BackfillOperation(
+                operation_id=op_id,
+                kind=BackfillKind.DERIVED_REBUILD,
+                targets=resolved_names,
+                status=OperationStatus.FAILED,
+                progress=0.0,
+                started_at=started_at,
+                completed_at=started_at,
+                error=message,
+                scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+                reason=InvalidationReason.UNKNOWN,
+                failure_samples=BoundedFailureSamples.from_samples((sample,)),
+                metrics={"repaired_count": 0.0},
+            )
+        # The state cursor has already been translated by identity. The
+        # remaining tuple is a fresh positional work list for this run.
+        resolved_specs = pending_specs
+        resolved_names = tuple(spec.name for spec in resolved_specs)
+        resume_cursor = _encode_cursor(0)
+
     blockers = offline_maintenance_blockers(
         config,
         repair=any(name in SAFE_REPAIR_TARGETS for name in resolved_names),
@@ -551,13 +643,6 @@ def execute_replay(
             failure_samples=BoundedFailureSamples.from_samples(samples),
             metrics={"repaired_count": 0.0},
         )
-
-    if resume_cursor is None and persist_state:
-        persisted = load_state(config, op_id)
-        if persisted is not None:
-            cursor_value = persisted.get("cursor")
-            if isinstance(cursor_value, str):
-                resume_cursor = cursor_value
 
     start_index = _decode_cursor(resume_cursor, total_targets=len(resolved_names))
     state = _ReplayState(

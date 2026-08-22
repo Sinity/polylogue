@@ -71,6 +71,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
         "session_insights": [],
         "message_type_backfill": [],
         "empty_sessions": [],
+        "orphaned_blobs": [],
     }
 
     def stub(name: str):  # type: ignore[no-untyped-def]
@@ -186,6 +187,27 @@ def test_removed_persisted_target_does_not_shift_resume_cursor(
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["empty_sessions"] == ["live"]
     assert patched_dispatch["orphaned_blobs"] == ["live"]
+
+
+def test_positional_persisted_cursor_without_identity_fails_closed(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-unverifiable")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"operation_id":"op-unverifiable","cursor":"target:2"}')
+
+    op = execute_replay(
+        config,
+        targets=("session_insights", "orphaned_blobs"),
+        operation_id="op-unverifiable",
+    )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.error == "Persisted replay state has no valid target identity list"
+    assert op.failure_samples.samples[0].kind == "IncompatibleReplayState"
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["orphaned_blobs"] == []
 
 
 def test_explicit_resume_cursor_overrides_persisted_state(
