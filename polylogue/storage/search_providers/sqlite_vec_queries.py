@@ -97,21 +97,21 @@ class SqliteVecQueryMixin:
         conn = self._get_connection()
         try:
             message_origin = origin
-            if message_origin is None:
-                message_origin = next(
-                    (msg.source_name.strip() for msg in embeddable if msg.source_name and msg.source_name.strip()),
-                    None,
-                )
             # Legacy arbitrary-path providers historically carried a sessions
-            # table beside vectors. Keep that compatibility fallback isolated;
-            # canonical split embeddings.db never queries its own absent table.
+            # table beside vectors. Prefer that authoritative legacy value;
+            # canonical split embeddings.db never queries its absent table.
             if message_origin is None and self.db_path.name != "embeddings.db":
                 row = conn.execute(
                     "SELECT origin FROM sessions WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()
                 if row:
-                    message_origin = row[0] or message_origin
+                    message_origin = row[0]
+            if message_origin is None:
+                message_origin = next(
+                    (msg.source_name.strip() for msg in embeddable if msg.source_name and msg.source_name.strip()),
+                    None,
+                )
             message_origin = message_origin or "unknown"
             now_ms = int(datetime.now(UTC).timestamp() * 1000)
             writes = [
