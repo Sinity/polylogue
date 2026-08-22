@@ -107,7 +107,7 @@ class SqliteVecQueryMixin:
                 ).fetchone()
                 if row:
                     message_origin = row[0]
-            if message_origin is None:
+            if message_origin is None and self.db_path.name == "embeddings.db":
                 message_origin = next(
                     (msg.source_name.strip() for msg in embeddable if msg.source_name and msg.source_name.strip()),
                     None,
