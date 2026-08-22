@@ -180,16 +180,51 @@ class SeededArchiveArtifact:
         return self.manifest.facts
 
 
-@dataclass(frozen=True)
+@dataclass
 class SeededArchiveClone:
     root: Path
     source_manifest_id: str
     clone_method: str
     _integrity_fd: int = field(default=-1, repr=False, compare=False)
+    _ancestor_fd: int = field(default=-1, repr=False, compare=False)
+    _parent_fd: int = field(default=-1, repr=False, compare=False)
+    _ancestor_mode: int | None = field(default=None, repr=False, compare=False)
+    _parent_mode: int | None = field(default=None, repr=False, compare=False)
 
     def close(self) -> None:
+        """Release the pinned return capability and its publication domain."""
         if self._integrity_fd >= 0:
-            os.close(self._integrity_fd)
+            with contextlib.suppress(OSError):
+                os.close(self._integrity_fd)
+            self._integrity_fd = -1
+        if self._parent_fd >= 0:
+            if self._parent_mode is not None:
+                with contextlib.suppress(OSError):
+                    os.fchmod(self._parent_fd, self._parent_mode)
+            with contextlib.suppress(OSError):
+                fcntl.flock(self._parent_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(self._parent_fd)
+            self._parent_fd = -1
+        if self._ancestor_fd >= 0:
+            if self._ancestor_mode is not None:
+                with contextlib.suppress(OSError):
+                    os.fchmod(self._ancestor_fd, self._ancestor_mode)
+            with contextlib.suppress(OSError):
+                fcntl.flock(self._ancestor_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(self._ancestor_fd)
+            self._ancestor_fd = -1
+
+    def __del__(self) -> None:
+        with contextlib.suppress(BaseException):
+            self.close()
+
+    def __enter__(self) -> SeededArchiveClone:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def c03_semantic_corpus_spec() -> CorpusSpec:
@@ -2044,13 +2079,23 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         os.fchmod(ancestor_fd, ancestor_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         os.fchmod(parent_fd, parent_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         _assert_named_directory(ancestor_fd, parent_name, parent_fd)
-        return _clone_seeded_archive_inner(artifact, destination)
+        clone = _clone_seeded_archive_inner(
+            artifact,
+            destination,
+            ancestor_fd=ancestor_fd,
+            parent_fd=parent_fd,
+            ancestor_mode=ancestor_mode,
+            parent_mode=parent_mode,
+        )
+        ancestor_fd = -1
+        parent_fd = -1
+        return clone
     finally:
         try:
-            if parent_mode is not None:
+            if parent_fd >= 0 and parent_mode is not None:
                 with contextlib.suppress(OSError):
                     os.fchmod(parent_fd, parent_mode)
-            if ancestor_mode is not None:
+            if ancestor_fd >= 0 and ancestor_mode is not None:
                 with contextlib.suppress(OSError):
                     os.fchmod(ancestor_fd, ancestor_mode)
         finally:
@@ -2060,17 +2105,27 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
                         fcntl.flock(parent_fd, fcntl.LOCK_UN)
             finally:
                 try:
-                    with contextlib.suppress(OSError):
-                        fcntl.flock(ancestor_fd, fcntl.LOCK_UN)
+                    if ancestor_fd >= 0:
+                        with contextlib.suppress(OSError):
+                            fcntl.flock(ancestor_fd, fcntl.LOCK_UN)
                 finally:
                     try:
                         if parent_fd >= 0:
                             os.close(parent_fd)
                     finally:
-                        os.close(ancestor_fd)
+                        if ancestor_fd >= 0:
+                            os.close(ancestor_fd)
 
 
-def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
+def _clone_seeded_archive_inner(
+    artifact: SeededArchiveArtifact,
+    destination: Path,
+    *,
+    ancestor_fd: int,
+    parent_fd: int,
+    ancestor_mode: int,
+    parent_mode: int,
+) -> SeededArchiveClone:
     """Create a complete private writable archive clone, recording its method."""
     _assert_no_symlinks(artifact.root)
     # The in-memory dataclass is frozen, but its nested dictionaries are not.
@@ -2125,6 +2180,10 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
         source_manifest_id=source_manifest_id,
         clone_method=method,
         _integrity_fd=integrity_fd,
+        _ancestor_fd=ancestor_fd,
+        _parent_fd=parent_fd,
+        _ancestor_mode=ancestor_mode,
+        _parent_mode=parent_mode,
     )
 
 
