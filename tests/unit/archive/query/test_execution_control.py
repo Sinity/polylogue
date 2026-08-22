@@ -230,10 +230,16 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
     controller = QueryAdmissionController(capacity=2, reserved_interactive=1)
     release_scans = threading.Event()
     first_scan_started = threading.Event()
+    second_scan_started = threading.Event()
     interactive_started = threading.Event()
 
     def blocking_scan(store: ArchiveStore) -> int:
         first_scan_started.set()
+        assert release_scans.wait(timeout=5)
+        return _cheap_work(store)
+
+    def second_scan_work(store: ArchiveStore) -> int:
+        second_scan_started.set()
         assert release_scans.wait(timeout=5)
         return _cheap_work(store)
 
@@ -255,7 +261,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
         assert await asyncio.to_thread(first_scan_started.wait, 2)
         second_scan_ctx = QueryExecutionContext.create(query_text="scan-2", workload_class="scan", timeout_s=5.0)
         second_scan = asyncio.create_task(
-            execute_archive_read(root, blocking_scan, ctx=second_scan_ctx, controller=controller)
+            execute_archive_read(root, second_scan_work, ctx=second_scan_ctx, controller=controller)
         )
         deadline = time.monotonic() + 2
         while controller.queue_position(second_scan_ctx) is None and time.monotonic() < deadline:
@@ -270,6 +276,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
             )
         )
         assert await asyncio.to_thread(interactive_started.wait, 1)
+        assert second_scan_started.is_set() is False
     finally:
         release_scans.set()
         await asyncio.gather(

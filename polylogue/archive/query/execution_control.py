@@ -622,12 +622,41 @@ async def execute_archive_read(
     from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter
 
     async def _admitted_submission() -> T:
-        # Keep the lease inside the shielded task. A client disconnect may
-        # stop awaiting this coroutine after its bounded drain, but capacity
-        # must remain held until the owned SQLite worker has actually cleaned
-        # up and returned.
-        async with admission.admit_async(ctx):
-            return await default_archive_read_async_adapter().run(_admitted_run)
+        # Acquire on the event loop so queued admission never consumes a
+        # storage worker. Once the executor accepts the operation, ownership
+        # transfers to its synchronous closure: task cancellation (including
+        # asyncio.run() shutdown) must not release capacity before the
+        # underlying executor operation has cleaned up and returned.
+        weight = await admission._admit_async(ctx)
+        released = False
+
+        def _release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                admission._release(ctx, weight)
+
+        def _owned_run() -> T:
+            try:
+                return _admitted_run()
+            finally:
+                _release()
+
+        submitted = False
+
+        def _mark_submitted() -> None:
+            nonlocal submitted
+            submitted = True
+
+        try:
+            return await default_archive_read_async_adapter().run(_owned_run, on_submitted=_mark_submitted)
+        except BaseException:
+            # No executor operation owns the lease when submission was
+            # rejected or cancellation arrived before this coroutine ran.
+            # After submission, _owned_run is the sole release owner.
+            if not submitted:
+                _release()
+            raise
 
     worker = asyncio.create_task(_admitted_submission())
     try:
