@@ -37,6 +37,7 @@ sessions instead of writing a duplicate raw row.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import zipfile
 from collections.abc import Iterator
@@ -205,6 +206,10 @@ def _write_large_zip_member(root: Path, name: str, payload: bytes) -> Path:
     return archive
 
 
+def _set_mtime_ms(path: Path, mtime_ms: int) -> None:
+    os.utime(path, ns=(mtime_ms * 1_000_000, mtime_ms * 1_000_000))
+
+
 @pytest.mark.asyncio
 async def test_archive_ingest_session_shaped_workflow_journal_reaches_parser_idempotently(
     tmp_path: Path, workspace_env: dict[str, Path]
@@ -273,6 +278,8 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     """A journal with no decodable session evidence remains a typed artifact."""
     archive_root = workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
+    expected_mtime_ms = 1_735_689_600_123
+    _set_mtime_ms(journal, expected_mtime_ms)
 
     result = await parse_sources_archive(
         archive_root,
@@ -283,6 +290,7 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     assert result.parse_failures == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT file_mtime_ms FROM raw_sessions").fetchone() == (expected_mtime_ms,)
         assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
             "workflow_journal",
             0,
@@ -320,6 +328,8 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
     """Malformed ZIP journals are retained as typed evidence without sessions."""
     archive_root = workspace_env["archive_root"]
     journal_zip = _write_workflow_journal_zip(tmp_path / "sessions", malformed=True)
+    expected_mtime_ms = 1_735_689_601_456
+    _set_mtime_ms(journal_zip, expected_mtime_ms)
 
     result = await parse_sources_archive(
         archive_root,
@@ -330,6 +340,7 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
     assert result.parse_failures == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT file_mtime_ms FROM raw_sessions").fetchone() == (expected_mtime_ms,)
         assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
             "workflow_journal",
             0,

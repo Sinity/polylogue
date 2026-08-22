@@ -432,7 +432,7 @@ def _admit_non_session_origin_artifacts(
         walk = _setup_source_walk(
             source,
             cursor_state=None,
-            include_mtime=False,
+            include_mtime=True,
             known_mtimes=None,
             discover_sidecars=True,
         )
