@@ -16,6 +16,7 @@ import click
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import get_logger
+from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
@@ -1403,6 +1404,32 @@ def _direct_archive_readiness_status(root: Path, *, include_archive_readiness: b
     }
 
 
+def _collect_direct_archive_readiness(root: Path, *, include_archive_readiness: bool) -> dict[str, Any]:
+    """Collect exact archive readiness as an independently budgeted component."""
+    registry = StatusComponentRegistry(
+        [
+            StatusComponentSpec(
+                name="archive_readiness",
+                scope="archive",
+                collector=lambda: _direct_archive_readiness_status(
+                    root, include_archive_readiness=include_archive_readiness
+                ),
+                deadline_s=2.0,
+                cost_class="expensive",
+                detail_only=False,
+            )
+        ]
+    )
+    snapshot = registry.collect(names=("archive_readiness",))["archive_readiness"]
+    result = dict(snapshot.value) if isinstance(snapshot.value, dict) else {"available": False}
+    if snapshot.state != "fresh":
+        result.setdefault("component_state", snapshot.state)
+        result.setdefault("component_age_s", round(snapshot.age_s, 3))
+    if snapshot.error:
+        result.setdefault("component_error", snapshot.error)
+    return result
+
+
 def _show_direct_json(
     env: AppEnv,
     *,
@@ -1423,7 +1450,7 @@ def _show_direct_json(
     diag = diagnose_first_run(daemon_alive=False)
     active_db = _active_status_db(db)
     active_root = active_db.parent if active_db is not None and active_db.name == "index.db" else root
-    archive_readiness = _direct_archive_readiness_status(
+    archive_readiness = _collect_direct_archive_readiness(
         active_root,
         include_archive_readiness=include_archive_readiness,
     )
