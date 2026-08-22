@@ -12,7 +12,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -413,7 +413,9 @@ def test_publish_attempts_rename_with_a_sealed_staging_root(
         destination: object,
         **kwargs: object,
     ) -> None:
-        observed_modes.append(os.stat(source, dir_fd=kwargs.get("src_dir_fd"), follow_symlinks=False).st_mode)
+        observed_modes.append(
+            os.stat(source, dir_fd=cast(int, kwargs.get("src_dir_fd")), follow_symlinks=False).st_mode
+        )
         raise PermissionError("injected sealed rename failure")
 
     monkeypatch.setattr(os, "replace", reject_rename)
@@ -451,7 +453,12 @@ def test_sealed_fallback_publishes_only_sealed_final_tree(
         if calls == 1:
             raise PermissionError("injected first rename failure")
         assert not destination_path.exists()
-        real_replace(source, destination, **kwargs)
+        real_replace(
+            source,
+            destination,
+            src_dir_fd=cast(int, kwargs.get("src_dir_fd")),
+            dst_dir_fd=cast(int, kwargs.get("dst_dir_fd")),
+        )
 
     monkeypatch.setattr(os, "replace", fail_once_then_replace)
     artifacts._publish_sealed_staging(staging, final_root)

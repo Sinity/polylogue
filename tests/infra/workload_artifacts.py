@@ -1570,6 +1570,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
                     if stat.S_ISDIR(info.st_mode):
                         os.mkdir(entry.name, (info.st_mode & 0o777) | stat.S_IWUSR, dir_fd=dst)
                         child_src = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=src)
+                        child_dst = -1
                         try:
                             child_dst = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst)
                         except BaseException:
@@ -1583,6 +1584,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
                             os.close(child_dst)
                     elif stat.S_ISREG(info.st_mode):
                         in_fd = os.open(entry.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=src)
+                        out_fd = -1
                         try:
                             out_fd = os.open(
                                 entry.name,
