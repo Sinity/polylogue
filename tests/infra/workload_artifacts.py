@@ -854,11 +854,12 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
     if budget <= 0:
         raise ValueError("cache deletion budget must be positive")
     parent, leaf = _open_pinned_parent(path)
-    original_parent_mode = os.fstat(parent).st_mode
-    os.fchmod(parent, original_parent_mode | stat.S_IWUSR)
+    original_parent_mode: int | None = None
     owned_fds: set[int] = set()
     iterators: set[_DirectoryEntryIterator] = set()
     try:
+        original_parent_mode = os.fstat(parent).st_mode
+        os.fchmod(parent, original_parent_mode | stat.S_IWUSR)
         stack: list[tuple[str, int, str, int, int | None, _DirectoryEntryIterator | None]] = [
             ("entry", parent, leaf, 0, None, None)
         ]
@@ -917,8 +918,9 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
         for owned_fd in owned_fds:
             with contextlib.suppress(OSError):
                 os.close(owned_fd)
-        with contextlib.suppress(OSError):
-            os.fchmod(parent, original_parent_mode)
+        if original_parent_mode is not None:
+            with contextlib.suppress(OSError):
+                os.fchmod(parent, original_parent_mode)
         os.close(parent)
 
 
