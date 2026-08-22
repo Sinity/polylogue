@@ -2298,6 +2298,8 @@ def _clone_seeded_archive_inner(
 __all__ = [
     "ImmutableTreeArtifact",
     "SeededArchiveArtifact",
+    "build_immutable_tree",
+    "clone_immutable_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",
     "SeededArchiveManifest",
