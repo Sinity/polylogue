@@ -142,7 +142,7 @@ the archive depends on but does not own as primary data:
 - backfilled columns (e.g. `message_type` for rows ingested before the
   classifier existed);
 - archive-cleanup scopes (orphaned messages, orphaned content blocks,
-  empty sessions, orphaned attachments, orphaned blobs);
+  empty sessions, orphaned attachments);
 A WAL checkpoint is not a maintenance operation. Ingest runs bounded passive
 checkpoints after commits, the daemon runs periodic truncate checkpoints, and
 status/metrics report WAL pressure. If WAL stays large after those automatic
@@ -168,7 +168,7 @@ Maintenance targets are grouped into four scopes:
 | Scope | Mode | Destructive | Targets |
 | --- | --- | --- | --- |
 | `derived` (derived_repair) | repair | no | `session_insights`, `message_type_backfill` |
-| `archive_cleanup` | cleanup | **yes** | `empty_sessions`, `orphaned_blobs` |
+| `archive_cleanup` | cleanup | **yes** | `empty_sessions` |
 | `backfill` | repair | no | column/row backfills surfaced by the planner (currently subsumed by `derived`). Re-acquiring raw artifacts from source, WAL checkpointing, and repairing FTS coherence are daemon/ingest convergence responsibilities, not maintenance targets. |
 
 The canonical target list is enforced by
@@ -1108,9 +1108,8 @@ restic restore latest --target / --include /path/to/archive_root/blob
 polylogue ops reset --session <conv_id>
 polylogue import <path-to-source>
 
-# 6. After recovery, GC the orphan references that point at the
-#    now-missing blobs.
-polylogue ops maintenance run --target orphaned_blobs
+# 6. After recovery, let the daemon's bounded periodic blob-GC pass
+#    reclaim aged, unreferenced files. Do not infer a reservation TTL.
 
 # 7. Restart the daemon.
 systemctl --user start polylogued.service

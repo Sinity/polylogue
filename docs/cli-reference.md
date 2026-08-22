@@ -567,11 +567,10 @@ Options:
   --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|message_type_backfill|empty_sessions|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|empty_sessions|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
                                   session_insights, message_type_backfill,
-                                  empty_sessions, orphaned_blobs, or
-                                  superseded_raw_snapshots
+                                  empty_sessions, or superseded_raw_snapshots
   --preview                       Preview maintenance without executing
                                   (requires --repair or --cleanup)
   --vacuum                        Reclaim unused space after maintenance

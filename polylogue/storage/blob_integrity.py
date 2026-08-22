@@ -2195,7 +2195,7 @@ def scan_blob_integrity(
                 count=len(orphan_hashes),
                 sample=tuple(orphan_hashes[:_MAX_FINDING_SAMPLE]),
                 bytes_total=sum(_blob_size(blob_store, blob_hash) for blob_hash in orphan_hashes),
-                suggested_action="preview cleanup with `polylogue ops doctor --cleanup --preview --target orphaned_blobs`",
+                suggested_action="allow the daemon's bounded periodic blob-GC pass to reclaim aged orphan files",
             )
         )
 

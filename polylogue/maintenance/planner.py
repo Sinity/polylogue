@@ -446,23 +446,6 @@ def preview_backfill(
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
 
-    if resolved_names == ("orphaned_blobs",):
-        from polylogue.storage.repair import repair_orphaned_blobs
-
-        preview_result = repair_orphaned_blobs(config, dry_run=True)
-        return BackfillOperation(
-            operation_id=operation_id,
-            kind=BackfillKind.ARCHIVE_SUBSET,
-            targets=resolved_names,
-            status=OperationStatus.PENDING,
-            affected_rows=preview_result.repaired_count,
-            estimated_time_s=0.0,
-            results=[preview_result.to_dict()],
-            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
-            reason=InvalidationReason.UNKNOWN if preview_result.repaired_count else None,
-            metrics={"repaired_count": float(preview_result.repaired_count)},
-        )
-
     # Thread the caller's archive db_path through the planner instead of
     # relying on ambient defaults. The original ``connection_context(None)``
     # call ignored ``config.db_path`` entirely, which made the planner

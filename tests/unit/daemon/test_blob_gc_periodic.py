@@ -58,6 +58,11 @@ def _make_source_db(path: Path) -> None:
                 reclaimed_bytes INTEGER NOT NULL DEFAULT 0
             )"""
         )
+        conn.execute(
+            """CREATE TABLE blob_publication_reservations (
+                blob_hash BLOB NOT NULL
+            )"""
+        )
         conn.commit()
     finally:
         conn.close()
@@ -116,14 +121,32 @@ def test_orphaned_blobs_is_not_a_manual_maintenance_route() -> None:
 
 
 def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
-    """Production-route proof; bypassing run_sync or its authority token makes this fail."""
+    """Production route preserves references and reservations while reclaiming an orphan."""
     db_path = tmp_path / "source.db"
     _make_source_db(db_path)
     blob_dir = tmp_path / "blob"
     blob_store = BlobStore(blob_dir)
 
-    blob_hash, _ = blob_store.write_from_bytes(b"orphan blob via coordinator")
-    _backdate(blob_store, blob_hash)
+    orphan_hash, _ = blob_store.write_from_bytes(b"orphan blob via coordinator")
+    referenced_hash, referenced_size = blob_store.write_from_bytes(b"referenced blob via coordinator")
+    reserved_hash, _ = blob_store.write_from_bytes(b"reserved blob via coordinator")
+    for blob_hash in (orphan_hash, referenced_hash, reserved_hash):
+        _backdate(blob_store, blob_hash)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            ("raw-coordinator", bytes.fromhex(referenced_hash), referenced_size),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
+            (bytes.fromhex(referenced_hash), "raw-coordinator", "raw_payload"),
+        )
+        conn.execute(
+            "INSERT INTO blob_publication_reservations (blob_hash) VALUES (?)",
+            (bytes.fromhex(reserved_hash),),
+        )
+        conn.commit()
 
     coordinator = DaemonWriteCoordinator()
 
@@ -134,8 +157,12 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.deleted_count == 1  # type: ignore[attr-defined]
+    assert result.skipped_referenced == 1  # type: ignore[attr-defined]
+    assert result.skipped_reserved == 1  # type: ignore[attr-defined]
     assert coordinator.snapshot().active_actor is None
-    assert not blob_store.blob_path(blob_hash).exists()
+    assert not blob_store.blob_path(orphan_hash).exists()
+    assert blob_store.blob_path(referenced_hash).exists()
+    assert blob_store.blob_path(reserved_hash).exists()
 
 
 def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]:
