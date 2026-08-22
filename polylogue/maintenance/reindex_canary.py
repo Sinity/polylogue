@@ -1787,7 +1787,7 @@ def _generation_root(location: object) -> Path:
 
 
 def _read_generation_metadata(generation_root: Path, generation_id: str) -> dict[str, object]:
-    if not isinstance(generation_id, str) or not _GENERATION_ID_PATTERN.fullmatch(generation_id):
+    if not _GENERATION_ID_PATTERN.fullmatch(generation_id):
         raise UnclassifiedCanaryDiffError("archive-owned generation id is not a well-formed archive-owned token")
     root = generation_root.resolve()
     path = root / generation_id / "generation.json"
