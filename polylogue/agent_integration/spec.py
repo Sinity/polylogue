@@ -784,7 +784,7 @@ RECIPES: tuple[Recipe, ...] = (
 
 def origin_meanings() -> tuple[OriginMeaning, ...]:
     """Project the current OriginSpec descriptions into the manual model."""
-    return tuple(OriginMeaning(token, meaning) for token, meaning in public_origin_meanings())
+    return tuple(OriginMeaning(token, meaning) for token, meaning in public_origin_meanings(include_non_public=True))
 
 
 # Backwards-compatible import for callers that consume the static contract.

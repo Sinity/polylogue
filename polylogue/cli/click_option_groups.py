@@ -12,7 +12,7 @@ from typing import TypeAlias
 
 import click
 
-from polylogue.core.sources import public_origin_tokens
+from polylogue.sources.origin_specs import public_origin_tokens
 
 ClickCallable: TypeAlias = Callable[..., object]
 

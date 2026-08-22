@@ -696,9 +696,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             # validating only below it lets an invalid Provider-wire token
             # bypass the public-origin boundary.
             if origin is not None:
-                from polylogue.core.sources import public_origin_tokens
+                from polylogue.operations.origin_filters import public_origin_filter_tokens
 
-                choices = public_origin_tokens()
+                choices = public_origin_filter_tokens()
                 bad_origins = [token.strip() for token in origin.split(",") if token.strip()]
                 bad_origins = [token for token in bad_origins if token not in choices]
                 if bad_origins:
