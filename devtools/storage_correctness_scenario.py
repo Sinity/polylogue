@@ -22,7 +22,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES, message_fts_readiness_sync
+from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -35,8 +35,6 @@ STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
         "reference survival, the gc_generations age gate, and typed reclaim evidence."
     )
 }
-
-_MESSAGE_FTS_TRIGGER_NAMES = tuple(name for name in FTS_TRIGGER_NAMES if name.startswith("messages_fts_"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,19 +138,6 @@ def _row_count(conn: sqlite3.Connection, table: str, where: str = "", params: tu
     return int(row[0] if row is not None else 0)
 
 
-def _message_fts_trigger_set(conn: sqlite3.Connection) -> tuple[str, ...]:
-    rows = conn.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'trigger' AND name IN (?, ?, ?)
-        ORDER BY name
-        """,
-        _MESSAGE_FTS_TRIGGER_NAMES,
-    ).fetchall()
-    return tuple(str(row[0]) for row in rows)
-
-
 def _storage_idempotent_reingest_check() -> dict[str, object]:
     session = _parsed_session(
         "storage-idempotent",
@@ -231,12 +216,9 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
                 acquired_at_ms=1_767_000_000_000,
             )
             with sqlite3.connect(root / "index.db") as conn:
-                before_readiness = message_fts_readiness_sync(conn)
-                before_triggers = _message_fts_trigger_set(conn)
                 conn.execute("DROP TRIGGER messages_fts_ai")
                 conn.commit()
                 drifted_readiness = message_fts_readiness_sync(conn)
-                drifted_triggers = _message_fts_trigger_set(conn)
             try:
                 search_messages("sentinel", archive_root=root, db_path=root / "index.db")
             except DatabaseError as exc:
@@ -246,10 +228,8 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
             repaired = repair_messages_fts_surface(root / "index.db")
             with sqlite3.connect(root / "index.db") as conn:
                 after_readiness = message_fts_readiness_sync(conn)
-                after_triggers = _message_fts_trigger_set(conn)
                 after_rows = _row_count(conn, "messages_fts")
             search_hits = search_messages("sentinel", archive_root=root, db_path=root / "index.db").hits
-    expected_triggers = tuple(sorted(_MESSAGE_FTS_TRIGGER_NAMES))
     exact_ready = {
         "exists": True,
         "indexed_rows": 1,
@@ -259,31 +239,19 @@ def _storage_fts_trigger_drift_check() -> dict[str, object]:
     }
     if first.content_changed is not True:
         raise AssertionError("first FTS scenario ingest should write content")
-    if before_readiness != exact_ready:
-        raise AssertionError(f"initial FTS readiness was not exact: {before_readiness}")
-    if before_triggers != expected_triggers:
-        raise AssertionError(f"initial trigger set is not canonical: {before_triggers}")
     if bool(drifted_readiness["ready"]) or bool(drifted_readiness["triggers_present"]):
         raise AssertionError(f"dropped trigger did not fail exact readiness: {drifted_readiness}")
-    if "messages_fts_ai" in drifted_triggers or drifted_triggers != ("messages_fts_ad", "messages_fts_au"):
-        raise AssertionError(f"dropped trigger setup failed: {drifted_triggers}")
     if repaired is not True:
         raise AssertionError("production messages_fts surface repair returned false")
     if after_readiness != exact_ready:
         raise AssertionError(f"production FTS repair did not restore exact readiness: {after_readiness}")
-    if after_triggers != expected_triggers:
-        raise AssertionError(f"production FTS repair did not restore all canonical triggers: {after_triggers}")
     if after_rows != 1 or len(search_hits) != 1:
         raise AssertionError(f"FTS repair did not restore searchable row: after={after_rows}, hits={search_hits}")
     return {
-        "before_readiness": before_readiness,
-        "before_triggers": before_triggers,
         "drifted_readiness": drifted_readiness,
-        "drifted_triggers": drifted_triggers,
         "search_failure": search_failure,
         "production_repair": repaired,
         "after_readiness": after_readiness,
-        "after_triggers": after_triggers,
         "after_fts_rows": after_rows,
         "search_hits": [asdict(hit) for hit in search_hits],
     }

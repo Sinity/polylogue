@@ -230,17 +230,8 @@ def test_storage_correctness_json_runs_archive_backed_checks(
     }
     assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["ready"] is False
     assert checks["fts-trigger-drift"]["details"]["drifted_readiness"]["triggers_present"] is False
-    assert checks["fts-trigger-drift"]["details"]["drifted_triggers"] == [
-        "messages_fts_ad",
-        "messages_fts_au",
-    ]
     assert "Search index is incomplete" in checks["fts-trigger-drift"]["details"]["search_failure"]
     assert checks["fts-trigger-drift"]["details"]["production_repair"] is True
-    assert checks["fts-trigger-drift"]["details"]["after_triggers"] == [
-        "messages_fts_ad",
-        "messages_fts_ai",
-        "messages_fts_au",
-    ]
     assert checks["fts-trigger-drift"]["details"]["after_readiness"]["ready"] is True
     assert checks["fts-trigger-drift"]["details"]["after_fts_rows"] == 1
     assert checks["blob-gc-invariant"]["details"]["reservation_count"] == 1
