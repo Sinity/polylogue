@@ -15,6 +15,7 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "generated surfaces",
     "release",
     "verification",
+    "verification",
     "benchmarking",
     "workspace",
 )
@@ -369,6 +370,35 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace index-fast-forward",
+        "workspace",
+        "Plan and prove a declared index fast-forward against retained raw replay.",
+        "devtools.index_fast_forward",
+        use_when=(
+            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
+            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
+            "the production parser/materializer route, then atomically activates the proven generation."
+        ),
+        examples=(
+            "devtools workspace index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace lane-finish",
+        "workspace",
+        "Package a clean lane's exact commits and changed paths for coordinator assimilation.",
+        "devtools.lane_finish",
+        use_when=(
+            "Finish an implementation lane without opening a PR: dirty or detached lanes remain blocked, while a clean "
+            "generated lane is recorded as ready-for-assimilation and released for post-assimilation cleanup."
+        ),
+        examples=(
+            "devtools workspace lane-finish --base feature/current-batch",
+            "devtools workspace lane-finish --json",
+        ),
+    ),
+    CommandSpec(
         "workspace integrate",
         "workspace",
         "Apply an ordered list of lane commits to a clean linked integration worktree.",
@@ -376,9 +406,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Integrate ready lane commits without coordinator cherry-pick ceremony. The target must be an explicit, "
             "clean linked worktree on a non-master branch. Source refs are range-derived only when target ancestry is "
-            "unambiguous; use repeated --commit for divergent histories. Successful source-ref integration removes "
-            "only clean, unlocked generated lane worktrees and their landed branches. Conflicts stop ordinary "
-            "cherry-pick in place and are never auto-resolved or aborted."
+            "unambiguous; use repeated --commit for divergent histories. Conflicts stop ordinary cherry-pick in place "
+            "and are never auto-resolved or aborted."
         ),
         examples=(
             "devtools workspace integrate --target /realm/worktrees/batch feature/lane-a feature/lane-b",
@@ -522,7 +551,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "fired only if a coordinator remembered to invoke them). `merge <PR>` validates the non-draft PR's structured scope carrier and auto-records a merge-gate receipt if none is fresh for the current head sha (running `--command`, "
             'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
             "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
-            "incident), then runs the actual `gh pr merge --squash`. After a successful squash, it executes the typed carrier dispositions against live Beads and writes the guarded `.beads/issues.jsonl` export; failures are loud and non-rollback. `--dry-run` runs every check without merging. `--with-verify` immediately runs and records the merge-train's "
+            "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
+            "without merging. Carrier dispositions attest the PR's whole-Bead scope; this command never mutates Beads or publishes `.beads/issues.jsonl`. Use an explicit, scoped Beads publication workflow for tracker state. `--with-verify` immediately runs and records the merge-train's "
             "terminal full-suite verify after merging; otherwise it prints a reminder. "
             "`train-status` reports (exit 1) any PRs merged since the last recorded terminal "
             "verify. The terminal step records itself: a plain `devtools verify` that earns "
@@ -570,6 +600,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace bead-reimport-guard reconcile .beads/issues.jsonl",
             "devtools workspace bead-reimport-guard export /tmp/issues-snapshot.jsonl",
+        ),
+    ),
+    CommandSpec(
+        "demo real-slice-screen",
+        "workspace",
+        "Read-only extraction + privacy screening of a candidate real-archive session slice.",
+        "devtools.proof_world_real_slice",
+        use_when=(
+            "Assembling a candidate real-archive slice for the shared demo proof world "
+            "(polylogue-212.11): pulls sessions read-only via the Polylogue API, flattens them "
+            "to text, and screens for secret/credential and PII-adjacent patterns before any "
+            "operator decides to fold the slice into a shared fixture. Never mutates the source "
+            "archive and never writes into polylogue/scenarios/ on its own."
+        ),
+        examples=(
+            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
+            "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
+            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
+            "--refs-file refs.txt --out .agent/scratch/real-slice",
         ),
     ),
     CommandSpec(
@@ -1090,6 +1139,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace unknown-export-reclassification-apply --json",
             "devtools workspace unknown-export-reclassification-apply --apply "
             "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace lineage-validation",
+        "workspace",
+        "Validate lineage-count evidence before citing archive counts externally.",
+        "devtools.lineage_validation",
+        use_when=(
+            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
+            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
+            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
+        ),
+        examples=(
+            "devtools workspace lineage-validation --json",
+            "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
+            "devtools workspace lineage-validation --out-dir .local/evidence/lineage-validation/current",
         ),
     ),
     CommandSpec(

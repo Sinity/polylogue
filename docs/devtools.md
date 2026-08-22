@@ -164,6 +164,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace integrate` | Apply an ordered list of lane commits to a clean linked integration worktree. |
+| `devtools workspace lane-finish` | Package a clean lane's exact commits and changed paths for coordinator assimilation. |
 | `devtools workspace lane-init` | Provision a lane worktree with an isolated, guard-verified interpreter. |
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, then records the carrier attestation in the merge ledger. |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
