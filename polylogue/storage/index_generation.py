@@ -1460,17 +1460,34 @@ class IndexGenerationStore:
             _fsync_directory(receipts_root)
 
 
+@contextmanager
+def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
+    """Open source.db through an already-open descriptor.
+
+    The source snapshot is an authority boundary: opening by pathname and
+    checking its inode afterwards still permits replacement in between those
+    operations. Linux's proc fd view lets SQLite bind its main database to the
+    descriptor we opened (and therefore to that inode), while retaining
+    SQLite's normal read-only behavior. Keep the descriptor alive through
+    connection close so SQLite cannot outlive the identity it was admitted
+    against.
+    """
+    path = archive_root / "source.db"
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        with closing(sqlite3.connect(f"file:/proc/self/fd/{fd}?mode=ro", uri=True)) as conn:
+            yield conn
+    finally:
+        os.close(fd)
+
+
 def source_revision_snapshot(archive_root: Path) -> str:
     """Hash the full mutable raw-session state after a rebuild replay."""
     import hashlib
 
     digest = hashlib.sha256()
-    source_db = archive_root / "source.db"
-    _assert_no_symlink_ancestry(source_db.parent, label="source snapshot parent")
-    source_metadata = source_db.stat()
-    source_identity = (source_metadata.st_dev, source_metadata.st_ino)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
-        _require_path_identity(source_db, source_identity, label="source snapshot")
+    with _open_source_snapshot(archive_root) as conn:
         for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id"):
             for value in row:
                 encoded = value.hex() if isinstance(value, bytes) else str(value)
@@ -1498,12 +1515,7 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     from polylogue.storage.blob_store import BlobStore
 
     digest = hashlib.sha256()
-    source_db = archive_root / "source.db"
-    _assert_no_symlink_ancestry(source_db.parent, label="source snapshot parent")
-    source_metadata = source_db.stat()
-    source_identity = (source_metadata.st_dev, source_metadata.st_ino)
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
-        _require_path_identity(source_db, source_identity, label="source snapshot")
+    with _open_source_snapshot(archive_root) as conn:
         rows = conn.execute(
             """
             SELECT raw_id, origin, capture_mode, native_id, source_path,

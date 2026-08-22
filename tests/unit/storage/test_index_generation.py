@@ -18,6 +18,7 @@ from polylogue.storage.index_generation import (
     IndexGenerationStore,
     RebuildLease,
     RebuildLeaseUnavailableError,
+    _open_source_snapshot,
     rebuild_lease_status,
     source_revision_snapshot,
 )
@@ -666,6 +667,21 @@ def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp
         processed_blob_bytes=100,
     )
     assert store.next_raw_page(transaction, limit=10).rows == (("later", hash_later.hex(), 1),)
+
+
+def test_source_snapshot_connection_stays_bound_across_path_replacement(tmp_path: Path) -> None:
+    """A replacement after admission must not change the snapshot database."""
+    _archive(tmp_path)
+    source = tmp_path / "source.db"
+    replacement = tmp_path / "replacement.db"
+    with sqlite3.connect(replacement) as conn:
+        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT)")
+        conn.execute("INSERT INTO raw_sessions VALUES ('replacement')")
+    with _open_source_snapshot(tmp_path) as conn:
+        original = conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0]
+        source.replace(tmp_path / "source-original.db")
+        replacement.replace(source)
+        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == original
 
 
 def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: Path) -> None:
