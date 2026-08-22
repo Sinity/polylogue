@@ -52,7 +52,11 @@ def _seed_realistic_db(db_path: Path, target_messages: int, seed: int = 42) -> d
 
 def _benchmark_db(tmp_path_factory: pytest.TempPathFactory, *, target_messages: int) -> Path:
     tier = benchmark_workload_tier(target_messages)
-    db_path = tmp_path_factory.mktemp(f"bench-{tier.value}") / "benchmark.db"
+    tier_root = tmp_path_factory.mktemp(f"bench-{tier.value}")
+    # Keep the clone helper's sealed ancestor inside the fixture-owned tier
+    # directory. The pytest basetemp root may be a restricted tmpfs mount and
+    # is owned by the harness rather than this fixture.
+    db_path = tier_root / "archive" / "benchmark.db"
     stats = _seed_realistic_db(db_path, target_messages=target_messages)
     print(f"\nbenchmark {tier.value}: {stats}")
     return db_path
