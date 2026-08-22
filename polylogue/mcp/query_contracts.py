@@ -10,7 +10,7 @@ from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
-from polylogue.sources.origin_specs import public_origin_tokens
+from polylogue.core.sources import public_origin_tokens
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
