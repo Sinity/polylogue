@@ -173,6 +173,45 @@ def test_malformed_graph_still_emits_structured_report_with_forcing_root(
     assert any(item["kind"] == "missing-dependency-target" for item in report["findings"])
 
 
+@pytest.mark.parametrize(
+    ("mutation", "expected_kind"),
+    [
+        ("poured-stage", "malformed-metadata-field"),
+        ("adapter-membership", "malformed-metadata-field"),
+        ("status", "malformed-status"),
+    ],
+)
+def test_campaign_export_json_rejects_malformed_nested_fields(
+    mutation: str,
+    expected_kind: str,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    issues = _campaign_fixture()
+    if mutation == "poured-stage":
+        issues.extend(_batch_group("a"))
+        stage = next(issue for issue in issues if issue.get("metadata", {}).get("stage") == "prepare")
+        stage["metadata"]["stage"] = ["prepare"]
+    elif mutation == "adapter-membership":
+        issues.append(
+            {
+                "id": verify_bead_graph.CAMPAIGN_ADAPTER_ID,
+                "labels": ["campaign:reindex-2026", "workstream:e", "campaign-role:implementation", "timing:prep"],
+                "metadata": {"campaign_membership_kind": {"kind": "staged-adapter"}},
+                "dependencies": [],
+            }
+        )
+    else:
+        issues[0]["status"] = ["open"]
+
+    export = tmp_path / f"{mutation}.jsonl"
+    export.write_text("\n".join(json.dumps(issue) for issue in issues) + "\n", encoding="utf-8")
+    assert verify_bead_graph.main(["--export", str(export), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert isinstance(report, dict)
+    assert any(item["kind"] == expected_kind for item in report["findings"])
+
+
 def _campaign_fixture() -> list[dict[str, Any]]:
     root: dict[str, Any] = {
         "id": "polylogue-reindex-2026",
