@@ -223,6 +223,79 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         _TIMING_ENV.reset(timing_token)
 
 
+def _execute_reference_query_pipeline(
+    expression: str,
+    *,
+    archive_root: Path,
+    index_db_path: Path,
+    output_format: str,
+    limit: int | None,
+) -> str | None:
+    """Execute the supported reference root through the canonical planner.
+
+    This is deliberately a narrow CLI seam: only a bare ``from <ref>`` root is
+    supported here.  Pipeline stages remain typed errors rather than being
+    silently discarded by the compatibility selector path.
+    """
+    from polylogue.archive.query.evaluator import DurableRefResolver
+    from polylogue.archive.query.expression import (
+        ExpressionCompileError,
+        RefOperandCycleError,
+        parse_reference_query_pipeline,
+        resolve_ref_operand,
+    )
+    from polylogue.archive.query.production_evaluator import (
+        ArchiveCanonicalPlanEvaluator,
+        LegacyQueryDefinitionNotExecutableError,
+        UnsupportedEvaluationGrainError,
+    )
+
+    pipeline = parse_reference_query_pipeline(expression)
+    if pipeline is None:
+        return None
+    if pipeline.stages:
+        raise click.UsageError(
+            "reference pipeline stages are not supported by the CLI find surface; "
+            "only the bare `from <ref>` operand is supported"
+        )
+    user_db_path = archive_root / "user.db"
+    if not user_db_path.exists() or not index_db_path.exists():
+        raise click.ClickException("archive is not initialized")
+    import sqlite3
+    from contextlib import closing
+
+    evaluator = ArchiveCanonicalPlanEvaluator(index_db_path)
+    try:
+        with closing(sqlite3.connect(f"file:{user_db_path}?mode=ro", uri=True, timeout=5.0)) as conn:
+            resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(conn, evaluator))
+    except KeyError as exc:
+        raise click.UsageError(f"reference not found: {pipeline.operand.reference.format()}") from exc
+    except (
+        ExpressionCompileError,
+        RefOperandCycleError,
+        LegacyQueryDefinitionNotExecutableError,
+        UnsupportedEvaluationGrainError,
+        NotImplementedError,
+        ValueError,
+    ) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    member_refs = resolved.member_refs
+    if limit is not None and limit >= 0:
+        member_refs = member_refs[:limit]
+    payload = {
+        "source": pipeline.operand.reference.format(),
+        "grain": resolved.grain,
+        "lineage": [ref.format() for ref in resolved.lineage],
+        "member_count": len(resolved.member_refs),
+        "members": list(member_refs),
+        "truncated": len(member_refs) < len(resolved.member_refs),
+    }
+    if output_format in {"json", "ndjson"}:
+        return json.dumps(payload, sort_keys=True)
+    return "\\n".join(member_refs)
+
+
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
     """Render root query output to stdout."""
     params = dict(request.params)
@@ -239,6 +312,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
+    reference_output = _execute_reference_query_pipeline(
+        raw_query,
+        archive_root=archive_root,
+        index_db_path=index_db_path,
+        output_format=output_format,
+        limit=_optional_int(params.get("limit")),
+    )
+    if reference_output is not None:
+        click.echo(reference_output)
+        env.record_timing("compile", perf_counter() - compile_started_at)
+        return
     fields = _optional_str(params.get("fields"))
     read_view = str(params.get("view") or "transcript")
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
