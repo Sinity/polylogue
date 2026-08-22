@@ -50,12 +50,15 @@ class ArchiveReadAsyncAdapter:
         asyncio wrapper.
         """
         context = copy_context()
+        loop = asyncio.get_running_loop()
+        # Keep the adapter lock across the closed check and submission.  Without
+        # this critical section, ``close()`` can pass ``shutdown()`` between
+        # the check and ``submit()``, turning a valid admitted read into a
+        # rejected operation after its admission lease has been transferred.
         with self._lock:
             if self._closed:
                 raise RuntimeError("archive read adapter is closed")
-            executor = self._executor
-        loop = asyncio.get_running_loop()
-        concurrent_future = executor.submit(_run_in_context, context, operation)
+            concurrent_future = self._executor.submit(_run_in_context, context, operation)
         if on_submitted is not None:
             on_submitted()
         if on_completed is not None:
