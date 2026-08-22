@@ -324,14 +324,15 @@ These override default agent behavior.
 
 ### Active campaign: devtools/harness overhaul → reindex readiness
 
-A multi-week campaign is coordinated from a gitignored control plane at
-`.agent/campaigns/2026-08-overhaul/` (`INDEX.md` first — reload protocol,
-workstream table, next action). If asked to continue "the campaign" or "the
-overhaul," read that before anything else; it supersedes the reindex plan and
-raw bead scanning for sequencing. The one rule that changes default behavior:
-**for this campaign, individual Beads are references, not units of work** —
-ship large thematic PRs per workstream and close many beads at once with
-evidence, rather than one bead per PR.
+The canonical campaign root is Bead `polylogue-reindex-2026`. Reload with:
+
+1. `scripts/bd show polylogue-reindex-2026 --json`
+2. `scripts/bd graph --open polylogue-reindex-2026`
+3. `scripts/bd list --label campaign:reindex-2026 --status open,in_progress --sort priority --limit 0`
+4. `scripts/bd ready --label campaign:reindex-2026 --explain --json`
+5. `scripts/bd list --label campaign:reindex-2026 --label-pattern 'batch:*' --status open,in_progress --limit 0` and inspect each batch's `authoritative_beads` metadata.
+
+Workstream epics A-H are closure gates, not executable tasks. Existing member Beads remain durable scope; ship coherent 3-5-Bead thematic PRs and close/split member Beads through carrier dispositions. Campaign-wide rules live here; machine receipts stay in their evidence stores and are referenced by digest. `.agent/campaigns/2026-08-overhaul/` is historical migration evidence only and must not be consulted for current status, sequencing, ownership, or next action.
 
 ### Beads issue tracking
 
