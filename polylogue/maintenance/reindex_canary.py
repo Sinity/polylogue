@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 from collections import Counter
@@ -56,6 +57,9 @@ class CanarySelectionError(ValueError):
 
 class UnclassifiedCanaryDiffError(ValueError):
     """A durable report was requested without one review per diff row."""
+
+
+_GENERATION_ID_PATTERN = re.compile(r"^gen-[0-9]+-[0-9a-f]{8}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1783,7 +1787,12 @@ def _generation_root(location: object) -> Path:
 
 
 def _read_generation_metadata(generation_root: Path, generation_id: str) -> dict[str, object]:
-    path = generation_root / generation_id / "generation.json"
+    if not isinstance(generation_id, str) or not _GENERATION_ID_PATTERN.fullmatch(generation_id):
+        raise UnclassifiedCanaryDiffError("archive-owned generation id is not a well-formed archive-owned token")
+    root = generation_root.resolve()
+    path = root / generation_id / "generation.json"
+    if path.resolve().parent.parent != root:
+        raise UnclassifiedCanaryDiffError("archive-owned generation id escapes the generation root")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
