@@ -271,6 +271,9 @@ def _render_text(report: IntegrationReport) -> str:
     if report.applied_commits:
         lines.append("applied SHAs:")
         lines.extend(f"  {sha}" for sha in report.applied_commits)
+    removed_sources = [result for result in report.cleanup_results if result.get("removed")]
+    if removed_sources:
+        lines.append(f"cleaned source lanes: {len(removed_sources)}")
     if report.conflict:
         lines.append(f"conflict: CHERRY_PICK_HEAD={report.conflict_head}")
         lines.append("conflict state left in target worktree; no automatic resolution or abort performed")
