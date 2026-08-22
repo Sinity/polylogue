@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.maintenance.failure_routing import resolve_maintenance_failures, route_failure_sample
 from polylogue.maintenance.invalidation import InvalidationReason
+from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.planner import (
     MAX_FAILURE_SAMPLES,
     BackfillKind,
@@ -405,7 +406,8 @@ def _state_dir(config: Config) -> Path:
 
 def state_path_for(config: Config, operation_id: str) -> Path:
     """Path of the JSON state file for ``operation_id``."""
-    return _state_dir(config) / f"{operation_id}.json"
+    safe_operation_id = validate_operation_id(operation_id)
+    return _state_dir(config) / f"{safe_operation_id}.json"
 
 
 def _write_state(path: Path, payload: JSONDocument) -> None:
@@ -707,7 +709,7 @@ def execute_replay(
         partial results so callers can resume from the cursor.
     """
 
-    op_id = operation_id or str(uuid.uuid4())
+    op_id = str(uuid.uuid4()) if operation_id is None else validate_operation_id(operation_id)
     catalog = build_maintenance_target_catalog()
     # Empty ``targets`` means "no explicit scope" and expands to the
     # documented run-all set (every catalog target); an explicit but
