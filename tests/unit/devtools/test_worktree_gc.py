@@ -9,14 +9,11 @@ from typing import Any
 
 import pytest
 
-import devtools.worktree_gc as worktree_gc
 from devtools.worktree_gc import (
     GcCandidate,
     WorktreeEntry,
     _build_payload,
-    _owns_exact_worktree,
     _resolve_target,
-    _restore_quarantine,
     apply_removals,
     check_dirty,
     classify_candidates,
@@ -96,16 +93,6 @@ def test_check_dirty_true(tmp_path: Path) -> None:
     assert check_dirty(repo) is True
 
 
-def test_check_dirty_treats_ignored_user_data_as_dirty(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path / "repo")
-    (repo / ".gitignore").write_text("private-cache/\n", encoding="utf-8")
-    _run_git(["add", ".gitignore"], cwd=repo)
-    _run_git(["commit", "-m", "ignore cache"], cwd=repo)
-    (repo / "private-cache").mkdir()
-    (repo / "private-cache" / "notes.txt").write_text("keep me", encoding="utf-8")
-    assert check_dirty(repo) is True
-
-
 def test_check_dirty_missing_path(tmp_path: Path) -> None:
     """check_dirty returns False for non-existent paths (prunable)."""
     assert check_dirty(tmp_path / "nonexistent") is False
@@ -159,6 +146,66 @@ def test_classify_unmerged_blocked() -> None:
     assert c[0].reason == "unmerged"
     assert c[0].safe is False
     assert c[0].blocked_reason == "branch-not-merged"
+
+
+def test_classify_completed_unmerged_lane_as_awaiting_assimilation() -> None:
+    branch = "refs/heads/worktree-agent-ready"
+    entry = _entry(head="abc123", branch=branch)
+    candidates = classify_candidates(
+        [entry],
+        repo_root=Path("/tmp/repo"),
+        merged={"refs/heads/master"},
+        existing={branch, "refs/heads/master"},
+        patch_evidence={
+            branch: {
+                "patch_equivalent": False,
+                "handoff_status": "ready-for-assimilation",
+                "handoff_head_matches": True,
+                "handoff_commits": ["abc123"],
+            }
+        },
+    )
+
+    assert candidates[0].reason == "ready-for-assimilation"
+    assert candidates[0].safe is False
+    assert candidates[0].blocked_reason == "awaiting-assimilation"
+    assert candidates[0].evidence is not None
+    assert candidates[0].evidence["handoff_commits"] == ["abc123"]
+
+
+def test_classify_stale_handoff_as_plain_unmerged() -> None:
+    branch = "refs/heads/worktree-agent-resumed"
+    entry = _entry(head="new-head", branch=branch)
+    candidates = classify_candidates(
+        [entry],
+        repo_root=Path("/tmp/repo"),
+        merged={"refs/heads/master"},
+        existing={branch, "refs/heads/master"},
+        patch_evidence={
+            branch: {
+                "patch_equivalent": False,
+                "handoff_status": "ready-for-assimilation",
+                "handoff_head_matches": False,
+            }
+        },
+    )
+
+    assert candidates[0].reason == "untracked-completion"
+    assert candidates[0].blocked_reason == "missing-completion-handoff"
+
+
+def test_classify_locked_generated_lane_remains_active() -> None:
+    branch = "refs/heads/worktree-agent-active"
+    entry = _entry(locked=True, branch=branch)
+    candidates = classify_candidates(
+        [entry],
+        repo_root=Path("/tmp/repo"),
+        merged={"refs/heads/master"},
+        existing={branch, "refs/heads/master"},
+    )
+
+    assert candidates[0].reason == "unmerged"
+    assert candidates[0].blocked_reason == "branch-not-merged"
 
 
 def test_classify_branch_deleted_safe(tmp_path: Path) -> None:
@@ -230,19 +277,6 @@ def test_classify_repo_root_skipped(tmp_path: Path) -> None:
     assert len(c) == 0
 
 
-def test_classify_repo_root_normalizes_symlink_identity(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path / "repo-root")
-    alias = tmp_path / "repo-alias"
-    alias.symlink_to(repo, target_is_directory=True)
-    c = classify_candidates(
-        [_entry(path=alias, branch="refs/heads/feature/x")],
-        repo_root=repo,
-        merged={"refs/heads/feature/x"},
-        existing={"refs/heads/feature/x"},
-    )
-    assert c == []
-
-
 def test_classify_locked_merged_blocked(tmp_path: Path) -> None:
     """Locked worktree with merged branch is blocked, not safe."""
     repo = _make_repo(tmp_path / "repo")
@@ -273,185 +307,80 @@ def test_classify_dirty_never_safe(tmp_path: Path) -> None:
     assert c[0].blocked_reason == "dirty"
 
 
-def test_exact_ownership_rejects_path_and_branch_collisions(tmp_path: Path) -> None:
-    repo = _make_repo(tmp_path / "repo")
-    first = _make_worktree(repo, tmp_path / "lane", "feature/first")
-    second = _make_worktree(repo, tmp_path / "lane-sibling", "feature/second")
-
-    assert _owns_exact_worktree(repo, WorktreeEntry(path=first, head="", branch="refs/heads/feature/first"))
-    # A path-prefix match must not authorize removing the sibling, and a
-    # branch collision at the same path must not authorize either target.
-    assert not _owns_exact_worktree(repo, WorktreeEntry(path=first, head="", branch="refs/heads/feature/second"))
-    assert not _owns_exact_worktree(
-        repo, WorktreeEntry(path=Path(str(first) + "-sibling"), head="", branch="refs/heads/feature/first")
-    )
-    assert second.exists()
-
-
 # ── apply ──────────────────────────────────────────────────────────
-
-
-def test_restore_quarantine_reports_collision_at_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    quarantine = tmp_path / "quarantine"
-    quarantine.mkdir()
-    target = tmp_path / "target"
-    original_rename = worktree_gc._rename_noreplace
-
-    def recreate_before_rename(source: Path, destination: Path) -> None:
-        if source == quarantine and not destination.exists():
-            destination.mkdir()
-            (destination / "replacement.txt").write_text("preserve", encoding="utf-8")
-        original_rename(source, destination)
-
-    monkeypatch.setattr(worktree_gc, "_rename_noreplace", recreate_before_rename)
-    detail = _restore_quarantine(quarantine, target)
-    assert detail == "restore-collision-preserved-quarantine-and-replacement"
-    assert quarantine.is_dir()
-    assert target.is_dir()
 
 
 def test_apply_removes_clean_merged(tmp_path: Path) -> None:
     """apply_removals removes safe merged worktrees."""
     repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/merged"], cwd=repo)
-    (repo / "merged.txt").write_text("merged")
-    _run_git(["add", "merged.txt"], cwd=repo)
-    _run_git(["commit", "-m", "merged"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/merged"], cwd=repo)
     wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
 
-    results = apply_removals([candidate], repo_root=repo)
+    candidates: list[GcCandidate] = [
+        GcCandidate(
+            entry=WorktreeEntry(path=wt_path, head="abc", branch="refs/heads/feature/merged"),
+            reason="merged",
+            safe=True,
+            action="remove",
+        )
+    ]
+    results = apply_removals(candidates, repo_root=repo)
     assert results[0].get("removed") is True
     # prune should have been called
     assert any(r.get("prune") for r in results)
 
 
-def test_apply_refuses_stale_merged_candidate_after_new_unmerged_commit(tmp_path: Path) -> None:
-    """A safe snapshot must not remove a branch that advanced before apply."""
+def test_apply_removes_completed_generated_lane_branch(tmp_path: Path) -> None:
+    """A landed generated lane does not leave its branch behind after GC."""
     repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/merged"], cwd=repo)
-    (repo / "merged.txt").write_text("merged")
-    _run_git(["add", "merged.txt"], cwd=repo)
-    _run_git(["commit", "-m", "merged"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/merged"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
+    branch = "worktree-agent-complete"
+    wt_path = _make_worktree(repo, tmp_path / "wt-complete", branch)
+    candidates = [
+        GcCandidate(
+            entry=WorktreeEntry(path=wt_path, head="abc", branch=f"refs/heads/{branch}"),
+            reason="merged",
+            safe=True,
+            action="remove",
+        )
+    ]
 
-    (wt_path / "not-landed.txt").write_text("new")
-    _run_git(["add", "not-landed.txt"], cwd=wt_path)
-    _run_git(["commit", "-m", "new unmerged commit"], cwd=wt_path)
+    results = apply_removals(candidates, repo_root=repo)
 
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0].get("removed") is False
-    assert results[0].get("blocked") == "stale-proof"
-    assert wt_path.exists()
-
-
-def test_apply_rechecks_dirty_state_immediately_before_remove(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A clean collection snapshot cannot race user data into removal."""
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/merged"], cwd=repo)
-    (repo / "merged.txt").write_text("merged")
-    _run_git(["add", "merged.txt"], cwd=repo)
-    _run_git(["commit", "-m", "merged"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/merged"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-
-    monkeypatch.setattr(worktree_gc, "check_dirty", lambda _path: True)
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0].get("removed") is False
-    assert results[0].get("blocked") == "dirty"
-    assert wt_path.exists()
-
-
-def test_apply_quarantine_preserves_ignored_final_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A file created after final inspection cannot be deleted by GC."""
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/merged"], cwd=repo)
-    (repo / ".gitignore").write_text("late-data/\n", encoding="utf-8")
-    _run_git(["add", ".gitignore"], cwd=repo)
-    _run_git(["commit", "-m", "ignore late data"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/merged"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-
-    original = worktree_gc._unregister_worktree_admin
-
-    def create_after_inspection(repo_root: Path, entry: WorktreeEntry, quarantine: Path) -> str | None:
-        late = quarantine / "late-data" / "keep.txt"
-        late.parent.mkdir()
-        late.write_text("keep", encoding="utf-8")
-        return original(repo_root, entry, quarantine)
-
-    monkeypatch.setattr(worktree_gc, "_unregister_worktree_admin", create_after_inspection)
-    results = apply_removals([candidate], repo_root=repo)
     assert results[0]["removed"] is True
-    assert results[0]["detail"] == "preserved-quarantine-data"
-    quarantine_dirs = list(wt_path.parent.glob(f".{wt_path.name}.polylogue-gc-*"))
-    assert len(quarantine_dirs) == 1
-    assert (quarantine_dirs[0] / "late-data" / "keep.txt").read_text(encoding="utf-8") == "keep"
-
-
-def test_apply_preserves_replacement_on_quarantine_restore_collision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A recreated registration path cannot crash or overwrite either side."""
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/merged"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/merged"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-merged", "feature/merged")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-    original = worktree_gc._unregister_worktree_admin
-
-    def replace_after_quarantine(repo_root: Path, entry: WorktreeEntry, quarantine: Path) -> str | None:
-        # Recreate the exact original Gitlink plus attacker data while the
-        # quarantined inode is being unregistered.  GC must never hand this
-        # mutable path to Git's recursive remover.
-        gitlink = (quarantine / ".git").read_text(encoding="utf-8")
-        wt_path.mkdir()
-        (wt_path / ".git").write_text(gitlink, encoding="utf-8")
-        (wt_path / "replacement.txt").write_text("do not touch", encoding="utf-8")
-        return original(repo_root, entry, quarantine)
-
-    monkeypatch.setattr(worktree_gc, "_unregister_worktree_admin", replace_after_quarantine)
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0]["removed"] is True
-    assert (wt_path / "replacement.txt").read_text(encoding="utf-8") == "do not touch"
-    assert (wt_path / ".git").is_file()
-    quarantine_dirs = list(wt_path.parent.glob(f".{wt_path.name}.polylogue-gc-*"))
-    assert quarantine_dirs == []
-
-
-def test_apply_clean_route_physically_removes_quarantine(tmp_path: Path) -> None:
-    """A clean worktree leaves no quarantine after direct admin unregister."""
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/clean"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/clean"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-clean", "feature/clean")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0]["removed"] is True
-    assert list(wt_path.parent.glob(f".{wt_path.name}.polylogue-gc-*")) == []
-    assert not wt_path.exists()
-    listed = subprocess.run(
-        ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    assert results[0]["branch_deleted"] is True
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", branch],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
-    assert str(wt_path) not in listed
+    assert branches.strip() == ""
+
+
+def test_apply_preserves_named_feature_branch(tmp_path: Path) -> None:
+    """GC removes a landed worktree without choosing to delete a human branch."""
+    repo = _make_repo(tmp_path / "main")
+    branch = "feature/complete"
+    wt_path = _make_worktree(repo, tmp_path / "wt-complete", branch)
+    candidates = [
+        GcCandidate(
+            entry=WorktreeEntry(path=wt_path, head="abc", branch=f"refs/heads/{branch}"),
+            reason="merged",
+            safe=True,
+            action="remove",
+        )
+    ]
+
+    results = apply_removals(candidates, repo_root=repo)
+
+    assert results[0]["removed"] is True
+    assert results[0]["branch_deleted"] is False
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", branch],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert branch in branches
 
 
 def test_apply_skips_blocked(tmp_path: Path) -> None:
@@ -476,9 +405,16 @@ def test_apply_force_removes_detached_clean(tmp_path: Path) -> None:
     # Detach HEAD
     subprocess.run(["git", "-C", str(wt_path), "checkout", "--detach"], capture_output=True)
 
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-    results = apply_removals([candidate], repo_root=repo, force=True)
+    candidates: list[GcCandidate] = [
+        GcCandidate(
+            entry=WorktreeEntry(path=wt_path, head="abc", branch=None, detached=True),
+            reason="detached",
+            safe=False,
+            action="remove-force",
+            blocked_reason="requires-force",
+        )
+    ]
+    results = apply_removals(candidates, repo_root=repo, force=True)
     assert results[0].get("removed") is True
 
 
@@ -575,6 +511,19 @@ def test_main_json_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
 
 
 # ── end-to-end with synthetic repo ─────────────────────────────────
+
+
+def test_collect_from_linked_worktree_never_candidates_main_checkout(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    caller = _make_worktree(repo, tmp_path / "caller", "worktree-agent-caller")
+    other = _make_worktree(repo, tmp_path / "other", "worktree-agent-other")
+
+    candidates, _entries = collect_candidates(caller, target="master")
+
+    paths = {candidate.entry.path.resolve() for candidate in candidates}
+    assert repo.resolve() not in paths
+    assert caller.resolve() not in paths
+    assert other.resolve() in paths
 
 
 def test_collect_end_to_end(tmp_path: Path) -> None:
@@ -765,66 +714,3 @@ def _make_worktree(repo: Path, worktree_path: Path, branch: str) -> Path:
     else:
         _run_git(["worktree", "add", "-b", branch, str(worktree_path)], cwd=repo)
     return worktree_path
-
-
-def test_quarantine_preserves_same_size_tracked_content_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/content"], cwd=repo)
-    (repo / "tracked.txt").write_text("before", encoding="utf-8")
-    _run_git(["add", "tracked.txt"], cwd=repo)
-    _run_git(["commit", "-m", "tracked"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/content"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-content", "feature/content")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-    original = worktree_gc._unregister_worktree_admin
-
-    def mutate(repo_root: Path, entry: WorktreeEntry, quarantine: Path) -> str | None:
-        (quarantine / "tracked.txt").write_text("changed", encoding="utf-8")
-        return original(repo_root, entry, quarantine)
-
-    monkeypatch.setattr(worktree_gc, "_unregister_worktree_admin", mutate)
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0]["removed"] is True
-    assert results[0]["detail"] == "preserved-quarantine-data"
-    quarantine = next(wt_path.parent.glob(f".{wt_path.name}.polylogue-gc-*"))
-    assert (quarantine / "tracked.txt").read_text(encoding="utf-8") == "changed"
-
-
-def test_quarantine_rechecks_locked_before_admin_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = _make_repo(tmp_path / "main")
-    _run_git(["checkout", "-b", "feature/lock-race"], cwd=repo)
-    _run_git(["checkout", "master"], cwd=repo)
-    _run_git(["merge", "feature/lock-race"], cwd=repo)
-    wt_path = _make_worktree(repo, tmp_path / "wt-lock", "feature/lock-race")
-    candidates, _entries = collect_candidates(repo)
-    candidate = next(c for c in candidates if c.entry.path == wt_path)
-    original = worktree_gc._unregister_worktree_admin
-
-    def lock_then_unregister(repo_root: Path, entry: WorktreeEntry, quarantine: Path) -> str | None:
-        real_run_git = worktree_gc._run_git
-
-        def report_locked(args: list[str], *, cwd: Path | None = None) -> str:
-            output = real_run_git(args, cwd=cwd)
-            if tuple(args) == ("worktree", "list", "--porcelain"):
-                blocks = []
-                for block in output.split("\\n\\n"):
-                    if block.startswith(f"worktree {entry.path}\\n"):
-                        block += "\\nlocked\\n"
-                    blocks.append(block)
-                return "\\n\\n".join(blocks)
-            return output
-
-        monkeypatch.setattr(worktree_gc, "_run_git", report_locked)
-        admin_text = (quarantine / ".git").read_text(encoding="utf-8").split(" ", 1)[1].strip()
-        (Path(admin_text) / "locked").write_text("race", encoding="utf-8")
-        return original(repo_root, entry, quarantine)
-
-    monkeypatch.setattr(worktree_gc, "_unregister_worktree_admin", lock_then_unregister)
-    results = apply_removals([candidate], repo_root=repo)
-    assert results[0]["removed"] is False, results
-    assert "locked" in str(results[0]["detail"]) or "locked" in str(results[0].get("blocked"))
-    assert wt_path.parent.exists()

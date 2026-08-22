@@ -58,6 +58,42 @@ def test_integrate_derives_ordered_ranges_and_reports_applied_shas(tmp_path: Pat
     assert (target / "b.txt").read_text() == "b\n"
 
 
+def test_integrate_cleans_unlocked_generated_source_lane(tmp_path: Path) -> None:
+    repo, target = _repo(tmp_path)
+    lane = tmp_path / "generated-lane"
+    branch = "worktree-agent-complete"
+    _git(repo, "worktree", "add", "-b", branch, str(lane), "master")
+    (lane / "change.txt").write_text("change\n")
+    _git(lane, "add", "change.txt")
+    commit = _commit(lane, "lane change")
+
+    report = integrate(target, [branch])
+
+    assert report.status == "applied"
+    assert report.applied_commits == [commit]
+    assert any(result.get("removed") for result in report.cleanup_results)
+    assert not lane.exists()
+    assert _git(repo, "branch", "--list", branch) == ""
+
+
+def test_integrate_preserves_locked_generated_source_lane(tmp_path: Path) -> None:
+    repo, target = _repo(tmp_path)
+    lane = tmp_path / "active-lane"
+    branch = "worktree-agent-active"
+    _git(repo, "worktree", "add", "-b", branch, str(lane), "master")
+    (lane / "change.txt").write_text("change\n")
+    _git(lane, "add", "change.txt")
+    _commit(lane, "lane change")
+    _git(repo, "worktree", "lock", "--reason", "active lane", str(lane))
+
+    report = integrate(target, [branch])
+
+    assert report.status == "applied"
+    assert not any(result.get("removed") for result in report.cleanup_results)
+    assert lane.exists()
+    assert branch in _git(repo, "branch", "--list", branch)
+
+
 def test_ambiguous_source_requires_explicit_commit(tmp_path: Path) -> None:
     repo, target = _repo(tmp_path)
     _git(repo, "switch", "lane-a")

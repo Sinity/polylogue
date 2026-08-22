@@ -376,8 +376,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Integrate ready lane commits without coordinator cherry-pick ceremony. The target must be an explicit, "
             "clean linked worktree on a non-master branch. Source refs are range-derived only when target ancestry is "
-            "unambiguous; use repeated --commit for divergent histories. Conflicts stop ordinary cherry-pick in place "
-            "and are never auto-resolved or aborted."
+            "unambiguous; use repeated --commit for divergent histories. Successful source-ref integration removes "
+            "only clean, unlocked generated lane worktrees and their landed branches. Conflicts stop ordinary "
+            "cherry-pick in place and are never auto-resolved or aborted."
         ),
         examples=(
             "devtools workspace integrate --target /realm/worktrees/batch feature/lane-a feature/lane-b",

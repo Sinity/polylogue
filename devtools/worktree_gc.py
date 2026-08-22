@@ -217,14 +217,17 @@ def classify_candidates(
     merged: set[str],
     existing: set[str],
     patch_evidence: dict[str, dict[str, object]] | None = None,
+    main_worktree: Path | None = None,
 ) -> list[GcCandidate]:
-    """Classify each worktree entry as a candidate or blocked."""
-    main_root = normalize_repo_root(repo_root)
+    """Classify each worktree while excluding caller and main checkout."""
+    excluded = {normalize_repo_root(repo_root)}
+    if main_worktree is not None:
+        excluded.add(normalize_repo_root(main_worktree))
     candidates: list[GcCandidate] = []
     for entry in entries:
         if entry.bare:
             continue
-        if entry.path.resolve() == main_root:
+        if normalize_repo_root(entry.path) in excluded:
             continue
         candidates.append(
             _classify_one(
@@ -382,6 +385,7 @@ def collect_candidates(repo_root: Path, *, target: str | None = None) -> tuple[l
         merged=merged,
         existing=existing,
         patch_evidence=patch_evidence,
+        main_worktree=entries[0].path if entries else None,
     )
     target_head = _run_git_nullable(["rev-parse", target_ref], cwd=repo_root)
     proven: list[GcCandidate] = []
@@ -739,8 +743,20 @@ def _quarantine_and_remove(entry: WorktreeEntry, *, repo_root: Path) -> tuple[bo
         os.close(parent_fd)
 
 
+def _delete_completed_agent_branch(candidate: GcCandidate, *, repo_root: Path) -> bool:
+    """Delete a generated lane branch after its worktree is removed."""
+    branch_ref = candidate.entry.branch
+    if candidate.reason not in {"merged", "squash-equivalent"} or branch_ref is None:
+        return False
+    branch = _branch_short_name(branch_ref)
+    if not branch.startswith("worktree-agent-"):
+        return False
+    return _run_git_nullable(["branch", "-D", branch], cwd=repo_root) is not None
+
+
 def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: bool = False) -> list[dict[str, object]]:
-    """Remove safe candidates.  Returns per-entry result dicts."""
+    """Remove safe candidates and completed generated lane branches."""
+    repo_root = normalize_repo_root(repo_root)
     repo_root = normalize_repo_root(repo_root)
     results: list[dict[str, object]] = []
     removed = 0
@@ -775,7 +791,13 @@ def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: boo
                 )
                 continue
             ok, detail = _quarantine_and_remove(c.entry, repo_root=repo_root)
-            result: dict[str, object] = {"path": str(c.entry.path), "removed": ok, "reason": c.reason}
+            branch_deleted = ok and _delete_completed_agent_branch(c, repo_root=repo_root)
+            result: dict[str, object] = {
+                "path": str(c.entry.path),
+                "removed": ok,
+                "reason": c.reason,
+                "branch_deleted": branch_deleted,
+            }
             if detail is not None:
                 result["detail"] = detail
             results.append(result)
@@ -806,7 +828,13 @@ def apply_removals(candidates: list[GcCandidate], *, repo_root: Path, force: boo
                 )
                 continue
             ok, detail = _quarantine_and_remove(c.entry, repo_root=repo_root)
-            result = {"path": str(c.entry.path), "removed": ok, "reason": c.reason}
+            branch_deleted = ok and _delete_completed_agent_branch(c, repo_root=repo_root)
+            result = {
+                "path": str(c.entry.path),
+                "removed": ok,
+                "reason": c.reason,
+                "branch_deleted": branch_deleted,
+            }
             if detail is not None:
                 result["detail"] = detail
             results.append(result)

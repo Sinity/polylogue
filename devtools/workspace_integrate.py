@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from devtools.verify_worktree import _git, inspect_worktree
+from devtools.worktree_gc import apply_removals, collect_candidates
 
 _ACTIVE_MARKERS = ("CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD", "REBASE_HEAD")
 
@@ -29,6 +30,7 @@ class IntegrationReport:
     explicit_commits: list[str] = field(default_factory=list)
     planned_commits: list[str] = field(default_factory=list)
     applied_commits: list[str] = field(default_factory=list)
+    cleanup_results: list[dict[str, object]] = field(default_factory=list)
     status: str = "blocked"
     conflict: bool = False
     conflict_head: str | None = None
@@ -156,6 +158,23 @@ def _reconcile_cherry_pick_timeout(
     return report
 
 
+def _cleanup_integrated_lanes(target: Path, source_refs: Sequence[str]) -> list[dict[str, object]]:
+    generated = {
+        source.removeprefix("refs/heads/")
+        for source in source_refs
+        if source.removeprefix("refs/heads/").startswith("worktree-agent-")
+    }
+    if not generated:
+        return []
+    candidates, _entries = collect_candidates(target, target="HEAD")
+    selected = [
+        candidate
+        for candidate in candidates
+        if candidate.entry.branch is not None and candidate.entry.branch.removeprefix("refs/heads/") in generated
+    ]
+    return apply_removals(selected, repo_root=target) if selected else []
+
+
 def _integrate(
     target: Path,
     source_refs: Sequence[str] = (),
@@ -214,6 +233,7 @@ def _integrate(
             report.applied_commits.append(commit)
 
         report.status = "applied"
+        report.cleanup_results = _cleanup_integrated_lanes(target, source_refs)
         return report
     except subprocess.TimeoutExpired as exc:
         report.status = "indeterminate"
@@ -241,6 +261,9 @@ def _render_text(report: IntegrationReport) -> str:
     if report.applied_commits:
         lines.append("applied SHAs:")
         lines.extend(f"  {sha}" for sha in report.applied_commits)
+    removed_sources = [result for result in report.cleanup_results if result.get("removed")]
+    if removed_sources:
+        lines.append(f"cleaned source lanes: {len(removed_sources)}")
     if report.conflict:
         lines.append(f"conflict: CHERRY_PICK_HEAD={report.conflict_head}")
         lines.append("conflict state left in target worktree; no automatic resolution or abort performed")

@@ -122,9 +122,6 @@ by construction.
 
 ## Final report
 
-In your closing message, state: the branch name, the PR URL (or why none was
-opened), the exact verification commands you ran and their pass/fail
-outcome, and anything you intentionally left out of scope (deferred work,
-follow-ups worth a new bead, acceptance criteria not addressed). Be honest
-about partial completion — "partially done, X remains" is more useful than a
-claim the diff doesn't support.
+The project `SubagentStop` hook packages your exact commits and changed paths automatically. A clean lane is unlocked for later assimilation cleanup; a dirty lane stays locked and its blocked handoff is recorded. Do not run a separate handoff or unlock command.
+
+In your closing message, state the branch, PR URL (or why none was opened), exact verification commands and outcomes, and anything intentionally left out of scope. Be honest about partial completion. The coordinator receives the machine-readable handoff from the lifecycle hook rather than reconstructing it from this prose.
