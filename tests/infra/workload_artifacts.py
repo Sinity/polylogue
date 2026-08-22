@@ -1595,9 +1595,10 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
             # an already sealed tree, never a writable directory.
             _assert_no_symlinks(handoff)
             _make_read_only(handoff)
-            _rename_sealed(handoff, final_root)
+            # Remove the original staging tree before visibility. Any cleanup
+            # failure therefore leaves no published final root behind.
             _remove_tree(staging)
-        _make_read_only(final_root)
+            _rename_sealed(handoff, final_root)
     except Exception:
         if _safe_exists(final_root):
             _remove_tree(final_root)
@@ -2100,16 +2101,18 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
             _record_fresh_durable_bootstrap(destination)
         # This is the final mutation and the final authentication. No
         # pathname or metadata operation occurs between this check and return.
+        # Pin the returned root before final authentication. No pathname
+        # operation occurs between authentication and returning this FD.
+        integrity_fd = _open_pinned_dir(destination)
+        fcntl.flock(integrity_fd, fcntl.LOCK_SH)
         _authenticate_clone_copy(
             artifact,
             destination,
             disk_manifest,
             ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
         )
-        # Retain a pinned, shared integrity capability across the return
-        # boundary. Callers may close it when the clone is no longer needed.
-        integrity_fd = _open_pinned_dir(destination)
-        fcntl.flock(integrity_fd, fcntl.LOCK_SH)
+        # Retain the shared integrity capability across the return boundary;
+        # callers may close it when the clone is no longer needed.
     except BaseException:
         if integrity_fd >= 0:
             with contextlib.suppress(OSError):
