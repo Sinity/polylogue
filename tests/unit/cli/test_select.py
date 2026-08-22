@@ -39,6 +39,26 @@ def _row(index: int = 1) -> SelectSessionRow:
     )
 
 
+def test_select_row_carries_shared_informativeness_fields() -> None:
+    summary = SessionSummary(
+        id=SessionId("conv-context"),
+        origin=Origin.CODEX_SESSION,
+        title="Context",
+        message_count=7,
+        git_repository_url="https://example.test/org/polylogue",
+        working_directories=("/workspace/polylogue",),
+    )
+
+    row = select_row_from_result(summary)
+
+    assert row.message_count == 7
+    assert row.repo == "https://example.test/org/polylogue"
+    assert row.cwd_display == "/workspace/polylogue"
+    assert row.to_json()["message_count"] == 7
+    assert row.to_json()["repo"] == "https://example.test/org/polylogue"
+    assert row.to_json()["cwd_display"] == "/workspace/polylogue"
+
+
 def test_select_row_from_summary_uses_query_result_display_contract() -> None:
     summary = SessionSummary(
         id=SessionId("conv-select"),
@@ -84,6 +104,9 @@ def test_render_select_row_outputs_requested_field() -> None:
         "origin": "claude-code-session",
         "title": "Session 1",
         "date": "2026-05-02",
+        "message_count": 0,
+        "repo": None,
+        "cwd_display": None,
     }
 
 
@@ -136,12 +159,18 @@ def test_render_select_rows_json_emits_single_array() -> None:
             "origin": "claude-code-session",
             "title": "Session 1",
             "date": "2026-05-02",
+            "message_count": 0,
+            "repo": None,
+            "cwd_display": None,
         },
         {
             "id": "conv-2",
             "origin": "claude-code-session",
             "title": "Session 2",
             "date": "2026-05-02",
+            "message_count": 0,
+            "repo": None,
+            "cwd_display": None,
         },
     ]
 

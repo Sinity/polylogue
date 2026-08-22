@@ -41,6 +41,9 @@ class SelectSessionRow:
     origin: str
     title: str
     date: str | None
+    message_count: int = 0
+    repo: str | None = None
+    cwd_display: str | None = None
 
     @property
     def label(self) -> str:
@@ -50,7 +53,13 @@ class SelectSessionRow:
     @property
     def preview(self) -> str:
         date = self.date or "unknown"
-        return f"Origin: {self.origin}  Date: {date}  Title: {self.title}  ID: {self.session_id}"
+        context = ""
+        if self.repo or self.cwd_display:
+            context = f"  Repo: {self.repo or 'unknown'}  CWD: {self.cwd_display or 'unknown'}"
+        return (
+            f"Origin: {self.origin}  Date: {date}  Messages: {self.message_count}  "
+            f"Title: {self.title}  ID: {self.session_id}{context}"
+        )
 
     def to_json(self) -> JSONDocument:
         return {
@@ -58,17 +67,26 @@ class SelectSessionRow:
             "origin": self.origin,
             "title": self.title,
             "date": self.date,
+            "message_count": self.message_count,
+            "repo": self.repo,
+            "cwd_display": self.cwd_display,
         }
 
 
 def select_row_from_result(result: Session | SessionSummary) -> SelectSessionRow:
     date = result_date(result)
     title = bound_display_title(result_title(result))
+    directories = getattr(result, "working_directories", ()) or ()
+    cwd_display = next((str(directory).strip() for directory in directories if str(directory).strip()), None)
+    repository = getattr(result, "git_repository_url", None)
     return SelectSessionRow(
         session_id=result_id(result),
         origin=result_origin(result),
         title=title,
         date=date.strftime("%Y-%m-%d") if isinstance(date, datetime) else None,
+        message_count=int(getattr(result, "message_count", None) or len(getattr(result, "messages", ()))),
+        repo=str(repository) if repository else None,
+        cwd_display=cwd_display,
     )
 
 
