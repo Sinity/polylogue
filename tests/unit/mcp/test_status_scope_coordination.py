@@ -10,6 +10,7 @@ touched :func:`build_coordination_envelope`.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -110,7 +111,7 @@ def test_status_coordination_observation_carries_checkout_head_context(
     observed: dict[str, object] = {}
 
     @contextmanager
-    def capture_observation(**kwargs: object):
+    def capture_observation(**kwargs: object) -> Iterator[RouteObservationContext]:
         observed.update(kwargs)
         yield RouteObservationContext()
 
