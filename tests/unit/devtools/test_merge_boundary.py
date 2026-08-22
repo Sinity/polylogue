@@ -467,6 +467,57 @@ def test_merge_strips_doubled_pr_suffix_before_merging(monkeypatch: pytest.Monke
     assert captured["cmd"][match_index] == "abc123"
 
 
+def test_merge_executes_typed_dispositions_after_squash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, "run", _fake_run(_base_pr_view()))
+    calls: list[tuple[int, Path, Path, bool]] = []
+    monkeypatch.setattr(
+        merge_boundary.carrier_dispositions,
+        "cmd_apply",
+        lambda pr, *, base_export, output, dry_run, **_kwargs: calls.append((pr, base_export, output, dry_run)) or 0,
+    )
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify",
+            dispositions_base_export=tmp_path / "base.jsonl",
+            dispositions_output=tmp_path / "out.jsonl",
+        )
+        == 0
+    )
+    assert calls == [(42, tmp_path / "base.jsonl", tmp_path / "out.jsonl", False)]
+
+
+def test_merge_reports_post_merge_disposition_failure_without_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(subprocess, "run", _fake_run(_base_pr_view()))
+    monkeypatch.setattr(merge_boundary.carrier_dispositions, "cmd_apply", lambda *_args, **_kwargs: 7)
+    assert (
+        merge_boundary.cmd_merge(
+            42,
+            command="devtools test x",
+            max_age_s=3600,
+            poll_rounds=1,
+            poll_interval_s=0,
+            dry_run=False,
+            with_verify=False,
+            verify_command="devtools verify",
+            dispositions_base_export=tmp_path / "base.jsonl",
+            dispositions_output=tmp_path / "out.jsonl",
+        )
+        == 7
+    )
+    assert "non-rollback" in capsys.readouterr().err
+
+
 def test_merge_refuses_when_the_target_base_changes_after_validation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

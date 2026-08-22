@@ -19,6 +19,11 @@ exact call:
 
     devtools workspace merge <PR>
 
+After a successful squash, the command also executes the merged PR's typed
+carrier against live Beads and writes the guarded ``.beads/issues.jsonl``
+export. A disposition failure is reported loudly after the merge and is never
+rolled back.
+
 which:
 
   1. Refuses unless the PR is OPEN.
@@ -75,7 +80,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from devtools import merge_gate, pr_scope
+from devtools import carrier_dispositions, merge_gate, pr_scope
 from devtools.verification_contracts import VerificationScope
 
 _LEDGER_PATH = Path(".cache/verify/merge-gate/merge-train-ledger.json")
@@ -914,6 +919,8 @@ def cmd_merge(
     dry_run: bool,
     with_verify: bool,
     verify_command: str,
+    dispositions_base_export: Path | None = None,
+    dispositions_output: Path | None = None,
 ) -> int:
     try:
         info = _gh_json(
@@ -1104,8 +1111,28 @@ def cmd_merge(
         )
         return 1
 
+    disposition_exit = 0
+    if dispositions_base_export is not None or dispositions_output is not None:
+        base_export = dispositions_base_export or dispositions_output
+        output = dispositions_output or dispositions_base_export
+        assert base_export is not None and output is not None
+        disposition_exit = carrier_dispositions.cmd_apply(
+            pr,
+            base_export=base_export,
+            output=output,
+            dry_run=False,
+        )
+        if disposition_exit != 0:
+            print(
+                f"MERGED PR #{pr}, but typed carrier dispositions failed after merge "
+                f"(exit {disposition_exit}); this is non-rollback and requires recovery.",
+                file=sys.stderr,
+            )
+
     if terminal_exit != 0:
         return terminal_exit
+    if disposition_exit != 0:
+        return disposition_exit
 
     if not with_verify:
         print(
@@ -1329,6 +1356,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Immediately run and record the merge-train's terminal full-suite verify after merging",
     )
     merge_p.add_argument("--verify-command", default="devtools verify", help="Command for --with-verify")
+    merge_p.add_argument(
+        "--dispositions-base-export",
+        type=Path,
+        default=Path(".beads/issues.jsonl"),
+        help="Beads snapshot to protect while applying the merged carrier",
+    )
+    merge_p.add_argument(
+        "--dispositions-output",
+        type=Path,
+        default=Path(".beads/issues.jsonl"),
+        help="Path for the post-merge Beads export",
+    )
 
     status_p = sub.add_parser(
         "train-status", help="Report whether the merge-train's terminal full-suite verify is recorded"
@@ -1347,6 +1386,8 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             with_verify=args.with_verify,
             verify_command=args.verify_command,
+            dispositions_base_export=args.dispositions_base_export,
+            dispositions_output=args.dispositions_output,
         )
     if args.action == "train-status":
         return cmd_train_status(args.as_json)
