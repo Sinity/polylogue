@@ -20,13 +20,13 @@ into a sequence of per-target executions that:
   in-flight failure count via the existing structured logger and via
   the returned :class:`BackfillOperation`.
 
-The cursor is intentionally a small opaque string (``"target:N"``)
-encoding the index of the *next* target to run in the current work list. The
-persisted state also records that list by target identity. On resume, the
-executor translates completed identities into the current catalog before any
-handler runs, so removing or reordering a target cannot shift the cursor onto
-unrelated work. An unverifiable historical state fails closed. The cursor is
-kept either in memory by the caller, or persisted to a small JSON state file
+Persisted state records target identities in ``completed_targets``. New
+checkpoints use those successful identities as the sole work coordinate and
+retain ``cursor="target:0"`` only as a validated migration field for older
+states. On resume, the executor derives pending work from completed identities
+against the current catalog before any handler runs, so removing or reordering
+a target cannot shift work onto an unrelated target. An unverifiable
+historical state fails closed. The state is persisted to a small JSON file
 under the configured archive root.
 
 The state file is the only durable resume substrate this module
@@ -81,10 +81,10 @@ logger = get_logger(__name__)
 #: Sentinel cursor value meaning "operation completed; nothing left to do."
 CURSOR_DONE: Final[str] = "done"
 
-#: Cursor prefix for the typed target-index encoding. The opaque string
-#: ``target:N`` means "the next target to run is index N in the resolved
-#: target tuple". Plain integers are reserved for future per-target
-#: progress (e.g. ``target:2:rowid:9182``).
+#: Cursor prefix retained for legacy state migration. New checkpoints write
+#: ``target:0`` and derive pending work from successful target identities;
+#: older ``target:N`` values are interpreted against their persisted target
+#: tuple only after strict validation.
 _CURSOR_TARGET_PREFIX: Final[str] = "target:"
 
 #: Subdirectory under :attr:`Config.archive_root` used for replay state
