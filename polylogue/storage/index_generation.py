@@ -10,13 +10,16 @@ import re
 import shutil
 import socket
 import sqlite3
+import stat
 import time
 import uuid
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
+from typing import Any, cast
 
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -51,6 +54,103 @@ SUPERSEDED_GENERATION_RETENTION = 1
 RETENTION_RECEIPT_HISTORY = SUPERSEDED_GENERATION_RETENTION + 1
 _GENERATIONS_DIRNAME = ".index-generations"
 _RETENTION_RECEIPTS_DIRNAME = "retention-receipts"
+_SAFE_LIFECYCLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_LIFECYCLE_STATES = frozenset({"inactive", "promoting", "active", "retained", "eligible", "reclaimed"})
+
+
+def _assert_no_symlink_ancestry(path: Path, *, label: str) -> Path:
+    """Reject links in an untrusted lifecycle path before any use.
+
+    ``Path.resolve`` is deliberately not a security check: it follows the very
+    links this lifecycle must refuse.  Inspect every existing component with
+    ``lstat`` and keep the lexical path for subsequent descriptor-relative
+    operations.
+    """
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect {label}: {current}") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise RuntimeError(f"{label} contains a symlink component: {current}")
+    return absolute
+
+
+def _ensure_lifecycle_directory(path: Path, *, label: str) -> Path:
+    """Create a lifecycle directory without accepting a symlink replacement."""
+    absolute = _assert_no_symlink_ancestry(path, label=label)
+    try:
+        absolute.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"cannot create {label}: {absolute}") from exc
+    _assert_no_symlink_ancestry(absolute, label=label)
+    if not absolute.is_dir():
+        raise RuntimeError(f"{label} is not a directory: {absolute}")
+    return absolute
+
+
+def _read_json_nofollow(path: Path, *, label: str) -> dict[str, object]:
+    """Read one lifecycle record without following a replacement symlink."""
+    _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"cannot securely read {label}: {path}") from exc
+    try:
+        with os.fdopen(fd, encoding="utf-8") as stream:
+            payload = json.load(stream)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"invalid {label}: {path}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid {label}: {path}")
+    return payload
+
+
+def _atomic_json_write(path: Path, payload: dict[str, object], *, label: str) -> None:
+    """Write a record via an exclusive, no-follow temporary file.
+
+    A pre-existing ``*.tmp`` symlink is an integrity failure, not an invitation
+    to follow it.  The fixed-name O_EXCL temporary plus the lifecycle lock make
+    check-to-use replacement by cooperating writers impossible; the final
+    lstat is a second fail-closed assertion about the installed inode.
+    """
+    parent = _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
+    for candidate in parent.glob("*.tmp"):
+        try:
+            if candidate.is_symlink():
+                raise RuntimeError(f"{label} temporary path is a symlink: {candidate}")
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect {label} temporary path: {candidate}") from exc
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    encoded = json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise RuntimeError(f"cannot create atomic {label} temporary: {temporary}") from exc
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        installed = path.lstat()
+        if stat.S_ISLNK(installed.st_mode):
+            raise RuntimeError(f"atomic {label} installed a symlink: {path}")
+    except BaseException:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        with suppress(OSError):
+            if path.is_symlink():
+                path.unlink()
+        raise
+    _fsync_directory(parent)
 
 
 class GenerationRetentionState(StrEnum):
@@ -288,8 +388,22 @@ def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> in
     a second lock domain and permit concurrent archive writers.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
+        before = path.stat()
+        before_identity = (before.st_dev, before.st_ino)
+    except FileNotFoundError:
+        before_identity = None
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        after = os.fstat(fd)
+        if before_identity is not None and (after.st_dev, after.st_ino) != before_identity:
+            raise RuntimeError(f"lock path was replaced: {path}")
+        try:
+            path_metadata = path.stat()
+        except OSError as exc:
+            raise RuntimeError(f"cannot verify lock path: {path}") from exc
+        if (path_metadata.st_dev, path_metadata.st_ino) != (after.st_dev, after.st_ino):
+            raise RuntimeError(f"lock path was replaced: {path}")
         fcntl.flock(fd, lock_type | fcntl.LOCK_NB)
         return fd
     except BlockingIOError as exc:
@@ -297,6 +411,9 @@ def _open_lock_fd(path: Path, lock_type: int, *, unavailable_message: str) -> in
         holder_pid = _lock_holder_pid(path)
         suffix = f" (recorded pid={holder_pid})" if holder_pid is not None else ""
         raise RebuildLeaseUnavailableError(unavailable_message + suffix) from exc
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 class RebuildLease:
@@ -419,6 +536,69 @@ def rebuild_lease_status(archive_root: Path) -> RebuildLeaseStatus:
         os.close(fd)
 
 
+def _stable_link_target(source: Path, *, label: str) -> tuple[Path, tuple[int, int], bool]:
+    """Capture one durable tier target and verify its inode across resolution."""
+    try:
+        before = source.stat()
+        resolved = source.resolve(strict=True)
+        after = source.stat()
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect {label}: {source}") from exc
+    before_identity = (before.st_dev, before.st_ino)
+    after_identity = (after.st_dev, after.st_ino)
+    if before_identity != after_identity:
+        raise RuntimeError(f"{label} changed during identity capture: {source}")
+    return resolved, after_identity, stat.S_ISDIR(after.st_mode)
+
+
+def _require_path_identity(path: Path, identity: tuple[int, int], *, label: str) -> None:
+    """Fail closed if a pathname no longer names the captured inode."""
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot verify {label}: {path}") from exc
+    current = (metadata.st_dev, metadata.st_ino)
+    if current != identity:
+        raise RuntimeError(f"{label} was replaced: {path}")
+
+
+def _stable_directory(path: Path, *, label: str) -> tuple[int, int]:
+    """Capture a lifecycle parent identity without following symlink ancestry."""
+    _assert_no_symlink_ancestry(path, label=label)
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect {label}: {path}") from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise RuntimeError(f"{label} is not a directory: {path}")
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _atomic_text_write(path: Path, text: str, *, label: str) -> None:
+    """Install a small text anchor with the same no-follow guarantees as JSON."""
+    parent = _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise RuntimeError(f"cannot create atomic {label} temporary: {temporary}") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if stat.S_ISLNK(path.lstat().st_mode):
+            raise RuntimeError(f"atomic {label} installed a symlink: {path}")
+    except BaseException:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
+    _fsync_directory(parent)
+
+
 class IndexGenerationStore:
     """Create, checkpoint, and atomically promote inactive generations.
 
@@ -464,18 +644,65 @@ class IndexGenerationStore:
             # anchor as recoverable rather than fatal lets an archive already
             # carrying one heal on next open, instead of needing the file
             # repaired by hand.
-            temporary = anchor.with_suffix(".tmp")
             # Constructing the store must not require the archive root to have
-            # been materialized first. Daemon bulk-rebuild routing is now
-            # unconditional, so this runs on every convergence tick -- including
-            # against a configured-but-not-yet-created root, where the eager
-            # pointer write previously raised FileNotFoundError.
-            anchor.parent.mkdir(parents=True, exist_ok=True)
-            temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
-            os.replace(temporary, anchor)
-            _fsync_directory(anchor.parent)
+            # been materialized first.  The anchor itself and its ancestry are
+            # nevertheless untrusted until inspected with lstat.
+            _ensure_lifecycle_directory(anchor.parent, label="active pointer parent")
+            if anchor.is_symlink():
+                raise RuntimeError(f"active pointer is a symlink: {anchor}")
+            _atomic_text_write(anchor, str(self.active_pointer.absolute()), label="active pointer")
         self.generations_root = self.active_pointer.parent / ".index-generations"
         self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
+        _ensure_lifecycle_directory(self.generations_root, label="generation root")
+        _ensure_lifecycle_directory(self.transactions_root, label="transaction root")
+        _ensure_lifecycle_directory(self.generations_root / _RETENTION_RECEIPTS_DIRNAME, label="retention receipt root")
+        self._lifecycle_lock_path = self.active_pointer.parent / ".index-generation-lifecycle.lock"
+        self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
+        self._lifecycle_lock_fd: int | None = None
+        if self._lifecycle_lock_path.is_symlink():
+            raise RuntimeError(f"lifecycle lock is a symlink: {self._lifecycle_lock_path}")
+        _assert_no_symlink_ancestry(self._lifecycle_lock_path.parent, label="lifecycle lock parent")
+
+    @contextmanager
+    def _lifecycle_lock(self) -> Iterator[None]:
+        """Serialize lifecycle check/use sequences on one filesystem root."""
+        if self._lifecycle_lock_fd is not None:
+            yield
+            return
+        _require_path_identity(self.active_pointer.parent, self._active_parent_identity, label="active pointer parent")
+        fd = os.open(self._lifecycle_lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            _require_path_identity(
+                self.active_pointer.parent, self._active_parent_identity, label="active pointer parent"
+            )
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._lifecycle_lock_fd = fd
+            yield
+        finally:
+            self._lifecycle_lock_fd = None
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _validate_generation(self, generation: IndexGeneration, requested_id: str) -> None:
+        if requested_id != generation.generation_id or not _SAFE_LIFECYCLE_ID.fullmatch(requested_id):
+            raise RuntimeError("generation metadata identity mismatch")
+        expected_root = self.generations_root / requested_id
+        _assert_no_symlink_ancestry(expected_root, label="generation metadata ancestry")
+        expected_index = (expected_root / "index.db").absolute()
+        if Path(generation.index_path).absolute() != expected_index:
+            raise RuntimeError("generation metadata index path escapes generation root")
+        try:
+            index_metadata = expected_index.lstat()
+        except FileNotFoundError:
+            index_metadata = None
+        if index_metadata is not None and (
+            stat.S_ISLNK(index_metadata.st_mode) or not stat.S_ISREG(index_metadata.st_mode)
+        ):
+            raise RuntimeError("generation metadata index path is not a regular file")
+        if Path(generation.archive_root).resolve(strict=False) != self.archive_root.resolve(strict=False):
+            raise RuntimeError("generation metadata archive root mismatch")
+        if generation.state not in _LIFECYCLE_STATES:
+            raise RuntimeError(f"generation metadata has invalid state: {generation.state}")
 
     @classmethod
     def for_archive_root(
@@ -523,8 +750,15 @@ class IndexGenerationStore:
 
     def load_transaction(self, operation_id: str) -> IndexRebuildTransaction:
         """Load a rebuild transaction; corrupt or missing state is never resumed."""
-        payload = json.loads(self._transaction_path(operation_id).read_text(encoding="utf-8"))
-        return IndexRebuildTransaction(**payload)
+        self._validate_lifecycle_id(operation_id, "operation")
+        payload = _read_json_nofollow(self._transaction_path(operation_id), label="rebuild transaction")
+        try:
+            transaction = IndexRebuildTransaction(**cast(dict[str, Any], payload))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid rebuild transaction") from exc
+        if transaction.operation_id != operation_id:
+            raise RuntimeError("rebuild transaction identity mismatch")
+        return transaction
 
     def save_pass_receipt(self, operation_id: str, receipt: dict[str, object]) -> Path:
         """Durably persist one rebuild pass's receipt for post-hoc recovery.
@@ -538,14 +772,12 @@ class IndexGenerationStore:
         record, written with the same tmp+os.replace+fsync pattern as
         ``save_transaction``.
         """
+        self._validate_lifecycle_id(operation_id, "operation")
         directory = self.transactions_root / f"{operation_id}.receipts"
-        directory.mkdir(parents=True, exist_ok=True)
         sequence = len(list(directory.glob("pass-*.json")))
         path = directory / f"pass-{sequence:06d}.json"
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True, default=str), encoding="utf-8")
-        os.replace(temporary, path)
-        _fsync_directory(directory)
+        _ensure_lifecycle_directory(directory, label="pass receipt directory")
+        _atomic_json_write(path, receipt, label="pass receipt")
         return path
 
     def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
@@ -561,11 +793,8 @@ class IndexGenerationStore:
             }
         )
         path = self._transaction_path(transaction.operation_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(asdict(updated), indent=2, sort_keys=True, default=str), encoding="utf-8")
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _ensure_lifecycle_directory(path.parent, label="transaction root")
+        _atomic_json_write(path, asdict(updated), label="rebuild transaction")
         return updated
 
     def checkpoint_transaction(
@@ -735,12 +964,30 @@ class IndexGenerationStore:
         created_at_ns = self._next_lifecycle_timestamp_ns()
         generation_id = f"gen-{created_at_ns // 1_000_000}-{uuid.uuid4().hex[:8]}"
         owner = owner_id or str(uuid.uuid4())
+        self._validate_lifecycle_id(generation_id, "generation")
         root = self.generations_root / generation_id
-        root.mkdir(parents=True, exist_ok=False)
+        _assert_no_symlink_ancestry(self.generations_root, label="generation root")
+        try:
+            root.mkdir(parents=False, exist_ok=False)
+        except FileExistsError:
+            raise RuntimeError(f"generation already exists: {generation_id}") from None
+        _assert_no_symlink_ancestry(root, label="generation directory")
         for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
             source = self.archive_root / filename
             if source.exists() or source.is_symlink():
-                (root / filename).symlink_to(source.resolve(strict=False), target_is_directory=source.is_dir())
+                target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
+                link = root / filename
+                link.symlink_to(target, target_is_directory=is_directory)
+                try:
+                    linked = link.stat()
+                except OSError as exc:
+                    raise RuntimeError(f"linked durable tier disappeared: {filename}") from exc
+                if (linked.st_dev, linked.st_ino) != identity:
+                    raise RuntimeError(f"durable tier changed during linking: {filename}")
+                # The source pathname is still an authority boundary after the
+                # link is installed.  Do not proceed if it was replaced between
+                # capture and post-link verification.
+                _require_path_identity(source, identity, label=f"durable tier {filename}")
         index_path = root / "index.db"
         initialize_archive_database(index_path, ArchiveTier.INDEX)
         generation = IndexGeneration(
@@ -757,15 +1004,31 @@ class IndexGenerationStore:
         return generation
 
     def load(self, generation_id: str) -> IndexGeneration:
-        payload = json.loads(self._metadata_path(generation_id).read_text(encoding="utf-8"))
-        return IndexGeneration(**payload)
+        self._validate_lifecycle_id(generation_id, "generation")
+        payload = _read_json_nofollow(self._metadata_path(generation_id), label="generation metadata")
+        try:
+            generation = IndexGeneration(**cast(dict[str, Any], payload))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("invalid generation metadata") from exc
+        self._validate_generation(generation, generation_id)
+        return generation
 
     def promote(self, generation: IndexGeneration) -> IndexGeneration:
+        """Promote a candidate while holding the lifecycle inode lock."""
+        with self._lifecycle_lock():
+            return self._promote_unlocked(generation)
+
+    def _promote_unlocked(self, generation: IndexGeneration) -> IndexGeneration:
         current = self.load(generation.generation_id)
         if current.owner_id != generation.owner_id or current.state != "inactive":
             raise RuntimeError("only the owning inactive generation can be promoted")
         self._validate_retention_ownership()
-        target = Path(current.index_path).resolve(strict=True)
+        target_path = Path(current.index_path)
+        _assert_no_symlink_ancestry(target_path.parent, label="generation index ancestry")
+        target_metadata = target_path.lstat()
+        if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISREG(target_metadata.st_mode):
+            raise RuntimeError("generation index is not a regular, non-symlink file")
+        target = target_path.absolute()
         _checkpoint_truncate(target, label="new index")
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
@@ -824,10 +1087,7 @@ class IndexGenerationStore:
         with no accountable owner.
         """
         for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
-            try:
-                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
-            except (OSError, ValueError, TypeError):
-                continue
+            generation = self.load(metadata_path.parent.name)
             if generation.state == "active" and not generation.owner_id.strip():
                 raise RuntimeError(f"retention ownership is missing for generation {generation.generation_id}")
 
@@ -840,13 +1100,11 @@ class IndexGenerationStore:
         receipt first records every eligible generation, then records its
         reclaimed state after filesystem removal.
         """
+        generations_root_identity = _stable_directory(self.generations_root, label="generation root")
         active_target = self.active_pointer.resolve(strict=True)
         candidates: list[tuple[int, int, str, Path, IndexGeneration]] = []
         for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
-            try:
-                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
-            except (OSError, ValueError, TypeError):
-                continue  # unreadable metadata remains retained, never reclaimed
+            generation = self.load(metadata_path.parent.name)
             if generation.state != "active":
                 continue
             try:
@@ -932,9 +1190,17 @@ class IndexGenerationStore:
         self._write_retention_receipt(receipt)
 
         reclaimed: list[str] = []
-        for _lifecycle_at_ns, _created_at_ns, generation_id, directory, _generation in eligible:
-            shutil.rmtree(directory)
-            reclaimed.append(generation_id)
+        try:
+            generations_fd = os.open(self.generations_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise RuntimeError("cannot securely open generation root") from exc
+        try:
+            for _lifecycle_at_ns, _created_at_ns, generation_id, directory, _generation in eligible:
+                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                shutil.rmtree(directory.name, dir_fd=generations_fd)
+                reclaimed.append(generation_id)
+        finally:
+            os.close(generations_fd)
 
         # The retired-* markers only point at superseded generations, so they
         # follow the same retention -- otherwise they accumulate as dangling
@@ -945,9 +1211,17 @@ class IndexGenerationStore:
             reverse=True,
         )
         pruned_markers = 0
-        for marker in markers[SUPERSEDED_GENERATION_RETENTION:]:
-            shutil.rmtree(marker)
-            pruned_markers += 1
+        try:
+            markers_fd = os.open(self.generations_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise RuntimeError("cannot securely open generation root") from exc
+        try:
+            for marker in markers[SUPERSEDED_GENERATION_RETENTION:]:
+                _require_path_identity(self.generations_root, generations_root_identity, label="generation root")
+                shutil.rmtree(marker.name, dir_fd=markers_fd)
+                pruned_markers += 1
+        finally:
+            os.close(markers_fd)
 
         if reclaimed or pruned_markers:
             _fsync_directory(self.generations_root)
@@ -977,24 +1251,51 @@ class IndexGenerationStore:
         return completed
 
     def load_retention_receipt(self, promoted_generation_id: str) -> GenerationRetentionReceipt:
-        payload = json.loads(self._retention_receipt_path(promoted_generation_id).read_text(encoding="utf-8"))
-        return GenerationRetentionReceipt(
-            promoted_generation_id=str(payload["promoted_generation_id"]),
-            promoted_at_ns=int(payload.get("promoted_at_ns", 0)),
-            retention_boundary=int(payload["retention_boundary"]),
-            automatic=bool(payload["automatic"]),
-            records=tuple(
-                GenerationRetentionRecord(
-                    generation_id=str(record["generation_id"]),
-                    generation_owner_id=str(record["generation_owner_id"]),
-                    retention_owner_id=str(record["retention_owner_id"]),
-                    state=GenerationRetentionState(str(record["state"])),
-                )
-                for record in payload["records"]
-            ),
-            eligible_generation_ids=tuple(str(generation_id) for generation_id in payload["eligible_generation_ids"]),
-            reclaimed_marker_count=int(payload.get("reclaimed_marker_count", 0)),
-        )
+        self._validate_lifecycle_id(promoted_generation_id, "promoted generation")
+        payload = _read_json_nofollow(self._retention_receipt_path(promoted_generation_id), label="retention receipt")
+        payload_any = cast(Any, payload)
+        try:
+            receipt = GenerationRetentionReceipt(
+                promoted_generation_id=str(payload_any["promoted_generation_id"]),
+                promoted_at_ns=int(payload_any.get("promoted_at_ns", 0)),
+                retention_boundary=int(payload_any["retention_boundary"]),
+                automatic=bool(payload_any["automatic"]),
+                records=tuple(
+                    GenerationRetentionRecord(
+                        generation_id=str(record["generation_id"]),
+                        generation_owner_id=str(record["generation_owner_id"]),
+                        retention_owner_id=str(record["retention_owner_id"]),
+                        state=GenerationRetentionState(str(record["state"])),
+                    )
+                    for record in payload_any["records"]
+                ),
+                eligible_generation_ids=tuple(
+                    str(generation_id) for generation_id in payload_any["eligible_generation_ids"]
+                ),
+                reclaimed_marker_count=int(payload_any.get("reclaimed_marker_count", 0)),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("invalid retention receipt") from exc
+        self._validate_receipt(receipt, promoted_generation_id)
+        return receipt
+
+    def _validate_receipt(self, receipt: GenerationRetentionReceipt, requested_id: str) -> None:
+        if receipt.promoted_generation_id != requested_id:
+            raise RuntimeError("retention receipt identity mismatch")
+        if not receipt.automatic or receipt.retention_boundary != SUPERSEDED_GENERATION_RETENTION:
+            raise RuntimeError("retention receipt provenance mismatch")
+        for record in receipt.records:
+            self._validate_lifecycle_id(record.generation_id, "receipt generation")
+            self._validate_lifecycle_id(record.generation_owner_id, "receipt generation owner")
+            self._validate_lifecycle_id(record.retention_owner_id, "receipt retention owner")
+        for generation_id in receipt.eligible_generation_ids:
+            self._validate_lifecycle_id(generation_id, "eligible generation")
+        if receipt.promoted_generation_id not in {record.generation_id for record in receipt.records}:
+            raise RuntimeError("retention receipt does not contain promoted generation")
+
+    def _validate_lifecycle_id(self, value: str, label: str) -> None:
+        if _SAFE_LIFECYCLE_ID.fullmatch(value) is None:
+            raise RuntimeError(f"invalid {label} identifier")
 
     def recover_promotion(self, generation_id: str) -> IndexGeneration:
         """Reconcile an incomplete promotion without trusting the pointer alone.
@@ -1010,10 +1311,32 @@ class IndexGenerationStore:
         if generation.state != "promoting":
             return generation
         pointer = self.active_pointer
-        if (pointer.exists() or pointer.is_symlink()) and pointer.resolve(strict=True) == Path(
-            generation.index_path
-        ).resolve(strict=True):
-            return generation
+        if pointer.exists() or pointer.is_symlink():
+            try:
+                pointer_target = pointer.resolve(strict=True)
+                expected_target = Path(generation.index_path).resolve(strict=True)
+            except OSError as exc:
+                raise RuntimeError("cannot recover through an unreadable active pointer") from exc
+            # A promoting record is authenticated only by its own generation
+            # inode.  A pointer to an external file must never make us clear
+            # or activate that record.
+            if pointer_target == expected_target:
+                return generation
+            try:
+                pointer_target.relative_to(self.generations_root.resolve(strict=True))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("active pointer targets outside generation root") from exc
+        # A mismatch can mean a newer active generation won the race. Never
+        # clear a promoting record while another active identity owns pointer.
+        if pointer.exists() or pointer.is_symlink():
+            try:
+                pointer_target = pointer.resolve(strict=True)
+            except OSError as exc:
+                raise RuntimeError("cannot recover through an unreadable active pointer") from exc
+            for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
+                candidate = self.load(metadata_path.parent.name)
+                if candidate.state == "active" and Path(candidate.index_path).resolve(strict=True) == pointer_target:
+                    return generation
         recovered = IndexGeneration(**{**asdict(generation), "state": "inactive"})
         self._write(recovered)
         return recovered
@@ -1026,7 +1349,13 @@ class IndexGenerationStore:
         pointer = self.active_pointer
         if not (pointer.exists() or pointer.is_symlink()):
             raise RuntimeError("cannot complete promotion recovery without an active index pointer")
-        if pointer.resolve(strict=True) != Path(generation.index_path).resolve(strict=True):
+        try:
+            pointer_target = pointer.resolve(strict=True)
+            expected_target = Path(generation.index_path).resolve(strict=True)
+            pointer_target.relative_to(self.generations_root.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("active pointer targets outside generation root") from exc
+        if pointer_target != expected_target:
             raise RuntimeError("cannot complete promotion recovery for a non-active generation")
         self._validate_retention_ownership()
         recovered = IndexGeneration(
@@ -1055,9 +1384,11 @@ class IndexGenerationStore:
         return True
 
     def _metadata_path(self, generation_id: str) -> Path:
+        self._validate_lifecycle_id(generation_id, "generation")
         return self.generations_root / generation_id / "generation.json"
 
     def _retention_receipt_path(self, promoted_generation_id: str) -> Path:
+        self._validate_lifecycle_id(promoted_generation_id, "promoted generation")
         return self.generations_root / _RETENTION_RECEIPTS_DIRNAME / f"{promoted_generation_id}.json"
 
     def _generation_id_for_active_target(self, pointer: Path) -> str | None:
@@ -1094,22 +1425,20 @@ class IndexGenerationStore:
         return max(time.time_ns(), latest + 1)
 
     def _transaction_path(self, operation_id: str) -> Path:
+        self._validate_lifecycle_id(operation_id, "operation")
         return self.transactions_root / f"{operation_id}.json"
 
     def _write(self, generation: IndexGeneration) -> None:
+        self._validate_generation(generation, generation.generation_id)
         path = self._metadata_path(generation.generation_id)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(asdict(generation), indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _ensure_lifecycle_directory(path.parent, label="generation directory")
+        _atomic_json_write(path, asdict(generation), label="generation metadata")
 
     def _write_retention_receipt(self, receipt: GenerationRetentionReceipt) -> None:
+        self._validate_lifecycle_id(receipt.promoted_generation_id, "promoted generation")
         path = self._retention_receipt_path(receipt.promoted_generation_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(asdict(receipt), indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
+        _ensure_lifecycle_directory(path.parent, label="retention receipt root")
+        _atomic_json_write(path, asdict(receipt), label="retention receipt")
 
     def _prune_retention_receipts(self, *, current_generation_id: str) -> None:
         """Bound receipt history without deleting current or unreadable proof."""
@@ -1136,7 +1465,12 @@ def source_revision_snapshot(archive_root: Path) -> str:
     import hashlib
 
     digest = hashlib.sha256()
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    source_db = archive_root / "source.db"
+    _assert_no_symlink_ancestry(source_db.parent, label="source snapshot parent")
+    source_metadata = source_db.stat()
+    source_identity = (source_metadata.st_dev, source_metadata.st_ino)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        _require_path_identity(source_db, source_identity, label="source snapshot")
         for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id"):
             for value in row:
                 encoded = value.hex() if isinstance(value, bytes) else str(value)
@@ -1164,7 +1498,12 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     from polylogue.storage.blob_store import BlobStore
 
     digest = hashlib.sha256()
-    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+    source_db = archive_root / "source.db"
+    _assert_no_symlink_ancestry(source_db.parent, label="source snapshot parent")
+    source_metadata = source_db.stat()
+    source_identity = (source_metadata.st_dev, source_metadata.st_ino)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        _require_path_identity(source_db, source_identity, label="source snapshot")
         rows = conn.execute(
             """
             SELECT raw_id, origin, capture_mode, native_id, source_path,
@@ -1259,8 +1598,26 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
 
 
 def _checkpoint_truncate(path: Path, *, label: str) -> None:
-    with closing(sqlite3.connect(path)) as conn:
-        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    """Checkpoint one inode without a path check-then-reopen race."""
+    try:
+        open_path = path.resolve(strict=True)
+        fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+        before = os.fstat(fd)
+        reopened_fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)
+        after = os.fstat(reopened_fd)
+    except OSError as exc:
+        raise RuntimeError(f"cannot securely open {label}: {path}") from exc
+    try:
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise RuntimeError(f"{label} changed during descriptor validation: {path}")
+        os.close(reopened_fd)
+        reopened_fd = -1
+        with closing(sqlite3.connect(f"/proc/self/fd/{fd}")) as conn:
+            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    finally:
+        if reopened_fd >= 0:
+            os.close(reopened_fd)
+        os.close(fd)
     if checkpoint is None or int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 

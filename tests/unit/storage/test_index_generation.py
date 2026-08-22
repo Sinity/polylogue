@@ -161,6 +161,197 @@ def test_bootstrap_writes_active_pointer_anchor_on_first_touch(tmp_path: Path) -
     assert store.generations_root == tmp_path / ".index-generations"
 
 
+def test_lifecycle_generation_root_symlink_is_rejected(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / ".index-generations").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        IndexGenerationStore.for_archive_root(tmp_path)
+
+
+def test_lifecycle_transaction_root_symlink_is_rejected(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / ".index-rebuild-transactions").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        IndexGenerationStore.for_archive_root(tmp_path)
+
+
+def test_in_root_generation_alias_cannot_load_another_generation(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    alias = store.generations_root / "gen-alias"
+    alias.symlink_to(store.generations_root / generation.generation_id, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink|metadata"):
+        store.load("gen-alias")
+
+
+def test_generation_metadata_is_bound_to_its_identity_and_archive_root(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    metadata_path = store._metadata_path(generation.generation_id)
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["generation_id"] = "gen-other"
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="generation metadata"):
+        store.load(generation.generation_id)
+
+    payload["generation_id"] = generation.generation_id
+    payload["archive_root"] = str(tmp_path / "outside")
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="generation metadata"):
+        store.load(generation.generation_id)
+
+    payload["archive_root"] = str(tmp_path.resolve())
+    payload["state"] = "untrusted"
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="generation metadata"):
+        store.load(generation.generation_id)
+
+
+def test_recover_promotion_does_not_clear_other_active_generation(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    active = store.create(owner_id="active-owner", source_snapshot="snapshot-a")
+    store.promote(active)
+    candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
+    store._write(replace(candidate, state="promoting"))
+
+    recovered = store.recover_promotion(candidate.generation_id)
+
+    assert recovered.state == "promoting"
+    assert store.load(active.generation_id).state == "active"
+
+
+def test_generation_metadata_index_path_cannot_escape_generation_root(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    metadata_path = store._metadata_path(generation.generation_id)
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["index_path"] = str(tmp_path / "outside-index.db")
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="generation metadata"):
+        store.load(generation.generation_id)
+
+
+def test_durable_tier_identity_change_during_linking_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _archive(tmp_path)
+    source = tmp_path / "source.db"
+    replacement = tmp_path / "replacement.db"
+    replacement.write_bytes(source.read_bytes())
+    original_resolve = Path.resolve
+    switched = False
+
+    def hostile_resolve(path: Path, *, strict: bool = False) -> Path:
+        nonlocal switched
+        if path == source and not switched:
+            switched = True
+            source.unlink()
+            source.symlink_to(replacement)
+        return original_resolve(path, strict=strict)
+
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    monkeypatch.setattr(Path, "resolve", hostile_resolve)
+    with pytest.raises(RuntimeError, match="changed during identity capture"):
+        store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+
+def test_capture_blob_directory_identity_is_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _archive(tmp_path)
+    blob = tmp_path / "blob"
+    blob.mkdir()
+    replacement = tmp_path / "blob-replacement"
+    replacement.mkdir()
+    original_resolve = Path.resolve
+    switched = False
+
+    def hostile_resolve(path: Path, *, strict: bool = False) -> Path:
+        nonlocal switched
+        if path == blob and not switched:
+            switched = True
+            blob.rmdir()
+            blob.symlink_to(replacement, target_is_directory=True)
+        return original_resolve(path, strict=strict)
+
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    monkeypatch.setattr(Path, "resolve", hostile_resolve)
+    with pytest.raises(RuntimeError, match="changed during identity capture"):
+        store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+
+def test_fresh_transaction_missing_file_preserves_file_not_found(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    with pytest.raises(FileNotFoundError):
+        store.load_transaction("fresh-operation")
+
+
+def test_transaction_tmp_symlink_is_not_followed(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="tmp-symlink")
+    path = store._transaction_path(transaction.operation_id)
+    path.unlink()
+    external = tmp_path / "external.json"
+    external.write_text("untouched", encoding="utf-8")
+    path.with_suffix(".json.tmp").symlink_to(external)
+
+    with pytest.raises((FileExistsError, RuntimeError, OSError)):
+        store.save_transaction(transaction)
+    assert external.read_text(encoding="utf-8") == "untouched"
+
+
+def test_check_to_use_replacement_cannot_redirect_transaction_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="race-op")
+    path = store._transaction_path(transaction.operation_id)
+    external = tmp_path / "external.json"
+    external.write_text("untouched", encoding="utf-8")
+    real_replace = os.replace
+
+    def replace_with_race(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+        Path(source).unlink()
+        Path(source).symlink_to(external)
+        real_replace(source, target)
+
+    monkeypatch.setattr("polylogue.storage.index_generation.os.replace", replace_with_race)
+    with pytest.raises(RuntimeError, match="symlink"):
+        store.save_transaction(transaction)
+
+    assert external.read_text(encoding="utf-8") == "untouched"
+    assert not path.is_symlink()
+
+
+def test_retention_receipt_payload_is_bound_to_requested_generation(tmp_path: Path) -> None:
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(generation)
+    receipt_path = store._retention_receipt_path(generation.generation_id)
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["promoted_generation_id"] = "gen-not-requested"
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="retention receipt"):
+        store.load_retention_receipt(generation.generation_id)
+
+
 def test_store_trusts_the_passed_location_instead_of_rereading_disk(tmp_path: Path) -> None:
     """polylogue-ovme.2.1 anti-regression: the retired constructor re-derived
     ``.index-active-pointer``/generation-root logic straight from disk on
