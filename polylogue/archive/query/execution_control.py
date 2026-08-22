@@ -636,12 +636,6 @@ async def execute_archive_read(
                 released = True
                 admission._release(ctx, weight)
 
-        def _owned_run() -> T:
-            try:
-                return _admitted_run()
-            finally:
-                _release()
-
         submitted = False
 
         def _mark_submitted() -> None:
@@ -649,7 +643,11 @@ async def execute_archive_read(
             submitted = True
 
         try:
-            return await default_archive_read_async_adapter().run(_owned_run, on_submitted=_mark_submitted)
+            return await default_archive_read_async_adapter().run(
+                _admitted_run,
+                on_submitted=_mark_submitted,
+                on_completed=_release,
+            )
         except BaseException:
             # No executor operation owns the lease when submission was
             # rejected or cancellation arrived before this coroutine ran.

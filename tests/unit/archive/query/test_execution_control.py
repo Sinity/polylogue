@@ -289,6 +289,57 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
     assert controller.in_flight_weight == 0
 
 
+async def test_adapter_close_releases_queued_executor_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Canceling an accepted-but-queued future must release its lease."""
+    from polylogue.storage.sqlite import async_adapter
+    from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
+
+    root = _bootstrap_archive(tmp_path)
+    adapter = ArchiveReadAsyncAdapter(max_workers=1)
+    monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
+    controller = QueryAdmissionController(capacity=2, reserved_interactive=0)
+    release_first = threading.Event()
+    first_started = threading.Event()
+    second_started = threading.Event()
+
+    def first_work(store: ArchiveStore) -> int:
+        first_started.set()
+        assert release_first.wait(timeout=5)
+        return _cheap_work(store)
+
+    def second_work(store: ArchiveStore) -> int:
+        second_started.set()
+        return _cheap_work(store)
+
+    first_ctx = QueryExecutionContext.create(query_text="adapter-close-first", timeout_s=5.0)
+    second_ctx = QueryExecutionContext.create(query_text="adapter-close-queued", timeout_s=5.0)
+    first = asyncio.create_task(execute_archive_read(root, first_work, ctx=first_ctx, controller=controller))
+    second = asyncio.create_task(execute_archive_read(root, second_work, ctx=second_ctx, controller=controller))
+    try:
+        assert await asyncio.to_thread(first_started.wait, 2)
+        deadline = time.monotonic() + 2
+        while controller.in_flight_weight != 2 and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        assert controller.in_flight_weight == 2
+        assert second_started.is_set() is False
+
+        close_task = asyncio.create_task(asyncio.to_thread(adapter.close))
+        await asyncio.sleep(0.05)
+        release_first.set()
+        await close_task
+        await asyncio.gather(first, second, return_exceptions=True)
+    finally:
+        release_first.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        if not adapter._closed:
+            adapter.close()
+
+    assert second_started.is_set() is False
+    assert controller.in_flight_weight == 0
+
+
 async def test_cancelled_pre_admission_scan_never_reaches_archive_worker(tmp_path: Path) -> None:
     """Cancellation removes a queued read before storage submission."""
     root = _bootstrap_archive(tmp_path)
