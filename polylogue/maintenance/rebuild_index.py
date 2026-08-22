@@ -990,11 +990,15 @@ class RebuildIndexReceipt:
     #: not measured at all. Persisting it here makes the next optimisation
     #: evidence-based rather than a guess.
     timings_s: dict[str, float] = field(default_factory=dict)
+    # Aggregate-only shape of the durable source plus this candidate index.
+    # Stored on every receipt shape (including bounded passes), so timing
+    # evidence is attributable even when a full replay spans many passes.
+    corpus_shape: dict[str, int] = field(default_factory=dict)
     consumed_evidence: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "receipt_schema_version": 4,
+            "receipt_schema_version": 5,
             "archive_root": self.archive_root,
             "raw_session_count": self.raw_session_count,
             "selected_raw_count": self.selected_raw_count,
@@ -1010,6 +1014,7 @@ class RebuildIndexReceipt:
             "source_evidence_after": self.source_evidence_after,
             "canary_acceptance": self.canary_acceptance,
             "timings_s": self.timings_s,
+            "corpus_shape": self.corpus_shape,
             "consumed_evidence": self.consumed_evidence,
             **self.replay,
         }
@@ -1324,6 +1329,7 @@ def _empty_source_receipt(root: Path, consumed_evidence: dict[str, object]) -> R
         readiness={},
         replay={},
         operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
+        corpus_shape=rebuild_corpus_shape(root),
         consumed_evidence=consumed_evidence,
     )
 
@@ -1342,6 +1348,26 @@ def total_source_blob_bytes(root: Path) -> int:
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         row = conn.execute("SELECT COALESCE(SUM(blob_size), 0) FROM raw_sessions").fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def rebuild_corpus_shape(root: Path, *, index_path: Path | None = None) -> dict[str, int]:
+    """Return aggregate corpus evidence for a rebuild receipt.
+
+    The values intentionally describe only durable/rebuildable storage shape,
+    never raw ids or payload content.  Persisting raw count, payload bytes,
+    and the candidate index footprint lets a later timing comparison distinguish
+    a code regression from a differently shaped corpus.
+    """
+    resolved_index = index_path or ArchiveLocation.resolve(root).active_index_path
+    try:
+        index_bytes = resolved_index.stat().st_size
+    except OSError:
+        index_bytes = 0
+    return {
+        "raw_count": count_source_raw_sessions(root),
+        "blob_bytes": total_source_blob_bytes(root),
+        "index_bytes": index_bytes,
+    }
 
 
 def missing_index_raw_ids(root: Path) -> list[str]:
@@ -1967,6 +1993,7 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        corpus_shape=rebuild_corpus_shape(root, index_path=Path(generation.index_path)),
                         consumed_evidence=provenance.receipt_evidence(),
                     )
                     pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
@@ -2065,6 +2092,7 @@ async def _rebuild_index_from_source_owned(
                         ),
                         selection_evidence=selection_evidence,
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                        corpus_shape=rebuild_corpus_shape(root, index_path=Path(generation.index_path)),
                         consumed_evidence=provenance.receipt_evidence(),
                     )
                     pass_receipt = _save_rebuild_pass_receipt_after_receipt_validation(
@@ -2398,6 +2426,7 @@ async def _rebuild_index_from_source_owned(
                 replay=replay,
                 terminal_timings_s=terminal_timings_s,
             ),
+            corpus_shape=rebuild_corpus_shape(root, index_path=Path(generation.index_path)),
             consumed_evidence=provenance.receipt_evidence(),
         )
         try:

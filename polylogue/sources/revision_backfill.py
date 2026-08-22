@@ -702,6 +702,12 @@ class RevisionBackfillResult:
     #: execution modes), not identical timing. Diagnostic metadata must not
     #: change that contract.
     stage_timings_s: dict[str, float] = field(default_factory=dict, compare=False)
+    #: Bounded-cache outcome for this replay.  Timing alone cannot distinguish
+    #: a whale that used the resident tier from one that fell back to spill or
+    #: reparse, so retain the effective envelopes and path counters alongside
+    #: the stage ledger.  It is diagnostic metadata, not parsed-content
+    #: identity, for the same equality reason as ``stage_timings_s``.
+    whale_envelope: dict[str, int] = field(default_factory=dict, compare=False)
 
 
 #: Stage-timing keys that are decode work (read-only blob->ParsedSession
@@ -2286,6 +2292,7 @@ def backfill_historical_revision_evidence(
     adoption_deferred = 0
     quarantined = 0
     stage_timings: dict[str, float] = {}
+    whale_envelope: dict[str, int] = {}
     logical_keys: set[str] = set()
     # The REPLAY phase's batch size is separately tunable
     # (``replay_commit_batch_size``; ``None`` inherits ``commit_batch_size``):
@@ -2693,6 +2700,7 @@ def backfill_historical_revision_evidence(
                 "backfill stage timings: %s",
                 " ".join(f"{key}={value:.1f}s" for key, value in sorted(stage_timings.items(), key=lambda kv: -kv[1])),
             )
+        whale_envelope = spill.whale_envelope_report()
     return RevisionBackfillResult(
         census.scanned,
         census.classified,
@@ -2700,6 +2708,7 @@ def backfill_historical_revision_evidence(
         census.quarantined + quarantined,
         adoption_deferred,
         stage_timings_s=stage_timings,
+        whale_envelope=whale_envelope,
     )
 
 
@@ -3805,6 +3814,12 @@ class _ParsedSessionSpill:
             if physical
             else self._decoded_budget
         )
+        # Receipt-facing counters: preserving the envelope makes a whale-path
+        # result reproducible without retaining any session content or raw id.
+        self._largest_tree_bytes_seen = 0
+        self._whale_retained_count = 0
+        self._whale_rejected_count = 0
+        self._whale_evicted_count = 0
         #: Optional Lever-A decode prefetcher (attached by
         #: ``backfill_historical_revision_evidence`` when pipelined decode is
         #: engaged). ``for_raw`` consults it AFTER the free RAM tiers and
@@ -3831,6 +3846,7 @@ class _ParsedSessionSpill:
 
     def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
         tree_bytes = estimate_parsed_tree_bytes(sessions)
+        self._largest_tree_bytes_seen = max(self._largest_tree_bytes_seen, tree_bytes)
         if tree_bytes > self._decoded_budget and self._retain_whale(
             raw_id, sessions, payload_bytes=payload_bytes, tree_bytes=tree_bytes
         ):
@@ -3903,15 +3919,29 @@ class _ParsedSessionSpill:
         unpatched baseline).
         """
         if tree_bytes > self._whale_budget:
+            self._whale_rejected_count += 1
             return False
         while self._whales and self._whale_tree_bytes + tree_bytes > self._whale_budget:
             oldest_raw = next(iter(self._whales))
             evicted_sessions, evicted_payload, evicted_tree = self._whales.pop(oldest_raw)
             self._whale_tree_bytes -= evicted_tree
+            self._whale_evicted_count += 1
             self._spill_to_sqlite(oldest_raw, evicted_sessions, payload_bytes=evicted_payload)
         self._whales[raw_id] = (sessions, payload_bytes, tree_bytes)
         self._whale_tree_bytes += tree_bytes
+        self._whale_retained_count += 1
         return True
+
+    def whale_envelope_report(self) -> dict[str, int]:
+        """Return aggregate whale-path evidence without session identifiers."""
+        return {
+            "decoded_cache_tree_budget_bytes": self._decoded_budget,
+            "whale_cache_tree_budget_bytes": self._whale_budget,
+            "largest_tree_bytes_seen": self._largest_tree_bytes_seen,
+            "whale_retained_count": self._whale_retained_count,
+            "whale_rejected_count": self._whale_rejected_count,
+            "whale_evicted_count": self._whale_evicted_count,
+        }
 
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
         decoded = self._decoded.get(raw_id)

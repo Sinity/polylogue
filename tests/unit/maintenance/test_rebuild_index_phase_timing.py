@@ -194,6 +194,30 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
     )
 
 
+def test_real_receipt_reports_corpus_shape_and_whale_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real rebuild makes timing comparable without persisting raw content."""
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    _seed_distinct_codex_sessions(root, 3, monkeypatch=monkeypatch)
+
+    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+
+    assert receipt.status == "replayed"
+    assert receipt.corpus_shape["raw_count"] == 3
+    assert receipt.corpus_shape["blob_bytes"] == rebuild_index.total_source_blob_bytes(root)
+    assert receipt.corpus_shape["index_bytes"] == (root / "index.db").stat().st_size
+    assert receipt.corpus_shape["index_bytes"] > 0
+
+    whale_envelope = receipt.replay["whale_envelope"]
+    assert isinstance(whale_envelope, dict)
+    assert whale_envelope["largest_tree_bytes_seen"] > 0
+    assert whale_envelope["decoded_cache_tree_budget_bytes"] > 0
+    assert whale_envelope["whale_cache_tree_budget_bytes"] >= whale_envelope["decoded_cache_tree_budget_bytes"]
+    assert whale_envelope["whale_retained_count"] >= 0
+    assert whale_envelope["whale_rejected_count"] >= 0
+    assert whale_envelope["whale_evicted_count"] >= 0
+
+
 def test_phase_rollups_are_bound_to_production_stage_timing_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

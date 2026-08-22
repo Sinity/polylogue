@@ -258,6 +258,10 @@ async def rebuild_index_from_source(
         "parse_s": round(parse_s, 6),
         "apply_s": round(apply_s, 6),
         "stage_timings_s": {key: round(value, 6) for key, value in result.stage_timings_s.items()},
+        # The timings ledger says where wall time went; these aggregate-only
+        # values say whether an outsized parsed tree stayed in the bounded
+        # resident tier or fell back to spill/reparse.
+        "whale_envelope": result.whale_envelope,
     }
 
 
