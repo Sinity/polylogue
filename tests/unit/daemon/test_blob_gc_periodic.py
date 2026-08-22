@@ -103,6 +103,18 @@ def test_run_blob_gc_once_reclaims_unreferenced_aged_blob(tmp_path: Path) -> Non
     assert not blob_store.blob_path(blob_hash).exists()
 
 
+def test_orphaned_blobs_is_not_a_manual_maintenance_route() -> None:
+    """Blob GC is daemon-owned; the retired generic target must not linger."""
+    from polylogue.maintenance.targets import build_maintenance_target_catalog
+    from polylogue.storage import repair
+
+    catalog = build_maintenance_target_catalog()
+
+    assert catalog.resolve_name("orphaned_blobs") is None
+    assert "orphaned_blobs" not in repair.PREVIEW_HANDLERS
+    assert "orphaned_blobs" not in repair.REPAIR_HANDLERS
+
+
 def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
     """Production-route proof; bypassing run_sync or its authority token makes this fail."""
     db_path = tmp_path / "source.db"
