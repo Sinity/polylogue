@@ -26,6 +26,9 @@ from tests.infra.workload_artifacts import (
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _open_no_follow,
+    _recover_obsolete_staging,
+    _recover_stale_handoffs,
+    _recover_stale_staging,
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
@@ -328,6 +331,80 @@ def test_cleanup_fails_closed_on_replaced_lock_path(tmp_path: Path) -> None:
     assert artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root) == ()
     assert (staging_root / "old-key.dead").exists()
     assert (cache_root / ".cleanup.lock").is_symlink()
+
+
+def test_build_aborts_when_key_lock_path_is_replaced_during_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    original = artifacts._recover_stale_staging
+
+    def replace_lock(*, staging_root: Path, artifact_name: str) -> tuple[str, ...]:
+        result = original(staging_root=staging_root, artifact_name=artifact_name)
+        lock = next((cache_root / ".locks").glob("*.lock"))
+        replacement = cache_root / "replacement.lock"
+        replacement.write_text("replacement", encoding="utf-8")
+        os.replace(replacement, lock)
+        return result
+
+    monkeypatch.setattr(artifacts, "_recover_stale_staging", replace_lock)
+    with pytest.raises(OSError, match="lock pathname was replaced"):
+        build_seeded_archive(cache_root=cache_root)
+
+
+def test_cleanup_removes_symlink_nodes_without_following_targets(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    staging_root = cache_root / ".staging"
+    artifacts_root = cache_root / "artifacts"
+    staging_root.mkdir(parents=True)
+    artifacts_root.mkdir(parents=True)
+    (cache_root / ".locks").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("keep", encoding="utf-8")
+    staging_link = staging_root / "key.dead"
+    handoff_link = artifacts_root / ".key.handoff"
+    staging_link.symlink_to(outside, target_is_directory=True)
+    handoff_link.symlink_to(outside, target_is_directory=True)
+
+    assert _recover_stale_staging(staging_root=staging_root, artifact_name="key") == ("key.dead",)
+    assert _recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts_root) == (".key.handoff",)
+    assert not staging_link.exists()
+    assert not handoff_link.exists()
+    assert (outside / "keep").read_text(encoding="utf-8") == "keep"
+
+
+def test_obsolete_cleanup_advances_cursor_past_irrelevant_entries(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    staging_root = cache_root / ".staging"
+    (staging_root / "irrelevant").mkdir(parents=True)
+    (staging_root / "also-irrelevant").write_text("x", encoding="utf-8")
+    (cache_root / ".locks").mkdir()
+
+    assert _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2) == ()
+    cursor = (cache_root / ".cleanup.cursor").read_text(encoding="utf-8").strip()
+    assert cursor in {"irrelevant", "also-irrelevant"}
+
+
+def test_clone_rejects_hardlinked_leaf_and_cleans_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    destination = tmp_path / "hardlinked-clone"
+    original_copy = artifacts._copy_tree
+
+    def hardlink(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        leaf = target / "source.db"
+        leaf.unlink()
+        os.link(source / "source.db", leaf)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", hardlink)
+    with pytest.raises(ValueError, match="inode"):
+        clone_seeded_archive(artifact, destination)
+    assert not destination.exists()
 
 
 def test_seeded_archive_rejects_malformed_self_hashed_file_entry(

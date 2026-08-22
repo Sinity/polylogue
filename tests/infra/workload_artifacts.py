@@ -445,18 +445,26 @@ def _configured_archive_root(root: Path) -> Iterator[None]:
             os.environ["POLYLOGUE_ARCHIVE_ROOT"] = previous
 
 
-def _sha256(path: Path) -> str:
+def _sha256_fd(fd: int) -> str:
     digest = hashlib.sha256()
-    fd = _open_no_follow(path, os.O_RDONLY)
+    os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(fd, 1024 * 1024)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+
+
+def _open_file_fd(path: Path) -> int:
+    return _open_no_follow(path, os.O_RDONLY | os.O_NONBLOCK)
+
+
+def _sha256(path: Path) -> str:
+    fd = _open_file_fd(path)
     try:
-        with os.fdopen(fd, "rb", closefd=True) as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(fd)
-        raise
-    return digest.hexdigest()
+        return _sha256_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def _is_reserved_root_file(path: Path, root: Path) -> bool:
@@ -564,10 +572,19 @@ def _safe_stat(path: Path) -> os.stat_result:
         os.close(parent)
 
 
+def _chmod_at(directory_fd: int, leaf: str, mode: int) -> None:
+    """Change mode through an O_NOFOLLOW descriptor, never a symlink target."""
+    fd = os.open(leaf, os.O_RDONLY | os.O_NONBLOCK | _O_NOFOLLOW, dir_fd=directory_fd)
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def _safe_chmod(path: Path, mode: int) -> None:
     parent, leaf = _open_pinned_parent(path)
     try:
-        os.chmod(leaf, mode, dir_fd=parent, follow_symlinks=False)
+        _chmod_at(parent, leaf, mode)
     finally:
         os.close(parent)
 
@@ -645,12 +662,15 @@ def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
     if budget <= 0:
         raise ValueError("cache enumeration budget must be positive")
     root_fd = _open_pinned_dir(root)
+    stack: list[tuple[int, Path, int]] = [(root_fd, root, 0)]
+    owned_fds: set[int] = {root_fd}
     seen = 0
-
-    def walk(fd: int, prefix: Path) -> Iterator[Path]:
-        nonlocal seen
-        with os.scandir(fd) as entries:
-            for entry in entries:
+    try:
+        while stack:
+            fd, prefix, depth = stack.pop()
+            with os.scandir(fd) as iterator:
+                entries = list(iterator)
+            for entry in reversed(entries):
                 seen += 1
                 if seen > budget:
                     raise RuntimeError("cache enumeration exceeded bounded node budget")
@@ -660,18 +680,22 @@ def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
                     raise ValueError(f"symlink node is not allowed: {path}")
                 if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                     raise ValueError(f"unsupported cache node is not allowed: {path}")
-                yield path
                 if stat.S_ISDIR(info.st_mode):
+                    yield path
+                    if depth >= 256:
+                        raise RuntimeError("cache enumeration exceeded maximum tree depth")
                     child = os.open(entry.name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
-                    try:
-                        yield from walk(child, path)
-                    finally:
-                        os.close(child)
-
-    try:
-        yield from walk(root_fd, root)
+                    owned_fds.add(child)
+                    stack.append((child, path, depth + 1))
+                else:
+                    yield path
+            if fd != root_fd:
+                os.close(fd)
+                owned_fds.discard(fd)
     finally:
-        os.close(root_fd)
+        for fd in owned_fds:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _archive_files(root: Path) -> tuple[dict[str, object], ...]:
@@ -807,47 +831,57 @@ _MAX_DELETE_NODES = 10_000
 
 
 def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
-    """Delete a locally-owned tree using one pinned parent capability.
-
-    The walk never reconstructs a pathname beneath a directory that was
-    checked earlier.  It also has a hard node budget so a malformed cache
-    cannot turn a build into unbounded destructive work.
-    """
+    """Delete a locally-owned tree with iterative, bounded descriptor walks."""
     if budget <= 0:
         raise ValueError("cache deletion budget must be positive")
     parent, leaf = _open_pinned_parent(path)
     original_parent_mode = os.fstat(parent).st_mode
     os.fchmod(parent, original_parent_mode | stat.S_IWUSR)
     try:
-        try:
-            os.lstat(leaf, dir_fd=parent)
-        except FileNotFoundError:
-            return
-        remaining = budget
-
-        def remove_entry(dir_fd: int, name: str) -> None:
-            nonlocal remaining
-            remaining -= 1
-            if remaining < 0:
+        stack: list[tuple[str, int, str, int, int | None]] = [("entry", parent, leaf, 0, None)]
+        owned_fds: set[int] = set()
+        inspected = 0
+        while stack:
+            action, directory_fd, name, depth, child_fd = stack.pop()
+            if action == "rmdir":
+                assert child_fd is not None
+                os.close(child_fd)
+                owned_fds.discard(child_fd)
+                _chmod_at(directory_fd, name, os.lstat(name, dir_fd=directory_fd).st_mode | stat.S_IWUSR)
+                os.rmdir(name, dir_fd=directory_fd)
+                continue
+            inspected += 1
+            if inspected > budget:
                 raise RuntimeError("cache deletion exceeded bounded node budget")
-            info = os.lstat(name, dir_fd=dir_fd)
+            try:
+                info = os.lstat(name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                continue
             if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
-                child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dir_fd)
+                if depth >= 256:
+                    raise RuntimeError("cache deletion exceeded maximum tree depth")
+                child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=directory_fd)
+                owned_fds.add(child)
                 try:
                     os.fchmod(child, os.fstat(child).st_mode | stat.S_IWUSR)
                     with os.scandir(child) as entries:
-                        for entry in entries:
-                            remove_entry(child, entry.name)
-                finally:
+                        names = [entry.name for entry in entries]
+                except BaseException:
                     os.close(child)
-                os.chmod(name, info.st_mode | stat.S_IWUSR, dir_fd=dir_fd, follow_symlinks=False)
-                os.rmdir(name, dir_fd=dir_fd)
+                    owned_fds.discard(child)
+                    raise
+                stack.append(("rmdir", directory_fd, name, depth, child))
+                stack.extend(("entry", child, child_name, depth + 1, None) for child_name in reversed(names))
             else:
-                os.chmod(name, info.st_mode | stat.S_IWUSR, dir_fd=dir_fd, follow_symlinks=False)
-                os.unlink(name, dir_fd=dir_fd)
-
-        remove_entry(parent, leaf)
+                if stat.S_ISLNK(info.st_mode):
+                    os.unlink(name, dir_fd=directory_fd)
+                else:
+                    _chmod_at(directory_fd, name, info.st_mode | stat.S_IWUSR)
+                    os.unlink(name, dir_fd=directory_fd)
     finally:
+        for owned_fd in owned_fds:
+            with contextlib.suppress(OSError):
+                os.close(owned_fd)
         with contextlib.suppress(OSError):
             os.fchmod(parent, original_parent_mode)
         os.close(parent)
@@ -955,6 +989,27 @@ def _bounded_cache_candidates(
         os.close(directory_fd)
 
 
+def _bounded_scan_last_name(directory: Path, *, cursor: str, budget: int) -> str:
+    """Return the last inspected entry even when no candidate matched."""
+    if budget <= 0:
+        return cursor
+    directory_fd = _open_pinned_dir(directory)
+    last = cursor
+    try:
+        inspected = 0
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                inspected += 1
+                if inspected > budget:
+                    break
+                if cursor and entry.name <= cursor:
+                    continue
+                last = entry.name
+        return last
+    finally:
+        os.close(directory_fd)
+
+
 def _recover_obsolete_staging(
     *,
     cache_root: Path,
@@ -1014,8 +1069,10 @@ def _recover_obsolete_staging(
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except OSError:
                 continue
-        if candidates and last_seen:
-            _write_private_text(cursor_path, last_seen + "\\n")
+        if not candidates:
+            last_seen = _bounded_scan_last_name(staging_root, cursor=cursor, budget=budget)
+        if last_seen and last_seen != cursor:
+            _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
     return tuple(removed)
 
@@ -1074,8 +1131,10 @@ def _recover_stale_handoffs(
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except OSError:
                 continue
-        if candidates and last_seen:
-            _write_private_text(cursor_path, last_seen + "\\n")
+        if not candidates:
+            last_seen = _bounded_scan_last_name(artifacts_root, cursor=cursor, budget=budget)
+        if last_seen and last_seen != cursor:
+            _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
     return tuple(removed)
 
@@ -1123,15 +1182,7 @@ def _validate_frontier_convergence(root: Path) -> None:
         raise RuntimeError("seeded archive is missing completed raw-authority frontier convergence")
 
 
-def _read_manifest(path: Path) -> SeededArchiveManifest:
-    fd = _open_no_follow(path, os.O_RDONLY)
-    try:
-        with os.fdopen(fd, "r", encoding="utf-8", closefd=True) as handle:
-            payload = json.load(handle)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(fd)
-        raise
+def _manifest_from_payload(payload: object) -> SeededArchiveManifest:
     if not isinstance(payload, dict):
         raise ValueError("seeded archive manifest must be an object")
     stored_manifest_id = payload.pop("manifest_id", None)
@@ -1153,6 +1204,20 @@ def _read_manifest(path: Path) -> SeededArchiveManifest:
     if stored_manifest_id != manifest.manifest_id:
         raise ValueError("seeded archive manifest identity mismatch")
     return manifest
+
+
+def _read_manifest_fd(fd: int) -> SeededArchiveManifest:
+    os.lseek(fd, 0, os.SEEK_SET)
+    with os.fdopen(os.dup(fd), "r", encoding="utf-8") as handle:
+        return _manifest_from_payload(json.load(handle))
+
+
+def _read_manifest(path: Path) -> SeededArchiveManifest:
+    fd = _open_no_follow(path, os.O_RDONLY)
+    try:
+        return _read_manifest_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def _manifest_binds_to_key(manifest: SeededArchiveManifest, root: Path, key: SeededArchiveKey) -> bool:
@@ -1441,13 +1506,17 @@ def build_seeded_archive(
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_handle:
         _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
+        _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
+        _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts)
+        _assert_lock_identity(lock_handle.fileno(), lock_path)
         cached = _validate_artifact_with_retry(final_root, key)
         if cached is not None:
             _VALIDATED_ARTIFACTS[memo_key] = cached
             return cached
         if _safe_exists(final_root):
+            _assert_lock_identity(lock_handle.fileno(), lock_path)
             _remove_tree(final_root)
         for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
             staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
@@ -1509,6 +1578,7 @@ def build_seeded_archive(
                     json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
                 )
                 _publish_sealed_staging(staging, final_root)
+                _assert_lock_identity(lock_handle.fileno(), lock_path)
                 break
             except sqlite3.OperationalError as exc:
                 # Same-process zombie-connection lock (polylogue-lbgc): a
@@ -1552,12 +1622,16 @@ def _copy_tree(source: Path, destination: Path) -> None:
         os.close(src_fd)
         raise
     original_parent_mode = os.fstat(dst_parent).st_mode
-    os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
+    dst_fd = -1
     try:
+        os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
         os.mkdir(dst_leaf, 0o700, dir_fd=dst_parent)
         dst_fd = os.open(dst_leaf, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst_parent)
     except BaseException:
+        with contextlib.suppress(OSError):
+            os.fchmod(dst_parent, original_parent_mode)
         os.close(dst_parent)
+        os.close(src_fd)
         raise
     try:
 
@@ -1630,19 +1704,43 @@ def _authenticate_clone_copy(
             actual_paths.add(str(path.relative_to(destination)))
     if actual_paths != expected_paths:
         raise ValueError("clone contains unexpected or missing files")
+
+    def authenticate_pair(relative: str, size: int, digest: str) -> None:
+        source_fd = _open_file_fd(source.root / relative)
+        clone_fd = _open_file_fd(destination / relative)
+        try:
+            source_stat = os.fstat(source_fd)
+            clone_stat = os.fstat(clone_fd)
+            if not stat.S_ISREG(clone_stat.st_mode) or clone_stat.st_size != size:
+                raise ValueError(f"clone file metadata mismatch: {relative}")
+            if (source_stat.st_dev, source_stat.st_ino) == (clone_stat.st_dev, clone_stat.st_ino):
+                raise ValueError(f"clone file inode was not detached: {relative}")
+            if _sha256_fd(clone_fd) != digest:
+                raise ValueError(f"clone file content mismatch: {relative}")
+        finally:
+            os.close(source_fd)
+            os.close(clone_fd)
+
     for relative, size, digest in expected:
-        source_path = source.root / relative
-        clone_path = destination / relative
-        source_stat = _safe_stat(source_path)
-        clone_stat = _safe_stat(clone_path)
-        if not stat.S_ISREG(clone_stat.st_mode) or clone_stat.st_size != size:
-            raise ValueError(f"clone file metadata mismatch: {relative}")
-        if (source_stat.st_dev, source_stat.st_ino) == (clone_stat.st_dev, clone_stat.st_ino):
-            raise ValueError(f"clone file inode was not detached: {relative}")
-        if _sha256(clone_path) != digest:
-            raise ValueError(f"clone file content mismatch: {relative}")
-    if _read_manifest(destination / "manifest.json") != manifest:
-        raise ValueError("clone manifest mismatch")
+        authenticate_pair(relative, size, digest)
+
+    source_manifest_fd = _open_file_fd(source.root / "manifest.json")
+    clone_manifest_fd = _open_file_fd(destination / "manifest.json")
+    try:
+        source_manifest_stat = os.fstat(source_manifest_fd)
+        clone_manifest_stat = os.fstat(clone_manifest_fd)
+        if (source_manifest_stat.st_dev, source_manifest_stat.st_ino) == (
+            clone_manifest_stat.st_dev,
+            clone_manifest_stat.st_ino,
+        ):
+            raise ValueError("clone manifest inode was not detached")
+        if _sha256_fd(source_manifest_fd) != _sha256_fd(clone_manifest_fd):
+            raise ValueError("clone manifest bytes mismatch")
+        if _read_manifest_fd(clone_manifest_fd) != manifest:
+            raise ValueError("clone manifest mismatch")
+    finally:
+        os.close(source_manifest_fd)
+        os.close(clone_manifest_fd)
 
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
