@@ -31,7 +31,7 @@ import subprocess as _subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from devtools.checkout_guard import find_git_worktree_root
 
@@ -73,9 +73,12 @@ def reexec_into_lane(module: str, argv: Sequence[str], *, cwd: Path | None = Non
 
     child_env = lane_command_env(worktree)
     child_env["POLYLOGUE_LANE_REEXEC_MODULE"] = module
-    return subprocess.run(
-        [str(lane_python), "-m", module, *argv],
-        cwd=worktree,
-        env=child_env,
-        check=False,
-    ).returncode
+    return cast(
+        int,
+        subprocess.run(
+            [str(lane_python), "-m", module, *argv],
+            cwd=worktree,
+            env=child_env,
+            check=False,
+        ).returncode,
+    )
