@@ -42,7 +42,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from polylogue.config import Config
 from polylogue.core.enums import OperationStatus
@@ -357,17 +357,18 @@ def _resume_pending_specs(
     cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
     if not isinstance(raw_targets, list) or not all(isinstance(name, str) for name in raw_targets):
         return None, (), "Persisted replay state has no valid target identity list"
-    old_targets = tuple(raw_targets)
+    old_targets = cast(tuple[str, ...], tuple(raw_targets))
     if len(set(old_targets)) != len(old_targets):
         return None, (), "Persisted replay state has duplicate target identities"
     if not isinstance(cursor, str):
         return None, (), "Persisted replay state has no valid cursor"
 
     completed_raw = persisted.get("completed_targets")
+    completed_order: tuple[str, ...]
     if "completed_targets" in persisted:
         if not isinstance(completed_raw, list) or not all(isinstance(name, str) for name in completed_raw):
             return None, (), "Persisted replay state has invalid completed target identities"
-        completed_order = tuple(completed_raw)
+        completed_order = cast(tuple[str, ...], tuple(completed_raw))
         if len(set(completed_order)) != len(completed_order) or not set(completed_order) <= set(old_targets):
             return None, (), "Persisted replay state has incompatible completed target identities"
         completed = set(completed_order)
@@ -666,14 +667,15 @@ def execute_replay(
         else:
             raw_history = persisted.get("targets")
             if isinstance(raw_history, list) and all(isinstance(name, str) for name in raw_history):
-                target_history = tuple(dict.fromkeys((*raw_history, *resolved_names)))
+                history_names = cast(list[str], raw_history)
+                target_history = tuple(dict.fromkeys((*history_names, *resolved_names)))
             cursor_value = resume_cursor if explicit_resume else persisted.get("cursor")
-            pending_specs, completed_targets, resume_error = _resume_pending_specs(
+            mapped_pending, completed_targets, resume_error = _resume_pending_specs(
                 resolved_specs,
                 persisted,
                 cursor_override=cursor_value if isinstance(cursor_value, str) else None,
             )
-            if resume_error is not None or pending_specs is None:
+            if resume_error is not None or mapped_pending is None:
                 message = resume_error or "Persisted replay state is incompatible with the current target catalog"
                 logger.error(
                     "replay_state_incompatible",
@@ -688,6 +690,8 @@ def execute_replay(
                     message=message,
                     kind="IncompatibleReplayState",
                 )
+            assert mapped_pending is not None
+            pending_specs = mapped_pending
             # The cursor has been translated by identity. The remaining tuple
             # is a fresh positional work list for this run.
             resume_cursor = _encode_cursor(0)
