@@ -847,6 +847,16 @@ def execute_replay(
     # resolve to zero targets and report ``status=failed``).
     resolved_specs = catalog.resolve_or_default(tuple(targets))
     resolved_names = tuple(spec.name for spec in resolved_specs)
+    if resume_cursor is not None and resolved_names:
+        _, cursor_range_error = _strict_cursor(resume_cursor, total_targets=len(resolved_names))
+        if cursor_range_error is not None:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=cursor_range_error,
+                kind="InvalidReplayCursor",
+            )
 
     if not resolved_names:
         return BackfillOperation(
