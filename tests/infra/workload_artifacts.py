@@ -309,8 +309,7 @@ def build_immutable_tree(
                 "files": files,
             }
             (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-            _make_read_only(staging)
-            os.replace(staging, final_root)
+            _publish_sealed_staging(staging, final_root)
         except Exception:
             _remove_tree(staging)
             raise
