@@ -13,6 +13,7 @@ These pin the resume contract from the issue acceptance criteria:
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -583,6 +584,136 @@ def test_blocker_receipt_retains_nested_cumulative_metrics(
     assert op.status is OperationStatus.FAILED
     assert op.metrics["same"] == 7.0
     assert op.metrics["repaired_count"] == 0.0
+    persisted = load_state(config, "op-blocked-receipt")
+    assert persisted is not None
+    assert persisted["operation"]["scope"]["filter"] == MaintenanceScopeFilter().to_dict()
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_legacy_cursor_with_failure_samples_fails_closed(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-legacy-failure-prefix")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-legacy-failure-prefix",'
+        '"targets":["session_insights","empty_sessions"],"cursor":"target:1",'
+        '"failure_samples":[{"kind":"RuntimeError","locator":"target:session_insights",'
+        '"message":"failed"}]}'
+    )
+
+    op = execute_replay(config, targets=("session_insights", "empty_sessions"), operation_id="op-legacy-failure-prefix")
+
+    assert op.status is OperationStatus.FAILED
+    assert "failure samples" in (op.error or "")
+    assert patched_dispatch["session_insights"] == []
+    assert patched_dispatch["empty_sessions"] == []
+
+
+def test_missing_persisted_cursor_is_invalid_not_fresh_execution(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-missing-cursor")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"operation_id":"op-missing-cursor","targets":["session_insights"]}')
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-missing-cursor")
+
+    assert op.status is OperationStatus.FAILED
+    assert op.failure_samples.samples[0].kind == "InvalidReplayCursor"
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_scoped_resume_requires_persisted_scope_identity(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-missing-scope")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-missing-scope","targets":["session_insights"],"completed_targets":[],"cursor":"target:0"}'
+    )
+
+    op = execute_replay(
+        config,
+        targets=("session_insights",),
+        operation_id="op-missing-scope",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.failure_samples.samples[0].kind == "ReplayContextMismatch"
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_nested_metrics_add_new_results_without_double_counting_prior_rows(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-metric-resume")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-metric-resume","targets":["session_insights"],'
+        '"completed_targets":[],"cursor":"target:0","metrics":{},'
+        '"results":[{"name":"old","success":true,"metrics":{"same":7.0}}],'
+        '"operation":{"metrics":{"same":7.0},"failure_samples":{"samples":[],"truncated":false}}}'
+    )
+
+    monkeypatch.setitem(
+        repair_module.REPAIR_HANDLERS,
+        "session_insights",
+        lambda _config, _dry_run: _ok_result("session_insights", metrics={"same": 2.0}),
+    )
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-metric-resume")
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.metrics["same"] == 9.0
+
+
+def test_nested_truncation_flag_survives_completed_resume(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-truncated-receipt")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    samples = ",".join('{"kind":"old","locator":"target:x","message":"old"}' for _ in range(50))
+    path.write_text(
+        '{"operation_id":"op-truncated-receipt","targets":["session_insights"],'
+        '"completed_targets":["session_insights"],"cursor":"target:0",'
+        '"failure_samples":[' + samples + "],"
+        '"operation":{"failure_samples":{"samples":[' + samples + '],"truncated":true}}}'
+    )
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-truncated-receipt")
+
+    assert op.status is OperationStatus.COMPLETED
+    assert op.failure_samples.truncated is True
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_scope_identity_normalizes_session_order_and_timezone_instants(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-scope-equivalent")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"operation_id":"op-scope-equivalent","targets":["session_insights"],'
+        '"completed_targets":["session_insights"],"cursor":"target:0",'
+        '"scope_filter":{"session_ids":["s-2","s-1"],"origin":null,"source_family":null,'
+        '"source_root":null,"time_range":["2026-01-01T01:00:00+01:00","2026-01-02T01:00:00+01:00"],'
+        '"failure_kind":null,"parser_version":null}}'
+    )
+    scope = MaintenanceScopeFilter(
+        session_ids=("s-1", "s-2"),
+        time_range=(datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)),
+    )
+
+    op = execute_replay(config, targets=("session_insights",), operation_id="op-scope-equivalent", scope_filter=scope)
+
+    assert op.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
 
 

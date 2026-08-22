@@ -566,11 +566,9 @@ The receipt keeps complete structured archive-verification evidence after redact
 
 ### `--operation-id` and `--resume`: worked example
 
-Replay execution writes a small JSON state file under
-`<archive_root>/.maintenance-state/<operation_id>.json` after each
-target completes. The state file is removed when the operation
-terminates successfully. The cursor is an opaque string
-(`target:N`) encoding the index of the next target to run.
+Replay execution writes a small JSON state file under `<archive_root>/.maintenance-state/<operation_id>.json` after each target attempt. The state file is removed when the operation terminates successfully. New checkpoints treat `completed_targets` as the authoritative work coordinate. They retain `cursor="target:0"` as a validated migration field. Legacy positional cursors are remapped against their persisted target identities and fail closed when successful completion cannot be established.
+
+The operation ID is an opaque filename component. It must be a non-empty string without path separators, absolute-path syntax, NUL bytes, `.` or `..`. Omitting `--operation-id` generates a UUID. A supplied ID is reused exactly for state lookup and resume.
 
 ```bash
 # Start an operation, capture its id.
@@ -586,11 +584,14 @@ polylogue ops maintenance run --operation-id "$op" \
        --target session_insights \
        --target message_type_backfill
 
-# Explicit cursor override (rare — for surgical replays).
+# Explicit cursor override for a fresh or legacy positional state.
+# New checkpoints use completed target identities instead of this position.
 polylogue ops maintenance run --operation-id "$op" --resume target:2 \
        --target session_insights \
        --target message_type_backfill
 ```
+
+When resuming a persisted operation, keep the execution mode and scope filter identical to the original request. A changed dry-run mode or a broader or narrower scope is rejected before any handler runs. A malformed or missing persisted cursor is a typed failure rather than a fresh execution.
 
 Two correctness guarantees the executor provides:
 
