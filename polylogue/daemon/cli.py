@@ -1546,8 +1546,9 @@ def _raw_materialization_whale_completion_payload(
         "census_incomplete_count": census_incomplete,
         "remaining_candidates": remaining,
     }
-    if "duration_ms" in values:
-        payload["duration_ms"] = float(values["duration_ms"])
+    duration_ms = values.get("duration_ms")
+    if isinstance(duration_ms, (int, float)):
+        payload["duration_ms"] = float(duration_ms)
     return payload
 
 
