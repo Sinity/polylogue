@@ -29,6 +29,16 @@ class TestCheckDocsRepoBaseline:
         assert errors == [], "\n".join(errors)
         assert files_checked > 0
 
+    def test_blob_gc_recovery_restarts_daemon_before_periodic_wait(self) -> None:
+        text = (Path(__file__).parents[3] / "docs" / "maintenance.md").read_text()
+        recovery = text.index("# 6. Restart the daemon so its periodic blob-GC route is active again.")
+        restart = text.index("systemctl --user start polylogued.service", recovery)
+        gc_wait = text.index("900-second", recovery)
+
+        assert restart < gc_wait
+        assert "up to 15 minutes" in text[gc_wait : gc_wait + 240]
+        assert "manual" in text[gc_wait : gc_wait + 240]
+
 
 class TestCheckDocsTmpFixtures:
     def test_known_devtools_command_passes(self, tmp_path: Path) -> None:

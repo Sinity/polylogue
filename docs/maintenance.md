@@ -1108,11 +1108,13 @@ restic restore latest --target / --include /path/to/archive_root/blob
 polylogue ops reset --session <conv_id>
 polylogue import <path-to-source>
 
-# 6. After recovery, let the daemon's bounded periodic blob-GC pass
-#    reclaim aged, unreferenced files. Do not infer a reservation TTL.
-
-# 7. Restart the daemon.
+# 6. Restart the daemon so its periodic blob-GC route is active again.
 systemctl --user start polylogued.service
+
+# 7. The daemon's first periodic blob-GC pass runs on its 900-second
+#    interval, so allow up to 15 minutes for it to reclaim aged,
+#    unreferenced files. Do not infer a reservation TTL or run a manual
+#    orphaned-blob repair target.
 ```
 
 If the corruption is the result of a known GC race (PR
