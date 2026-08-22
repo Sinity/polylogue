@@ -736,6 +736,32 @@ def test_unresolved_targets_short_circuit(tmp_path: Path) -> None:
     assert op.error == "No valid targets resolved from input"
 
 
+@pytest.mark.parametrize(
+    "operation_id",
+    ("", "/tmp/escape", "../escape", "nested/escape", "nested\\\\escape", "/", ".."),
+)
+def test_operation_ids_reject_falsey_and_path_traversal_before_state_path(tmp_path: Path, operation_id: str) -> None:
+    config = _make_config(tmp_path)
+
+    with pytest.raises(ValueError, match="operation_id"):
+        state_path_for(config, operation_id)
+    with pytest.raises(ValueError, match="operation_id"):
+        execute_replay(config, targets=("session_insights",), operation_id=operation_id)
+
+    assert not (tmp_path / "escape.json").exists()
+
+
+def test_operation_id_none_generates_uuid_and_existing_id_is_preserved(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+
+    generated = execute_replay(config, targets=("session_insights",), operation_id=None, persist_state=False)
+    assert generated.operation_id
+    assert generated.operation_id != "None"
+
+    path = state_path_for(config, "legacy-operation-42")
+    assert path == config.archive_root / ".maintenance-state" / "legacy-operation-42.json"
+
+
 def test_clear_state_is_idempotent(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     # Clearing a non-existent state file is a no-op.
