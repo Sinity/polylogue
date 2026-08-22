@@ -527,6 +527,21 @@ class TestArchiveOneTierStatusDaemonParity:
         assert cli_result["exists"] is daemon_result.exists is False
         assert cli_result["version_status"] == daemon_result.version_status == "missing"
 
+    def test_invalid_tier_agrees_with_daemon_and_stays_explicit(self, tmp_path: Path) -> None:
+        """A corrupt present tier is invalid, never silently reported healthy."""
+        from polylogue.daemon.status import _archive_tier_status as _daemon_archive_tier_status
+
+        db_path = tmp_path / "index.db"
+        db_path.write_bytes(b"not a sqlite database")
+
+        cli_result = _archive_one_tier_status("index", db_path)
+        daemon_result = _daemon_archive_tier_status("index", db_path)
+
+        assert cli_result["exists"] is daemon_result.exists is True
+        assert cli_result["user_version"] is daemon_result.user_version is None
+        assert cli_result["version_status"] == daemon_result.version_status == "invalid"
+        assert cli_result["size_bytes"] == daemon_result.size_bytes == db_path.stat().st_size
+
 
 class TestArchiveTierStatus:
     """Tests for _archive_tier_status()."""
