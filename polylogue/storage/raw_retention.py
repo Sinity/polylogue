@@ -413,8 +413,20 @@ def active_raw_retention_authority(
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
         if not seeds:
-            all_raw_ids = frozenset(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions").fetchall())
-            terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn)
+            if terminal_source_paths is None:
+                raw_rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
+            else:
+                selected_paths = tuple(sorted({str(path) for path in terminal_source_paths}))
+                if selected_paths:
+                    placeholders = ", ".join("?" for _ in selected_paths)
+                    raw_rows = conn.execute(
+                        f"SELECT raw_id FROM raw_sessions WHERE source_path IN ({placeholders})",
+                        selected_paths,
+                    ).fetchall()
+                else:
+                    raw_rows = []
+            all_raw_ids = frozenset(str(row[0]) for row in raw_rows)
+            terminal_artifact_raw_ids = _terminal_artifact_raw_ids(conn, source_paths=terminal_source_paths)
             if all_raw_ids and all_raw_ids.issubset(terminal_artifact_raw_ids):
                 return RawRetentionAuthority(protected_raw_ids=all_raw_ids, eligible_raw_ids=frozenset())
             if all_raw_ids:

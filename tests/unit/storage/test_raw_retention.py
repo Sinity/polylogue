@@ -79,18 +79,19 @@ def test_scoped_terminal_authority_does_not_mask_another_source_path(tmp_path: P
                 """,
                 (raw_id, raw_id, str(source_path), bytes([number]) * 32, number),
             )
-            conn.execute(
-                """
-                INSERT INTO raw_artifacts (
-                    artifact_id, raw_id, origin, source_path, source_index,
-                    artifact_kind, support_status, classification_reason,
-                    parse_as_session, schema_eligible, malformed_jsonl_lines,
-                    first_observed_at_ms, last_observed_at_ms
-                ) VALUES (?, ?, 'unknown-export', ?, 0, 'workflow_journal',
-                          'unknown', 'terminal', 0, 0, 0, ?, ?)
-                """,
-                (f"artifact-{number}", raw_id, str(source_path), number, number),
-            )
+            if number == 1:
+                conn.execute(
+                    """
+                    INSERT INTO raw_artifacts (
+                        artifact_id, raw_id, origin, source_path, source_index,
+                        artifact_kind, support_status, classification_reason,
+                        parse_as_session, schema_eligible, malformed_jsonl_lines,
+                        first_observed_at_ms, last_observed_at_ms
+                    ) VALUES (?, ?, 'unknown-export', ?, 0, 'workflow_journal',
+                              'unknown', 'terminal', 0, 0, 0, ?, ?)
+                    """,
+                    (f"artifact-{number}", raw_id, str(source_path), number, number),
+                )
         conn.commit()
 
     with sqlite3.connect(source_db) as conn:
