@@ -453,6 +453,64 @@ def test_fresh_explicit_done_and_malformed_cursor_are_typed_noops_or_failures(
     assert patched_dispatch["session_insights"] == []
 
 
+@pytest.mark.parametrize("resume_cursor", ["", "not-a-cursor", "target:not-an-integer", "target:-1"])
+def test_explicit_malformed_cursor_precedes_blocker_and_preserves_state(
+    tmp_path: Path,
+    patched_dispatch: dict[str, list[str]],
+    resume_cursor: str,
+) -> None:
+    config = _make_config(tmp_path)
+    path = state_path_for(config, "op-invalid-before-blocker")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = '{"operation_id":"op-invalid-before-blocker","cursor":"target:0"}'
+    path.write_text(original)
+
+    blocker = _ok_result("session_insights", repaired=0)
+    blocker = RepairResult(
+        name=blocker.name,
+        category=blocker.category,
+        destructive=blocker.destructive,
+        repaired_count=0,
+        success=False,
+        detail="daemon is running",
+    )
+    with patch(
+        "polylogue.maintenance.replay.offline_maintenance_blockers",
+        return_value=[blocker],
+    ) as blocker_check:
+        op = execute_replay(
+            config,
+            targets=("session_insights",),
+            operation_id="op-invalid-before-blocker",
+            resume_cursor=resume_cursor,
+        )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.failure_samples.samples[0].kind == "InvalidReplayCursor"
+    blocker_check.assert_not_called()
+    assert path.read_text() == original
+    assert patched_dispatch["session_insights"] == []
+
+
+def test_explicit_malformed_cursor_without_state_does_not_create_state(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    config = _make_config(tmp_path)
+    with patch("polylogue.maintenance.replay.offline_maintenance_blockers") as blocker_check:
+        op = execute_replay(
+            config,
+            targets=("session_insights",),
+            operation_id="op-invalid-no-state",
+            resume_cursor="",
+        )
+
+    assert op.status is OperationStatus.FAILED
+    assert op.failure_samples.samples[0].kind == "InvalidReplayCursor"
+    blocker_check.assert_not_called()
+    assert not state_path_for(config, "op-invalid-no-state").exists()
+    assert patched_dispatch["session_insights"] == []
+
+
 def test_explicit_resume_cursor_maps_reordered_subset_by_identity(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
