@@ -4537,6 +4537,52 @@ def test_writer_leaves_session_timestamps_null_when_no_timestamp_evidence_exists
     assert row["sort_key_ms"] is None
 
 
+def test_writer_derives_session_timestamps_from_event_evidence_when_messages_carry_none(
+    tmp_path: Path,
+) -> None:
+    """Event-only sessions use timestamped session events as timeline evidence."""
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id="event-only-atif-trajectory",
+        title="Hermes ATIF trajectory: event-only",
+        messages=[
+            ParsedMessage(
+                provider_message_id="event-only-atif-trajectory:trace-summary",
+                role=Role.SYSTEM,
+                text="Hermes ATIF trajectory: event-only",
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                material_origin=MaterialOrigin.RUNTIME_CONTEXT,
+            ),
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="hermes_llm_request_span",
+                timestamp="2026-04-01T10:00:00+00:00",
+                payload={},
+            ),
+            ParsedSessionEvent(
+                event_type="hermes_tool_execution_span",
+                timestamp="2026-04-01T10:04:30+00:00",
+                payload={},
+            ),
+        ],
+    )
+
+    assert session.created_at is None
+    assert session.updated_at is None
+    assert all(message.occurred_at_ms is None for message in session.messages)
+
+    session_id = write_parsed_session_to_archive(conn, session)
+    row = _session_timestamps(conn, session_id)
+
+    assert row["created_at_ms"] == 1_775_037_600_000
+    assert row["updated_at_ms"] == 1_775_037_870_000
+    assert row["sort_key_ms"] == 1_775_037_870_000
+
+
 def test_writer_derives_prefix_sharing_child_created_at_from_full_transcript(
     tmp_path: Path,
 ) -> None:
