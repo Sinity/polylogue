@@ -27,6 +27,11 @@ class ProductionSeamSpec:
     tested_symbols: tuple[str, ...]
     required_symbols: tuple[str, ...] = ()
     production_namespace: str = "polylogue"
+    # Fixture names that establish this seam's hermetic filesystem boundary.
+    # Keeping them in the contract prevents a proof test from silently
+    # changing its isolation setup (for example, from ``workspace_env`` to a
+    # raw ambient path).
+    fixture_boundary: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -36,6 +41,7 @@ class ProductionSeamSpec:
             "tested_symbols": list(self.tested_symbols),
             "required_symbols": list(self.required_symbols),
             "production_namespace": self.production_namespace,
+            "fixture_boundary": list(self.fixture_boundary),
         }
 
 
@@ -244,6 +250,17 @@ def _test_function_name(spec: ProductionSeamSpec, source_root: Path) -> str:
     return f"{_module_name(absolute_path, source_root)}.{spec.test_function}"
 
 
+def _test_fixture_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    return frozenset(
+        argument.arg
+        for argument in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+    )
+
+
 def _shadowed_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     names = {argument.arg for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)}
     if function.args.vararg is not None:
@@ -353,6 +370,14 @@ def check_production_seam(spec: ProductionSeamSpec, *, source_root: Path) -> Pro
         violations.append(ProductionReachabilityViolation("missing_production_entrypoint", entrypoint))
     if test_function not in graph.nodes:
         violations.append(ProductionReachabilityViolation("missing_test_function", test_function))
+    elif spec.fixture_boundary:
+        test_node = graph.nodes[test_function]
+        declared = _test_fixture_names(test_node.node)
+        for fixture_name in spec.fixture_boundary:
+            if not fixture_name.isidentifier():
+                violations.append(ProductionReachabilityViolation("fixture_boundary_invalid", fixture_name))
+            elif fixture_name not in declared:
+                violations.append(ProductionReachabilityViolation("fixture_boundary_not_declared", fixture_name))
 
     test_targets = graph.edges.get(test_function, frozenset())
     reachable = graph.reachable_from(entrypoint)

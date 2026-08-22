@@ -25,6 +25,59 @@ def test_wired_fixture_route_is_reachable() -> None:
     assert report.ok, report.to_json()
 
 
+def test_declared_fixture_boundary_is_bound_to_test_signature() -> None:
+    report = check_production_seam(
+        ProductionSeamSpec(
+            test_path="fixture_test.py",
+            test_function="test_wired_route_with_tmp_path",
+            production_entrypoint="routes.production_entrypoint",
+            tested_symbols=("routes.production_entrypoint",),
+            production_namespace="routes",
+            fixture_boundary=("tmp_path",),
+        ),
+        source_root=_FIXTURE_ROOT,
+    )
+
+    assert report.ok, report.to_json()
+    assert report.spec.fixture_boundary == ("tmp_path",)
+
+
+def test_fixture_boundary_rejects_removed_or_renamed_fixture() -> None:
+    report = check_production_seam(
+        ProductionSeamSpec(
+            test_path="fixture_test.py",
+            test_function="test_wired_route_with_tmp_path",
+            production_entrypoint="routes.production_entrypoint",
+            tested_symbols=("routes.production_entrypoint",),
+            production_namespace="routes",
+            fixture_boundary=("workspace_env",),
+        ),
+        source_root=_FIXTURE_ROOT,
+    )
+
+    assert [violation.to_dict() for violation in report.violations] == [
+        {"code": "fixture_boundary_not_declared", "symbol": "workspace_env"}
+    ]
+
+
+def test_fixture_boundary_rejects_path_widening() -> None:
+    report = check_production_seam(
+        ProductionSeamSpec(
+            test_path="fixture_test.py",
+            test_function="test_wired_route_with_tmp_path",
+            production_entrypoint="routes.production_entrypoint",
+            tested_symbols=("routes.production_entrypoint",),
+            production_namespace="routes",
+            fixture_boundary=("/realm/data",),
+        ),
+        source_root=_FIXTURE_ROOT,
+    )
+
+    assert [violation.to_dict() for violation in report.violations] == [
+        {"code": "fixture_boundary_invalid", "symbol": "/realm/data"}
+    ]
+
+
 def test_unreachable_tested_symbol_is_a_structured_failure() -> None:
     report = check_production_seam(
         ProductionSeamSpec(

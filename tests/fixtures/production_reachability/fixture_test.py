@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .nestedpkg import package_route
 from .routes import (
     class_route,
@@ -16,6 +18,11 @@ from .routes import (
 
 def test_wired_route() -> None:
     assert production_entrypoint() == "live"
+
+
+def test_wired_route_with_tmp_path(tmp_path: Path) -> None:
+    assert production_entrypoint() == "live"
+    assert tmp_path.is_dir()
 
 
 def test_dead_helper() -> None:
