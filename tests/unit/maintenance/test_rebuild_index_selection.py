@@ -120,3 +120,12 @@ class TestValidateRebuildIndexRequestSharedService:
             candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
         )
         validate_rebuild_index_request(request)
+
+    def test_candidate_build_is_capability_negative(self, tmp_path: Path) -> None:
+        request = RebuildIndexRequest(archive_root=tmp_path, candidate_build=True, promote=False)
+        validate_rebuild_index_request(request)
+
+    def test_candidate_build_cannot_claim_promotion(self, tmp_path: Path) -> None:
+        request = RebuildIndexRequest(archive_root=tmp_path, candidate_build=True, promote=True)
+        with pytest.raises(ValueError, match="candidate builds require --no-promote"):
+            validate_rebuild_index_request(request)

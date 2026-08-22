@@ -389,6 +389,7 @@ async def run_daemon_bulk_rebuild_pass(
     parse_stage: DaemonParseStage,
     batch_size: int = DAEMON_BULK_REBUILD_BATCH_SIZE,
     max_payload_bytes: int,
+    candidate_build: bool = False,
 ) -> RebuildIndexReceipt | None:
     """Drive one bounded daemon-owned bulk-rebuild pass.
 
@@ -484,7 +485,8 @@ async def run_daemon_bulk_rebuild_pass(
 
     request = RebuildIndexRequest(
         archive_root=root,
-        promote=True,
+        promote=not candidate_build,
+        candidate_build=candidate_build,
         operation_id=transaction.operation_id,
         schema_inference_receipt_path=receipt_path,
         message_owner_scope_backfill_receipt_path=message_owner_receipt_path,

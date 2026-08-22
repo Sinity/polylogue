@@ -1070,6 +1070,7 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
             config=config,
             parse_stage=_daemon_bulk_rebuild_parse_stage(),
             max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            candidate_build=True,
         )
     except Exception:
         logger.warning("bulk-rebuild: routed pass failed", exc_info=True)

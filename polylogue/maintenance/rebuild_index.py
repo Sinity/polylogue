@@ -754,6 +754,11 @@ class RebuildIndexRequest:
     selected_session_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    # Candidate construction is capability-negative: it may build an inactive
+    # generation, but can never acquire promotion authority.  The daemon sets
+    # this explicitly; keeping it separate from ``promote`` prevents a caller
+    # from accidentally treating a candidate build as an accepted rebuild.
+    candidate_build: bool = False
     # A daemon-owned mode, not a client-selected list of candidate checks.
     canary: bool = False
     candidate_acceptance_checks: tuple[str, ...] | None = None
@@ -1262,6 +1267,8 @@ def _operation_evidence(
 
 def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
     """Reject selection and transaction combinations that cannot be promoted safely."""
+    if request.candidate_build and request.promote:
+        raise ValueError("candidate builds require --no-promote and cannot accept or replace the active index")
     if request.raw_ids and request.only_missing:
         raise ValueError("--raw-id cannot be combined with --only-missing")
     if request.selected_session_ids and not request.raw_ids:
