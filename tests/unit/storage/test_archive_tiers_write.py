@@ -4111,6 +4111,31 @@ def _session_timestamps(conn: sqlite3.Connection, session_id: str) -> sqlite3.Ro
     return row
 
 
+def test_epoch_timeline_is_authoritative_over_session_timestamp() -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="epoch-timeline",
+        created_at="1970-01-01T00:00:01Z",
+        updated_at="1970-01-01T00:00:02Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="epoch",
+                timestamp="1970-01-01T00:00:00Z",
+                position=0,
+            )
+        ],
+    )
+
+    normalized = normalize_session_timestamps(session)
+
+    assert normalized.created_at == "1970-01-01T00:00:00+00:00"
+    assert normalized.updated_at == "1970-01-01T00:00:00+00:00"
+    assert normalized.created_at_provenance == "derived"
+    assert normalized.updated_at_provenance == "derived"
+
+
 def test_fallback_normalization_remains_derived_when_newer_timeline_arrives() -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,
