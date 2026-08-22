@@ -22,6 +22,7 @@ import time
 import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Protocol
 from unittest.mock import patch
@@ -1000,14 +1001,30 @@ def _bounded_cache_candidates(
             selected: list[Path] = []
             inspected = 0
             with os.scandir(directory_fd) as entries:
-                for candidate in entries:
+                preview: list[os.DirEntry[str]] = []
+                for _ in range(min(2, budget)):
+                    try:
+                        preview.append(next(entries))
+                    except StopIteration:
+                        break
+                descending = (len(preview) == 2 and preview[1].name < preview[0].name) or (
+                    len(preview) == 1 and bool(cursor) and preview[0].name < cursor
+                )
+                ordered_entries = chain(preview, entries)
+                for candidate in ordered_entries:
+                    if (
+                        after_cursor
+                        and cursor
+                        and ((not descending and candidate.name <= cursor) or (descending and candidate.name >= cursor))
+                    ):
+                        # The persisted cursor has already accounted for this
+                        # prefix. It must not consume the new scan budget.
+                        continue
                     inspected += 1
                     if inspected > budget:
                         break
                     if len(selected) >= budget:
                         break
-                    if after_cursor and cursor and candidate.name <= cursor:
-                        continue
                     if prefix is not None and not candidate.name.startswith(prefix):
                         continue
                     if suffix is not None and not candidate.name.endswith(suffix):
@@ -1021,7 +1038,7 @@ def _bounded_cache_candidates(
             return selected
 
         selected = scan(after_cursor=True)
-        return selected if selected or not cursor else scan(after_cursor=False)
+        return selected
     finally:
         os.close(directory_fd)
 
@@ -1035,12 +1052,21 @@ def _bounded_scan_last_name(directory: Path, *, cursor: str, budget: int) -> str
     try:
         inspected = 0
         with os.scandir(directory_fd) as entries:
-            for entry in entries:
+            preview: list[os.DirEntry[str]] = []
+            for _ in range(min(2, budget)):
+                try:
+                    preview.append(next(entries))
+                except StopIteration:
+                    break
+            descending = (len(preview) == 2 and preview[1].name < preview[0].name) or (
+                len(preview) == 1 and bool(cursor) and preview[0].name < cursor
+            )
+            for entry in chain(preview, entries):
+                if cursor and ((not descending and entry.name <= cursor) or (descending and entry.name >= cursor)):
+                    continue
                 inspected += 1
                 if inspected > budget:
                     break
-                if cursor and entry.name <= cursor:
-                    continue
                 last = entry.name
         return last
     finally:
@@ -1084,17 +1110,16 @@ def _recover_obsolete_staging(
         candidates = _bounded_cache_candidates(staging_root, cursor=cursor, budget=budget)
         inspected = 0
         last_seen = ""
-        for candidate in candidates:
-            if inspected >= budget:
+        blocked = False
+        for inspected, candidate in enumerate(candidates, start=1):
+            if inspected > budget:
                 break
-            inspected += 1
-            last_seen = candidate.name
             artifact_name = candidate.name.split(".", 1)[0]
             lock_path = locks_root / f"{artifact_name}.lock"
             if _is_symlink_node(lock_path):
-                # Never unlink/recreate a suspicious lock pathname.  The
-                # existing owner may hold the replaced inode.
-                continue
+                # Keep the blocked candidate before the cursor for retry.
+                blocked = True
+                break
             try:
                 lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
@@ -1102,11 +1127,13 @@ def _recover_obsolete_staging(
                         _assert_lock_identity(handle.fileno(), lock_path)
                         _remove_tree(candidate)
                         removed.append(candidate.name)
+                        last_seen = candidate.name
                     finally:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except OSError:
-                continue
-        if not candidates:
+                blocked = True
+                break
+        if not blocked and not candidates:
             last_seen = _bounded_scan_last_name(staging_root, cursor=cursor, budget=budget)
         if last_seen and last_seen != cursor:
             _write_private_text(cursor_path, last_seen + "\n")
@@ -1140,23 +1167,23 @@ def _recover_stale_handoffs(
         candidates = _bounded_cache_candidates(artifacts_root, cursor=cursor, budget=budget, suffix=".handoff")
         inspected = 0
         last_seen = ""
-        for candidate in candidates:
-            if inspected >= budget:
+        blocked = False
+        for inspected, candidate in enumerate(candidates, start=1):
+            if inspected > budget:
                 break
-            inspected += 1
-            last_seen = candidate.name
             if _is_symlink_node(candidate):
                 _remove_tree(candidate)
                 removed.append(candidate.name)
+                last_seen = candidate.name
                 continue
             parts = candidate.name.removeprefix(".").split(".", 1)
             if len(parts) != 2:
+                last_seen = candidate.name
                 continue
             lock_path = locks_root / f"{parts[0]}.lock"
             if _is_symlink_node(lock_path):
-                # Never unlink/recreate a suspicious lock pathname.  The
-                # existing owner may hold the replaced inode.
-                continue
+                blocked = True
+                break
             try:
                 lock_fd = _open_authenticated_lock(lock_path, nonblocking=True)
                 with os.fdopen(lock_fd, "a+") as handle:
@@ -1164,11 +1191,13 @@ def _recover_stale_handoffs(
                         _assert_lock_identity(handle.fileno(), lock_path)
                         _remove_tree(candidate)
                         removed.append(candidate.name)
+                        last_seen = candidate.name
                     finally:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except OSError:
-                continue
-        if not candidates:
+                blocked = True
+                break
+        if not blocked and not candidates:
             last_seen = _bounded_scan_last_name(artifacts_root, cursor=cursor, budget=budget)
         if last_seen and last_seen != cursor:
             _write_private_text(cursor_path, last_seen + "\n")
@@ -1502,15 +1531,68 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
         raise
 
 
-def _open_lock_domain(cache_root: Path) -> int:
-    locks = cache_root / ".locks"
-    _mkdir_pinned(locks)
-    fd = _open_pinned_dir(locks)
+@dataclass(frozen=True)
+class _LockDomain:
+    root_fd: int
+    locks_fd: int
+    root_mode: int
+
+
+def _assert_directory_identity(fd: int, path: Path) -> None:
+    parent, leaf = _open_pinned_parent(path)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        return fd
-    except BaseException:
+        named = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+    finally:
+        os.close(parent)
+    opened = os.fstat(fd)
+    if not stat.S_ISDIR(named.st_mode) or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        raise OSError("lock domain pathname was replaced while locked")
+
+
+def _open_lock_domain(cache_root: Path) -> _LockDomain:
+    """Pin the cache root and lock directory for the entire critical section."""
+    locks = cache_root / ".locks"
+    _mkdir_pinned(cache_root / "artifacts")
+    _mkdir_pinned(locks)
+    _mkdir_pinned(cache_root / ".staging")
+    for control_file in (
+        cache_root / ".cleanup.lock",
+        cache_root / ".cleanup.cursor",
+        cache_root / ".handoff.cursor",
+    ):
+        fd = _open_no_follow(control_file, os.O_RDWR | os.O_CREAT, 0o600)
         os.close(fd)
+    root_fd = _open_pinned_dir(cache_root)
+    locks_fd = -1
+    root_mode = 0
+    try:
+        _assert_directory_identity(root_fd, cache_root)
+        fcntl.flock(root_fd, fcntl.LOCK_EX)
+        _assert_directory_identity(root_fd, cache_root)
+        locks_fd = os.open(".locks", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd)
+        named_locks = os.stat(".locks", dir_fd=root_fd, follow_symlinks=False)
+        opened_locks = os.fstat(locks_fd)
+        if (named_locks.st_dev, named_locks.st_ino) != (opened_locks.st_dev, opened_locks.st_ino):
+            raise OSError("lock domain pathname was replaced while locked")
+        fcntl.flock(locks_fd, fcntl.LOCK_EX)
+        root_mode = os.fstat(root_fd).st_mode
+        # Prevent replacement of cache_root/.locks while children remain writable.
+        os.fchmod(root_fd, root_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        _assert_directory_identity(root_fd, cache_root)
+        named_locks = os.stat(".locks", dir_fd=root_fd, follow_symlinks=False)
+        if (named_locks.st_dev, named_locks.st_ino) != (opened_locks.st_dev, opened_locks.st_ino):
+            raise OSError("lock domain pathname was replaced while locked")
+        return _LockDomain(root_fd=root_fd, locks_fd=locks_fd, root_mode=root_mode)
+    except BaseException:
+        if locks_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(locks_fd, fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                os.close(locks_fd)
+        with contextlib.suppress(OSError):
+            fcntl.flock(root_fd, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(root_fd)
         raise
 
 
@@ -1520,12 +1602,23 @@ def build_seeded_archive(
     cache_root: Path | None = None,
 ) -> SeededArchiveArtifact:
     selected_root = (cache_root or default_cache_root()).expanduser()
-    domain_fd = _open_lock_domain(selected_root)
+    domain = _open_lock_domain(selected_root)
     try:
         return _build_seeded_archive_inner(specs, cache_root=selected_root)
     finally:
-        fcntl.flock(domain_fd, fcntl.LOCK_UN)
-        os.close(domain_fd)
+        try:
+            fcntl.flock(domain.locks_fd, fcntl.LOCK_UN)
+        finally:
+            try:
+                fcntl.flock(domain.root_fd, fcntl.LOCK_UN)
+            finally:
+                try:
+                    os.fchmod(domain.root_fd, domain.root_mode)
+                finally:
+                    try:
+                        os.close(domain.locks_fd)
+                    finally:
+                        os.close(domain.root_fd)
 
 
 def _build_seeded_archive_inner(
@@ -1641,7 +1734,6 @@ def _build_seeded_archive_inner(
                     json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
                 )
                 _publish_sealed_staging(staging, final_root)
-                _assert_lock_identity(lock_handle.fileno(), lock_path)
                 break
             except sqlite3.OperationalError as exc:
                 # Same-process zombie-connection lock (polylogue-lbgc): a
@@ -1763,13 +1855,21 @@ def _authenticate_clone_copy(
     source: SeededArchiveArtifact,
     destination: Path,
     manifest: SeededArchiveManifest,
+    *,
+    ignored_relatives: frozenset[str] = frozenset(),
 ) -> None:
-    expected = _manifest_file_entries(manifest.files)
+    expected = tuple(item for item in _manifest_file_entries(manifest.files) if item[0] not in ignored_relatives)
     expected_paths = {relative for relative, _, _ in expected}
     actual_paths: set[str] = set()
     for path in _pinned_paths(destination):
-        if _is_regular(path) and not _is_reserved_root_file(path, destination):
-            actual_paths.add(str(path.relative_to(destination)))
+        relative = str(path.relative_to(destination))
+        if _is_regular(path) and not _is_reserved_root_file(path, destination) and relative not in ignored_relatives:
+            actual_paths.add(relative)
+        elif relative in ignored_relatives:
+            continue
+        elif not _is_regular(path) and not stat.S_ISDIR(_safe_stat(path).st_mode):
+            raise ValueError(f"clone contains unsupported node: {relative}")
+
     if actual_paths != expected_paths:
         raise ValueError("clone contains unexpected or missing files")
 
@@ -1822,13 +1922,21 @@ def _authenticate_clone_copy(
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     _mkdir_pinned(destination.parent)
     parent_fd = _open_pinned_dir(destination.parent)
+    parent_mode: int | None = None
     try:
+        parent_mode = os.fstat(parent_fd).st_mode
         fcntl.flock(parent_fd, fcntl.LOCK_EX)
+        os.fchmod(parent_fd, parent_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         return _clone_seeded_archive_inner(artifact, destination)
     finally:
-        with contextlib.suppress(OSError):
+        try:
             fcntl.flock(parent_fd, fcntl.LOCK_UN)
-        os.close(parent_fd)
+        finally:
+            try:
+                if parent_mode is not None:
+                    os.fchmod(parent_fd, parent_mode)
+            finally:
+                os.close(parent_fd)
 
 
 def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
@@ -1853,13 +1961,20 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
         for path in _pinned_paths(destination):
             _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
         _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-        _authenticate_clone_copy(artifact, destination, disk_manifest)
         bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
         if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
             from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
 
             _safe_unlink(bootstrap_marker)
             _record_fresh_durable_bootstrap(destination)
+        # This is the final mutation and the final authentication. No
+        # pathname or metadata operation occurs between this check and return.
+        _authenticate_clone_copy(
+            artifact,
+            destination,
+            disk_manifest,
+            ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+        )
     except BaseException:
         with contextlib.suppress(BaseException):
             _remove_tree(destination)

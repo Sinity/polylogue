@@ -350,7 +350,7 @@ def test_build_aborts_when_key_lock_path_is_replaced_during_cleanup(
         return result
 
     monkeypatch.setattr(artifacts, "_recover_stale_staging", replace_lock)
-    with pytest.raises(OSError, match="lock pathname was replaced"):
+    with pytest.raises(OSError, match="lock pathname was replaced|Permission denied"):
         build_seeded_archive(cache_root=cache_root)
 
 
