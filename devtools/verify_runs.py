@@ -143,6 +143,8 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
     peak_pss: int | None = None
     peak_swap: int | None = None
     peak_storage: int | None = None
+    peak_shm_used: int | None = None
+    min_shm_free: int | None = None
     read_bytes = 0
     write_bytes = 0
     for step in pytest_steps:
@@ -176,6 +178,19 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
         storage = stats.get("storage")
         storage_values = storage if isinstance(storage, Mapping) else {}
         peak_storage = max_optional(peak_storage, storage_values.get("basetemp_allocated_bytes_max"))
+        for sample_key, reducer in (("used_kb", "max"), ("free_kb", "min")):
+            shm = resource_values.get("shm")
+            value = (
+                shm.get(sample_key) * 1024
+                if isinstance(shm, Mapping) and isinstance(shm.get(sample_key), int)
+                else None
+            )
+            if reducer == "max":
+                peak_shm_used = max_optional(peak_shm_used, value)
+            else:
+                min_shm_free = value if value is not None and min_shm_free is None else min_shm_free
+                if value is not None and min_shm_free is not None:
+                    min_shm_free = min(min_shm_free, value)
         read_bytes += optional_int(resource_values.get("tree_read_bytes_delta")) or 0
         write_bytes += optional_int(resource_values.get("tree_write_bytes_delta")) or 0
         lanes.append(
@@ -234,6 +249,11 @@ def _history_pytest_aggregate(entry: Mapping[str, Any]) -> dict[str, Any]:
             "peak_storage_bytes": peak_storage,
             "read_bytes": read_bytes,
             "write_bytes": write_bytes,
+            "write_amplification_ratio": (
+                round(write_bytes / peak_storage, 3) if peak_storage and write_bytes >= 0 else None
+            ),
+            "peak_shm_used_bytes": peak_shm_used,
+            "min_shm_free_bytes": min_shm_free,
         },
         "cleanup": {"complete": True if no_pytest else cleanup_complete},
         "containment": {"complete": True if no_pytest else containment_complete},
@@ -1385,6 +1405,8 @@ def aggregate_native_testmon_run(
     peak_pss_kb: int | None = None
     peak_swap_pss_kb: int | None = None
     peak_storage_bytes: int | None = None
+    peak_shm_used_bytes: int | None = None
+    min_shm_free_bytes: int | None = None
     read_bytes = 0
     write_bytes = 0
     archive_tier_init_counts: dict[str, int] = {}
@@ -1436,6 +1458,16 @@ def aggregate_native_testmon_run(
             write_bytes += lane_write if isinstance(lane_write, int) else 0
         if isinstance(storage, Mapping):
             peak_storage_bytes = _peak(peak_storage_bytes, storage.get("basetemp_allocated_bytes_max"))
+        for sample_key, reducer in (("used_kb", "max"), ("free_kb", "min")):
+            for sample_key_source in ("first_resource_sample", "last_resource_sample"):
+                sample = statistics.get(sample_key_source) if isinstance(statistics, Mapping) else None
+                shm = sample.get("shm") if isinstance(sample, Mapping) else None
+                raw_value = shm.get(sample_key) if isinstance(shm, Mapping) else None
+                value = raw_value * 1024 if isinstance(raw_value, int) else None
+                if reducer == "max":
+                    peak_shm_used_bytes = _peak(peak_shm_used_bytes, value)
+                elif value is not None:
+                    min_shm_free_bytes = value if min_shm_free_bytes is None else min(min_shm_free_bytes, value)
         lane_cleanup = cleanup.get("complete") if isinstance(cleanup, Mapping) else None
         cleanup_complete = cleanup_complete and lane_cleanup is True
         lane_addopts_neutralized = step.get("external_addopts_neutralized") is True
@@ -1578,6 +1610,11 @@ def aggregate_native_testmon_run(
             "peak_storage_bytes": peak_storage_bytes,
             "read_bytes": read_bytes,
             "write_bytes": write_bytes,
+            "write_amplification_ratio": (
+                round(write_bytes / peak_storage_bytes, 3) if peak_storage_bytes and write_bytes >= 0 else None
+            ),
+            "peak_shm_used_bytes": peak_shm_used_bytes,
+            "min_shm_free_bytes": min_shm_free_bytes,
         },
         "cleanup": {"complete": cleanup_complete},
         "containment": {"complete": containment_complete},

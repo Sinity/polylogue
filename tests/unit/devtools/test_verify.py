@@ -903,7 +903,12 @@ def test_verify_history_normalizes_focused_and_quick_runs_to_one_aggregate_schem
                     "outcomes": {"passed": 2},
                     "cleanup": {"complete": True},
                     "storage": {"basetemp_allocated_bytes_max": 128},
-                    "resources": {"peak_tree_rss_kb": 512, "tree_read_bytes_delta": 64, "tree_write_bytes_delta": 64},
+                    "resources": {
+                        "peak_tree_rss_kb": 512,
+                        "tree_read_bytes_delta": 64,
+                        "tree_write_bytes_delta": 64,
+                        "shm": {"used_kb": 3, "free_kb": 9},
+                    },
                 },
             }
         ],
@@ -918,7 +923,10 @@ def test_verify_history_normalizes_focused_and_quick_runs_to_one_aggregate_schem
     assert focused_row["total_duration_s"] == 1.25
     assert focused_row["pytest_aggregate"]["selection_mode"] == "focused"
     assert focused_row["pytest_aggregate"]["outcomes"] == {"passed": 2}
-    assert focused_row["pytest_aggregate"]["resources"]["peak_tree_rss_kb"] == 512
+    resources = focused_row["pytest_aggregate"]["resources"]
+    assert resources["peak_tree_rss_kb"] == 512
+    assert resources["peak_shm_used_bytes"] == 3 * 1024
+    assert resources["min_shm_free_bytes"] == 9 * 1024
     telemetry = focused_row["cost_telemetry"]
     assert telemetry == {
         "schema_version": 1,
