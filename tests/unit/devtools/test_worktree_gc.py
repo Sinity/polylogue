@@ -132,16 +132,24 @@ def test_check_dirty_blocks_ordinary_untracked_file_with_disposable_cache(tmp_pa
     assert check_dirty(repo) is True
 
 
-def test_default_target_prefers_origin_master(tmp_path: Path) -> None:
-    """Repo workflows integrate through origin/master, not stale local master."""
+def test_default_target_uses_invoking_checkout_branch(tmp_path: Path) -> None:
+    """The default follows the active integration branch, not a remote base."""
     repo = _make_repo(tmp_path / "repo")
     remote = tmp_path / "remote.git"
     _run_git(["init", "--bare", str(remote)], cwd=tmp_path)
     _run_git(["remote", "add", "origin", str(remote)], cwd=repo)
     _run_git(["push", "-u", "origin", "master"], cwd=repo)
+    _run_git(["switch", "-c", "integration/current"], cwd=repo)
 
-    assert _resolve_target(repo, None) == "origin/master"
+    assert _resolve_target(repo, None) == "integration/current"
     assert _resolve_target(repo, "master") == "master"
+
+
+def test_default_target_uses_head_when_checkout_is_detached(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    _run_git(["switch", "--detach", "HEAD"], cwd=repo)
+
+    assert _resolve_target(repo, None) == "HEAD"
 
 
 # ── classification ─────────────────────────────────────────────────
