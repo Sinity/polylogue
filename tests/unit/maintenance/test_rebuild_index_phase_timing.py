@@ -156,6 +156,7 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
         "selection_s",
         "prefetch_warm_s",
         "cohort_s",
+        "replay_s",
         "parse_s",
         "apply_s",
         "insight_s",
@@ -179,6 +180,9 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
     )
     assert cohort_stage_seconds > 0.0
     assert timings["cohort_s"] == pytest.approx(cohort_stage_seconds, abs=0.005)
+    replay_seconds = stage_timings["total"]
+    assert isinstance(replay_seconds, int | float) and not isinstance(replay_seconds, bool)
+    assert timings["replay_s"] == pytest.approx(float(replay_seconds), abs=0.005)
     parse_seconds = receipt.replay["parse_s"]
     apply_seconds = receipt.replay["apply_s"]
     assert isinstance(parse_seconds, int | float) and not isinstance(parse_seconds, bool)
