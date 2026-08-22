@@ -59,8 +59,16 @@ def session_evidence_timestamps(
     # timeline is available at all.
     producer_created = raw_created if created_provenance not in {"derived", "fallback"} else None
     producer_updated = raw_updated if updated_provenance not in {"derived", "fallback"} else None
-    created = producer_created if producer_created is not None else (derived_created or raw_created)
-    updated = producer_updated if producer_updated is not None else (derived_updated or raw_updated)
+    created = (
+        producer_created
+        if producer_created is not None
+        else (derived_created if derived_created is not None else raw_created)
+    )
+    updated = (
+        producer_updated
+        if producer_updated is not None
+        else (derived_updated if derived_updated is not None else raw_updated)
+    )
     if created is None and updated is None and fallback_timestamp is not None:
         fallback = timestamp_millis(fallback_timestamp)
         created = fallback
