@@ -86,6 +86,27 @@ def test_public_origin_projections_cover_declared_specs_coherently() -> None:
     assert all(mode.package_ref and mode.capture_mode for spec in ORIGIN_SPECS for mode in spec.completeness_modes)
 
 
+def test_projection_only_origin_spec_changes_do_not_change_lowering_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public declarations are not executable lowering semantics."""
+    import polylogue.sources.origin_specs as origin_specs
+
+    before = lowering_fingerprint()
+    changed_specs = tuple(
+        replace(
+            spec, display_description=f"{spec.display_description} (reworded)", public_filter=not spec.public_filter
+        )
+        for spec in ORIGIN_SPECS
+    )
+    monkeypatch.setattr(origin_specs, "ORIGIN_SPECS", changed_specs)
+    origin_specs._fingerprint_sources_cached.cache_clear()
+
+    assert origin_specs.lowering_fingerprint() == before
+    target = next(spec for spec in changed_specs if spec.origin is Origin.CODEX_SESSION)
+    assert target.parser_fingerprint() == parser_fingerprint_for_origin(Origin.CODEX_SESSION)
+
+
 def test_origin_spec_metadata_change_propagates_to_public_manual_projection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

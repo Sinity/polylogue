@@ -6179,6 +6179,20 @@ class TestMCPWiring:
         # Must NOT go to FTS query_terms.
         assert not any("origin" in t for t in spec.query_terms)
 
+    @pytest.mark.parametrize("token", ["codex", "claude-code", "unknown-export", "beads-issue"])
+    def test_dsl_origin_rejects_provider_and_non_filter_tokens(self, token: str) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        with pytest.raises(ExpressionCompileError, match="unknown origin"):
+            build_query_spec(query=f"origin:{token}")
+
+    def test_dsl_and_explicit_origin_filters_share_public_vocabulary(self) -> None:
+        from polylogue.mcp.query_contracts import build_query_spec
+
+        dsl = build_query_spec(query="origin:codex-session")
+        explicit = build_query_spec(origin="codex-session")
+        assert dsl.origins == explicit.origins == ("codex-session",)
+
     def test_dsl_has_paste_compiled(self) -> None:
         from polylogue.mcp.query_contracts import build_query_spec
 

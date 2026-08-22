@@ -161,10 +161,10 @@ from polylogue.archive.query.spec import (
     normalize_retrieval_lane,
     optional_bool,
 )
-from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
 from polylogue.core.query_identity import query_ref, query_run_ref, result_set_ref
 from polylogue.core.refs import ObjectRef
+from polylogue.sources.origin_specs import public_origin_tokens
 
 
 def _count_field_regex() -> str:
@@ -1179,7 +1179,7 @@ def _field_token_to_predicate(token: _FieldToken) -> QueryPredicate:
         else ()
     )
     if validation_field == "origin":
-        known_origins = {o.value for o in Origin}
+        known_origins = frozenset(public_origin_tokens())
         for value in values:
             if value not in known_origins:
                 raise ExpressionCompileError(
@@ -3394,7 +3394,7 @@ class _SpecAccumulator:
             self.project_refs.extend(values)
 
         elif fname == "origin":
-            _known_origins = {o.value for o in Origin}
+            _known_origins = frozenset(public_origin_tokens())
             if tok.negated:
                 for v in values:
                     if v not in _known_origins:
