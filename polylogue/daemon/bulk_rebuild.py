@@ -580,6 +580,42 @@ def discard_daemon_canary_candidate(
         raise RuntimeError(f"daemon did not discard inactive canary candidate {generation_id}")
 
 
+def seal_daemon_canary_comparison(
+    *, archive_root: Path, generation_id: str, generation_owner_id: str
+) -> dict[str, object]:
+    """Ask the candidate-owning daemon to seal its historical comparison."""
+
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient, DaemonResponseError
+    from polylogue.maintenance.reindex_canary import UnclassifiedCanaryDiffError
+
+    root = Path(archive_root).resolve()
+    config = load_polylogue_config()
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=None,
+        auth_token=resolve_api_auth_token(
+            config.api_auth_token, allow_no_auth=config.api_allow_no_auth, token_path=root / "api-auth-token"
+        ),
+    )
+    try:
+        payload = client.request_json(
+            "POST",
+            "/api/maintenance/seal-canary-comparison",
+            {"generation_id": generation_id, "generation_owner_id": generation_owner_id},
+            raise_for_status=True,
+        )
+    except DaemonResponseError as exc:
+        if 400 <= exc.status < 500:
+            raise UnclassifiedCanaryDiffError(exc.detail) from exc
+        raise RuntimeError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("daemon rejected or did not complete canary comparison sealing")
+    return payload
+
+
 def consume_daemon_canary_report(*, archive_root: Path, report_path: Path) -> dict[str, object]:
     """Consume report evidence through the archive's running daemon writer."""
 
@@ -622,5 +658,6 @@ __all__ = [
     "has_resumable_daemon_bulk_rebuild_transaction",
     "resolve_or_start_daemon_bulk_rebuild_transaction",
     "run_daemon_canary_rebuild",
+    "seal_daemon_canary_comparison",
     "run_daemon_bulk_rebuild_pass",
 ]

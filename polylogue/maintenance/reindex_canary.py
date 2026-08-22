@@ -121,12 +121,15 @@ class DeltaExpectation:
     table: str
     operations: tuple[DifferenceOperation, ...]
     columns: tuple[str, ...]
+    scope: str = "row"
     origin: str | None = None
     session_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.table or not self.operations or not self.columns:
             raise ValueError("delta expectations require a table, operation, and changed-column signature")
+        if self.scope not in ("row", "schema"):
+            raise ValueError("delta expectations scope must be 'row' or 'schema'")
 
     def matches(
         self,
@@ -138,8 +141,13 @@ class DeltaExpectation:
     ) -> bool:
         if self.table != table or operation not in self.operations:
             return False
+        schema_identity = dict(identity).get("__schema__") in {"table", "column"}
+        if (self.scope == "schema") != schema_identity:
+            return False
         if not changed_columns or not set(changed_columns) <= set(self.columns):
             return False
+        if self.scope == "schema":
+            return True
         if self.origin is None and not self.session_ids:
             return True
         session_id = _session_id_from_identity(dict(identity))
@@ -184,6 +192,7 @@ def index_delta_expectations(
                     table=change.table,
                     operations=tuple(DifferenceOperation(value) for value in change.operations),
                     columns=tuple(change.columns),
+                    scope="row",
                     origin=None if scope is None else scope.origin,
                     session_ids=() if scope is None else tuple(scope.session_ids),
                 )
@@ -567,6 +576,34 @@ def _index_user_version(path: Path) -> int:
     return int(row[0])
 
 
+def _crossed_delta_versions_for_comparison(comparison: CanaryDiffReport) -> frozenset[int] | None:
+    """Return only delta versions that the compared generations actually cross.
+
+    A reviewed delta is executable authority, not a historical explanation. If
+    the comparison carries its active source version, derive the target from
+    the candidate file and restrict authority to that exact version interval.
+    Older reports without source-version evidence retain their structural
+    validation path and cannot be approved as current reports.
+    """
+    source_version = comparison.source_index_version
+    if source_version is None:
+        return None
+    try:
+        persisted_source_version = _index_user_version(comparison.current_index)
+    except (CanarySelectionError, OSError, sqlite3.Error) as exc:
+        raise UnclassifiedCanaryDiffError(
+            "cannot verify persisted current index source version for canary authority"
+        ) from exc
+    if persisted_source_version != source_version:
+        raise UnclassifiedCanaryDiffError("reported source index version does not match persisted current index")
+    from polylogue.storage.sqlite.lifecycle import index_delta_declarations_between
+
+    target_version = _index_user_version(comparison.candidate_index)
+    return frozenset(
+        declaration.version for declaration in index_delta_declarations_between(source_version, target_version)
+    )
+
+
 def _discard_canary_candidate(archive_root: Path, receipt: object) -> list[BaseException]:
     """Discard the inactive canary candidate after a post-rebuild failure."""
     from polylogue.daemon.bulk_rebuild import discard_daemon_canary_candidate
@@ -789,6 +826,34 @@ class CanaryDifferenceReview:
         }
 
 
+LEGACY_CANARY_REPORT_SCHEMA_VERSION = 9
+STRICT_CANARY_REPORT_SCHEMA_VERSION = 10
+CANARY_REPORT_SCHEMA_VERSION = 11
+CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION = 1
+_CANARY_COMPARISON_ATTESTATION_NAME = "canary-comparison-attestation.json"
+
+
+@dataclass(frozen=True, slots=True)
+class CanaryComparisonAttestation:
+    """Daemon-sealed historical comparison evidence owned by one candidate.
+
+    The sidecar is deliberately separate from the externally writable report:
+    its path is derived from the candidate generation and it is created once by
+    the daemon while it owns the archive.  A later active-index fast-forward
+    must not turn a correctly sealed historical comparison into a different
+    comparison, nor may it be silently rebased onto the new active bytes.
+    """
+
+    payload: dict[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return self.payload
+
+    @property
+    def digest(self) -> str:
+        return _canonical_payload_digest(self.payload)
+
+
 @dataclass(frozen=True, slots=True)
 class DurableCanaryReport:
     """The reviewed, persisted canary changelog."""
@@ -800,14 +865,19 @@ class DurableCanaryReport:
     review_status: str
     comparison_fingerprint: str
     archive_provenance: dict[str, object]
+    comparison_attestation: dict[str, object] | None = None
 
     @property
     def unclassified_count(self) -> int:
         return self.comparison.unclassified_count
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "schema_version": 9,
+        payload: dict[str, object] = {
+            "schema_version": (
+                CANARY_REPORT_SCHEMA_VERSION
+                if self.comparison_attestation is not None
+                else STRICT_CANARY_REPORT_SCHEMA_VERSION
+            ),
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
@@ -816,6 +886,9 @@ class DurableCanaryReport:
             "comparison_fingerprint": self.comparison_fingerprint,
             "archive_provenance": self.archive_provenance,
         }
+        if self.comparison_attestation is not None:
+            payload["comparison_attestation"] = self.comparison_attestation
+        return payload
 
 
 def write_canary_report(
@@ -826,6 +899,7 @@ def write_canary_report(
     rebuild_receipt: dict[str, object],
     reviews: Iterable[CanaryDifferenceReview],
     allow_unreviewed: bool = False,
+    comparison_attestation: CanaryComparisonAttestation | None = None,
 ) -> DurableCanaryReport:
     """Persist reviewed evidence, or one explicitly non-approvable discovery report.
 
@@ -842,6 +916,14 @@ def write_canary_report(
         candidate_index=comparison.candidate_index,
     )
     _validate_selection_binding(selection, comparison, rebuild_receipt)
+    if comparison_attestation is not None:
+        _validate_comparison_attestation_for_report(
+            comparison_attestation.payload,
+            comparison=comparison,
+            selection=selection,
+            receipt=rebuild_receipt,
+            configured_archive_root=Path(cast(str, rebuild_receipt["archive_root"])),
+        )
     review_list = tuple(reviews)
     review_by_key: dict[
         tuple[str, DifferenceOperation, tuple[tuple[str, object], ...], tuple[str, ...]], CanaryDifferenceReview
@@ -853,7 +935,11 @@ def write_canary_report(
         if review.key in review_by_key:
             duplicate_keys.append(review.key)
         review_by_key[review.key] = review
-    _validate_expected_review_authorities(review_list)
+    _validate_expected_review_authorities(
+        review_list,
+        crossed_delta_versions=_crossed_delta_versions_for_comparison(comparison),
+        require_crossed_delta_versions=True,
+    )
     difference_keys = {_difference_key(difference) for difference in comparison.differences}
     missing_keys = difference_keys.difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_keys)
@@ -888,6 +974,9 @@ def write_canary_report(
         review_status=review_status,
         comparison_fingerprint=_comparison_fingerprint(comparison),
         archive_provenance=archive_provenance,
+        comparison_attestation=(
+            _comparison_attestation_reference(comparison_attestation) if comparison_attestation is not None else None
+        ),
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -920,6 +1009,392 @@ def write_canary_report(
                 )
         raise
     return durable
+
+
+def _canonical_payload_digest(payload: object) -> str:
+    """Return the stable digest used to bind an external report to its sidecar."""
+
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _comparison_attestation_path(candidate_index: Path) -> Path:
+    """Derive the sole archive-owned comparison sidecar path for a candidate."""
+
+    return Path(candidate_index).parent / _CANARY_COMPARISON_ATTESTATION_NAME
+
+
+def _comparison_attestation_reference(attestation: CanaryComparisonAttestation) -> dict[str, object]:
+    payload = attestation.payload
+    candidate = payload.get("candidate_generation")
+    if not isinstance(candidate, dict):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has no candidate identity")
+    generation_id = candidate.get("generation_id")
+    owner_id = candidate.get("owner_id")
+    if not isinstance(generation_id, str) or not generation_id or not isinstance(owner_id, str) or not owner_id:
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has incomplete candidate identity")
+    return {
+        "schema_version": CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION,
+        "generation_id": generation_id,
+        "owner_id": owner_id,
+        "digest": attestation.digest,
+    }
+
+
+def _write_immutable_json(path: Path, payload: dict[str, object]) -> None:
+    """Create a sidecar exactly once; replacing a seal would rewrite authority."""
+
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        view = memoryview(encoded)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _attestation_selection_digest(evidence: object) -> str:
+    """Bind the receipt's canonical selection commitment without re-expanding it."""
+
+    if not isinstance(evidence, dict):
+        raise UnclassifiedCanaryDiffError("canary comparison receipt has no selection evidence")
+    raw_ids_sha256 = evidence.get("raw_ids_sha256")
+    raw_id_count = evidence.get("raw_id_count")
+    selected_session_ids = evidence.get("selected_session_ids")
+    if (
+        not isinstance(raw_ids_sha256, str)
+        or len(raw_ids_sha256) != 64
+        or not isinstance(raw_id_count, int)
+        or not isinstance(selected_session_ids, list)
+        or not all(isinstance(value, str) and value for value in selected_session_ids)
+    ):
+        raise UnclassifiedCanaryDiffError("canary comparison receipt has invalid selection evidence")
+    return _canonical_payload_digest(
+        {
+            "raw_ids_sha256": raw_ids_sha256,
+            "raw_id_count": raw_id_count,
+            "selected_session_ids": selected_session_ids,
+        }
+    )
+
+
+def seal_canary_comparison_under_daemon_ownership(
+    *, archive_root: Path, generation_id: str, generation_owner_id: str
+) -> CanaryComparisonAttestation:
+    """Seal a candidate's historical comparison while the daemon owns writes."""
+
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if not daemon_write_lease_active():
+        raise RuntimeError("canary comparison sealing requires the daemon write coordinator")
+    return seal_canary_comparison(
+        archive_root=archive_root,
+        generation_id=generation_id,
+        generation_owner_id=generation_owner_id,
+    )
+
+
+def _selected_raw_ids_from_baseline(index_path: Path, session_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Recover the caller selection from the baseline the daemon is about to seal."""
+
+    placeholders = ",".join("?" for _ in session_ids)
+    with _open_read_only(index_path) as connection:
+        rows = connection.execute(
+            f"SELECT raw_id FROM sessions WHERE session_id IN ({placeholders}) AND raw_id IS NOT NULL",
+            session_ids,
+        ).fetchall()
+    raw_ids = tuple(sorted({str(row[0]) for row in rows}))
+    if not raw_ids:
+        raise UnclassifiedCanaryDiffError("canary comparison selection has no baseline raw ids")
+    return raw_ids
+
+
+def seal_canary_comparison(
+    *, archive_root: Path, generation_id: str, generation_owner_id: str
+) -> CanaryComparisonAttestation:
+    """Recompute and immutably seal one inactive candidate comparison.
+
+    This is intentionally candidate-generation owned.  The active index is
+    consulted only at sealing time; later validation authenticates the sealed
+    baseline evidence instead of treating present active bytes as history.
+    """
+
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.sqlite.lifecycle import undeclared_index_delta_versions
+
+    root = Path(archive_root).resolve()
+    location = ArchiveLocation.resolve(root)
+    candidate_metadata = _read_generation_metadata(_generation_root(location), generation_id)
+    candidate = _generation_fields(candidate_metadata)
+    if candidate["owner_id"] != generation_owner_id or candidate["state"] != "inactive":
+        raise UnclassifiedCanaryDiffError("canary comparison candidate ownership or state does not match")
+    if Path(cast(str, candidate["archive_root"])).resolve() != root:
+        raise UnclassifiedCanaryDiffError("canary comparison candidate belongs to a different archive root")
+    candidate_index = Path(cast(str, candidate["index_path"]))
+    expected_candidate = _generation_root(location).resolve() / generation_id / "index.db"
+    if candidate_index.resolve(strict=True) != expected_candidate:
+        raise UnclassifiedCanaryDiffError("canary comparison candidate path is not archive-owned")
+    receipt_path = candidate_index.parent / "rebuild-receipt.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt is unreadable") from exc
+    if not isinstance(receipt, dict) or receipt.get("generation") != candidate_metadata:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt does not match the candidate")
+    evidence = receipt.get("selection_evidence")
+    if not isinstance(evidence, dict):
+        raise UnclassifiedCanaryDiffError("canary comparison receipt has no selection evidence")
+    session_ids = evidence.get("selected_session_ids")
+    if (
+        not isinstance(session_ids, list)
+        or not session_ids
+        or not all(isinstance(value, str) and value for value in session_ids)
+    ):
+        raise UnclassifiedCanaryDiffError("canary comparison receipt has invalid selection evidence")
+    selected_session_ids = tuple(cast(list[str], session_ids))
+    selected_raw_ids = _selected_raw_ids_from_baseline(location.active_index_path, selected_session_ids)
+    _validate_rebuild_receipt(
+        receipt,
+        selected_raw_ids=selected_raw_ids,
+        selected_session_ids=selected_session_ids,
+        candidate_index=candidate_index,
+        configured_archive_root=root,
+    )
+    _validate_authoritative_rebuild_receipt(receipt, candidate_index)
+    source_snapshot = _verified_source_evidence(root)
+    if source_snapshot != candidate["source_snapshot"] or source_snapshot != receipt.get("source_evidence_after"):
+        raise UnclassifiedCanaryDiffError("archive-owned source evidence does not match the inactive candidate")
+    parser_fingerprints, lowering, routing, materializer = _parser_binding_from_evidence(evidence)
+    _validate_live_parser_and_lowering_fingerprints(parser_fingerprints, lowering)
+    _validate_live_replay_routing_fingerprint(routing)
+    _validate_live_materializer_fingerprint(materializer)
+    baseline_index = location.active_index_path
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+    source_version = _index_user_version(baseline_index)
+    candidate_file_version = _index_user_version(candidate_index)
+    # Rebuild candidates may retain the source PRAGMA while their replay
+    # semantics target the packaged index declaration. The historical authority
+    # interval is therefore the daemon's target version, while the sidecar also
+    # records the candidate file's own observed version for byte evidence.
+    target_version = INDEX_SCHEMA_VERSION
+    comparison = compare_reindex_generations(
+        baseline_index,
+        candidate_index,
+        session_ids=selected_session_ids,
+        delta_expectations=index_delta_expectations(source_version, target_version),
+        source_index_version=source_version,
+        undeclared_delta_versions=undeclared_index_delta_versions(source_version, target_version),
+    )
+    if comparison.session_ids != selected_session_ids:
+        raise UnclassifiedCanaryDiffError("canary comparison scope does not match the candidate selection")
+    crossed = _crossed_delta_versions_between(source_version, target_version)
+    payload: dict[str, object] = {
+        "schema_version": CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION,
+        "archive_root": str(root),
+        "candidate_generation": candidate_metadata,
+        "receipt_digest": _canonical_payload_digest(receipt),
+        "selection_digest": _attestation_selection_digest(evidence),
+        "source_snapshot": source_snapshot,
+        "source_evidence_after": receipt.get("source_evidence_after"),
+        "code_evidence": {
+            "parser_fingerprints": dict(parser_fingerprints),
+            "lowering_fingerprint": lowering,
+            "replay_routing_fingerprint": routing,
+            "materializer_fingerprint": materializer,
+        },
+        "baseline_index": {"evidence": _index_evidence(baseline_index), "index_schema_version": source_version},
+        "candidate_index": {
+            "evidence": _index_evidence(candidate_index),
+            "index_schema_version": candidate_file_version,
+            "comparison_target_index_version": target_version,
+        },
+        "crossed_delta_versions": list(crossed),
+        "undeclared_delta_versions": list(comparison.undeclared_delta_versions),
+        "comparison_fingerprint_schema_version": CANARY_REPORT_SCHEMA_VERSION,
+        "comparison_fingerprint": _comparison_fingerprint(comparison),
+        "comparison": comparison.to_dict(),
+    }
+    path = _comparison_attestation_path(candidate_index)
+    if path.exists():
+        existing = _load_comparison_attestation(path)
+        if existing.payload != payload:
+            raise UnclassifiedCanaryDiffError("candidate already has a different immutable comparison attestation")
+        return existing
+    try:
+        _write_immutable_json(path, payload)
+    except FileExistsError as exc:
+        existing = _load_comparison_attestation(path)
+        if existing.payload != payload:
+            raise UnclassifiedCanaryDiffError(
+                "candidate already has a different immutable comparison attestation"
+            ) from exc
+        return existing
+    return CanaryComparisonAttestation(payload)
+
+
+def _crossed_delta_versions_between(source_version: int, target_version: int) -> tuple[int, ...]:
+    from polylogue.storage.sqlite.lifecycle import index_delta_declarations_between
+
+    return tuple(
+        declaration.version for declaration in index_delta_declarations_between(source_version, target_version)
+    )
+
+
+def _load_comparison_attestation(path: Path) -> CanaryComparisonAttestation:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UnclassifiedCanaryDiffError("archive-owned comparison attestation is unreadable") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION:
+        raise UnclassifiedCanaryDiffError("archive-owned comparison attestation has an unsupported schema")
+    return CanaryComparisonAttestation(payload)
+
+
+def _validate_comparison_attestation_for_report(
+    attestation: dict[str, object],
+    *,
+    comparison: CanaryDiffReport,
+    selection: CanarySelection,
+    receipt: dict[str, object],
+    configured_archive_root: Path,
+) -> None:
+    """Validate a v11 report against its fixed archive-owned sidecar.
+
+    Unlike strict legacy reports, this authenticates the historical baseline
+    through the immutable seal and therefore does not compare it to today's
+    active pointer or bytes.
+    """
+
+    if attestation.get("schema_version") != CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION:
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has an unsupported schema")
+    candidate_generation = attestation.get("candidate_generation")
+    if not isinstance(candidate_generation, dict) or candidate_generation != receipt.get("generation"):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation candidate does not match the rebuild receipt")
+    candidate = _generation_fields(candidate_generation)
+    root = configured_archive_root.resolve()
+    if attestation.get("archive_root") != str(root):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation belongs to a different archive root")
+    if Path(cast(str, candidate["archive_root"])).resolve() != root:
+        raise UnclassifiedCanaryDiffError("canary comparison attestation candidate belongs to a different archive root")
+    candidate_index = Path(cast(str, candidate["index_path"]))
+    if candidate_index.resolve(strict=True) != comparison.candidate_index.resolve(strict=True):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation candidate does not match the report")
+    if attestation.get("receipt_digest") != _canonical_payload_digest(receipt):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation receipt does not match the report")
+    if attestation.get("selection_digest") != _attestation_selection_digest(receipt.get("selection_evidence")):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation selection does not match the report")
+    if attestation.get("comparison_fingerprint_schema_version") != CANARY_REPORT_SCHEMA_VERSION:
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has an unsupported comparison fingerprint")
+    if attestation.get("comparison_fingerprint") != _comparison_fingerprint(comparison):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation does not match the report comparison")
+
+
+def _validate_sealed_comparison_attestation(
+    reference: object,
+    *,
+    comparison: CanaryDiffReport,
+    selection: CanarySelection,
+    receipt: dict[str, object],
+    configured_archive_root: Path,
+) -> CanaryComparisonAttestation:
+    """Load the fixed candidate sidecar and prove it is still authoritative."""
+
+    if not isinstance(reference, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no comparison attestation reference")
+    if reference.get("schema_version") != CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION:
+        raise UnclassifiedCanaryDiffError("canary report has an unsupported comparison attestation reference")
+    generation = receipt.get("generation")
+    if not isinstance(generation, dict):
+        raise UnclassifiedCanaryDiffError("canary report has invalid candidate generation provenance")
+    fields = _generation_fields(generation)
+    if reference.get("generation_id") != fields["generation_id"] or reference.get("owner_id") != fields["owner_id"]:
+        raise UnclassifiedCanaryDiffError("canary report comparison attestation identity does not match the candidate")
+    candidate_index = Path(cast(str, fields["index_path"]))
+    attestation = _load_comparison_attestation(_comparison_attestation_path(candidate_index))
+    if reference.get("digest") != attestation.digest:
+        raise UnclassifiedCanaryDiffError(
+            "canary report comparison attestation digest does not match the archive-owned sidecar"
+        )
+    _validate_comparison_attestation_for_report(
+        attestation.payload,
+        comparison=comparison,
+        selection=selection,
+        receipt=receipt,
+        configured_archive_root=configured_archive_root,
+    )
+    root = configured_archive_root.resolve()
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    location = ArchiveLocation.resolve(root)
+    live_generation = _read_generation_metadata(_generation_root(location), cast(str, fields["generation_id"]))
+    live_fields = _generation_fields(live_generation)
+    if live_generation != generation or live_fields["state"] != "inactive":
+        raise UnclassifiedCanaryDiffError(
+            "archive-owned candidate generation no longer matches the comparison attestation"
+        )
+    expected_candidate = _generation_root(location).resolve() / str(fields["generation_id"]) / "index.db"
+    if candidate_index.resolve(strict=True) != expected_candidate:
+        raise UnclassifiedCanaryDiffError("archive-owned candidate generation path is not archive-owned")
+    candidate_evidence = attestation.payload.get("candidate_index")
+    if not isinstance(candidate_evidence, dict) or candidate_evidence.get("evidence") != _index_evidence(
+        candidate_index
+    ):
+        raise UnclassifiedCanaryDiffError(
+            "archive-owned candidate index bytes no longer match the comparison attestation"
+        )
+    if candidate_evidence.get("index_schema_version") != _index_user_version(candidate_index):
+        raise UnclassifiedCanaryDiffError(
+            "archive-owned candidate index version no longer matches the comparison attestation"
+        )
+    stored_receipt_path = candidate_index.parent / "rebuild-receipt.json"
+    try:
+        stored_receipt = json.loads(stored_receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt is unreadable") from exc
+    if stored_receipt != receipt:
+        raise UnclassifiedCanaryDiffError("archive-owned rebuild receipt does not match the report")
+    source_snapshot = _verified_source_evidence(root)
+    if source_snapshot != attestation.payload.get("source_snapshot") or source_snapshot != fields["source_snapshot"]:
+        raise UnclassifiedCanaryDiffError("archive-owned source evidence no longer matches the comparison attestation")
+    code_evidence = attestation.payload.get("code_evidence")
+    parsers, lowering, routing, materializer = _parser_binding_from_evidence(receipt.get("selection_evidence"))
+    expected_code_evidence = {
+        "parser_fingerprints": dict(parsers),
+        "lowering_fingerprint": lowering,
+        "replay_routing_fingerprint": routing,
+        "materializer_fingerprint": materializer,
+    }
+    if code_evidence != expected_code_evidence:
+        raise UnclassifiedCanaryDiffError(
+            "canary comparison attestation code evidence does not match the rebuild receipt"
+        )
+    _validate_live_parser_and_lowering_fingerprints(parsers, lowering)
+    _validate_live_replay_routing_fingerprint(routing)
+    _validate_live_materializer_fingerprint(materializer)
+    baseline = attestation.payload.get("baseline_index")
+    if not isinstance(baseline, dict) or not isinstance(baseline.get("index_schema_version"), int):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has invalid baseline index evidence")
+    target_version = candidate_evidence.get("comparison_target_index_version")
+    if not isinstance(target_version, int):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has invalid target version evidence")
+    crossed = _crossed_delta_versions_between(cast(int, baseline["index_schema_version"]), target_version)
+    recorded_crossed = attestation.payload.get("crossed_delta_versions")
+    if not isinstance(recorded_crossed, list) or not all(isinstance(version, int) for version in recorded_crossed):
+        raise UnclassifiedCanaryDiffError("canary comparison attestation has invalid crossed delta evidence")
+    if tuple(cast(list[int], recorded_crossed)) != crossed:
+        raise UnclassifiedCanaryDiffError(
+            "canary comparison attestation crossed delta evidence does not match sealed versions"
+        )
+    # `comparison` is sealed history.  Deliberately do not inspect the current
+    # active index here: it may have fast-forwarded after the daemon sealed it.
+    return attestation
 
 
 def _validate_selection_binding(
@@ -1182,10 +1657,19 @@ def _raw_session_evidence(evidence: object) -> list[object] | None:
     return None
 
 
-def _comparison_fingerprint(comparison: CanaryDiffReport) -> str:
-    """Hash comparison evidence independently of operator classification."""
+def _comparison_fingerprint(
+    comparison: CanaryDiffReport,
+    *,
+    schema_version: int = CANARY_REPORT_SCHEMA_VERSION,
+) -> str:
+    """Hash comparison evidence independently of operator classification.
 
-    payload = {
+    Version 9 intentionally omitted delta coverage from this payload. Keep that
+    historical formula available for eligible v9 reports while all new reports
+    bind the source-version evidence.
+    """
+
+    payload: dict[str, object] = {
         "current_index": str(comparison.current_index),
         "candidate_index": str(comparison.candidate_index),
         "session_ids": list(comparison.session_ids),
@@ -1206,6 +1690,9 @@ def _comparison_fingerprint(comparison: CanaryDiffReport) -> str:
             for difference in comparison.differences
         ],
     }
+    if schema_version >= STRICT_CANARY_REPORT_SCHEMA_VERSION:
+        payload["source_index_version"] = comparison.source_index_version
+        payload["undeclared_delta_versions"] = list(comparison.undeclared_delta_versions)
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return sha256(encoded).hexdigest()
 
@@ -1540,8 +2027,14 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UnclassifiedCanaryDiffError("canary report root must be an object")
-    if payload.get("schema_version") != 9:
+    report_schema_version = payload.get("schema_version")
+    if report_schema_version not in (
+        LEGACY_CANARY_REPORT_SCHEMA_VERSION,
+        STRICT_CANARY_REPORT_SCHEMA_VERSION,
+        CANARY_REPORT_SCHEMA_VERSION,
+    ):
         raise UnclassifiedCanaryDiffError("canary report has no authoritative rebuild receipt schema")
+    assert isinstance(report_schema_version, int)
     configured_root = (
         _validate_report_archive_root(payload, configured_archive_root=Path(archive_root))
         if archive_root is not None
@@ -1561,7 +2054,6 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
     if not isinstance(raw_reviews, list):
         raise UnclassifiedCanaryDiffError("canary report has no reviews list")
     reviews = tuple(_review_from_dict(item) for item in raw_reviews)
-    _validate_expected_review_authorities(reviews)
     review_status = payload.get("review_status")
     if review_status != "reviewed":
         raise UnclassifiedCanaryDiffError("canary report is not fully reviewed")
@@ -1644,6 +2136,27 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         or not isinstance(raw_missing_columns, list)
     ):
         raise UnclassifiedCanaryDiffError("canary report has invalid comparison selection")
+    raw_delta_coverage = comparison.get("delta_coverage")
+    if not isinstance(raw_delta_coverage, dict):
+        if report_schema_version == LEGACY_CANARY_REPORT_SCHEMA_VERSION:
+            raise UnclassifiedCanaryDiffError(
+                "legacy canary report lacks source index version evidence; cannot validate its fingerprint"
+            )
+        raise UnclassifiedCanaryDiffError("canary report has no delta coverage object")
+    source_index_version = raw_delta_coverage.get("source_index_version")
+    undeclared_delta_versions = raw_delta_coverage.get("undeclared_delta_versions")
+    if source_index_version is not None and (
+        not isinstance(source_index_version, int) or isinstance(source_index_version, bool)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has invalid source index version")
+    if report_schema_version == LEGACY_CANARY_REPORT_SCHEMA_VERSION and source_index_version is None:
+        raise UnclassifiedCanaryDiffError(
+            "legacy canary report lacks source index version evidence; cannot validate its fingerprint or delta authority"
+        )
+    if not isinstance(undeclared_delta_versions, list) or not all(
+        isinstance(version, int) and not isinstance(version, bool) for version in undeclared_delta_versions
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has invalid undeclared delta versions")
     missing_columns: list[tuple[str, tuple[str, ...]]] = []
     for item in raw_missing_columns:
         if not isinstance(item, dict):
@@ -1665,34 +2178,70 @@ def load_canary_report(path: Path, *, archive_root: Path | None = None) -> dict[
         missing_tables=tuple(cast(list[str], missing_tables)),
         missing_columns=tuple(missing_columns),
         differences=differences,
+        source_index_version=source_index_version,
+        undeclared_delta_versions=tuple(cast(list[int], undeclared_delta_versions)),
+    )
+    from polylogue.config import resolve_archive_root
+
+    authority_root = configured_root if configured_root is not None else resolve_archive_root()
+    receipt = cast(dict[str, object], payload["rebuild_receipt"])
+    sealed_attestation: CanaryComparisonAttestation | None = None
+    if report_schema_version == CANARY_REPORT_SCHEMA_VERSION:
+        sealed_attestation = _validate_sealed_comparison_attestation(
+            payload.get("comparison_attestation"),
+            comparison=persisted_comparison,
+            selection=persisted_selection,
+            receipt=receipt,
+            configured_archive_root=authority_root,
+        )
+        sealed_crossed = sealed_attestation.payload.get("crossed_delta_versions")
+        if not isinstance(sealed_crossed, list) or not all(isinstance(value, int) for value in sealed_crossed):
+            raise UnclassifiedCanaryDiffError("canary comparison attestation has invalid crossed delta evidence")
+        crossed_delta_versions: frozenset[int] | None = frozenset(cast(list[int], sealed_crossed))
+    else:
+        # v9/v10 have no archive-owned historical baseline. Retain their strict
+        # current-active comparison and authority behavior indefinitely.
+        crossed_delta_versions = _crossed_delta_versions_for_comparison(persisted_comparison)
+    _validate_expected_review_authorities(
+        reviews,
+        crossed_delta_versions=crossed_delta_versions,
+        require_crossed_delta_versions=True,
     )
     _validate_selection_binding(
         persisted_selection,
         persisted_comparison,
-        cast(dict[str, object], payload["rebuild_receipt"]),
+        receipt,
         archive_root=configured_root,
     )
-    from polylogue.config import resolve_archive_root
-
-    _validate_archive_provenance(
-        payload.get("archive_provenance"),
-        configured_archive_root=configured_root if configured_root is not None else resolve_archive_root(),
-        current_index=persisted_comparison.current_index,
-        candidate_index=persisted_comparison.candidate_index,
-        receipt=cast(dict[str, object], payload["rebuild_receipt"]),
-    )
-    _validate_authoritative_rebuild_receipt(
-        cast(dict[str, object], payload["rebuild_receipt"]), persisted_comparison.candidate_index
-    )
-    recomputed_comparison = compare_reindex_generations(
-        persisted_comparison.current_index,
-        persisted_comparison.candidate_index,
-        session_ids=persisted_selection.selected_session_ids,
-    )
-    if comparison_fingerprint != _comparison_fingerprint(
-        persisted_comparison
-    ) or comparison_fingerprint != _comparison_fingerprint(recomputed_comparison):
-        raise UnclassifiedCanaryDiffError("canary report comparison attestation does not match the recorded indexes")
+    if report_schema_version == CANARY_REPORT_SCHEMA_VERSION:
+        if comparison_fingerprint != _comparison_fingerprint(persisted_comparison):
+            raise UnclassifiedCanaryDiffError(
+                "canary report comparison fingerprint does not match its sealed comparison"
+            )
+    else:
+        _validate_archive_provenance(
+            payload.get("archive_provenance"),
+            configured_archive_root=authority_root,
+            current_index=persisted_comparison.current_index,
+            candidate_index=persisted_comparison.candidate_index,
+            receipt=receipt,
+        )
+        _validate_authoritative_rebuild_receipt(receipt, persisted_comparison.candidate_index)
+        recomputed_comparison = compare_reindex_generations(
+            persisted_comparison.current_index,
+            persisted_comparison.candidate_index,
+            session_ids=persisted_selection.selected_session_ids,
+            source_index_version=persisted_comparison.source_index_version,
+            undeclared_delta_versions=persisted_comparison.undeclared_delta_versions,
+        )
+        if comparison_fingerprint != _comparison_fingerprint(
+            persisted_comparison, schema_version=report_schema_version
+        ) or comparison_fingerprint != _comparison_fingerprint(
+            recomputed_comparison, schema_version=report_schema_version
+        ):
+            raise UnclassifiedCanaryDiffError(
+                "canary report comparison attestation does not match the recorded indexes"
+            )
     difference_keys = tuple(_difference_key(difference) for difference in differences)
     review_keys = tuple(review.key for review in reviews)
     if len(set(difference_keys)) != len(difference_keys) or len(set(review_keys)) != len(review_keys):
@@ -1905,15 +2454,24 @@ def _session_id_from_identity(identity: dict[str, object]) -> str | None:
     return None
 
 
-def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceReview]) -> None:
-    """Resolve approval-capable authorities from packaged product declarations.
+def _validate_expected_review_authorities(
+    reviews: Iterable[CanaryDifferenceReview],
+    *,
+    crossed_delta_versions: Iterable[int] | None = None,
+    require_crossed_delta_versions: bool = False,
+) -> None:
+    """Resolve approval-capable authorities from crossed product declarations.
 
     An expected semantic difference can approve a canary, so it must name an
-    executable index delta shipped in the same package.  A Bead is planning
-    state, not semantic evidence.  Unexpected differences may name a successor
-    for human follow-up, but approval rejects them regardless of that label.
+    executable index delta shipped in the same package *and crossed by the
+    compared generations*.  A Bead is planning state, not semantic evidence.
+    Unexpected differences may name a successor for human follow-up, but
+    approval rejects them regardless of that label.
     """
     from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS
+
+    crossed = None if crossed_delta_versions is None else frozenset(crossed_delta_versions)
+    crossed_detail = "" if crossed is None else f" (crossed versions: {sorted(crossed)})"
 
     expected_reviews = tuple(
         review
@@ -1922,6 +2480,10 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         and review.authority_kind is CanaryAuthorityKind.DELTA
         and review.authority_id is not None
     )
+    if expected_reviews and require_crossed_delta_versions and crossed is None:
+        raise UnclassifiedCanaryDiffError(
+            "expected delta authority requires source index version evidence and a crossed declaration set"
+        )
     declarations_by_id = {str(declaration.version): declaration for declaration in INDEX_DELTA_DECLARATIONS}
     unknown_deltas = sorted(
         {
@@ -1938,6 +2500,9 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
         authority_id = review.authority_id
         assert authority_id is not None
         declaration = declarations_by_id[authority_id]
+        if crossed is not None and declaration.version not in crossed:
+            unrelated_reviews.append(f"delta {authority_id} is not crossed by this comparison{crossed_detail}")
+            continue
         if not (declaration.requires_semantic_reparse or declaration.requires_targeted_reprocess):
             unrelated_reviews.append(f"delta {authority_id} does not declare a semantic reparse")
             continue
@@ -1960,10 +2525,11 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
             unrelated_reviews.append(f"delta {authority_id} does not declare table {review.table}")
             continue
         else:
+            review_is_schema = dict(review.identity).get("__schema__") in {"table", "column"}
             matching_changes = tuple(
                 change
                 for change in declaration.expected_canary_changes
-                if change.table == review.table and review.operation.value in change.operations
+                if change.table == review.table and review.operation.value in change.operations and not review_is_schema
             )
             if not matching_changes:
                 unrelated_reviews.append(
@@ -1976,6 +2542,11 @@ def _validate_expected_review_authorities(reviews: Iterable[CanaryDifferenceRevi
                     f"delta {authority_id} does not declare changed columns {review.changed_columns!r} "
                     f"for table {review.table}"
                 )
+                continue
+            # Schema differences have no session row identity. Their authority
+            # is the declared DDL signature itself, never the row-level
+            # reprocess scope carried by a targeted semantic delta.
+            if review_is_schema:
                 continue
             scope = declaration.reprocess_scope
             if scope is not None:
@@ -2403,7 +2974,12 @@ def _quote_identifier(value: str) -> str:
 
 
 __all__ = [
+    "CANARY_COMPARISON_ATTESTATION_SCHEMA_VERSION",
+    "CANARY_REPORT_SCHEMA_VERSION",
+    "LEGACY_CANARY_REPORT_SCHEMA_VERSION",
+    "STRICT_CANARY_REPORT_SCHEMA_VERSION",
     "CanaryAuthorityKind",
+    "CanaryComparisonAttestation",
     "CanaryDifferenceReview",
     "CanaryDiffReport",
     "CanaryRunResult",
@@ -2422,6 +2998,8 @@ __all__ = [
     "index_delta_expectations",
     "load_canary_report",
     "run_reindex_canary",
+    "seal_canary_comparison",
+    "seal_canary_comparison_under_daemon_ownership",
     "select_canary_sessions",
     "write_canary_report",
 ]

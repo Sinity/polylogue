@@ -314,6 +314,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/maintenance/seal-canary-comparison",
+        "maintenance",
+        "private",
+        "bearer_if_configured_and_same_origin",
+        "sealed canary comparison attestation",
+        "Recomputes and immutably seals a candidate-owned historical comparison under the daemon writer gate.",
+    ),
+    RouteContract(
+        "POST",
         "/api/maintenance/consume-canary-report",
         "maintenance",
         "private",
