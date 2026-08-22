@@ -149,8 +149,9 @@ def test_asyncio_run_shutdown_keeps_admission_until_executor_operation_finishes(
             operation_finished.set()
 
     async def start_and_return() -> None:
-        asyncio.create_task(execute_archive_read(root, held_work, ctx=ctx, controller=controller))
+        worker = asyncio.create_task(execute_archive_read(root, held_work, ctx=ctx, controller=controller))
         assert await asyncio.to_thread(entered.wait, 2)
+        assert worker.done() is False
 
     asyncio.run(start_and_return())
     assert operation_finished.is_set() is False
