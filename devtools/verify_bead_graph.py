@@ -109,9 +109,73 @@ def _suffixes(issue: dict[str, Any], prefix: str, findings: list[Finding] | None
     return {label.removeprefix(prefix) for label in _labels_with_prefix(issue, prefix, findings)}
 
 
-def _metadata_set(metadata: dict[str, Any], key: str) -> set[str]:
-    value = metadata.get(key)
+def _metadata_text(issue: dict[str, Any], key: str, findings: list[Finding] | None = None) -> str | None:
+    """Return a campaign metadata scalar only when it is a string.
+
+    Campaign records come from untrusted JSONL.  Keeping the type guard at the
+    access boundary prevents list/dict values from reaching ``.lower`` or set
+    membership while retaining a structured diagnostic for the caller.
+    """
+    value = _metadata(issue, findings).get(key)
+    if value is None:
+        return None
     if not isinstance(value, str):
+        if findings is not None:
+            findings.append(
+                Finding(
+                    "malformed-metadata-field",
+                    str(issue.get("id", "<unknown>")),
+                    f"metadata.{key} must be a string",
+                )
+            )
+        return None
+    return value
+
+
+def _metadata_integer(issue: dict[str, Any], key: str, findings: list[Finding] | None = None) -> int | None:
+    value = _metadata(issue, findings).get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        if findings is not None:
+            findings.append(
+                Finding(
+                    "malformed-metadata-field",
+                    str(issue.get("id", "<unknown>")),
+                    f"metadata.{key} must be an integer",
+                )
+            )
+        return None
+    return value
+
+
+def _status(issue: dict[str, Any], findings: list[Finding] | None = None) -> str | None:
+    value = issue.get("status")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        if findings is not None:
+            findings.append(Finding("malformed-status", str(issue.get("id", "<unknown>")), "status must be a string"))
+        return None
+    return value
+
+
+def _issue_type(issue: dict[str, Any], findings: list[Finding] | None = None) -> str | None:
+    value = issue.get("issue_type")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        if findings is not None:
+            findings.append(
+                Finding("malformed-issue-type", str(issue.get("id", "<unknown>")), "issue_type must be a string")
+            )
+        return None
+    return value
+
+
+def _metadata_set(issue: dict[str, Any], key: str, findings: list[Finding] | None = None) -> set[str]:
+    value = _metadata_text(issue, key, findings)
+    if value is None:
         return set()
     return {part.strip().lower() for part in value.split(",") if part.strip()}
 
@@ -181,9 +245,9 @@ def _staged_adapter_findings(
     are the authority; this makes copied metadata insufficient to pass.
     """
     bead_id = str(issue["id"])
-    metadata = _metadata(issue)
-    declared = metadata.get("native_control_ids")
     findings: list[Finding] = []
+    metadata = _metadata(issue, findings)
+    declared = metadata.get("native_control_ids")
     if not isinstance(declared, list) or any(not isinstance(item, str) or not item for item in declared):
         return [Finding("campaign-agentctl-provenance", bead_id, "native_control_ids must be a non-empty string list")]
     if len(set(declared)) != len(declared):
@@ -191,11 +255,10 @@ def _staged_adapter_findings(
 
     root = by_id.get(root_id)
     epic = by_id.get(epic_id)
-    root_metadata = _metadata(root or {})
     root_labels = set(_labels(root or {}))
-    root_attachment = root_metadata.get("source_control_plane_sha256")
+    root_attachment = _metadata_text(root or {}, "source_control_plane_sha256", findings)
     source_root, _source_rows, source_error = _source_evidence()
-    source_attachment = _metadata(source_root or {}).get("source_control_plane_sha256")
+    source_attachment = _metadata_text(source_root or {}, "source_control_plane_sha256")
     native = by_id.get(CAMPAIGN_NATIVE_CONTROL_ID)
     native_id: str | None = CAMPAIGN_NATIVE_CONTROL_ID if native is not None else None
     if source_error is not None or root_attachment != source_attachment:
@@ -215,8 +278,10 @@ def _staged_adapter_findings(
             )
         )
     else:
-        native_metadata = _metadata(native)
-        if native_metadata.get("source_attachment_sha256") != source_attachment:
+        native_attachment = _metadata_text(native, "source_attachment_sha256", findings)
+        native_campaign_id = _metadata_text(native, "campaign_id", findings)
+        native_workstream = _metadata_text(native, "workstream", findings)
+        if native_attachment != source_attachment:
             findings.append(
                 Finding(
                     "campaign-agentctl-provenance",
@@ -224,11 +289,7 @@ def _staged_adapter_findings(
                     "native control is not attached to the trusted source digest",
                 )
             )
-        if (
-            native_metadata.get("campaign_id") != CAMPAIGN_ID
-            or not isinstance(native_metadata.get("workstream"), str)
-            or native_metadata["workstream"].lower() != "e"
-        ):
+        if native_campaign_id != CAMPAIGN_ID or native_workstream is None or native_workstream.lower() != "e":
             findings.append(
                 Finding("campaign-agentctl-provenance", bead_id, "trusted native control identity is mismatched")
             )
@@ -237,8 +298,8 @@ def _staged_adapter_findings(
         for candidate in by_id.values()
         if str(candidate.get("id")) != CAMPAIGN_NATIVE_CONTROL_ID
         and (
-            _metadata(candidate).get("campaign_membership_source") == "native-control-plane"
-            or _metadata(candidate).get("source_attachment_sha256") == source_attachment
+            _metadata_text(candidate, "campaign_membership_source", findings) == "native-control-plane"
+            or _metadata_text(candidate, "source_attachment_sha256", findings) == source_attachment
         )
     ]
     if clones:
@@ -271,13 +332,19 @@ def _staged_adapter_findings(
         findings.append(Finding("campaign-agentctl-edge", bead_id, f"{root_id} must block {epic_id}"))
     if native_id is not None and not has_edge(root, native_id):
         findings.append(Finding("campaign-agentctl-edge", bead_id, f"{root_id} must block {native_id}"))
-    if root is None or CAMPAIGN_LABEL not in root_labels or root_metadata.get("campaign_schema") != CAMPAIGN_SCHEMA:
+    if (
+        root is None
+        or CAMPAIGN_LABEL not in root_labels
+        or _metadata_text(root or {}, "campaign_schema", findings) != CAMPAIGN_SCHEMA
+    ):
         findings.append(Finding("campaign-agentctl-provenance", bead_id, "root control record is not campaign-bound"))
     if (
         epic is None
         or CAMPAIGN_LABEL not in set(_labels(epic))
-        or not isinstance(_metadata(epic).get("workstream"), str)
-        or f"workstream:{_metadata(epic).get('workstream', '').lower()}" not in set(_labels(epic))
+        or (
+            (epic_workstream := _metadata_text(epic, "workstream", findings)) is None
+            or f"workstream:{epic_workstream.lower()}" not in set(_labels(epic, findings))
+        )
     ):
         findings.append(
             Finding("campaign-agentctl-provenance", bead_id, "workstream control record is not campaign-bound")
@@ -289,8 +356,8 @@ def _campaign_marker_present(issues: list[dict[str, Any]], *, campaign_id: str, 
     label = f"campaign:{campaign_id}"
     root = next((issue for issue in issues if str(issue.get("id")) == root_id), None)
     return any(
-        label in set(_labels(issue)) or _metadata(issue).get("campaign_id") == campaign_id for issue in issues
-    ) or (root is not None and _metadata(root).get("campaign_schema") is not None)
+        label in set(_labels(issue)) or _metadata_text(issue, "campaign_id") == campaign_id for issue in issues
+    ) or (root is not None and _metadata_text(root, "campaign_schema") is not None)
 
 
 def _campaign_dependency_targets(issue: dict[str, Any], *, dependency_type: str = "blocks") -> set[str]:
@@ -312,7 +379,7 @@ def _batch_dag_findings(
     roots = [
         issue
         for issue in by_id.values()
-        if issue.get("issue_type") == "molecule" and issue.get("title") == BATCH_FORMULA
+        if _issue_type(issue, findings) == "molecule" and issue.get("title") == BATCH_FORMULA
     ]
     required_predecessors = {
         "implement": "prepare",
@@ -328,16 +395,16 @@ def _batch_dag_findings(
         stage_children = [
             issue
             for issue in children
-            if issue.get("issue_type") == "task" and _metadata(issue).get("stage") in BATCH_STAGES
+            if _issue_type(issue, findings) == "task" and _metadata_text(issue, "stage", findings) in BATCH_STAGES
         ]
         forged_stage_children = [
             issue
             for issue in children
-            if _metadata(issue).get("stage") in BATCH_STAGES and issue.get("issue_type") != "task"
+            if _metadata_text(issue, "stage", findings) in BATCH_STAGES and _issue_type(issue, findings) != "task"
         ]
         for forged in forged_stage_children:
             findings.append(Finding("campaign-batch-child", root_id, f"stage child {forged['id']!r} is not a task"))
-        stages = [str(_metadata(issue).get("stage")) for issue in stage_children]
+        stages = [_metadata_text(issue, "stage", findings) or "<missing>" for issue in stage_children]
         if len(stage_children) != len(set(stages)) or set(stages) != BATCH_STAGES:
             findings.append(
                 Finding(
@@ -346,7 +413,7 @@ def _batch_dag_findings(
                     f"native molecule children must contain exactly {sorted(BATCH_STAGES)}; got {sorted(stages)}",
                 )
             )
-        gates = [issue for issue in children if issue.get("issue_type") == "gate"]
+        gates = [issue for issue in children if _issue_type(issue, findings) == "gate"]
         valid_gates = [
             gate
             for gate in gates
@@ -367,23 +434,24 @@ def _batch_dag_findings(
                     Finding("campaign-batch-child", root_id, f"unvalidated native molecule child {child['id']!r}")
                 )
         for stage_issue in stage_children:
-            stage_metadata = _metadata(stage_issue)
             if (
-                set(_labels(stage_issue)) != BATCH_LABELS
-                or stage_metadata.get("campaign_id") != CAMPAIGN_ID
-                or stage_metadata.get("formula") != BATCH_FORMULA
-                or stage_metadata.get("formula_version") != BATCH_FORMULA_VERSION
-                or stage_metadata.get("molecule_type") != "workflow"
-                or stage_metadata.get("pour_origin") != "native-formula"
-                or stage_metadata.get("campaign_role") != "batch"
-                or stage_metadata.get("campaign_timing") != "execution"
+                set(_labels(stage_issue, findings)) != BATCH_LABELS
+                or _metadata_text(stage_issue, "campaign_id", findings) != CAMPAIGN_ID
+                or _metadata_text(stage_issue, "formula", findings) != BATCH_FORMULA
+                or _metadata_integer(stage_issue, "formula_version", findings) != BATCH_FORMULA_VERSION
+                or _metadata_text(stage_issue, "molecule_type", findings) != "workflow"
+                or _metadata_text(stage_issue, "pour_origin", findings) != "native-formula"
+                or _metadata_text(stage_issue, "campaign_role", findings) != "batch"
+                or _metadata_text(stage_issue, "campaign_timing", findings) != "execution"
             ):
                 findings.append(
                     Finding(
                         "campaign-batch-binding", root_id, f"stage {stage_issue['id']!r} lacks native pour metadata"
                     )
                 )
-        by_stage = {str(_metadata(issue).get("stage")): issue for issue in stage_children}
+        by_stage = {
+            stage: issue for issue in stage_children if (stage := _metadata_text(issue, "stage", findings)) is not None
+        }
         for stage, predecessor in required_predecessors.items():
             current = by_stage.get(stage)
             prior = by_stage.get(predecessor)
@@ -432,11 +500,11 @@ def collect_campaign_findings(
         return [Finding("campaign-missing-root", root_id, f"campaign root {root_id!r} is absent")]
     root_metadata = _metadata(root, findings)
     root_labels = set(_labels(root, findings))
-    if root_metadata.get("campaign_id") != campaign_id:
+    if _metadata_text(root, "campaign_id", findings) != campaign_id:
         findings.append(
             Finding("campaign-missing-binding", root_id, "root metadata campaign_id is missing or inconsistent")
         )
-    if root_metadata.get("campaign_schema") != CAMPAIGN_SCHEMA:
+    if _metadata_text(root, "campaign_schema", findings) != CAMPAIGN_SCHEMA:
         findings.append(Finding("campaign-schema", root_id, "root campaign_schema is missing or inconsistent"))
     if campaign_label not in root_labels or "campaign-role:milestone" not in root_labels:
         findings.append(Finding("campaign-missing-binding", root_id, "root campaign/milestone labels are missing"))
@@ -466,10 +534,12 @@ def collect_campaign_findings(
             findings.append(
                 Finding("campaign-missing-binding", epic_id, "workstream gate lacks campaign/workstream/role labels")
             )
+        epic_workstream = _metadata_text(epic, "workstream", findings)
         if (
-            metadata.get("campaign_id") != campaign_id
-            or str(metadata.get("workstream", "")).lower() != workstream
-            or metadata.get("epic_semantics") != "closure-gate-not-executable"
+            _metadata_text(epic, "campaign_id", findings) != campaign_id
+            or epic_workstream is None
+            or epic_workstream.lower() != workstream
+            or _metadata_text(epic, "epic_semantics", findings) != "closure-gate-not-executable"
         ):
             findings.append(
                 Finding("campaign-missing-binding", epic_id, "workstream gate metadata is missing or inconsistent")
@@ -482,9 +552,9 @@ def collect_campaign_findings(
             if target in by_id:
                 owned[target].add(workstream)
 
-    anchor = root_metadata.get("source_control_plane_sha256")
+    anchor = _metadata_text(root, "source_control_plane_sha256", findings)
     source_root, source_rows, source_error = _source_evidence()
-    source_anchor = _metadata(source_root or {}).get("source_control_plane_sha256")
+    source_anchor = _metadata_text(source_root or {}, "source_control_plane_sha256")
     trusted_source = isinstance(anchor, str) and bool(anchor) and anchor == source_anchor and source_error is None
     if not isinstance(anchor, str) or not anchor.strip():
         findings.append(
@@ -502,12 +572,11 @@ def collect_campaign_findings(
 
         def historical(row: dict[str, Any]) -> bool:
             bead_id = str(row.get("id"))
-            metadata = _metadata(row)
             return (
                 CAMPAIGN_LABEL in set(_labels(row))
                 and bead_id
                 not in {CAMPAIGN_ROOT, *source_epics.values(), CAMPAIGN_NATIVE_CONTROL_ID, CAMPAIGN_ADAPTER_ID}
-                and metadata.get("campaign_membership_kind") != "staged-adapter"
+                and _metadata_text(row, "campaign_membership_kind") != "staged-adapter"
             )
 
         expected_members = {str(row["id"]) for row in source_rows if historical(row)}
@@ -554,15 +623,14 @@ def collect_campaign_findings(
                 )
             )
         else:
-            adapter_metadata = _metadata(adapter)
-            adapter_labels = set(_labels(adapter))
-            if adapter_metadata.get("campaign_membership_kind") != "staged-adapter":
+            adapter_labels = set(_labels(adapter, findings))
+            if _metadata_text(adapter, "campaign_membership_kind", findings) != "staged-adapter":
                 findings.append(
                     Finding(
                         "campaign-agentctl-provenance", CAMPAIGN_ADAPTER_ID, "trusted singleton adapter was demoted"
                     )
                 )
-            if adapter_metadata.get("campaign_membership_source") != "agentctl:staged-native-adapter":
+            if _metadata_text(adapter, "campaign_membership_source", findings) != "agentctl:staged-native-adapter":
                 findings.append(
                     Finding(
                         "campaign-agentctl-provenance",
@@ -589,8 +657,8 @@ def collect_campaign_findings(
             issue
             for issue in issues
             if (
-                _metadata(issue).get("campaign_membership_source") == "agentctl:staged-native-adapter"
-                or _metadata(issue).get("campaign_membership_kind") == "staged-adapter"
+                _metadata_text(issue, "campaign_membership_source", findings) == "agentctl:staged-native-adapter"
+                or _metadata_text(issue, "campaign_membership_kind", findings) == "staged-adapter"
                 or _metadata(issue).get("native_control_ids") is not None
             )
             and str(issue.get("id")) != CAMPAIGN_ADAPTER_ID
@@ -608,11 +676,10 @@ def collect_campaign_findings(
     for target in sorted(root_targets - expected_epics):
         target_issue = by_id.get(target)
         target_labels = set(_labels(target_issue, findings)) if target_issue else set()
-        target_metadata = _metadata(target_issue, findings) if target_issue else {}
         campaign_bound = (
             target_issue is not None
             and campaign_label in target_labels
-            and target_metadata.get("campaign_id") == campaign_id
+            and _metadata_text(target_issue, "campaign_id", findings) == campaign_id
         )
         if target not in owned or not campaign_bound:
             findings.append(
@@ -629,8 +696,8 @@ def collect_campaign_findings(
         workstreams = _suffixes(issue, "workstream:")
         roles = _suffixes(issue, "campaign-role:")
         timings = _suffixes(issue, "timing:")
-        is_batch_claim = metadata.get("campaign_role") == "batch" or "campaign-role:batch" in labels
-        if metadata.get("campaign_id") != campaign_id:
+        is_batch_claim = _metadata_text(issue, "campaign_role", findings) == "batch" or "campaign-role:batch" in labels
+        if _metadata_text(issue, "campaign_id", findings) != campaign_id:
             findings.append(
                 Finding(
                     "campaign-missing-binding", bead_id, "campaign row metadata campaign_id is missing or inconsistent"
@@ -666,13 +733,16 @@ def collect_campaign_findings(
                 )
             if roles != {"batch"} or timings != {"execution"}:
                 findings.append(Finding("campaign-batch-binding", bead_id, "batch role/timing labels are invalid"))
-            if metadata.get("campaign_role") != "batch" or metadata.get("campaign_timing") != "execution":
+            if (
+                _metadata_text(issue, "campaign_role", findings) != "batch"
+                or _metadata_text(issue, "campaign_timing", findings) != "execution"
+            ):
                 findings.append(Finding("campaign-batch-binding", bead_id, "batch role/timing metadata is invalid"))
             if (
-                metadata.get("formula") != BATCH_FORMULA
-                or metadata.get("formula_version") != BATCH_FORMULA_VERSION
-                or metadata.get("molecule_type") != "workflow"
-                or metadata.get("pour_origin") != "native-formula"
+                _metadata_text(issue, "formula", findings) != BATCH_FORMULA
+                or _metadata_integer(issue, "formula_version", findings) != BATCH_FORMULA_VERSION
+                or _metadata_text(issue, "molecule_type", findings) != "workflow"
+                or _metadata_text(issue, "pour_origin", findings) != "native-formula"
             ):
                 findings.append(
                     Finding("campaign-batch-binding", bead_id, "batch lacks typed native formula provenance")
@@ -689,10 +759,9 @@ def collect_campaign_findings(
                         "campaign-workstream-edge", bead_id, f"labels={sorted(workstreams)} edges={sorted(expected)}"
                     )
                 )
-            membership_source = metadata.get("campaign_membership_source")
-            is_native_attachment = metadata.get("source_attachment_sha256") == root_metadata.get(
-                "source_control_plane_sha256"
-            )
+            membership_source = _metadata_text(issue, "campaign_membership_source", findings)
+            source_attachment = _metadata_text(issue, "source_attachment_sha256", findings)
+            is_native_attachment = source_attachment == _metadata_text(root, "source_control_plane_sha256", findings)
             is_native_control = membership_source == "native-control-plane" or (
                 is_native_attachment and roles == {"implementation"} and timings == {"prep"}
             )
@@ -702,15 +771,15 @@ def collect_campaign_findings(
                         Finding("campaign-role-timing", bead_id, "member role/timing labels are missing or ambiguous")
                     )
                 else:
-                    if metadata.get("campaign_role") != next(iter(roles)):
+                    if _metadata_text(issue, "campaign_role", findings) != next(iter(roles)):
                         findings.append(
                             Finding("campaign-role-timing", bead_id, "campaign_role metadata disagrees with labels")
                         )
-                    if _metadata_set(metadata, "campaign_timing") != timings:
+                    if _metadata_set(issue, "campaign_timing", findings) != timings:
                         findings.append(
                             Finding("campaign-role-timing", bead_id, "campaign_timing metadata disagrees with labels")
                         )
-                if _metadata_set(metadata, "campaign_workstreams") != workstreams:
+                if _metadata_set(issue, "campaign_workstreams", findings) != workstreams:
                     findings.append(
                         Finding("campaign-role-timing", bead_id, "campaign_workstreams metadata disagrees with labels")
                     )
@@ -726,7 +795,7 @@ def collect_campaign_findings(
                         )
                     )
                 continue
-            membership_kind = metadata.get("campaign_membership_kind")
+            membership_kind = _metadata_text(issue, "campaign_membership_kind", findings)
             claims_agentctl = (
                 membership_source == "agentctl:staged-native-adapter" or metadata.get("native_control_ids") is not None
             )
@@ -800,35 +869,39 @@ def collect_campaign_findings(
     active_groups = [
         molecule_id
         for molecule_id in complete_groups
-        if any(issue.get("status") in {"open", "in_progress"} for issue in groups[molecule_id])
+        if any(_status(issue, findings) in {"open", "in_progress"} for issue in groups[molecule_id])
     ]
     active_by_workstream: dict[str, set[str]] = defaultdict(set)
     implementation_lanes = 0
     merge_ready = 0
     for molecule_id in active_groups:
-        merge_stage = next((issue for issue in groups[molecule_id] if _metadata(issue).get("stage") == "merge"), None)
+        merge_stage = next(
+            (issue for issue in groups[molecule_id] if _metadata_text(issue, "stage", findings) == "merge"), None
+        )
         for issue in groups[molecule_id]:
             workstream = _binding_fields(issue).get("workstream", "")
             if workstream:
                 active_by_workstream[workstream].add(molecule_id)
-            if issue.get("status") == "in_progress" and _metadata(issue).get("stage") == "implement":
+            if _status(issue, findings) == "in_progress" and _metadata_text(issue, "stage", findings) == "implement":
                 implementation_lanes += 1
-        verify_stage = next((issue for issue in groups[molecule_id] if _metadata(issue).get("stage") == "verify"), None)
+        verify_stage = next(
+            (issue for issue in groups[molecule_id] if _metadata_text(issue, "stage", findings) == "verify"), None
+        )
         gate = next(
             (
                 issue
                 for issue in by_id.values()
-                if issue.get("issue_type") == "gate" and molecule_id in _parent_targets(issue)
+                if _issue_type(issue, findings) == "gate" and molecule_id in _parent_targets(issue)
             ),
             None,
         )
         if (
             merge_stage is not None
-            and merge_stage.get("status") in MERGE_READY_STATUSES
+            and _status(merge_stage, findings) in MERGE_READY_STATUSES
             and verify_stage is not None
-            and verify_stage.get("status") == "closed"
+            and _status(verify_stage, findings) == "closed"
             and gate is not None
-            and gate.get("status") == "closed"
+            and _status(gate, findings) == "closed"
         ):
             merge_ready += 1
     implementation_limit = _wip_limit(root_metadata, "implementation_lane_wip", findings, root_id)
