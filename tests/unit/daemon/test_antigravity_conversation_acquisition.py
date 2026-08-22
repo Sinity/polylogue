@@ -136,12 +136,21 @@ def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(
     acquired = acquire_antigravity_conversations_once(archive_root)
 
     assert acquired == 2
-    expected_payloads = {
-        str(path): path.read_bytes() for path in sorted((antigravity_root / "conversations").glob("*.pb"))
-    }
+    expected_paths = sorted((antigravity_root / "conversations").glob("*.pb"))
+    expected_payloads = {str(path): path.read_bytes() for path in expected_paths}
+    expected_mtimes = {str(path): int(path.stat().st_mtime * 1000) for path in expected_paths}
     raw_blobs = _raw_pb_blobs_by_source_path(archive_root / "source.db")
 
     assert sorted(raw_blobs) == sorted(expected_payloads)
+    import sqlite3
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        durable_mtimes = dict(
+            conn.execute(
+                "SELECT source_path, file_mtime_ms FROM raw_sessions WHERE origin = 'antigravity-session'"
+            ).fetchall()
+        )
+    assert durable_mtimes == expected_mtimes
     blob_store = BlobStore(archive_root / "blob")
     assert {
         source_path: blob_store.read_all(blob_hash) for source_path, blob_hash in raw_blobs.items()

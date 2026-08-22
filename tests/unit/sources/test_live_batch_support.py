@@ -5599,6 +5599,7 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     source.parent.mkdir(parents=True)
     payload = b'{"contentKey":"call-2","agentId":"agent-b"}\n'
     source.write_bytes(payload)
+    expected_mtime_ms = int(source.stat().st_mtime * 1000)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -5617,11 +5618,11 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         raw = conn.execute(
-            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions"
+            "SELECT raw_id, logical_source_key, revision_kind, revision_authority, file_mtime_ms FROM raw_sessions"
         ).fetchone()
         artifact = conn.execute("SELECT artifact_kind, parse_as_session, raw_id FROM raw_artifacts").fetchone()
     assert raw is not None
-    assert raw[1:] == (None, "unknown", "quarantined")
+    assert raw[1:] == (None, "unknown", "quarantined", expected_mtime_ms)
     assert artifact == ("workflow_journal", 0, raw[0])
 
 
