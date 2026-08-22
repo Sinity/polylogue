@@ -842,6 +842,54 @@ def test_expected_delta_authority_resolves_outside_a_git_checkout(
     reindex_canary_module._validate_expected_review_authorities((delta,))
 
 
+def test_crossed_delta_authority_rejects_reported_source_version_mismatch(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    with sqlite3.connect(current) as connection:
+        connection.execute("PRAGMA user_version = 43")
+        connection.commit()
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("PRAGMA user_version = 44")
+        connection.commit()
+    comparison = compare_reindex_generations(
+        current,
+        candidate,
+        session_ids=("codex-session:sample",),
+        source_index_version=42,
+    )
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not match persisted"):
+        reindex_canary_module._crossed_delta_versions_for_comparison(comparison)
+
+
+def test_expected_delta_authority_requires_crossed_source_versions() -> None:
+    difference = RowDifference(
+        table="sessions",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"title_ref": None},
+        after={"title_ref": "message:codex-session:sample:user"},
+        changed_columns=("title_ref",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    review = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="delta:44",
+        rationale="declared targeted title reprocess",
+    )
+    with pytest.raises(UnclassifiedCanaryDiffError, match="not crossed"):
+        reindex_canary_module._validate_expected_review_authorities(
+            (review,), crossed_delta_versions=(43,), require_crossed_delta_versions=True
+        )
+    with pytest.raises(UnclassifiedCanaryDiffError, match="source index version evidence"):
+        reindex_canary_module._validate_expected_review_authorities(
+            (review,), crossed_delta_versions=None, require_crossed_delta_versions=True
+        )
+
+
 def test_expected_delta_authority_rejects_unrelated_table() -> None:
     """A historical delta number cannot bless an arbitrary semantic change."""
 
@@ -1910,7 +1958,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 9
+    assert payload["schema_version"] == 10
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
