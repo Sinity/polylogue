@@ -35,6 +35,8 @@ from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatal
 from tests.infra.schema_access import schema_properties, schema_property, schema_values
 from tests.infra.workload_artifacts import SeededArchiveClone
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 class TestProviderSchemaGeneration:
     """Provider-level schema generation entrypoints."""

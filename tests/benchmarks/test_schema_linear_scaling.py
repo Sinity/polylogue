@@ -16,6 +16,8 @@ from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from tests.infra.workload_artifacts import SeededArchiveClone
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _measure(db_path: Path, record_limit: int | None) -> float:
     """Run ``verify_raw_corpus`` with *record_limit* and return wall-clock ms."""

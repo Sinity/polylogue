@@ -54,6 +54,8 @@ from tests.infra.pathology_zoo import (
 )
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)

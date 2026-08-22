@@ -63,7 +63,6 @@ except CheckoutImportMismatchError as _checkout_exc:
     _CHECKOUT_GUARD_ERROR = _checkout_exc
 
 pytest_plugins = (
-    "tests.infra.corpus_fixtures",
     "tests.infra.frozen_clock",
     "tests.infra.clock_guard",
 )

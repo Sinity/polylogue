@@ -34,6 +34,8 @@ from polylogue.storage.raw_retention import RawFrontierIntegritySnapshot, raw_fr
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.workload_artifacts import SeededArchiveClone
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _snapshot(root: Path) -> RawFrontierIntegritySnapshot:
     conn = open_readonly_connection(root / "source.db")

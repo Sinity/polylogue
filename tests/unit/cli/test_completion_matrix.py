@@ -55,6 +55,8 @@ DYNAMIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
     ("tool", ["--tool"]),
 )
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def test_contract_completion_contexts_are_in_shell_matrix() -> None:
     """Action-contract completion contexts with shell completers are matrix-covered."""

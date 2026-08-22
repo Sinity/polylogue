@@ -35,6 +35,8 @@ from tests.infra.workload_artifacts import (
     seeded_archive_key,
 )
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"

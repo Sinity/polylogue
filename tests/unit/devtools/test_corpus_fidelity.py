@@ -13,6 +13,8 @@ from devtools import click_dispatch
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _archive_tier_bytes(root: Path) -> dict[str, bytes]:
     """Capture exact bytes for every registered tier file present in a fixture."""

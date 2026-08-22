@@ -17,6 +17,8 @@ from polylogue.maintenance.archive_verification import (
 )
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)

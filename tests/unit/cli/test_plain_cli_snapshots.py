@@ -47,6 +47,8 @@ _SCHEMA_VERSION_FIELD_RE = re.compile(r'("(?:expected_)?user_version": )\d+')
 # Match path-like sequences (anything with a "/" between segments).
 _PATH_RE = re.compile(r"(/[A-Za-z0-9_.\-]+){2,}")
 
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
 
 def _redact(text: str) -> str:
     """Strip ephemeral content that is not part of the rendering contract."""
