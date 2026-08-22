@@ -460,8 +460,8 @@ def test_origin_specs_are_parity_checked_against_the_live_assembly_registry() ->
 def test_every_origin_spec_declares_a_display_description() -> None:
     """Production dependency: CLI --origin shell completion derives its help text from OriginSpec.
 
-    Anti-vacuity: blanking a display_description (or dropping a spec) shrinks
-    the derived completion inventory below the full Origin vocabulary.
+    Anti-vacuity: blanking a display_description (or dropping a public spec)
+    shrinks the derived completion inventory below the accepted filter vocabulary.
     """
     from polylogue.sources.origin_specs import public_origin_descriptions
 
@@ -469,7 +469,7 @@ def test_every_origin_spec_declares_a_display_description() -> None:
         assert spec.display_description.strip(), spec.origin.value
 
     descriptions = public_origin_descriptions()
-    assert set(descriptions) == {origin.value for origin in Origin}
+    assert set(descriptions) == set(public_origin_tokens())
     assert all(text.strip() for text in descriptions.values())
 
 
