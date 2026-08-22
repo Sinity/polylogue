@@ -141,7 +141,14 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     persisted = load_state(config, "op-resume")
     assert persisted is not None
     rewind = state_path_for(config, "op-resume")
-    rewind.write_text(rewind.read_text().replace(persisted["cursor"], "target:1"))  # type: ignore[arg-type]
+    # Drop the cumulative field to model a legacy positional state edited by
+    # an operator. New-format checkpoints treat completed identities as
+    # authoritative and reject contradictory cursor rewinds.
+    rewind.write_text(
+        '{"operation_id":"op-resume",'
+        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"cursor":"target:1"}'
+    )
 
     # Second invocation with same id and a "fixed" dispatch must skip
     # the already-completed first target.
@@ -219,10 +226,11 @@ def test_chained_resume_retains_completed_identity_history(
     path.write_text(
         '{"operation_id":"op-chained",'
         '"targets":["session_insights","empty_sessions","orphaned_blobs"],'
-        '"cursor":"target:1"}'
+        '"completed_targets":["session_insights"],'
+        '"cursor":"target:0"}'
     )
 
-    def fail_orphan(_config: Config, _dry_run: bool) -> RepairResult:
+    def fail_empty(_config: Config, _dry_run: bool) -> RepairResult:
         raise RuntimeError("interrupted")
 
     with patch.object(
@@ -230,8 +238,8 @@ def test_chained_resume_retains_completed_identity_history(
         "REPAIR_HANDLERS",
         {
             "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
-            "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
-            "orphaned_blobs": fail_orphan,
+            "empty_sessions": fail_empty,
+            "orphaned_blobs": patched_dispatch_callable(patched_dispatch, "orphaned_blobs"),
         },
     ):
         first = execute_replay(
@@ -240,6 +248,10 @@ def test_chained_resume_retains_completed_identity_history(
             operation_id="op-chained",
         )
     assert first.status is OperationStatus.FAILED
+    checkpoint = load_state(config, "op-chained")
+    assert checkpoint is not None
+    assert checkpoint["targets"] == ["session_insights", "empty_sessions", "orphaned_blobs"]
+    assert checkpoint["completed_targets"] == ["session_insights", "empty_sessions", "orphaned_blobs"]
 
     second = execute_replay(
         config,
@@ -249,7 +261,7 @@ def test_chained_resume_retains_completed_identity_history(
 
     assert second.status is OperationStatus.COMPLETED
     assert patched_dispatch["session_insights"] == []
-    assert patched_dispatch["empty_sessions"] == ["live"]
+    assert patched_dispatch["empty_sessions"] == []
     assert patched_dispatch["orphaned_blobs"] == ["live"]
 
 
@@ -261,7 +273,7 @@ def test_all_completed_identity_remap_returns_completed_noop(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '{"operation_id":"op-all-done",'
-        '"targets":["session_insights","message_type_backfill","empty_sessions"],'
+        '"targets":["session_insights","message_type_backfill","empty_sessions","orphaned_blobs"],'
         '"cursor":"done"}'
     )
 

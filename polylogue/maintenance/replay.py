@@ -263,6 +263,41 @@ class UnsupportedReplayTargetError(RuntimeError):
     """Raised when a resolved target has no replay dispatch entry."""
 
 
+class InvalidReplayStateError(RuntimeError):
+    """Raised when persisted replay state cannot be trusted for resumption."""
+
+
+class IncompatibleReplayStateError(RuntimeError):
+    """Raised when persisted replay identities cannot map to current targets."""
+
+
+def _failed_replay_state(
+    *,
+    operation_id: str,
+    targets: tuple[str, ...],
+    scope_filter: MaintenanceScopeFilter,
+    message: str,
+    kind: str,
+) -> BackfillOperation:
+    """Build a typed failure without invoking a maintenance handler."""
+    started_at = datetime.now(timezone.utc).isoformat()
+    sample = FailureSample(kind=kind, locator=f"operation:{operation_id}", message=message)
+    return BackfillOperation(
+        operation_id=operation_id,
+        kind=BackfillKind.DERIVED_REBUILD,
+        targets=targets,
+        status=OperationStatus.FAILED,
+        progress=0.0,
+        started_at=started_at,
+        completed_at=started_at,
+        error=message,
+        scope=MaintenanceScope(targets=targets, filter=scope_filter),
+        reason=InvalidationReason.UNKNOWN,
+        failure_samples=BoundedFailureSamples.from_samples((sample,)),
+        metrics={"repaired_count": 0.0},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cursor encoding
 # ---------------------------------------------------------------------------
@@ -305,44 +340,64 @@ def _decode_cursor(cursor: str | None, *, total_targets: int) -> int:
 def _resume_pending_specs(
     specs: tuple[MaintenanceTargetSpec, ...],
     persisted: JSONDocument,
-) -> tuple[tuple[MaintenanceTargetSpec, ...] | None, str | None]:
+    *,
+    cursor_override: str | None = None,
+) -> tuple[tuple[MaintenanceTargetSpec, ...] | None, tuple[str, ...], str | None]:
     """Resolve a persisted cursor by target identity, never by old position.
 
     Target catalogs can remove or reorder entries while an operation is
     interrupted. A positional cursor from the old catalog must therefore not
     be applied to the new tuple. Completed names are removed from the current
     target set, while targets absent from the old state remain pending. This
-    lets a removed target disappear without shifting the cursor onto an
-    unrelated cleanup target.
+    lets a removed target disappear without shifting the cursor onto unrelated
+    cleanup work. ``completed_targets`` is cumulative for state files written
+    by this implementation; older files derive completion from their cursor.
     """
     raw_targets = persisted.get("targets")
-    cursor = persisted.get("cursor")
+    cursor = cursor_override if cursor_override is not None else persisted.get("cursor")
     if not isinstance(raw_targets, list) or not all(isinstance(name, str) for name in raw_targets):
-        return None, "Persisted replay state has no valid target identity list"
+        return None, (), "Persisted replay state has no valid target identity list"
     old_targets = tuple(raw_targets)
     if len(set(old_targets)) != len(old_targets):
-        return None, "Persisted replay state has duplicate target identities"
+        return None, (), "Persisted replay state has duplicate target identities"
     if not isinstance(cursor, str):
-        return None, "Persisted replay state has no valid cursor"
+        return None, (), "Persisted replay state has no valid cursor"
+
+    completed_raw = persisted.get("completed_targets")
+    if "completed_targets" in persisted:
+        if not isinstance(completed_raw, list) or not all(isinstance(name, str) for name in completed_raw):
+            return None, (), "Persisted replay state has invalid completed target identities"
+        completed_order = tuple(completed_raw)
+        if len(set(completed_order)) != len(completed_order) or not set(completed_order) <= set(old_targets):
+            return None, (), "Persisted replay state has incompatible completed target identities"
+        completed = set(completed_order)
+        cursor_targets = tuple(name for name in old_targets if name not in completed)
+    else:
+        completed_order = ()
+        completed = set()
+        cursor_targets = old_targets
 
     # Unlike _decode_cursor, an invalid upper bound is incompatible here. The
     # normal decoder's historical clamping is safe only when the target tuple
     # is known to be the same tuple that produced the cursor.
     if cursor == CURSOR_DONE:
-        old_index = len(old_targets)
+        old_index = len(cursor_targets)
     elif cursor.startswith(_CURSOR_TARGET_PREFIX):
         head = cursor[len(_CURSOR_TARGET_PREFIX) :].split(":", 1)[0]
         try:
             old_index = int(head)
         except ValueError:
             old_index = -1
-        if old_index < 0 or old_index > len(old_targets):
-            return None, "Persisted replay state has an incompatible target cursor"
+        if old_index < 0 or old_index > len(cursor_targets):
+            return None, (), "Persisted replay state has an incompatible target cursor"
     else:
-        return None, "Persisted replay state has an incompatible target cursor"
+        return None, (), "Persisted replay state has an incompatible target cursor"
 
-    completed = set(old_targets[:old_index])
-    return tuple(spec for spec in specs if spec.name not in completed), None
+    for name in cursor_targets[:old_index]:
+        if name not in completed:
+            completed.add(name)
+            completed_order += (name,)
+    return tuple(spec for spec in specs if spec.name not in completed), completed_order, None
 
 
 # ---------------------------------------------------------------------------
@@ -367,18 +422,31 @@ def _write_state(path: Path, payload: JSONDocument) -> None:
 
 
 def load_state(config: Config, operation_id: str) -> JSONDocument | None:
-    """Load a previously persisted operation state, or ``None``."""
+    """Load a previously persisted operation state, or ``None``.
+
+    A present but malformed state is distinct from an absent state. Callers
+    must fail closed rather than treating corruption as a fresh operation.
+    """
     path = state_path_for(config, operation_id)
     if not path.exists():
         return None
-    raw = loads(path.read_text())
+    try:
+        raw = loads(path.read_text())
+    except Exception as exc:
+        logger.warning(
+            "replay_state_unparseable",
+            operation_id=operation_id,
+            path=str(path),
+            error=str(exc),
+        )
+        raise InvalidReplayStateError("Persisted replay state is not a JSON object") from exc
     if not isinstance(raw, dict):
         logger.warning(
             "replay_state_unparseable",
             operation_id=operation_id,
             path=str(path),
         )
-        return None
+        raise InvalidReplayStateError("Persisted replay state is not a JSON object")
     return raw
 
 
@@ -452,6 +520,7 @@ class _ReplayState:
     operation_id: str
     targets: tuple[str, ...]
     cursor: str
+    completed_targets: list[str] = field(default_factory=list)
     results: list[JSONDocument] = field(default_factory=list)
     failures: list[FailureSample] = field(default_factory=list)
     repaired_total: int = 0
@@ -567,49 +636,63 @@ def execute_replay(
     # Load persisted identity metadata before any execution gate. A cursor
     # written against a retired catalog must be remapped or rejected before a
     # handler can observe the request.
+    explicit_resume = resume_cursor is not None
     persisted: JSONDocument | None = None
-    if resume_cursor is None and persist_state:
-        persisted = load_state(config, op_id)
-        if persisted is not None:
-            cursor_value = persisted.get("cursor")
-            if isinstance(cursor_value, str):
-                resume_cursor = cursor_value
+    if persist_state:
+        try:
+            persisted = load_state(config, op_id)
+        except InvalidReplayStateError as exc:
+            return _failed_replay_state(
+                operation_id=op_id,
+                targets=resolved_names,
+                scope_filter=effective_filter,
+                message=str(exc),
+                kind="InvalidReplayState",
+            )
 
+    pending_specs = resolved_specs
+    completed_targets: tuple[str, ...] = ()
+    target_history = resolved_names
     if persisted is not None:
-        pending_specs, resume_error = _resume_pending_specs(resolved_specs, persisted)
-        if resume_error is not None or pending_specs is None:
-            started_at = datetime.now(timezone.utc).isoformat()
-            message = resume_error or "Persisted replay state is incompatible with the current target catalog"
-            sample = FailureSample(
-                kind="IncompatibleReplayState",
-                locator=f"operation:{op_id}",
-                message=message,
+        if "targets" not in persisted:
+            if not explicit_resume:
+                return _failed_replay_state(
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    scope_filter=effective_filter,
+                    message="Persisted replay state has no valid target identity list",
+                    kind="IncompatibleReplayState",
+                )
+        else:
+            raw_history = persisted.get("targets")
+            if isinstance(raw_history, list) and all(isinstance(name, str) for name in raw_history):
+                target_history = tuple(dict.fromkeys((*raw_history, *resolved_names)))
+            cursor_value = resume_cursor if explicit_resume else persisted.get("cursor")
+            pending_specs, completed_targets, resume_error = _resume_pending_specs(
+                resolved_specs,
+                persisted,
+                cursor_override=cursor_value if isinstance(cursor_value, str) else None,
             )
-            logger.error(
-                "replay_state_incompatible",
-                operation_id=op_id,
-                targets=resolved_names,
-                error=message,
-            )
-            return BackfillOperation(
-                operation_id=op_id,
-                kind=BackfillKind.DERIVED_REBUILD,
-                targets=resolved_names,
-                status=OperationStatus.FAILED,
-                progress=0.0,
-                started_at=started_at,
-                completed_at=started_at,
-                error=message,
-                scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
-                reason=InvalidationReason.UNKNOWN,
-                failure_samples=BoundedFailureSamples.from_samples((sample,)),
-                metrics={"repaired_count": 0.0},
-            )
-        # The state cursor has already been translated by identity. The
-        # remaining tuple is a fresh positional work list for this run.
-        resolved_specs = pending_specs
-        resolved_names = tuple(spec.name for spec in resolved_specs)
-        resume_cursor = _encode_cursor(0)
+            if resume_error is not None or pending_specs is None:
+                message = resume_error or "Persisted replay state is incompatible with the current target catalog"
+                logger.error(
+                    "replay_state_incompatible",
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    error=message,
+                )
+                return _failed_replay_state(
+                    operation_id=op_id,
+                    targets=resolved_names,
+                    scope_filter=effective_filter,
+                    message=message,
+                    kind="IncompatibleReplayState",
+                )
+            # The cursor has been translated by identity. The remaining tuple
+            # is a fresh positional work list for this run.
+            resume_cursor = _encode_cursor(0)
+    elif not explicit_resume:
+        resume_cursor = None
 
     blockers = offline_maintenance_blockers(
         config,
@@ -618,7 +701,7 @@ def execute_replay(
         dry_run=dry_run,
         targets=resolved_names,
     )
-    if blockers:
+    if blockers and pending_specs:
         samples = tuple(
             FailureSample(
                 kind="OfflineMaintenanceBlocked",
@@ -644,12 +727,35 @@ def execute_replay(
             metrics={"repaired_count": 0.0},
         )
 
-    start_index = _decode_cursor(resume_cursor, total_targets=len(resolved_names))
+    start_index = _decode_cursor(resume_cursor, total_targets=len(pending_specs))
+    if not completed_targets and start_index:
+        completed_targets = tuple(spec.name for spec in pending_specs[:start_index])
     state = _ReplayState(
         operation_id=op_id,
-        targets=resolved_names,
+        targets=target_history,
         cursor=_encode_cursor(start_index),
+        completed_targets=list(completed_targets),
     )
+
+    if not pending_specs:
+        state.cursor = CURSOR_DONE
+        completed_at = datetime.now(timezone.utc).isoformat()
+        final = BackfillOperation(
+            operation_id=op_id,
+            kind=BackfillKind.DERIVED_REBUILD,
+            targets=resolved_names,
+            status=OperationStatus.COMPLETED,
+            progress=1.0,
+            started_at=completed_at,
+            completed_at=completed_at,
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            resume_cursor=CURSOR_DONE,
+            failure_samples=BoundedFailureSamples(),
+            metrics={"repaired_count": 0.0},
+        )
+        if persist_state:
+            clear_state(config, op_id)
+        return final
 
     started_at = datetime.now(timezone.utc).isoformat()
     logger.info(
@@ -660,8 +766,8 @@ def execute_replay(
         dry_run=dry_run,
     )
 
-    for index in range(start_index, len(resolved_names)):
-        spec = resolved_specs[index]
+    for index in range(start_index, len(pending_specs)):
+        spec = pending_specs[index]
         target_name = spec.name
         _run_one_target(
             state,
@@ -678,7 +784,9 @@ def execute_replay(
         # not re-execute the same target and stack duplicate failure
         # samples; the bounded sample list already records the problem.
         next_index = index + 1
-        state.cursor = CURSOR_DONE if next_index == len(resolved_names) else _encode_cursor(next_index)
+        if target_name not in state.completed_targets:
+            state.completed_targets.append(target_name)
+        state.cursor = CURSOR_DONE if next_index == len(pending_specs) else _encode_cursor(next_index)
         if persist_state:
             _checkpoint_state(
                 config=config,
@@ -694,7 +802,7 @@ def execute_replay(
     successful = not state.failures
     status = OperationStatus.COMPLETED if successful else OperationStatus.FAILED
 
-    progress = (len(resolved_names) - start_index) / len(resolved_names)
+    progress = 1.0 if not pending_specs else (len(pending_specs) - start_index) / len(pending_specs)
     logger.info(
         "replay_completed",
         operation_id=op_id,
@@ -904,6 +1012,7 @@ def _checkpoint_state(
         {
             "operation_id": operation_id,
             "targets": list(state.targets),
+            "completed_targets": list(state.completed_targets),
             "cursor": state.cursor,
             "started_at": started_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -942,8 +1051,8 @@ def _build_in_progress_snapshot(
         completed_at: str | None = datetime.now(timezone.utc).isoformat()
     else:
         status = OperationStatus.RUNNING
-        processed = _decode_cursor(cursor, total_targets=total)
-        progress = processed / total if total > 0 else 0.0
+        processed = len(state.completed_targets)
+        progress = min(processed / total, 1.0) if total > 0 else 0.0
         completed_at = None
 
     return BackfillOperation(
@@ -969,6 +1078,8 @@ __all__ = [
     "MaintenanceScopeFilter",
     "ProgressCallback",
     "ReplayProgress",
+    "InvalidReplayStateError",
+    "IncompatibleReplayStateError",
     "UnsupportedReplayTargetError",
     "clear_state",
     "execute_replay",
