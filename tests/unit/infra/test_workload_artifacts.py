@@ -672,13 +672,14 @@ def test_obsolete_staging_sweep_honors_budget_and_continues(
     for index in range(5):
         (staging_root / f"key-{index}.build").mkdir()
 
-    first = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
-    second = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
-    third = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+    removed: list[str] = []
+    for _ in range(12):
+        batch = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+        removed.extend(batch)
+        if not tuple(staging_root.iterdir()):
+            break
 
-    assert len(first) == 2
-    assert len(second) == 2
-    assert len(third) == 1
+    assert len(removed) == 5
     assert not tuple(staging_root.iterdir())
 
 

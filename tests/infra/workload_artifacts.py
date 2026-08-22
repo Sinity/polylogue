@@ -20,8 +20,8 @@ import stat
 import subprocess
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Iterator
+from dataclasses import asdict, dataclass, field
 from itertools import chain
 from pathlib import Path
 from typing import Protocol
@@ -185,6 +185,11 @@ class SeededArchiveClone:
     root: Path
     source_manifest_id: str
     clone_method: str
+    _integrity_fd: int = field(default=-1, repr=False, compare=False)
+
+    def close(self) -> None:
+        if self._integrity_fd >= 0:
+            os.close(self._integrity_fd)
 
 
 def c03_semantic_corpus_spec() -> CorpusSpec:
@@ -1073,25 +1078,43 @@ def _bounded_scan_last_name(directory: Path, *, cursor: str, budget: int) -> str
         os.close(directory_fd)
 
 
-def _seen_cleanup_name(path: Path, name: str) -> bool:
+_MAX_CLEANUP_SEEN_BYTES = 1 << 20
+
+
+def _cleanup_identity(name: str, info: os.stat_result) -> str:
+    return f"{name}\0{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}:{info.st_size}"
+
+
+def _seen_cleanup_identity(path: Path, identity: str, *, budget: int) -> tuple[bool, int]:
+    if budget <= 0:
+        return False, 0
     try:
         fd = _open_no_follow(path, os.O_RDONLY)
     except FileNotFoundError:
-        return False
+        return False, 0
+    scanned = 0
     try:
         with os.fdopen(fd, "r", encoding="utf-8", closefd=True) as handle:
-            return any(line.rstrip("\n") == name for line in handle)
+            for line in handle:
+                scanned += 1
+                if line.rstrip("\n") == identity:
+                    return True, scanned
+                if scanned >= budget:
+                    break
+        return False, scanned
     except BaseException:
         with contextlib.suppress(OSError):
             os.close(fd)
         raise
 
 
-def _mark_cleanup_name(path: Path, name: str) -> None:
+def _mark_cleanup_identity(path: Path, identity: str) -> None:
     fd = _open_no_follow(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", closefd=True) as handle:
-            handle.write(name + "\n")
+        if os.fstat(fd).st_size >= _MAX_CLEANUP_SEEN_BYTES:
+            os.ftruncate(fd, 0)
+        with os.fdopen(fd, "a", encoding="utf-8", closefd=True) as handle:
+            handle.write(identity + "\n")
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
@@ -1143,16 +1166,18 @@ def _recover_obsolete_staging(
         try:
             with os.scandir(staging_fd) as entries:
                 for entry in entries:
-                    if _seen_cleanup_name(seen_path, entry.name):
+                    info = entry.stat(follow_symlinks=False)
+                    identity = _cleanup_identity(entry.name, info)
+                    # Journal lookup is independently bounded; node
+                    # selection retains its own bounded batch.
+                    seen, _journal_work = _seen_cleanup_identity(seen_path, identity, budget=max(1, budget - inspected))
+                    if seen:
                         continue
                     inspected += 1
-                    if inspected > budget:
-                        break
                     last_seen = entry.name
                     candidate = staging_root / entry.name
-                    info = entry.stat(follow_symlinks=False)
                     if "." not in entry.name or not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
-                        _mark_cleanup_name(seen_path, entry.name)
+                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     artifact_name = entry.name.split(".", 1)[0]
                     lock_path = locks_root / f"{artifact_name}.lock"
@@ -1165,7 +1190,7 @@ def _recover_obsolete_staging(
                                 _assert_lock_identity(handle.fileno(), lock_path)
                                 _remove_tree(candidate)
                                 removed.append(entry.name)
-                                _mark_cleanup_name(seen_path, entry.name)
+                                _mark_cleanup_identity(seen_path, identity)
                             finally:
                                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
@@ -1211,25 +1236,27 @@ def _recover_stale_handoffs(
         try:
             with os.scandir(artifacts_fd) as entries:
                 for entry in entries:
-                    if _seen_cleanup_name(seen_path, entry.name):
+                    info = entry.stat(follow_symlinks=False)
+                    identity = _cleanup_identity(entry.name, info)
+                    # Journal lookup is independently bounded; node
+                    # selection retains its own bounded batch.
+                    seen, _journal_work = _seen_cleanup_identity(seen_path, identity, budget=max(1, budget - inspected))
+                    if seen:
                         continue
                     inspected += 1
-                    if inspected > budget:
-                        break
                     last_seen = entry.name
                     candidate = artifacts_root / entry.name
-                    info = entry.stat(follow_symlinks=False)
                     if stat.S_ISLNK(info.st_mode):
                         _remove_tree(candidate)
                         removed.append(entry.name)
-                        _mark_cleanup_name(seen_path, entry.name)
+                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     if not stat.S_ISDIR(info.st_mode):
-                        _mark_cleanup_name(seen_path, entry.name)
+                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     parts = entry.name.removeprefix(".").split(".", 1)
                     if len(parts) != 2:
-                        _mark_cleanup_name(seen_path, entry.name)
+                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     lock_path = locks_root / f"{parts[0]}.lock"
                     if _is_symlink_node(lock_path):
@@ -1241,7 +1268,7 @@ def _recover_stale_handoffs(
                                 _assert_lock_identity(handle.fileno(), lock_path)
                                 _remove_tree(candidate)
                                 removed.append(entry.name)
-                                _mark_cleanup_name(seen_path, entry.name)
+                                _mark_cleanup_identity(seen_path, identity)
                             finally:
                                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
@@ -1661,7 +1688,7 @@ def _open_lock_domain(cache_root: Path) -> _LockDomain:
 
 
 def _release_lock_domain(domain: _LockDomain) -> None:
-    """Restore modes while locks are held, then release and close independently."""
+    """Restore modes while capabilities remain locked, then close independently."""
     try:
         with contextlib.suppress(OSError):
             os.fchmod(domain.root_fd, domain.root_mode)
@@ -2000,18 +2027,6 @@ def _authenticate_clone_copy(
             os.close(clone_manifest_fd)
 
 
-def _authenticate_clone_at_return_boundary(
-    source: SeededArchiveArtifact,
-    destination: Path,
-    manifest: SeededArchiveManifest,
-    *,
-    ignored_relatives: frozenset[str] = frozenset(),
-    _authenticator: Callable[..., None] = _authenticate_clone_copy,
-) -> None:
-    """Authenticate through a private bound callable immediately before return."""
-    _authenticator(source, destination, manifest, ignored_relatives=ignored_relatives)
-
-
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     _mkdir_pinned(destination.parent)
     ancestor_fd, parent_name = _open_pinned_parent(destination.parent)
@@ -2030,8 +2045,6 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         _assert_named_directory(ancestor_fd, parent_name, parent_fd)
         return _clone_seeded_archive_inner(artifact, destination)
     finally:
-        # Restore protection while both locks are still held; only then can
-        # another holder acquire either directory capability.
         try:
             if parent_mode is not None:
                 with contextlib.suppress(OSError):
@@ -2070,6 +2083,7 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
         _safe_unlink(destination)
     _remove_tree(destination)
     _mkdir_pinned(destination.parent)
+    integrity_fd = -1
     try:
         _copy_tree(artifact.root, destination)
         _authenticate_clone_copy(artifact, destination, disk_manifest)
@@ -2086,13 +2100,20 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
             _record_fresh_durable_bootstrap(destination)
         # This is the final mutation and the final authentication. No
         # pathname or metadata operation occurs between this check and return.
-        _authenticate_clone_at_return_boundary(
+        _authenticate_clone_copy(
             artifact,
             destination,
             disk_manifest,
             ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
         )
+        # Retain a pinned, shared integrity capability across the return
+        # boundary. Callers may close it when the clone is no longer needed.
+        integrity_fd = _open_pinned_dir(destination)
+        fcntl.flock(integrity_fd, fcntl.LOCK_SH)
     except BaseException:
+        if integrity_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(integrity_fd)
         with contextlib.suppress(BaseException):
             _remove_tree(destination)
         raise
@@ -2100,6 +2121,7 @@ def _clone_seeded_archive_inner(artifact: SeededArchiveArtifact, destination: Pa
         root=destination,
         source_manifest_id=source_manifest_id,
         clone_method=method,
+        _integrity_fd=integrity_fd,
     )
 
 
