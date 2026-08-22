@@ -263,13 +263,23 @@ def normalize_verify_history_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     resource_values = resources if isinstance(resources, Mapping) else {}
     outcomes = aggregate.get("outcomes")
     outcome_values = outcomes if isinstance(outcomes, Mapping) else {}
+    peak_basetemp_bytes = resource_values.get("peak_storage_bytes")
+    write_bytes = resource_values.get("write_bytes")
+    amplification = (
+        write_bytes / peak_basetemp_bytes
+        if isinstance(write_bytes, (int, float))
+        and isinstance(peak_basetemp_bytes, (int, float))
+        and peak_basetemp_bytes > 0
+        else None
+    )
     normalized["cost_telemetry"] = {
         "schema_version": 1,
         "tier": normalized.get("tier"),
         "wall_s": aggregate.get("wall_s", normalized.get("total_duration_s")),
         "read_bytes": resource_values.get("read_bytes"),
-        "write_bytes": resource_values.get("write_bytes"),
-        "peak_basetemp_bytes": resource_values.get("peak_storage_bytes"),
+        "write_bytes": write_bytes,
+        "peak_basetemp_bytes": peak_basetemp_bytes,
+        "write_amplification_ratio": amplification,
         "peak_tree_rss_kb": resource_values.get("peak_tree_rss_kb"),
         "peak_tree_pss_kb": resource_values.get("peak_tree_pss_kb"),
         "selected_count": aggregate.get("selected_union_count"),
