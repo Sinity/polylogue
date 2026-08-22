@@ -32,13 +32,9 @@ def test_maintenance_target_catalog_resolves_aliases_to_canonical_targets() -> N
 def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None:
     catalog = build_maintenance_target_catalog()
 
-    assert catalog.preview_target_names() == (
-        "session_insights",
-        "message_type_backfill",
-    )
+    assert catalog.preview_target_names() == ("session_insights",)
     assert catalog.help_text() == (
-        "Limit maintenance to named targets such as session_insights, "
-        "message_type_backfill, empty_sessions, or superseded_raw_snapshots"
+        "Limit maintenance to named targets such as session_insights, empty_sessions, or superseded_raw_snapshots"
     )
 
 

@@ -645,11 +645,8 @@ def _message_type_from_code_record(item: dict[str, object], text: str | None) ->
     ``text_blocks_prose``), not the combined multi-segment string
     ``extract_message_text``/``extract_text_from_segments`` produce --
     those fold THINKING/TOOL_USE/TOOL_RESULT segments into the same
-    string, which is a different input than
-    ``storage.message_type_backfill`` reconstructs from the persisted
-    ``blocks`` table (TEXT-type rows only). Passing the combined text
-    here silently diverges from the backfill's re-classification of the
-    same row (bd polylogue-c831).
+    string and can misclassify runtime artifacts as authored prose.
+    The writer classifies from the same split content blocks that it stores.
     """
     artifact_type = classify_text_message_type(text)
     if artifact_type is not None:
@@ -1562,13 +1559,10 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
     content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
     content_blocks = _attach_file_edit(content_blocks, _file_edit_from_tool_result(item))
-    # bd polylogue-c831: classify from the message's own TEXT-block-only
-    # prose, not the combined `text` (which folds in THINKING/TOOL_USE/
-    # TOOL_RESULT segments via extract_message_text/
-    # extract_text_from_segments) -- the persisted `blocks` table only
-    # ever carries TEXT-type rows for classify_text_message_type to see
-    # again later (storage.message_type_backfill), so classifying off the
-    # combined string here silently drifts from that re-classification.
+    # Classify from the message's own TEXT-block-only prose, not the
+    # combined `text`, which folds in THINKING/TOOL_USE/TOOL_RESULT
+    # segments via extract_message_text/extract_text_from_segments.
+    # The writer persists the same split blocks it classifies.
     message_type = _message_type_from_code_record(item, text_blocks_prose(content_blocks))
     if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
         message_type = MessageType.CONTEXT

@@ -218,15 +218,6 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         ),
     ),
     MaintenanceTargetSpec(
-        name="message_type_backfill",
-        mode=MaintenanceTargetMode.REPAIR,
-        category=MaintenanceCategory.DERIVED_REPAIR,
-        destructive=False,
-        description="Backfill message_type for rows ingested before context/protocol classification (#839).",
-        include_preview_when_ready=True,
-        doctor_repair_operation="backfill-message-type",
-    ),
-    MaintenanceTargetSpec(
         name="empty_sessions",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,

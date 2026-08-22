@@ -163,12 +163,10 @@ def test_parse_code_classifies_message_type_from_text_blocks_only() -> None:
     own TEXT block carries no such marker. Before the fix, ingest-time
     classification ran ``classify_text_message_type`` over
     ``extract_message_text``'s combined multi-segment string (THINKING text
-    included), while ``storage.message_type_backfill`` re-derives the same
-    row's classification from only the persisted TEXT-type ``blocks`` rows
-    -- a silent, systematic divergence between the two paths. This asserts
-    they now agree by construction: the ingest-time verdict is exactly what
-    re-running the classifier against the persisted TEXT block would
-    produce.
+    included). The writer and persisted TEXT-block representation therefore
+    share one classification input rather than silently diverging. This
+    asserts the ingest-time verdict is exactly what re-running the classifier
+    against the persisted TEXT block would produce.
     """
     result = parse_code(
         [

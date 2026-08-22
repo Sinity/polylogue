@@ -54,11 +54,6 @@ from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
     session_profile_stale_predicate,
 )
-from polylogue.storage.message_type_backfill import (
-    BackfillResult,
-    count_messages_by_type_sync,
-    count_unclassified_message_type_sync,
-)
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RAW_REPLAY_NO_PROGRESS_REASON,
@@ -5763,20 +5758,6 @@ def collect_archive_debt_statuses_sync(
             if session_insights == 0
             else f"{session_insights:,} pending/stale/orphaned session-insight rows",
         )
-    if "message_type_backfill" in selected:
-        unclassified = 0 if skip_large_message_scans else count_unclassified_message_type_sync(conn)
-        debt_statuses["message_type_backfill"] = _archive_debt_status(
-            "message_type_backfill",
-            issue_count=unclassified,
-            detail=(
-                "Skipped exact message-type backfill scan in probe mode; use --deep for exact count"
-                if skip_large_message_scans
-                else "No messages need context/protocol classification"
-                if unclassified == 0
-                else f"{unclassified:,} messages would be classified as context or protocol"
-            ),
-            skipped=skip_large_message_scans,
-        )
     if include_expensive and "superseded_raw_snapshots" in selected:
         superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
         debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
@@ -7384,43 +7365,8 @@ def _repair_raw_materialization(
     )
 
 
-def _to_repair_result(result: BackfillResult) -> RepairResult:
-    """Adapt a ``BackfillResult`` to the shared ``RepairResult`` shape."""
-    return RepairResult(
-        name=result.name,
-        category=result.category,
-        destructive=result.destructive,
-        repaired_count=result.repaired_count,
-        success=result.success,
-        detail=result.detail,
-    )
-
-
-def preview_message_type_backfill(*, count: int) -> RepairResult:
-    """Preview handler for the #839 message_type backfill.
-
-    Thin shim over ``message_type_backfill.preview_backfill`` so the
-    repair orchestrator's preview dispatch keeps working.
-    """
-    from polylogue.storage.message_type_backfill import preview_backfill
-
-    return _to_repair_result(preview_backfill(count=count))
-
-
-def repair_message_type_backfill(config: Config, dry_run: bool = False) -> RepairResult:
-    """Backfill ``message_type`` for pre-#839 rows.
-
-    Delegates to ``storage.message_type_backfill.run_backfill`` so the
-    one-time durable-row rewrite remains isolated from the repair dispatcher.
-    """
-    from polylogue.storage.message_type_backfill import run_backfill
-
-    return _to_repair_result(run_backfill(config, dry_run=dry_run))
-
-
 PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
-    "message_type_backfill": preview_message_type_backfill,
     "empty_sessions": preview_empty_sessions,
     "superseded_raw_snapshots": preview_superseded_raw_snapshots,
 }
@@ -7428,7 +7374,6 @@ PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 
 REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
-    "message_type_backfill": repair_message_type_backfill,
     "empty_sessions": repair_empty_sessions,
     "superseded_raw_snapshots": repair_superseded_raw_snapshots,
 }
@@ -7543,18 +7488,14 @@ __all__ = [
     "collect_archive_debt_statuses_sync",
     "count_empty_sessions_sync",
     "count_superseded_raw_snapshots_sync",
-    "count_messages_by_type_sync",
-    "count_unclassified_message_type_sync",
     "preview_counts_from_archive_debt",
     "preview_empty_sessions",
     "preview_superseded_raw_snapshots",
-    "preview_message_type_backfill",
     "preview_session_insights",
     "raw_materialization_lease_refusal_result",
     "raw_materialization_replay_backlog",
     "raw_materialization_scale_profile",
     "repair_empty_sessions",
-    "repair_message_type_backfill",
     "repair_raw_materialization",
     "repair_superseded_raw_snapshots",
     "repair_session_insights",

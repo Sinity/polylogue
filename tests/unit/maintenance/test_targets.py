@@ -104,6 +104,21 @@ class TestCatalogReplayEquality:
         assert "message_type_backfill" not in repair_module.REPAIR_HANDLERS
         assert "message_type_backfill" not in repair_module.PREVIEW_HANDLERS
 
+    def test_cli_rejects_spent_message_type_target(self, cli_runner: CliRunner) -> None:
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "run-preview",
+                "--target",
+                "message_type_backfill",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Invalid value for '--target'" in result.output
+
     def test_every_replayable_target_has_a_real_handler(self) -> None:
         """A target claiming ``replayable=True`` must have a real handler.
 

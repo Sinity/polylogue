@@ -23,7 +23,6 @@ Models inventoried:
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
   read models.
 * ``empty_sessions`` — archive-cleanup scope for positively classified debris.
-* ``message_type_backfill`` — message-type classification backlog.
 
 The inventory is produced at the model granularity reported by the
 derived-status collector; mapping back to ``MaintenanceTargetSpec`` is the
@@ -41,7 +40,6 @@ from pathlib import Path
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.maintenance.models import DerivedModelStatus
-from polylogue.storage.message_type_backfill import count_unclassified_message_type_sync
 from polylogue.storage.repair import count_empty_sessions_sync
 
 
@@ -74,13 +72,10 @@ class InvalidationReason(str, Enum):
 _DERIVED_MODEL_SCOPE = "derived"
 _RETRIEVAL_MODEL_SCOPE = "retrieval"
 _ARCHIVE_CLEANUP_SCOPE = "archive_cleanup"
-_BACKFILL_SCOPE = "backfill"
-
 ALL_SCOPES: tuple[str, ...] = (
     _DERIVED_MODEL_SCOPE,
     _RETRIEVAL_MODEL_SCOPE,
     _ARCHIVE_CLEANUP_SCOPE,
-    _BACKFILL_SCOPE,
 )
 
 
@@ -321,28 +316,6 @@ def _archive_cleanup_items(
     return items
 
 
-def _backfill_items(conn: sqlite3.Connection) -> list[StalenessItem]:
-    """Pending backfills (message_type classification)."""
-
-    unclassified = count_unclassified_message_type_sync(conn)
-    total_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-    return [
-        StalenessItem(
-            model="message_type_backfill",
-            scope=_BACKFILL_SCOPE,
-            reason=InvalidationReason.MISSING,
-            count=unclassified,
-            source_total=total_messages,
-            materialized_total=max(0, total_messages - unclassified),
-            detail=(
-                f"{unclassified:,} of {total_messages:,} messages need context/protocol classification"
-                if unclassified > 0
-                else "All messages have message_type classified"
-            ),
-        )
-    ]
-
-
 def _coerce_scopes(scopes: Iterable[str] | None) -> tuple[str, ...]:
     if not scopes:
         return ALL_SCOPES
@@ -438,9 +411,6 @@ def staleness_inventory(
 
         if _ARCHIVE_CLEANUP_SCOPE in selected_scopes:
             items.extend(_archive_cleanup_items(conn, db_path=resolved_path, include_expensive=verify_full))
-
-        if _BACKFILL_SCOPE in selected_scopes:
-            items.extend(_backfill_items(conn))
 
     return StalenessInventory(
         captured_at=captured_at,

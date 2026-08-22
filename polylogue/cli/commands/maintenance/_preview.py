@@ -14,7 +14,7 @@ from polylogue.logging import configure_logging
 # and its storage.derived/storage.repair import chain -- onto the `--help`
 # path; test_preview_scopes_match_preview_module asserts these stay in sync.
 # See polylogue-sod7.
-_ALL_SCOPES = ("derived", "retrieval", "archive_cleanup", "backfill")
+_ALL_SCOPES = ("derived", "retrieval", "archive_cleanup")
 
 
 @click.command("preview")
@@ -23,7 +23,7 @@ _ALL_SCOPES = ("derived", "retrieval", "archive_cleanup", "backfill")
     "scopes",
     multiple=True,
     type=click.Choice(_ALL_SCOPES),
-    help="Limit preview to named scopes (derived, retrieval, archive_cleanup, backfill).",
+    help="Limit preview to named scopes (derived, retrieval, archive_cleanup).",
 )
 @click.option(
     "--output-format",

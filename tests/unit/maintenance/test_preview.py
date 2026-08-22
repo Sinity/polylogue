@@ -271,9 +271,6 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
             # Archive-cleanup scopes report a single orphan_archive_row item.
             assert {item.reason for item in items} == {InvalidationReason.ORPHAN_ARCHIVE_ROW}
             continue
-        if model == "message_type_backfill":
-            assert {item.reason for item in items} == {InvalidationReason.MISSING}
-            continue
         reasons = {item.reason for item in items}
         assert {
             InvalidationReason.MISSING,
@@ -332,8 +329,6 @@ def test_inventory_exercises_multiple_invalidation_reasons(monkeypatch: pytest.M
         }
 
     monkeypatch.setattr(preview_mod, "_archive_cleanup_items", lambda _c: [])
-    monkeypatch.setattr(preview_mod, "_backfill_items", lambda _c: [])
-
     from polylogue.storage.derived import derived_status as derived_status_mod
 
     monkeypatch.setattr(
