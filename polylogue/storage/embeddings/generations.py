@@ -365,6 +365,21 @@ class EmbeddingGenerationStore:
                     shutil.rmtree(candidate.parent)
             _fsync_dir(self.root)
 
+    @contextmanager
+    def writer_lock(self) -> Iterator[Path]:
+        """Admit one embedding SQLite writer for its complete write lifetime."""
+        with self._lock():
+            generations = self._generations()
+            self._validate_receipts(generations)
+            active = self._active_generation(generations)
+            if active is None and _regular_file(self.active_path):
+                self._adopt_existing_active_locked()
+            elif active is None and self.active_path.is_symlink():
+                raise EmbeddingGenerationError("embedding active pointer has no active generation")
+            elif active is None:
+                raise EmbeddingGenerationError("embedding lifecycle has no active database")
+            yield self.active_path
+
     def ensure_active(self) -> Path:
         with self._lock():
             generations = self._generations()
