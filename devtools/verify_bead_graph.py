@@ -671,7 +671,6 @@ def collect_campaign_findings(
                     "AgentCTL provenance claims a non-singleton adapter identity",
                 )
             )
-
     controls = {root_id, *epics.values()}
     for target in sorted(root_targets - expected_epics):
         target_issue = by_id.get(target)
@@ -761,7 +760,17 @@ def collect_campaign_findings(
                 )
             membership_source = _metadata_text(issue, "campaign_membership_source", findings)
             source_attachment = _metadata_text(issue, "source_attachment_sha256", findings)
-            is_native_attachment = source_attachment == _metadata_text(root, "source_control_plane_sha256", findings)
+            root_attachment = _metadata_text(root, "source_control_plane_sha256", findings)
+            # A missing/empty anchor is never an attachment.  In particular,
+            # ``None == None`` must not promote a row to native control when
+            # both the candidate and root have lost their provenance.
+            is_native_attachment = (
+                isinstance(source_attachment, str)
+                and bool(source_attachment.strip())
+                and isinstance(root_attachment, str)
+                and bool(root_attachment.strip())
+                and source_attachment == root_attachment
+            )
             is_native_control = membership_source == "native-control-plane" or (
                 is_native_attachment and roles == {"implementation"} and timings == {"prep"}
             )

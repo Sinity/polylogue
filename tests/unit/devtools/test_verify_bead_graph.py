@@ -480,6 +480,75 @@ def test_campaign_anchor_and_census_reject_identity_substitution() -> None:
     )
 
 
+def test_cli_export_reports_combined_anchor_removal_and_adapter_demotion(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issues = deepcopy(_campaign_fixture())
+    root = next(issue for issue in issues if issue["id"] == verify_bead_graph.CAMPAIGN_ROOT)
+    root["metadata"]["source_control_plane_sha256"] = "df6ce27a046a6d95252282124f3f889fed41f0f6fce7b10bed462f5b66dc0d7f"
+    issues.extend(
+        [
+            {
+                "id": verify_bead_graph.CAMPAIGN_NATIVE_CONTROL_ID,
+                "status": "open",
+                "labels": ["campaign:reindex-2026", "workstream:e", "campaign-role:implementation", "timing:prep"],
+                "metadata": {
+                    "campaign_id": "reindex-2026",
+                    "workstream": "E",
+                    "campaign_membership_source": "native-control-plane",
+                    "source_attachment_sha256": root["metadata"]["source_control_plane_sha256"],
+                },
+                "dependencies": [],
+            },
+            {
+                "id": verify_bead_graph.CAMPAIGN_ADAPTER_ID,
+                "status": "open",
+                "labels": ["campaign:reindex-2026", "workstream:e", "campaign-role:implementation", "timing:prep"],
+                "metadata": {
+                    "campaign_id": "reindex-2026",
+                    "campaign_role": "implementation",
+                    "campaign_timing": "prep",
+                    "campaign_workstreams": "E",
+                    "campaign_membership_source": "agentctl:staged-native-adapter",
+                    "campaign_membership_kind": "staged-adapter",
+                    "native_control_ids": [
+                        verify_bead_graph.CAMPAIGN_NATIVE_CONTROL_ID,
+                        "polylogue-reindex-ws-e",
+                        verify_bead_graph.CAMPAIGN_ROOT,
+                    ],
+                },
+                "dependencies": [
+                    {"type": "blocks", "depends_on_id": verify_bead_graph.CAMPAIGN_NATIVE_CONTROL_ID},
+                ],
+            },
+        ]
+    )
+    root["dependencies"].append({"type": "blocks", "depends_on_id": verify_bead_graph.CAMPAIGN_NATIVE_CONTROL_ID})
+    workstream = next(issue for issue in issues if issue["id"] == "polylogue-reindex-ws-e")
+    workstream["dependencies"].extend(
+        [
+            {"type": "blocks", "depends_on_id": verify_bead_graph.CAMPAIGN_NATIVE_CONTROL_ID},
+            {"type": "blocks", "depends_on_id": verify_bead_graph.CAMPAIGN_ADAPTER_ID},
+        ]
+    )
+
+    # Apply both mutations before entering the real CLI export route.
+    root["metadata"].pop("source_control_plane_sha256")
+    adapter = next(issue for issue in issues if issue["id"] == verify_bead_graph.CAMPAIGN_ADAPTER_ID)
+    adapter["metadata"].pop("campaign_membership_kind")
+    export = tmp_path / "combined-mutation.jsonl"
+    export.write_text("\n".join(json.dumps(issue) for issue in issues) + "\n", encoding="utf-8")
+
+    assert verify_bead_graph.main(["--export", str(export), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    findings = report["findings"]
+    assert any(item["kind"] == "campaign-source-anchor" for item in findings)
+    assert any(
+        item["kind"] == "campaign-agentctl-provenance" and item["id"] == verify_bead_graph.CAMPAIGN_ADAPTER_ID
+        for item in findings
+    )
+
+
 def test_campaign_projection_handles_malformed_nested_fields_without_traceback() -> None:
     malformed = deepcopy(_campaign_fixture())
     root = next(issue for issue in malformed if issue["id"] == "polylogue-reindex-2026")
