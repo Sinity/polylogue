@@ -134,8 +134,7 @@ def test_clone_requests_reflink_before_copy_fallback(monkeypatch: pytest.MonkeyP
     (template / "index.db").write_bytes(b"snapshot")
     calls: list[list[str]] = []
 
-    def no_reflink(*args: object, **kwargs: object) -> None:
-        argv = list(args[0])
+    def no_reflink(argv: list[str], **kwargs: object) -> None:
         calls.append(argv)
         raise subprocess.CalledProcessError(1, argv)
 
