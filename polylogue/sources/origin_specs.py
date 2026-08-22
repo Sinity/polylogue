@@ -60,6 +60,13 @@ _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/sqlite/archive_tiers/write.py",
     "polylogue/archive/session_revision_membership.py",
 )
+# ``dispatch`` imports this declaration module to obtain the compiled detector
+# registry.  Its public descriptions/filter flags are not executable lowering
+# semantics, however, so following that import into the whole declaration
+# module would make a projection-only edit look like a parser change.  The
+# detector declaration payload below fingerprints the runtime claims explicitly;
+# keep the projection metadata outside the source-AST portion of this stamp.
+_LOWERING_FINGERPRINT_EXCLUDED_PATHS: tuple[str, ...] = ("polylogue/sources/origin_specs.py",)
 _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revision_backfill.py",)
 _MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/repair.py",
@@ -167,12 +174,13 @@ def _local_import_paths(signature: tuple[str, int, int]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in found))
 
 
-def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
+def _semantic_source_paths(paths: tuple[str, ...], *, excluded_paths: tuple[str, ...] = ()) -> tuple[Path, ...]:
+    excluded = {_source_path(path) for path in excluded_paths}
     pending = [_source_path(path) for path in paths]
     found: set[Path] = set()
     while pending:
         path = pending.pop()
-        if path in found:
+        if path in found or path in excluded:
             continue
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
@@ -196,8 +204,8 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], na
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _fingerprint_sources(paths: tuple[str, ...], *, namespace: str) -> str:
-    source_paths = _semantic_source_paths(paths)
+def _fingerprint_sources(paths: tuple[str, ...], *, namespace: str, excluded_paths: tuple[str, ...] = ()) -> str:
+    source_paths = _semantic_source_paths(paths, excluded_paths=excluded_paths)
     signatures = tuple(_source_signature(path) for path in source_paths)
     return _fingerprint_sources_cached(signatures, namespace)
 
@@ -468,7 +476,11 @@ def _detector_declaration_fingerprint_payload() -> tuple[dict[str, object], ...]
 def lowering_fingerprint() -> str:
     """Return the shared lowering, identity, revision, lineage, and detector fingerprint."""
     payload = {
-        "source_fingerprint": _fingerprint_sources(_LOWERING_FINGERPRINT_PATHS, namespace="lowering"),
+        "source_fingerprint": _fingerprint_sources(
+            _LOWERING_FINGERPRINT_PATHS,
+            namespace="lowering",
+            excluded_paths=_LOWERING_FINGERPRINT_EXCLUDED_PATHS,
+        ),
         "detector_declarations": _detector_declaration_fingerprint_payload(),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

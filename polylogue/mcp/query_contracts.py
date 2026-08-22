@@ -10,7 +10,7 @@ from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
-from polylogue.core.enums import Origin, enum_values
+from polylogue.sources.origin_specs import public_origin_tokens
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
@@ -36,7 +36,7 @@ def _validate_origin_filters(params: Mapping[str, object]) -> None:
     The agent-facing query boundary is closed, so return the same typed query
     error used for invalid sort and message-type filters instead.
     """
-    valid_origins = frozenset(enum_values(Origin))
+    valid_origins = frozenset(public_origin_tokens())
     for field in ("origin", "exclude_origin"):
         for value in split_csv(params.get(field)):
             if value not in valid_origins:

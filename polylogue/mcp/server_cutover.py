@@ -691,11 +691,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
-            if expression is not None:
-                reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
-                if reference_result is not None:
-                    return reference_result
-
+            # Validate before the reference-pipeline shortcut.  That pipeline
+            # can return a result without constructing a SessionQuerySpec, so
+            # validating only below it lets an invalid Provider-wire token
+            # bypass the public-origin boundary.
             if origin is not None:
                 from polylogue.core.sources import public_origin_tokens
 
@@ -708,6 +707,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         code="invalid_argument",
                         tool="query",
                     )
+
+            if expression is not None:
+                reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
+                if reference_result is not None:
+                    return reference_result
 
             if projection == "default" and sort is not None:
                 return hooks.error_json(

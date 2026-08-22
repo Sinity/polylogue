@@ -135,7 +135,7 @@ def render_standing_manual() -> str:
         "",
         "## Source coverage",
         "",
-        "The authoritative `Origin` enum currently contains 11 tokens. Older plans that say ten predate `beads-issue`.",
+        "The authoritative `Origin` enum currently contains 12 tokens. Older plans that say ten predate `beads-issue`.",
         "",
         "| Origin token | Meaning |",
         "|---|---|",
