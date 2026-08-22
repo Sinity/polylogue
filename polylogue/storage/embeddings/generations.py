@@ -71,7 +71,6 @@ class EmbeddingPromotionReceipt:
 
 _GENERATIONS = ".embeddings-generations"
 _RECEIPTS = "retention-receipts"
-_RECLAMATION = "reclamation"
 _MAX_RETAINED = 1
 _ID = re.compile(r"^gen-[0-9]+-[0-9a-f]{10}$")
 _OWNER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -131,28 +130,10 @@ class EmbeddingGenerationStore:
         self.active_path = (Path(active_path) if active_path is not None else root / "embeddings.db").absolute()
         if not _under(root, self.active_path) or self.active_path.name != "embeddings.db":
             raise EmbeddingGenerationError("embedding active path must be archive-local embeddings.db")
-        # These are archive-owned namespaces.  Never follow an operator- or
-        # attacker-supplied link while creating lifecycle evidence.
-        if self.root.exists() and (self.root.is_symlink() or not self.root.is_dir()):
-            raise EmbeddingGenerationError("embedding generation root is not an owned directory")
         self.root.mkdir(parents=True, exist_ok=True)
-        if self.root.is_symlink() or not self.root.is_dir():
-            raise EmbeddingGenerationError("embedding generation root is not an owned directory")
         self.receipts = self.root / _RECEIPTS
-        if self.receipts.exists() and (self.receipts.is_symlink() or not self.receipts.is_dir()):
-            raise EmbeddingGenerationError("embedding receipt root is not an owned directory")
         self.receipts.mkdir(parents=True, exist_ok=True)
-        if self.receipts.is_symlink() or not self.receipts.is_dir():
-            raise EmbeddingGenerationError("embedding receipt root is not an owned directory")
-        self.reclamation = self.root / _RECLAMATION
-        if self.reclamation.exists() and (self.reclamation.is_symlink() or not self.reclamation.is_dir()):
-            raise EmbeddingGenerationError("embedding reclamation root is not an owned directory")
-        self.reclamation.mkdir(parents=True, exist_ok=True)
-        if self.reclamation.is_symlink() or not self.reclamation.is_dir():
-            raise EmbeddingGenerationError("embedding reclamation root is not an owned directory")
         self.lock_path = self.root / ".lifecycle.lock"
-        if self.lock_path.exists() and (self.lock_path.is_symlink() or not self.lock_path.is_file()):
-            raise EmbeddingGenerationError("embedding lifecycle lock is not an owned file")
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
@@ -174,11 +155,9 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError(f"embedding database is not an archive-owned regular file: {path}")
         if path.with_name(path.name + "-wal").exists() or path.with_name(path.name + "-shm").exists():
             raise EmbeddingGenerationError(f"embedding database has an uncheckpointed WAL: {path}")
+        uri = f"file:{path}?mode=ro"
         try:
-            # The lifecycle lock serializes writers; avoid URI-only connection
-            # options so embedding integrations can instrument ordinary
-            # sqlite3.connect calls without changing admission semantics.
-            with sqlite3.connect(path, timeout=1.0) as conn:
+            with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
                 ok, error = try_load_sqlite_vec(conn)
                 if not ok:
                     raise EmbeddingGenerationError("embedding database requires sqlite-vec") from error
@@ -233,10 +212,7 @@ class EmbeddingGenerationStore:
     def _generations(self) -> list[EmbeddingGeneration]:
         result: list[EmbeddingGeneration] = []
         for child in self.root.iterdir():
-            if child.name in {_RECEIPTS, _RECLAMATION, ".lifecycle.lock"} or child.name.startswith("retired-"):
-                # Retired artifacts predate this owner and are deliberately
-                # outside the lifecycle namespace.  They must not poison
-                # admission or become candidates for reclamation.
+            if child.name in {_RECEIPTS, ".lifecycle.lock"}:
                 continue
             if child.is_symlink() or not child.is_dir():
                 raise EmbeddingGenerationError(f"unexpected embedding generation child: {child}")
@@ -272,17 +248,9 @@ class EmbeddingGenerationStore:
         self, path: Path, generations: list[EmbeddingGeneration] | None = None
     ) -> EmbeddingPromotionReceipt:
         try:
-            # Validate the caller-supplied path before opening it.  In
-            # particular, a receipt symlink must never be read as evidence.
-            if (
-                path.is_symlink()
-                or path.suffix != ".json"
-                or not _regular_file(path)
-                or path.parent != self.receipts
-                or not _under(self.root, path)
-            ):
-                raise ValueError("receipt must be an owned regular JSON file")
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if path.is_symlink() or path.suffix != ".json" or not _regular_file(path):
+                raise ValueError("receipt must be a regular JSON file")
             expected_keys = {
                 "promoted_generation_id",
                 "promoted_at_ns",
@@ -300,32 +268,15 @@ class EmbeddingGenerationStore:
                 payload["reclaimed_generation_ids"], list
             ):
                 raise ValueError("receipt generation lists have invalid types")
-            if payload["automatic"] is not True:
-                raise ValueError("embedding lifecycle receipts must be automatic")
-            if not isinstance(payload["promoted_generation_id"], str):
-                raise ValueError("receipt generation identity has invalid type")
-            if not isinstance(payload["promoted_at_ns"], int) or isinstance(payload["promoted_at_ns"], bool):
-                raise ValueError("receipt chronology has invalid type")
-            if not isinstance(payload["retention_boundary"], int) or isinstance(payload["retention_boundary"], bool):
-                raise ValueError("receipt retention boundary has invalid type")
-            if any(
-                not isinstance(record, dict)
-                or set(record) != {"generation_id", "owner_id", "state"}
-                or not isinstance(record["generation_id"], str)
-                or not isinstance(record["owner_id"], str)
-                or not isinstance(record["state"], str)
-                for record in payload["records"]
-            ):
-                raise ValueError("receipt records have invalid types")
             records = tuple(EmbeddingRetentionRecord(**record) for record in payload["records"])
             receipt = EmbeddingPromotionReceipt(
-                payload["promoted_generation_id"],
-                payload["promoted_at_ns"],
-                payload["retention_boundary"],
+                str(payload["promoted_generation_id"]),
+                int(payload["promoted_at_ns"]),
+                int(payload["retention_boundary"]),
                 payload["automatic"],
                 records,
-                tuple(payload["eligible_generation_ids"]),
-                tuple(payload["reclaimed_generation_ids"]),
+                tuple(str(x) for x in payload["eligible_generation_ids"]),
+                tuple(str(x) for x in payload["reclaimed_generation_ids"]),
             )
             if path.stem != receipt.promoted_generation_id or not _ID.fullmatch(receipt.promoted_generation_id):
                 raise ValueError("receipt identity does not match filename")
@@ -333,33 +284,19 @@ class EmbeddingGenerationStore:
                 raise ValueError("invalid receipt chronology or retention boundary")
             ids = [r.generation_id for r in receipt.records]
             if len(ids) != len(set(ids)) or any(
-                not _ID.fullmatch(r.generation_id)
+                not _ID.fullmatch(i)
                 or not _OWNER.fullmatch(r.owner_id)
                 or r.state not in {"active", "retained", "eligible", "reclaimed"}
-                for r in records
+                for i, r in zip(ids, records, strict=True)
             ):
                 raise ValueError("invalid receipt generation ownership")
-            eligible = receipt.eligible_generation_ids
-            reclaimed = receipt.reclaimed_generation_ids
-            if any(not _ID.fullmatch(i) for i in (*eligible, *reclaimed)):
-                raise ValueError("invalid receipt generation identity")
-            if len(set(eligible)) != len(eligible) or len(set(reclaimed)) != len(reclaimed):
-                raise ValueError("receipt generation lists contain duplicates")
-            if set(eligible) & set(reclaimed):
-                raise ValueError("receipt eligible and reclaimed sets overlap")
             if (
                 receipt.promoted_generation_id not in ids
-                or receipt.promoted_generation_id in eligible
-                or receipt.promoted_generation_id in reclaimed
+                or receipt.promoted_generation_id in receipt.eligible_generation_ids
             ):
                 raise ValueError("receipt active identity is inconsistent")
-            state_by_id = {r.generation_id: r.state for r in records}
-            if state_by_id[receipt.promoted_generation_id] != "active":
-                raise ValueError("receipt active generation state is inconsistent")
-            if any(state_by_id.get(i) != "eligible" for i in eligible):
-                raise ValueError("receipt eligible state is inconsistent")
-            if any(state_by_id.get(i) != "reclaimed" for i in reclaimed):
-                raise ValueError("receipt reclaimed state is inconsistent")
+            if any(not _ID.fullmatch(i) for i in (*receipt.eligible_generation_ids, *receipt.reclaimed_generation_ids)):
+                raise ValueError("invalid receipt generation identity")
             if generations is not None:
                 by_id = {g.generation_id: g for g in generations}
                 active = by_id.get(receipt.promoted_generation_id)
@@ -369,65 +306,33 @@ class EmbeddingGenerationStore:
                     raise ValueError("receipt active generation is stale or unbound")
                 if active.promoted_at_ns != receipt.promoted_at_ns:
                     raise ValueError("receipt chronology does not match generation")
-                # Entries absent from disk are permitted only after durable
-                # reclamation and must be explicitly marked reclaimed.
                 for record in records:
                     generation = by_id.get(record.generation_id)
-                    if generation is None:
-                        if record.state != "reclaimed" or record.generation_id not in reclaimed:
-                            raise ValueError("receipt references an unknown generation")
-                    elif generation.owner_id != record.owner_id:
-                        raise ValueError("receipt generation metadata does not match")
+                    if generation is not None and generation.owner_id != record.owner_id:
+                        raise ValueError("receipt owner does not match generation")
             return receipt
         except (OSError, ValueError, TypeError, KeyError, StopIteration, json.JSONDecodeError) as exc:
             raise EmbeddingGenerationError(f"malformed embedding retention receipt: {path}") from exc
 
     def _validate_receipts(self, generations: list[EmbeddingGeneration]) -> list[tuple[int, Path]]:
-        paths = sorted(self.receipts.iterdir(), key=lambda item: item.name)
         result = []
-        decoded: list[tuple[EmbeddingPromotionReceipt, Path]] = []
-        for path in paths:
+        for path in self.receipts.iterdir():
             if path.is_symlink() or not path.is_file() or path.suffix != ".json":
                 raise EmbeddingGenerationError(f"unexpected embedding receipt child: {path}")
-            decoded.append((self._validate_receipt(path), path))
-        # Bind a receipt to the current namespace only while it names the
-        # current active generation.  Once that generation is retained, the
-        # receipt is immutable historical evidence and its old coverage cannot
-        # include generations promoted later.
-        active = self._active_generation(generations)
-        active_id = active.generation_id if active is not None else None
-        for receipt, path in decoded:
-            if receipt.promoted_generation_id == active_id:
-                receipt = self._validate_receipt(path, generations)
+            receipt = self._validate_receipt(path, generations)
             result.append((receipt.promoted_at_ns, path))
         return result
 
-    def _recover_interrupted_locked(self) -> None:
-        generations = self._generations()
-        active = self._active_generation(generations)
-        for generation in generations:
-            if generation.state != EmbeddingGenerationState.PROMOTING.value:
-                continue
-            candidate = Path(generation.database_path)
-            self._validate_database(candidate)
-            if active is not None and active.generation_id == generation.generation_id:
-                self._write_generation(
-                    EmbeddingGeneration(
-                        **{
-                            **asdict(generation),
-                            "state": "active",
-                            "promoted_at_ns": generation.promoted_at_ns or self._next_ns(),
-                        }
-                    )
-                )
-            elif active is None and generation.predecessor_generation_id is None:
-                # Adoption intent was durable before the pointer swap.  Complete
-                # it rather than creating a second owner for the legacy file.
-                if not self.active_path.exists() or _regular_file(self.active_path):
-                    temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
-                    temporary.symlink_to(candidate)
-                    os.replace(temporary, self.active_path)
-                    _fsync_dir(self.active_path.parent)
+    def recover_interrupted(self) -> None:
+        with self._lock():
+            generations = self._generations()
+            active = self._active_generation(generations)
+            for generation in generations:
+                if generation.state != EmbeddingGenerationState.PROMOTING.value:
+                    continue
+                candidate = Path(generation.database_path)
+                self._validate_database(candidate)
+                if active is not None and active.generation_id == generation.generation_id:
                     self._write_generation(
                         EmbeddingGeneration(
                             **{
@@ -437,33 +342,28 @@ class EmbeddingGenerationStore:
                             }
                         )
                     )
+                elif active is None and generation.predecessor_generation_id is None:
+                    # Adoption intent was durable before the pointer swap.  Complete
+                    # it rather than creating a second owner for the legacy file.
+                    if _regular_file(self.active_path):
+                        temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
+                        temporary.symlink_to(candidate)
+                        os.replace(temporary, self.active_path)
+                        _fsync_dir(self.active_path.parent)
+                        self._write_generation(
+                            EmbeddingGeneration(
+                                **{
+                                    **asdict(generation),
+                                    "state": "active",
+                                    "promoted_at_ns": generation.promoted_at_ns or self._next_ns(),
+                                }
+                            )
+                        )
+                    else:
+                        self._write_generation(EmbeddingGeneration(**{**asdict(generation), "state": "retained"}))
                 else:
-                    raise EmbeddingGenerationError("embedding promotion target became unsafe during recovery")
-            else:
-                # A failed promotion with a predecessor cannot displace the
-                # already-live database.  The candidate is safe to discard.
-                shutil.rmtree(candidate.parent)
-        _fsync_dir(self.root)
-
-    def recover_interrupted(self) -> None:
-        with self._lock():
-            self._recover_interrupted_locked()
-
-    @contextmanager
-    def writer_lock(self) -> Iterator[Path]:
-        """Admit one embedding SQLite writer for its complete write lifetime."""
-        with self._lock():
-            self._recover_interrupted_locked()
-            generations = self._generations()
-            self._validate_receipts(generations)
-            active = self._active_generation(generations)
-            if active is None and _regular_file(self.active_path):
-                self._adopt_existing_active_locked()
-            elif active is None and self.active_path.is_symlink():
-                raise EmbeddingGenerationError("embedding active pointer has no active generation")
-            elif active is None:
-                raise EmbeddingGenerationError("embedding lifecycle has no active database")
-            yield self.active_path
+                    shutil.rmtree(candidate.parent)
+            _fsync_dir(self.root)
 
     def ensure_active(self) -> Path:
         with self._lock():
@@ -559,74 +459,7 @@ class EmbeddingGenerationStore:
         with self._lock():
             return self._collect_locked()
 
-    def _resume_reclamation_locked(self) -> None:
-        """Finish durable deletion intents left by an interrupted collector."""
-        for path in sorted(self.reclamation.iterdir(), key=lambda item: item.name):
-            if path.is_symlink() or path.suffix != ".json" or not _regular_file(path):
-                raise EmbeddingGenerationError(f"unexpected embedding reclamation child: {path}")
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                if set(payload) != {"promoted_generation_id", "targets", "state"}:
-                    raise ValueError("invalid reclamation schema")
-                promoted = payload["promoted_generation_id"]
-                targets = payload["targets"]
-                state = payload["state"]
-                if not isinstance(promoted, str) or _ID.fullmatch(promoted) is None:
-                    raise ValueError("invalid reclamation owner")
-                if path.stem != promoted or not isinstance(targets, list) or state not in {"pending", "complete"}:
-                    raise ValueError("invalid reclamation identity")
-                seen: set[str] = set()
-                for target in targets:
-                    if not isinstance(target, dict) or set(target) != {"generation_id", "owner_id"}:
-                        raise ValueError("invalid reclamation target")
-                    generation_id = target["generation_id"]
-                    owner_id = target["owner_id"]
-                    if (
-                        not isinstance(generation_id, str)
-                        or _ID.fullmatch(generation_id) is None
-                        or generation_id in seen
-                        or not isinstance(owner_id, str)
-                        or not _OWNER.fullmatch(owner_id)
-                    ):
-                        raise ValueError("invalid reclamation target identity")
-                    seen.add(generation_id)
-                    directory = self.root / generation_id
-                    if (
-                        directory.is_symlink()
-                        or (directory.exists() and not directory.is_dir())
-                        or not _under(self.root, directory)
-                    ):
-                        raise EmbeddingGenerationError("embedding reclamation target is unsafe")
-                    if directory.exists():
-                        generation = self._read_generation(directory / "generation.json")
-                        if (
-                            generation.owner_id != owner_id
-                            or generation.state != EmbeddingGenerationState.ELIGIBLE.value
-                        ):
-                            raise EmbeddingGenerationError("embedding reclamation target ownership changed")
-                        shutil.rmtree(directory)
-                if state != "complete":
-                    _atomic_json(path, {"promoted_generation_id": promoted, "targets": targets, "state": "complete"})
-            except EmbeddingGenerationError:
-                raise
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                raise EmbeddingGenerationError(f"malformed embedding reclamation intent: {path}") from exc
-        _fsync_dir(self.root)
-
-    def _write_reclamation_intent(self, receipt: EmbeddingPromotionReceipt) -> Path:
-        path = self.reclamation / f"{receipt.promoted_generation_id}.json"
-        targets = [
-            {"generation_id": record.generation_id, "owner_id": record.owner_id}
-            for record in receipt.records
-            if record.state == "eligible"
-        ]
-        _atomic_json(
-            path, {"promoted_generation_id": receipt.promoted_generation_id, "targets": targets, "state": "pending"}
-        )
-        return path
-
     def _collect_locked(self) -> EmbeddingPromotionReceipt | None:
-        self._resume_reclamation_locked()
         generations = self._generations()
         self._validate_receipts(generations)
         active = self._active_generation(generations)
@@ -659,17 +492,21 @@ class EmbeddingGenerationStore:
             tuple(g.generation_id for g in eligible),
         )
         self._write_receipt(receipt)
-        # The intent is durable before the first directory removal.  Restart
-        # can therefore distinguish an unfinished reclaim from corruption.
-        self._write_reclamation_intent(receipt)
         receipt_files = self._validate_receipts(self._generations())
         receipt_files.sort(key=lambda item: (item[0], item[1].name), reverse=True)
         for _, path in receipt_files[2:]:
             path.unlink()
         if len(receipt_files) > 2:
             _fsync_dir(self.receipts)
-        self._resume_reclamation_locked()
-        reclaimed = [generation.generation_id for generation in eligible]
+        reclaimed = []
+        for generation in eligible:
+            directory = self._metadata_path(generation.generation_id).parent
+            if directory.is_symlink() or not directory.is_dir() or not _under(self.root, directory):
+                raise EmbeddingGenerationError("embedding reclaim directory is unsafe")
+            shutil.rmtree(directory)
+            reclaimed.append(generation.generation_id)
+        if reclaimed:
+            _fsync_dir(self.root)
         completed = EmbeddingPromotionReceipt(
             receipt.promoted_generation_id,
             receipt.promoted_at_ns,
@@ -681,7 +518,7 @@ class EmbeddingGenerationStore:
                 )
                 for r in receipt.records
             ),
-            (),
+            receipt.eligible_generation_ids,
             tuple(reclaimed),
         )
         self._write_receipt(completed)
@@ -690,20 +527,8 @@ class EmbeddingGenerationStore:
     def _write_receipt(self, receipt: EmbeddingPromotionReceipt) -> None:
         _atomic_json(self.receipts / f"{receipt.promoted_generation_id}.json", asdict(receipt))
 
-    def load_receipt(self, generation_id: object) -> EmbeddingPromotionReceipt:
-        # Do not interpolate untrusted IDs into a path until the identity is
-        # sealed.  This also blocks separators, dot segments, and symlink
-        # traversal before any filesystem access occurs.
-        if not isinstance(generation_id, str) or _ID.fullmatch(generation_id) is None:
-            raise EmbeddingGenerationError("invalid embedding generation identity")
-        path = self.receipts / f"{generation_id}.json"
-        receipt = self._validate_receipt(path)
-        generations = {generation.generation_id: generation for generation in self._generations()}
-        for record in receipt.records:
-            generation = generations.get(record.generation_id)
-            if generation is not None and generation.owner_id != record.owner_id:
-                raise EmbeddingGenerationError("receipt generation metadata does not match")
-        return receipt
+    def load_receipt(self, generation_id: str) -> EmbeddingPromotionReceipt:
+        return self._validate_receipt(self.receipts / f"{generation_id}.json")
 
 
 def ensure_embedding_lifecycle(archive_root: str | Path, *, active_path: str | Path | None = None) -> Path:
