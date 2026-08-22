@@ -250,20 +250,35 @@ async def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSes
 def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
     """Register MCP prompts on the given server."""
 
+    # Keep one cache for the lifetime of this server registration.  Compact
+    # prompt requests are a real status consumer, so they must observe the
+    # same bounded, fingerprint-invalidated snapshot path as the cutover
+    # ``status(scope="coordination")`` handler.  Detail remains an explicit
+    # uncached diagnostic query by contract.
+    from polylogue.coordination import CoordinationEnvelopeCache, CoordinationView, build_coordination_envelope
+
+    coordination_cache = CoordinationEnvelopeCache()
+
     @mcp.prompt()
     async def agent_coordination_brief(view: str = "status", limit: int = 10, detail: bool = False) -> str:
-        from polylogue.coordination import CoordinationView, build_coordination_envelope
-
         normalized_view: CoordinationView
         if view in {"status", "self", "work-item", "conflicts", "handoff"}:
             normalized_view = cast(CoordinationView, view)
         else:
             normalized_view = "status"
-        payload = build_coordination_envelope(
-            view=normalized_view,
-            limit=hooks.clamp_limit(limit),
-            detail=detail,
-        )
+        bounded_limit = hooks.clamp_limit(limit)
+        if detail:
+            payload = build_coordination_envelope(
+                view=normalized_view,
+                limit=bounded_limit,
+                detail=True,
+            )
+        else:
+            payload = coordination_cache.get_or_build(
+                view=normalized_view,
+                cwd=None,
+                limit=bounded_limit,
+            )
         return f"""Use this bounded coordination envelope to decide the next agent action.
 
 Rules:
