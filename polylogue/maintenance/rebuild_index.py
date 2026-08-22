@@ -939,8 +939,10 @@ def _receipt_timings(
 ) -> dict[str, float]:
     """Build one stable phase vocabulary plus existing granular timings."""
     stage_timings_s = replay.get("stage_timings_s", {})
+    replay_s = stage_timings_s.get("total", 0.0) if isinstance(stage_timings_s, dict) else 0.0
     parse_s = replay.get("parse_s", 0.0)
     apply_s = replay.get("apply_s", 0.0)
+    resolved_replay_s = float(replay_s) if isinstance(replay_s, int | float) else 0.0
     resolved_parse_s = float(parse_s) if isinstance(parse_s, int | float) else 0.0
     resolved_apply_s = float(apply_s) if isinstance(apply_s, int | float) else 0.0
     insight_s = float(terminal_timings_s.get("terminal.session_insights", 0.0))
@@ -949,6 +951,7 @@ def _receipt_timings(
         "selection_s": float(selection_s),
         "prefetch_warm_s": float(prefetch_warm_s),
         "cohort_s": _cohort_seconds(stage_timings_s),
+        "replay_s": resolved_replay_s,
         "parse_s": resolved_parse_s,
         "apply_s": resolved_apply_s,
         "insight_s": insight_s,
