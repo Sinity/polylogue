@@ -48,17 +48,11 @@ from devtools.verify import (
     _run,
 )
 from devtools.verify_runs import (
-    CheckoutMutationMonitor,
-    CheckoutMutationObservation,
     VerifyRun,
     append_verify_history,
     configured_pytest_worker_request,
-    finalize_checkout_mutation_monitors,
-    finish_checkout_mutation_monitor,
     git_head,
     pytest_command_worker_request,
-    start_checkout_mutation_monitor,
-    worktree_fingerprint,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -292,7 +286,6 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
             handle.truncate()
 
 
-@finalize_checkout_mutation_monitors
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
@@ -332,9 +325,6 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
-        mutation_monitor = CheckoutMutationMonitor(ROOT)
-        start_checkout_mutation_monitor(mutation_monitor)
-        initial_worktree_fingerprint = worktree_fingerprint(ROOT)
         run = VerifyRun(
             tier="focused-test",
             argv=selection,
@@ -342,12 +332,8 @@ def main(argv: list[str] | None = None) -> int:
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
             environment_fingerprint=environment_fingerprint,
-            worktree_fingerprint=initial_worktree_fingerprint,
         )
         started = time.monotonic()
-        final_worktree_fingerprint = "unavailable"
-        mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
-        runner_exception = False
         try:
             rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
         except KeyboardInterrupt:
@@ -355,7 +341,6 @@ def main(argv: list[str] | None = None) -> int:
             metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
             run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
         except Exception as exc:
-            runner_exception = True
             rc = 125
             metadata = {
                 "diagnosis": "focused_test_runner_exception",
@@ -368,54 +353,14 @@ def main(argv: list[str] | None = None) -> int:
                 diagnosis=str(metadata["diagnosis"]),
                 termination_reason="runner_exception",
             )
-            try:
-                final_worktree_fingerprint = worktree_fingerprint(ROOT)
-            except Exception:
-                final_worktree_fingerprint = "unavailable"
-            try:
-                mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
-            except Exception:
-                mutation_observation = CheckoutMutationObservation(changed=False, unavailable=True)
             sys.stderr.write(f"devtools test: unexpected runner exception: {exc}\n")
-        if not runner_exception:
-            final_worktree_fingerprint = worktree_fingerprint(ROOT)
-            mutation_observation = finish_checkout_mutation_monitor(mutation_monitor)
-            if (
-                "unavailable" in {initial_worktree_fingerprint, final_worktree_fingerprint}
-                or mutation_observation.unavailable
-            ):
-                checkout_diagnosis = "checkout_fingerprint_unavailable"
-                if rc == 130:
-                    metadata["checkout_diagnosis"] = checkout_diagnosis
-                else:
-                    metadata["diagnosis"] = checkout_diagnosis
-                if rc == 0:
-                    rc = 125
-                sys.stderr.write("devtools test: checkout fingerprint unavailable; evidence is not exact-head.\n")
-            elif mutation_observation.changed or final_worktree_fingerprint != initial_worktree_fingerprint:
-                checkout_diagnosis = "checkout_changed_during_focused_test"
-                if rc == 130:
-                    metadata["checkout_diagnosis"] = checkout_diagnosis
-                else:
-                    metadata["diagnosis"] = checkout_diagnosis
-                metadata["transient_checkout_mutation"] = mutation_observation.changed
-                metadata["checkout_mutation_path"] = mutation_observation.observed_path
-                if rc == 0:
-                    rc = 125
-                sys.stderr.write(
-                    "devtools test: checkout contents changed during pytest; evidence is not exact-head.\n"
-                )
         payload = run.finish(
             exit_code=rc,
             duration_s=time.monotonic() - started,
             diagnosis=metadata.get("diagnosis"),
             verification_scope="affected",
             release_baseline_allowed=False,
-            final_worktree_fingerprint=final_worktree_fingerprint,
-            checkout_mutation_path=mutation_observation.observed_path,
-            checkout_diagnosis=(
-                metadata["checkout_diagnosis"] if isinstance(metadata.get("checkout_diagnosis"), str) else None
-            ),
+            final_git_head=git_head(ROOT),
         )
         append_verify_history(payload)
     if use_json:

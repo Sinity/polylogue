@@ -9,10 +9,12 @@ All commands below assume you are inside the project devshell. See
 # Normal repository verification
 devtools verify
 
-# Focused inner-loop runs — prefer `devtools test` over raw pytest. It runs the
+# Focused inner-loop runs: prefer `devtools test` over raw pytest. It runs the
 # selection through the managed harness (repo env, single-process by default,
 # live output, current-node progress artifacts, stall/runtime timeouts) and
 # serializes overlapping runs from the same checkout so two suites do not race.
+# It records direct CLI evidence in the managed run ledger. Exact worktree
+# authority and AgentCTL receipts belong to declared `devtools verify` routes.
 # Any pytest arguments go after the command name.
 devtools test tests/unit/storage/test_hybrid_laws.py
 devtools test -k "test_name"
