@@ -22,7 +22,7 @@ from devtools.sinnixd_service_context import require_declared_operation_context
 _SOURCE_ROOT = Path.home() / ".config" / "chrome-ws"
 _DESTINATION_ROOT = Path("/realm/state/polylogue/live-provider-proof-profile")
 _MAX_FILES = 20_000
-_MAX_BYTES = 1_000_000_000
+_MAX_BYTES = 2_000_000_000
 _EXCLUDED_NAMES = frozenset({"SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"})
 _MAX_ERROR_MESSAGE = 512
 

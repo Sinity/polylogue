@@ -26,6 +26,19 @@ def test_profile_provision_reports_missing_source_paths(tmp_path: Path) -> None:
         provision._copy_selected_profile(source_root=tmp_path / "absent", destination_root=tmp_path / "destination")
 
 
+def test_profile_provision_rejects_profiles_above_the_copy_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_profile(tmp_path / "current-chrome")
+    destination = tmp_path / "proof-profile"
+    monkeypatch.setattr(provision, "_MAX_BYTES", 1)
+
+    with pytest.raises(ValueError, match="exceeds the declared provisioning bound"):
+        provision._copy_selected_profile(source_root=source, destination_root=destination)
+
+    assert not destination.exists()
+
+
 def test_profile_provision_copies_fixed_profile_without_live_locks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
