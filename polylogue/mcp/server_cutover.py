@@ -1104,6 +1104,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             if scope == "coordination":
+                from pathlib import Path
+
                 from polylogue.coordination import build_coordination_envelope
                 from polylogue.operations.route_observation import observe_route
 
@@ -1114,6 +1116,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     surface="mcp",
                     route="mcp.status.coordination",
                     verb="detail" if is_detail else "compact",
+                    # Tie MCP latency evidence to the producer revision.
+                    git_head_cwd=Path.cwd(),
                 ) as obs:
                     if is_detail:
                         envelope = build_coordination_envelope(view="status", detail=True)

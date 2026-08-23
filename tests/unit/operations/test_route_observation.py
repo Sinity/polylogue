@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -82,6 +83,27 @@ def test_observe_route_records_a_receipt_with_measured_duration(tmp_path: Path) 
     assert row.status == "ok"
     assert row.verb == "v1"
     assert row.attributes == {"marker": "seen"}
+
+
+def test_observe_route_records_git_head_when_requested(tmp_path: Path) -> None:
+    _init_ops(tmp_path)
+    expected = subprocess.check_output(
+        ["git", "-C", str(Path.cwd()), "rev-parse", "--short=12", "HEAD"],
+        text=True,
+    ).strip()
+
+    with observe_route(
+        archive_root=tmp_path,
+        surface="mcp",
+        route="mcp.status.coordination",
+        git_head_cwd=Path.cwd(),
+    ):
+        pass
+
+    conn = sqlite3.connect(tmp_path / "ops.db")
+    rows = list_route_observations(conn, surface="mcp", route="mcp.status.coordination")
+    assert len(rows) == 1
+    assert rows[0].git_head == expected
 
 
 def test_observe_route_records_error_status_on_exception_and_reraises(tmp_path: Path) -> None:
