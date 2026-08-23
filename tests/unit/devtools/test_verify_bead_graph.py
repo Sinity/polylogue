@@ -423,6 +423,15 @@ def test_campaign_projection_rejects_missing_binding_extra_row_and_bad_edge() ->
         for finding in verify_bead_graph.collect_campaign_findings(corrected_agentctl)
     )
 
+    production_agentctl = deepcopy(corrected_agentctl)
+    adapter = next(issue for issue in production_agentctl if issue["id"] == "polylogue-agentctl-adapter")
+    adapter["metadata"]["campaign_membership_source"] = "agentctl:production-native-adapter"
+    adapter["metadata"]["campaign_membership_kind"] = "production-adapter"
+    assert not any(
+        finding.bead_id == "polylogue-agentctl-adapter"
+        for finding in verify_bead_graph.collect_campaign_findings(production_agentctl)
+    )
+
     forged_provenance = deepcopy(corrected_agentctl)
     adapter = next(issue for issue in forged_provenance if issue["id"] == "polylogue-agentctl-adapter")
     adapter["metadata"]["native_control_ids"] = ["polylogue-reindex-ws-e", "forged"]
