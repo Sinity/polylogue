@@ -97,7 +97,7 @@ def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate
                 testmon_environment="env-digest" if not quick else "",
             )
         ]
-        assert labels.count("lab policy schema-versioning") == 1
+        assert labels.count("verify schema-versioning") == 1
 
     commit_labels = [
         label
@@ -107,4 +107,4 @@ def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate
             commit=True,
         )
     ]
-    assert "lab policy schema-versioning" not in commit_labels
+    assert "verify schema-versioning" not in commit_labels
