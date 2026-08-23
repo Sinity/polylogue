@@ -73,6 +73,7 @@ from devtools.verify_runs import (
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
+    compare_verify_costs,
     pytest_basetemp_known_roots,
     pytest_basetemp_path,
     pytest_tmpfs_budget_exceeded,
@@ -988,6 +989,49 @@ def test_verify_history_append_reads_only_the_trailing_record(
     row = json.loads(history.read_text(encoding="utf-8").splitlines()[-1])
     assert row["sequence"] == 1
     assert row["history_schema_version"] == 1
+
+
+def test_compare_verify_costs_reports_deltas_and_amplification() -> None:
+    def run(wall_s: float, write_bytes: int, peak_storage_bytes: int) -> dict[str, object]:
+        return {
+            "pytest_aggregate": {
+                "complete_corpus_covered": True,
+                "terminal_green": True,
+                "wall_s": wall_s,
+                "resources": {
+                    "write_bytes": write_bytes,
+                    "peak_storage_bytes": peak_storage_bytes,
+                },
+            }
+        }
+
+    comparison = compare_verify_costs(run(100.0, 900, 100), run(80.0, 400, 100))
+
+    assert comparison["comparison_ready"] is True
+    assert comparison["delta"] == {
+        "wall_s": -20.0,
+        "write_bytes": -500,
+        "peak_storage_bytes": 0,
+        "amplification": -5.0,
+    }
+    assert comparison["amplification"] == {"baseline": 9.0, "candidate": 4.0}
+
+
+def test_compare_verify_costs_refuses_incomplete_evidence() -> None:
+    incomplete = {
+        "pytest_aggregate": {
+            "complete_corpus_covered": True,
+            "terminal_green": True,
+            "wall_s": 10.0,
+            "resources": {"write_bytes": 100},
+        }
+    }
+
+    comparison = compare_verify_costs(incomplete, incomplete)
+
+    assert comparison["comparison_ready"] is False
+    assert comparison["missing"]["baseline"] == ["peak_storage_bytes"]
+    assert "delta" not in comparison
 
 
 def test_compare_against_last_skips_intervening_focused_history(monkeypatch: pytest.MonkeyPatch) -> None:

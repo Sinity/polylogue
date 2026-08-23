@@ -308,6 +308,66 @@ def normalize_verify_history_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def compare_verify_costs(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Compare durable pytest cost evidence without inventing measurements.
+
+    The result is explicitly not ready unless both normalized history entries
+    contain a green, complete-corpus aggregate and all three cost metrics.  A
+    missing metric therefore cannot be mistaken for a zero-cost improvement.
+    """
+    required = ("wall_s", "write_bytes", "peak_storage_bytes")
+    sides: dict[str, dict[str, Any]] = {}
+    missing: dict[str, list[str]] = {}
+    for name, entry in (("baseline", baseline), ("candidate", candidate)):
+        aggregate = entry.get("pytest_aggregate")
+        aggregate = aggregate if isinstance(aggregate, Mapping) else {}
+        resources = aggregate.get("resources")
+        resources = resources if isinstance(resources, Mapping) else {}
+
+        def positive_number(value: object) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+        absent = [
+            key
+            for key in ("complete_corpus_covered", "terminal_green", *required)
+            if (key in {"complete_corpus_covered", "terminal_green"} and aggregate.get(key) is not True)
+            or (
+                key in required
+                and not positive_number(aggregate.get("wall_s") if key == "wall_s" else resources.get(key))
+            )
+        ]
+        missing[name] = absent
+        sides[name] = {
+            "wall_s": resources.get("wall_s", aggregate.get("wall_s")),
+            "write_bytes": resources.get("write_bytes"),
+            "peak_storage_bytes": resources.get("peak_storage_bytes"),
+        }
+
+    ready = not any(missing.values())
+    result: dict[str, Any] = {
+        "comparison_ready": ready,
+        "missing": missing,
+        "baseline": sides["baseline"],
+        "candidate": sides["candidate"],
+    }
+    if ready:
+        baseline_values = sides["baseline"]
+        candidate_values = sides["candidate"]
+        baseline_amplification = baseline_values["write_bytes"] / baseline_values["peak_storage_bytes"]
+        candidate_amplification = candidate_values["write_bytes"] / candidate_values["peak_storage_bytes"]
+        result["delta"] = {
+            "wall_s": candidate_values["wall_s"] - baseline_values["wall_s"],
+            "write_bytes": candidate_values["write_bytes"] - baseline_values["write_bytes"],
+            "peak_storage_bytes": candidate_values["peak_storage_bytes"] - baseline_values["peak_storage_bytes"],
+            "amplification": candidate_amplification - baseline_amplification,
+        }
+        result["amplification"] = {
+            "baseline": baseline_amplification,
+            "candidate": candidate_amplification,
+        }
+    return result
+
+
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
     """Append one complete invocation to the cross-worktree run history.
 
