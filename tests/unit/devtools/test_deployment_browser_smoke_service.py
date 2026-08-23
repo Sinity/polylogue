@@ -122,6 +122,25 @@ def test_private_live_provider_module_imports_without_launching_chrome() -> None
     assert completed.stdout == ""
 
 
+def test_live_provider_uses_an_unconfigured_chromium_binary() -> None:
+    completed = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            "import('./scripts/live_provider_proof.mjs').then(m => console.log(m.resolveChromeBinary()))",
+        ],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "google-chrome" not in completed.stdout
+    assert "chromium" in completed.stdout
+
+
 def test_live_provider_module_rejects_forged_environment_before_node_can_launch(tmp_path: Path) -> None:
     environment = os.environ | {
         "SINNIXD_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",

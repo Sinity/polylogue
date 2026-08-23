@@ -5,7 +5,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -58,12 +58,32 @@ function requireExpectedServiceContext() {
   }
 }
 
-function resolveChromeBinary() {
-  for (const candidate of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome-for-testing"]) {
+function nixStoreChromiumCandidates() {
+  const storeRoot = "/nix/store";
+  if (!existsSync(storeRoot)) return [];
+  return readdirSync(storeRoot)
+    .map((entry) => {
+      const match = entry.match(/-chromium-(\d+(?:\.\d+)+)$/);
+      if (!match) return null;
+      const binary = path.join(storeRoot, entry, "bin", "chromium");
+      return existsSync(binary) ? { binary, version: match[1].split(".").map(Number) } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => right.version.join(".").localeCompare(left.version.join("."), undefined, { numeric: true }))
+    .map((candidate) => candidate.binary);
+}
+
+export function resolveChromeBinary() {
+  // The operator's google-chrome command is intentionally a shared-profile
+  // launcher. It injects its own profile and CDP port, so it is not a valid
+  // executable boundary for this isolated copied-profile proof.
+  for (const candidate of ["chromium", "chromium-browser", "chrome-for-testing"]) {
     const resolved = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
     if (resolved.status === 0 && resolved.stdout.trim()) return resolved.stdout.trim();
   }
-  throw new Error("no fixed Chrome/Chromium executable is available on the declared service PATH");
+  const storeCandidate = nixStoreChromiumCandidates()[0];
+  if (storeCandidate) return storeCandidate;
+  throw new Error("no unconfigured Chromium executable is available for the copied-profile proof");
 }
 
 function fixedInputs() {
