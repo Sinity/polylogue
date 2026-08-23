@@ -461,7 +461,7 @@
           pyc_should_clean=1
           if [ -f "$pyc_stamp" ]; then
             last_clean=$(stat -c %Y "$pyc_stamp" 2>/dev/null || echo 0)
-            newest_src=$(find polylogue tests devtools -name '*.py' -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+            newest_src=$(find polylogue tests devtools -name '*.py' -printf '%T@\n' 2>/dev/null | sort -rn | sed -n '1p' | cut -d. -f1)
             if [ -n "$newest_src" ] && [ "$last_clean" -ge "$newest_src" ]; then
               pyc_should_clean=0
             fi
