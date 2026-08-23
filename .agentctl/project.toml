@@ -130,10 +130,6 @@ timeout_seconds = 120
 exclusive_keys = ["polylogue:live-provider-proof"]
 scratch = "nvme"
 
-[operations.live_provider_profile_provision.service]
-readiness = "project-command"
-lifetime = "job"
-
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
 owner = "polylogue-archive"

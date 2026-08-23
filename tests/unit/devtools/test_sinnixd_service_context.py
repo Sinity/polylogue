@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
+from devtools import sinnixd_service_context
+from devtools.sinnixd_service_context import (
+    require_declared_operation_context,
+    require_declared_service_context,
+    terminate_process_group,
+)
 
 _JOB_ID = "123e4567-e89b-42d3-a456-426614174000"
 
@@ -21,12 +26,12 @@ def _environment(operation: str = "dev_loop_proof") -> dict[str, str]:
     }
 
 
-def test_service_context_requires_matching_unit_and_declared_operation() -> None:
+def test_operation_context_requires_matching_unit_and_declared_operation() -> None:
     environment = _environment()
     unit = "sinnixd-job-123e4567-e89b-42d3-a456-426614174000.service"
 
     assert (
-        require_declared_service_context(
+        require_declared_operation_context(
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: f"0::/user.slice/user-1000.slice/user@1000.service/agent.slice/{unit}\n",
@@ -45,11 +50,21 @@ def test_service_context_requires_matching_unit_and_declared_operation() -> None
     )
 
 
+def test_service_context_delegates_to_declared_operation_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sinnixd_service_context,
+        "require_declared_operation_context",
+        lambda operation, **_kwargs: f"unit-{operation}",
+    )
+
+    assert require_declared_service_context("dev_loop_proof") == "unit-dev_loop_proof"
+
+
 def test_forged_environment_without_matching_cgroup_fails_before_launch() -> None:
     environment = _environment()
 
     with pytest.raises(ValueError, match="matching transient unit"):
-        require_declared_service_context(
+        require_declared_operation_context(
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: "0::/user.slice/user-1000.slice/user@1000.service/app.slice/shell.scope\n",
@@ -62,7 +77,7 @@ def test_matching_cgroup_with_wrong_unit_operation_fails() -> None:
     unit = "sinnixd-job-123e4567-e89b-42d3-a456-426614174000.service"
 
     with pytest.raises(ValueError, match="transient unit does not match"):
-        require_declared_service_context(
+        require_declared_operation_context(
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: f"0::/agent.slice/{unit}\n",

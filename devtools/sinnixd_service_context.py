@@ -1,8 +1,8 @@
-"""Local defense-in-depth checks for declared Sinnixd service commands.
+"""Local defense-in-depth checks for declared Sinnixd operations.
 
 Sinnixd remains the authority for admission, exact-head validation, and leases.
-These checks only ensure a private project command did not escape the transient
-unit Sinnixd created for that already-authorized job.
+These checks only ensure a private project command did not escape the matching
+transient unit Sinnixd created for that already-authorized job.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def _exec_start_declares_child_environment(exec_start: str, expected: Mapping[st
     return all(f"{key}={value}" in child_command for key, value in expected.items())
 
 
-def require_declared_service_context(
+def require_declared_operation_context(
     operation: str,
     *,
     environment: Mapping[str, str] | None = None,
@@ -98,6 +98,22 @@ def require_declared_service_context(
     if not _exec_start_declares_child_environment(read_unit_exec_start(unit), expected):
         raise ValueError("Sinnixd transient unit does not match the declared operation")
     return unit
+
+
+def require_declared_service_context(
+    operation: str,
+    *,
+    environment: Mapping[str, str] | None = None,
+    cgroup_reader: Callable[[], str] | None = None,
+    unit_exec_start_reader: Callable[[str], str] | None = None,
+) -> str:
+    """Require the declared operation context for a port-owning service command."""
+    return require_declared_operation_context(
+        operation,
+        environment=environment,
+        cgroup_reader=cgroup_reader,
+        unit_exec_start_reader=unit_exec_start_reader,
+    )
 
 
 def terminate_process_group(process: subprocess.Popen[Any], *, timeout_s: float = 2.0) -> None:

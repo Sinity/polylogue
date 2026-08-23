@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from devtools.sinnixd_service_context import require_declared_service_context
+from devtools.sinnixd_service_context import require_declared_operation_context
 
 _SOURCE_ROOT = Path.home() / ".config" / "google-chrome"
 _DESTINATION_ROOT = Path("/realm/state/polylogue/live-provider-proof-profile")
@@ -83,8 +83,8 @@ def _copy_selected_profile(*, source_root: Path, destination_root: Path) -> dict
 
 
 def provision_profile() -> dict[str, object]:
-    """Copy the fixed current Chrome profile after Sinnixd admitted this job."""
-    require_declared_service_context("live_provider_profile_provision")
+    """Copy the fixed current Chrome profile as a finite provisioning job."""
+    require_declared_operation_context("live_provider_profile_provision")
     copied = _copy_selected_profile(source_root=_SOURCE_ROOT, destination_root=_DESTINATION_ROOT)
     return {"ok": True, "profile": {"files": copied["files"], "bytes": copied["bytes"]}}
 

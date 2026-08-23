@@ -29,7 +29,7 @@ def test_profile_provision_copies_fixed_profile_without_live_locks(
     destination = tmp_path / "proof-profile"
     monkeypatch.setattr(provision, "_SOURCE_ROOT", source)
     monkeypatch.setattr(provision, "_DESTINATION_ROOT", destination)
-    monkeypatch.setattr(provision, "require_declared_service_context", lambda operation: f"unit-{operation}")
+    monkeypatch.setattr(provision, "require_declared_operation_context", lambda operation: f"unit-{operation}")
 
     assert provision.main(["--json"]) == 0
 

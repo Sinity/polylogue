@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,21 +53,54 @@ def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_declared_profile_provisioning_has_no_browser_or_caller_arguments() -> None:
-    descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
-    operation = descriptor["operations"]["live_provider_profile_provision"]
+def test_sinnixd_parser_accepts_complete_adapter_and_models_provisioning_as_a_job() -> None:
+    """Cross-contract proof against the production Sinnixd descriptor parser."""
+    repository_root = Path(__file__).resolve().parents[3]
+    sinnix_root = Path("/realm/project/sinnix")
+    package_roots = (
+        sinnix_root / "pkgs" / "sinnixd",
+        sinnix_root / "pkgs" / "sinnix-mcp",
+        sinnix_root / "pkgs" / "sinnix-lib",
+    )
+    parser_program = """
+import json
+import sys
+from pathlib import Path
 
-    assert operation == {
-        "description": "Provision the fixed copied Chrome profile for the live-provider proof",
-        "exec": ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"],
-        "pool": "interactive",
-        "result": "json",
-        "cache": "none",
-        "timeout_seconds": 120,
-        "exclusive_keys": ["polylogue:live-provider-proof"],
-        "scratch": "nvme",
-        "service": {"readiness": "project-command", "lifetime": "job"},
+from sinnixd.projects import load_project_adapter
+
+adapter = load_project_adapter(Path(sys.argv[1]))
+provisioning = adapter.operation("live_provider_profile_provision")
+print(json.dumps({
+    "project_id": adapter.project_id,
+    "operation_count": len(adapter.operations),
+    "provisioning": {
+        "command": provisioning.command,
+        "parameters": provisioning.parameters,
+        "service": provisioning.service.catalog_row() if provisioning.service is not None else None,
+    },
+    "service_operations": sorted(operation.name for operation in adapter.operations if operation.service is not None),
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", parser_program, str(repository_root)],
+        cwd=sinnix_root,
+        env=os.environ | {"PYTHONPATH": os.pathsep.join(map(str, package_roots))},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    parsed = json.loads(completed.stdout)
+    assert parsed["project_id"] == "polylogue"
+    assert parsed["operation_count"] >= 7
+    assert parsed["provisioning"] == {
+        "command": ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"],
+        "parameters": [],
+        "service": None,
     }
+    assert parsed["service_operations"] == ["deployment_browser_smoke", "dev_loop_proof", "live_provider_proof"]
     assert all(spec.module != "devtools.live_provider_profile_provision_service" for spec in COMMAND_SPECS)
 
 
