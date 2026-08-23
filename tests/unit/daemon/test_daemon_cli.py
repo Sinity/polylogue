@@ -1430,7 +1430,7 @@ def test_periodic_raw_materialization_convergence_starts_without_catch_up(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain", "fts"]
+    assert calls == ["drain"]
 
 
 def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
@@ -1463,7 +1463,7 @@ def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain", "fts"]
+    assert calls == ["drain"]
 
 
 def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
@@ -2946,8 +2946,10 @@ def test_archive_message_fts_startup_records_known_stale_ledger_without_global_c
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
+            if query == "PRAGMA user_version":
+                return FakeCursor((0,))
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0, 0))
+                return FakeCursor(("stale", 250_000, 100_000, 150_000, 0, 0, 0, "unknown", None, 0))
             raise AssertionError(f"unexpected query: {query}")
 
     conn = FakeConnection()
@@ -3016,8 +3018,10 @@ def test_archive_message_fts_startup_downgrades_inconsistent_ready_ledger_withou
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
+            if query == "PRAGMA user_version":
+                return FakeCursor((0,))
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("ready", 250_000, 100_000, 0, 0, 0, 0))
+                return FakeCursor(("ready", 250_000, 100_000, 0, 0, 0, 0, "unknown", None, 0))
             raise AssertionError(f"unexpected query: {query}")
 
     conn = FakeConnection()
@@ -3105,8 +3109,10 @@ def test_archive_message_fts_startup_records_poisoned_stale_zero_ledger_without_
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
                 triggers: list[tuple[object, ...]] = [("messages_fts_ai",), ("messages_fts_ad",), ("messages_fts_au",)]
                 return FakeCursor(triggers[0], rows=triggers)
+            if query == "PRAGMA user_version":
+                return FakeCursor((0,))
             if query.startswith("SELECT state, source_rows, indexed_rows"):
-                return FakeCursor(("stale", 0, 0, 0, 0, 0, 0))
+                return FakeCursor(("stale", 0, 0, 0, 0, 0, 0, "unknown", None, 0))
             if query == "SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1":
                 return FakeCursor((1,))
             if query == "SELECT 1 FROM messages_fts_docsize LIMIT 1":
@@ -3277,7 +3283,10 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
                         (6, "excess_rows"),
                         (7, "duplicate_rows"),
                         (8, "identity_mismatch_rows"),
-                        (9, "detail"),
+                        (9, "verification_kind"),
+                        (10, "exact_checked_at"),
+                        (11, "exact_generation"),
+                        (12, "detail"),
                     ],
                 )
             if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
@@ -3293,7 +3302,9 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
                 ]
                 return FakeCursor(None, rows=triggers)
             if query.startswith("SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows"):
-                return FakeCursor(("ready", 10, 10, 0, 0, 0, 0))
+                return FakeCursor(("ready", 10, 10, 0, 0, 0, 0, "exact", "2026-08-23T00:00:00+00:00", 0))
+            if query == "PRAGMA user_version":
+                return FakeCursor((0,))
             raise AssertionError(f"unexpected query: {query}")
 
         def commit(self) -> None:
@@ -3651,7 +3662,7 @@ def test_ensure_fts_startup_readiness_handles_archive(
             WHERE surface = 'messages_fts'
             """
         ).fetchone()
-    assert row == ("ready", 1, 1)
+    assert row == ("stale", 1, 1)
 
 
 def test_ensure_fts_startup_readiness_uses_extended_write_timeout(
@@ -4784,7 +4795,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     with (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
-        patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", noop_sync),
+        patch.object(daemon_cli, "_run_startup_fts_readiness", lambda _coordinator: noop()),
         patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
