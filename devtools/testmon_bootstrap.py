@@ -28,6 +28,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import sqlite3
 import stat
 import subprocess
@@ -1255,9 +1256,9 @@ def _reclaim_stale_native_testmon_bindings(directory_fd: int, name: str) -> None
         entries = os.listdir(directory_fd)
     except OSError as exc:
         raise NativeTestmonRepairError(f"cannot inspect native testmon bindings: {exc}") from exc
-    prefix = f".{name}.bound-"
+    private_name = re.compile(rf"\A\.{re.escape(name)}\.bound-[0-9]+-[0-9a-f]{{32}}\.tmp\Z")
     for entry in entries:
-        if not entry.startswith(prefix) or not entry.endswith(".tmp"):
+        if private_name.fullmatch(entry) is None:
             continue
         try:
             candidate = os.stat(entry, dir_fd=directory_fd, follow_symlinks=False)
