@@ -46,9 +46,6 @@ from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.fts_startup import (
     ensure_fts_startup_readiness as _ensure_fts_startup_readiness,
 )
-from polylogue.daemon.fts_startup import (
-    ensure_fts_startup_readiness_sync as _ensure_fts_startup_readiness_sync,
-)
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -328,9 +325,15 @@ async def _await_parse_stage_writer_admission() -> bool:
     return idle
 
 
-async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
-    """Run the real startup FTS writer on an exit-safe coordinator thread."""
-    await coordinator.run_sync("startup.fts_readiness", _ensure_fts_startup_readiness_sync)
+async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> object:
+    """Run the single FTS convergence owner before the watcher starts."""
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+
+    return await coordinator.run_sync(
+        "startup.fts_convergence",
+        FtsConvergenceOwner(_active_index_db_path()).run_once_sync,
+        reason=FtsRunReason.STARTUP,
+    )
 
 
 async def _run_startup_embedding_lifecycle(coordinator: DaemonWriteCoordinator, archive_root_path: Path) -> Path:
@@ -943,6 +946,7 @@ async def _periodic_convergence_check(
     await _await_catch_up_gate(catch_up_complete, loop_name="convergence debt retry")
     while True:
         await _retry_convergence_debt_once(db)
+        await _run_periodic_fts_convergence_once(db)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
 
 
@@ -965,6 +969,23 @@ async def _retry_convergence_debt_once(db: Path) -> None:
         logger.warning("convergence: check failed", exc_info=True)
     except Exception:
         logger.warning("convergence: check failed", exc_info=True)
+
+
+async def _run_periodic_fts_convergence_once(db: Path) -> None:
+    """Run the owner-only archive-wide exact FTS audit when it is due."""
+    from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+
+    result = await daemon_write_coordinator().run_sync(
+        "maintenance.fts_convergence",
+        FtsConvergenceOwner(db).run_once_sync,
+        reason=FtsRunReason.PERIODIC,
+    )
+    if bool(getattr(result, "exact", False)):
+        logger.info(
+            "fts convergence: state=%s repaired_surfaces=%d",
+            getattr(result, "state", "unknown"),
+            int(getattr(result, "repaired_surfaces", 0)),
+        )
 
 
 def _bulk_scale_raw_materialization_backlog(counts: RawMaterializationCounts) -> bool:
@@ -2247,7 +2268,14 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
         return 0
 
     fts_surfaces = tuple(dict.fromkeys(debt.subject_id for debt in due_debt if debt.subject_type == "fts_surface"))
-    fts_surface_results = _drain_fts_surface_debt(db, fts_surfaces)
+    fts_owner_result: object | None = None
+    if fts_surfaces:
+        from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+
+        fts_owner_result = FtsConvergenceOwner(db).run_once_sync(
+            reason=FtsRunReason.DEBT_RETRY,
+            surfaces=fts_surfaces,
+        )
 
     subject_states: dict[tuple[str, str, str], object] = {}
     retryable_debt = tuple(debt for debt in due_debt if debt.subject_type in {"source_path", "session_id"})
@@ -2285,8 +2313,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     for debt in due_debt:
         retried += 1
         if debt.subject_type == "fts_surface":
-            result = fts_surface_results.get(debt.subject_id)
-            if bool(getattr(result, "success", result)):
+            if bool(getattr(fts_owner_result, "ready", False)):
                 cursor.clear_convergence_debt(
                     stage=debt.stage,
                     subject_type=debt.subject_type,
@@ -2297,9 +2324,9 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 stage=debt.stage,
                 subject_type=debt.subject_type,
                 subject_id=debt.subject_id,
-                error="FTS freshness convergence did not converge",
+                error="FTS convergence owner retained outstanding exact-verification debt",
                 materializer_version=debt.materializer_version,
-                deferred=bool(getattr(result, "deferred", False)),
+                deferred=bool(getattr(fts_owner_result, "deferred", False)),
             )
             continue
 
@@ -2355,17 +2382,6 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 deferred=is_deferred_stage_state(stages_map.get(stage)),
             )
     return retried
-
-
-def _drain_fts_surface_debt(db: Path, surfaces: tuple[str, ...]) -> dict[str, object]:
-    if not surfaces:
-        return {}
-    from polylogue.daemon.convergence_stages import repair_fts_surface_result
-
-    results: dict[str, object] = {}
-    for surface in surfaces:
-        results[surface] = repair_fts_surface_result(db, surface)
-    return results
 
 
 def _debt_retry_due(debt: object, *, now: datetime) -> bool:
@@ -3143,17 +3159,15 @@ async def _run_daemon_services_under_active_writer_lease(
                 periodic_embedding_backlog_check,
                 periodic_embedding_orphan_reconcile_check,
             )
-            from polylogue.daemon.fts_identity_convergence import periodic_fts_identity_drift_recompute
-            from polylogue.daemon.fts_orphan_audit import periodic_fts_orphan_audit
             from polylogue.daemon.judgment_automation import periodic_judgment_automation_sweep
             from polylogue.daemon.secret_scan_sweep import periodic_secret_scan_sweep
 
-            await _run_startup_fts_readiness(write_coordinator)
+            fts_startup = await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
-                    "component_ready",
+                    "component_ready" if bool(getattr(fts_startup, "ready", False)) else "component_degraded",
                     archive_root_path=archive_root_path,
-                    component="fts_startup",
+                    component="fts",
                 )
             await _run_startup_lineage_readiness(write_coordinator)
             if lifecycle_events_enabled:
@@ -3185,8 +3199,6 @@ async def _run_daemon_services_under_active_writer_lease(
                     catch_up_complete=catch_up_complete_gate,
                     archive_root_path=archive_root_path,
                 ),
-                periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
-                periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_publication_reconciliation_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
