@@ -3079,6 +3079,19 @@ async def _run_daemon_services_under_active_writer_lease(
                     },
                 )
 
+        # Embedding reads are exposed by the API, so recover the active
+        # generation before publishing either HTTP socket.  Otherwise an
+        # immediate similarity request can recreate legacy WAL sidecars after
+        # the lifecycle checkpoint and turn a clean restart into a failure.
+        if not watcher_blocked:
+            await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
+            if lifecycle_events_enabled:
+                await _emit_daemon_lifecycle_event(
+                    "component_ready",
+                    archive_root_path=archive_root_path,
+                    component="embedding_lifecycle_startup",
+                )
+
         if enable_api:
             from polylogue.daemon.http import (
                 DaemonAPIHandler,
@@ -3135,13 +3148,6 @@ async def _run_daemon_services_under_active_writer_lease(
             from polylogue.daemon.judgment_automation import periodic_judgment_automation_sweep
             from polylogue.daemon.secret_scan_sweep import periodic_secret_scan_sweep
 
-            await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
-            if lifecycle_events_enabled:
-                await _emit_daemon_lifecycle_event(
-                    "component_ready",
-                    archive_root_path=archive_root_path,
-                    component="embedding_lifecycle_startup",
-                )
             await _run_startup_fts_readiness(write_coordinator)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(

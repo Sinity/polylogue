@@ -4429,7 +4429,12 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
             return None
 
     api_server = FakeAPIServer()
-    api_server_factory = Mock(return_value=api_server)
+
+    def make_api_server(*_args: object, **_kwargs: object) -> FakeAPIServer:
+        events.append("api-bind")
+        return api_server
+
+    api_server_factory = Mock(side_effect=make_api_server)
 
     def fake_emit_daemon_event(kind: str, **kwargs: object) -> None:
         assert kind == "daemon.lifecycle"
@@ -4515,6 +4520,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         )
 
     assert "watcher" in events
+    assert events.index("embedding-lifecycle") < events.index("api-bind")
     assert events.index("embedding-lifecycle") < events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
