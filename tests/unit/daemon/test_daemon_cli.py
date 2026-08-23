@@ -4389,6 +4389,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     def fake_fts_startup() -> None:
         events.append("fts")
 
+    def fake_embedding_lifecycle_startup(_archive_root_path: Path) -> Path:
+        events.append("embedding-lifecycle")
+        return Path("/tmp/polylogue-test-archive/embeddings.db")
+
     def fake_lineage_startup() -> int:
         events.append("lineage")
         return 0
@@ -4434,6 +4438,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        stack.enter_context(
+            patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", fake_embedding_lifecycle_startup)
+        )
         stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", fake_fts_startup))
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
@@ -4508,6 +4515,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         )
 
     assert "watcher" in events
+    assert events.index("embedding-lifecycle") < events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")
@@ -4527,7 +4535,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert lifecycle_phases[-1] == "shutdown_started"
     assert "shutdown_complete" not in lifecycle_phases
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
-    assert {"fts_startup", "lineage_startup", "converger", "watcher"}.issubset(lifecycle_components)
+    assert {"embedding_lifecycle_startup", "fts_startup", "lineage_startup", "converger", "watcher"}.issubset(
+        lifecycle_components
+    )
     assert len(watcher_coordinators) == 1
     bridge = api_server_factory.call_args.kwargs["write_bridge"]
     assert bridge._coordinator is watcher_coordinators[0]
@@ -4720,7 +4730,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def noop() -> None:
         return None
 
-    def noop_sync() -> None:
+    def noop_sync(*_args: object) -> None:
         return None
 
     async def no_drive_changes() -> int:
@@ -4764,6 +4774,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
 
     with (
         patch.object(daemon_cli, "make_server", return_value=browser_server),
+        patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
         patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),

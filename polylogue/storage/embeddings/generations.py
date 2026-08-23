@@ -188,6 +188,37 @@ class EmbeddingGenerationStore:
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise EmbeddingGenerationError(f"malformed embedding database: {path}") from exc
 
+    def prepare_legacy_active_database(self) -> None:
+        """Checkpoint a pre-lifecycle active database before copying it.
+
+        The lifecycle never copies bytes accompanied by SQLite sidecars.  The
+        daemon owns the archive writer when this route runs, so ask SQLite to
+        complete a truncate checkpoint and reject the handoff if any sidecar
+        remains.  In particular, do not unlink a WAL or SHM file ourselves:
+        SQLite remains the authority for recovery and lock safety.
+        """
+        if self.active_path.is_symlink() or not self.active_path.exists():
+            return
+        if not _regular_file(self.active_path):
+            raise EmbeddingGenerationError("embedding active path is not a regular file")
+        try:
+            with sqlite3.connect(self.active_path, timeout=30.0) as conn:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except (OSError, sqlite3.Error) as exc:
+            raise EmbeddingGenerationError("could not checkpoint legacy embedding database") from exc
+        if row is None or int(row[0] or 0) != 0:
+            raise EmbeddingGenerationError("legacy embedding database checkpoint is blocked")
+        sidecars = tuple(
+            path
+            for path in (
+                self.active_path.with_name(self.active_path.name + "-wal"),
+                self.active_path.with_name(self.active_path.name + "-shm"),
+            )
+            if path.exists()
+        )
+        if sidecars:
+            raise EmbeddingGenerationError("legacy embedding database retains SQLite sidecars after checkpoint")
+
     def _read_generation(self, path: Path) -> EmbeddingGeneration:
         try:
             if path.is_symlink() or path.name != "generation.json" or not _regular_file(path):
@@ -558,6 +589,7 @@ class EmbeddingGenerationStore:
 def ensure_embedding_lifecycle(archive_root: str | Path, *, active_path: str | Path | None = None) -> Path:
     """Actual daemon/CLI entrypoint for recovery, legacy adoption, and collection."""
     store = EmbeddingGenerationStore(archive_root, active_path=active_path)
+    store.prepare_legacy_active_database()
     store.recover_interrupted()
     path = store.ensure_active()
     store.collect()

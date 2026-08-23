@@ -158,6 +158,23 @@ def test_legacy_adoption_runs_on_ensure_route(tmp_path: Path) -> None:
     assert json.loads(metadata[0].read_text(encoding="utf-8"))["state"] == "active"
 
 
+def test_legacy_adoption_rejects_sidecars_that_sqlite_cannot_clear(tmp_path: Path) -> None:
+    active = tmp_path / "embeddings.db"
+    _sqlite(active, "legacy")
+    writer = sqlite3.connect(active)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("INSERT INTO values_ VALUES ('wal')")
+        writer.commit()
+        assert active.with_name("embeddings.db-wal").exists()
+        with pytest.raises(EmbeddingGenerationError, match="retains SQLite sidecars"):
+            ensure_embedding_lifecycle(tmp_path)
+    finally:
+        writer.close()
+    assert active.is_file()
+    assert not active.is_symlink()
+
+
 def test_lifecycle_entrypoint_enters_collector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     original = EmbeddingGenerationStore.collect
