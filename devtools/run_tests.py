@@ -1,4 +1,4 @@
-"""``devtools test`` — focused pytest runner through the managed harness.
+"""``devtools test`` — focused pytest runner with project-owned semantics.
 
 Agents and humans should never invoke raw ``pytest`` for inner-loop checks.
 This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
@@ -9,13 +9,12 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 - a single-process worker default (``-n 0``) for fast focused runs, overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - live, streamed output (unlike ``devtools verify``, which captures);
-- the same pytest progress ledger, external deadline supervisor, owned process
-  group/cgroup containment, heartbeat, and stall timeout used by
-  ``devtools verify``;
-- a checkout-scoped lock that serializes overlapping runs so two suites from
-  the same checkout do not race and burn CPU. Concurrency is already
-  *correctness*-safe at the conftest level (#1785, per-run tmpfs basetemp); the
-  lock is the throughput guard. Set ``POLYLOGUE_TEST_NO_LOCK=1`` to bypass it.
+- the same pytest progress ledger, JSON report, and typed outcome receipt used
+  by ``devtools verify``.
+
+Process placement, cancellation, resource admission, and timeout authority
+belong to AgentCTL when a job needs them. A direct focused invocation is an
+ordinary foreground subprocess and does not create a second local lifecycle.
 
 For the full pre-PR gate use ``devtools verify``; this command is the inner
 loop, not a substitute for it.
@@ -23,40 +22,36 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
-from devtools.verify import (
-    PYTEST_CONTAINMENT_PATH,
-    PYTEST_EVENTS_PATH,
-    PYTEST_OUTPUT_PATH,
-    PYTEST_PROGRESS_PATH,
-    PYTEST_REPORT_PATH,
-    PYTEST_SELECTION_PATH,
-    PYTEST_SUMMARY_PATH,
-    _clear_pytest_report,
-    _run,
-)
 from devtools.verify_runs import (
     VerifyRun,
     append_verify_history,
     configured_pytest_worker_request,
+    env_for_pytest_step,
     git_head,
     pytest_command_worker_request,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-_LOCK_PATH = ROOT / ".cache" / "test-run.lock"
+PYTEST_REPORT_DIR = Path(".cache/verify")
+PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
+PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
+PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
+PYTEST_EVENTS_DIR = PYTEST_REPORT_DIR / "current-pytest-events"
+PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
+PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
+PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 _PATH_VALUE_OPTIONS = frozenset(
     {
         "-c",
@@ -257,33 +252,42 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
     ]
 
 
-@contextlib.contextmanager
-def _run_lock(*, enabled: bool) -> Iterator[None]:
-    """Serialize concurrent ``devtools test`` runs from the same checkout."""
-    if not enabled:
-        yield
-        return
-    _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _LOCK_PATH.open("a+") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            handle.seek(0)
-            holder = handle.read().strip() or "another run"
-            sys.stderr.write(
-                f"devtools test: waiting for in-flight run ({holder}) — set POLYLOGUE_TEST_NO_LOCK=1 to skip\n"
-            )
-            sys.stderr.flush()
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid={os.getpid()}")
-        handle.flush()
-        try:
-            yield
-        finally:
-            handle.seek(0)
-            handle.truncate()
+def _clear_pytest_report(_cmd: list[str]) -> None:
+    """Remove this focused invocation's stale pytest-domain artifacts."""
+    for path in (
+        PYTEST_REPORT_PATH,
+        PYTEST_PROGRESS_PATH,
+        PYTEST_EVENTS_PATH,
+        PYTEST_EVENTS_DIR,
+        PYTEST_SELECTION_PATH,
+        PYTEST_SUMMARY_PATH,
+        PYTEST_OUTPUT_PATH,
+    ):
+        if not path.exists():
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def _run(
+    label: str,
+    command: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    run: VerifyRun,
+) -> tuple[int, float, dict[str, str]]:
+    """Run focused pytest directly while preserving its project receipt."""
+    del label, run
+    started = time.monotonic()
+    completed = subprocess.run(command, cwd=cwd, env=env)
+    return (
+        completed.returncode,
+        time.monotonic() - started,
+        {"diagnosis": "pytest_passed" if completed.returncode == 0 else "pytest_failed"},
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -322,47 +326,54 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cmd = build_pytest_cmd(selection)
-    no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
-    with _run_lock(enabled=not no_lock):
-        _clear_pytest_report(cmd)
-        run = VerifyRun(
-            tier="focused-test",
-            argv=selection,
-            git_head=git_head(ROOT),
-            root=ROOT,
-            polylogue_import_path=str(polylogue_import_path),
-            environment_fingerprint=environment_fingerprint,
+    _clear_pytest_report(cmd)
+    run = VerifyRun(
+        tier="focused-test",
+        argv=selection,
+        git_head=git_head(ROOT),
+        root=ROOT,
+        polylogue_import_path=str(polylogue_import_path),
+        environment_fingerprint=environment_fingerprint,
+    )
+    artifacts = run.start_step(label="pytest focused", cmd=cmd)
+    started = time.monotonic()
+    try:
+        pytest_env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
+        pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
+        rc, elapsed, metadata = _run(
+            "pytest focused",
+            cmd,
+            cwd=str(ROOT),
+            env=pytest_env,
+            run=run,
         )
-        started = time.monotonic()
-        try:
-            rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
-        except KeyboardInterrupt:
-            rc = 130
-            metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
-            run.finish_interrupted_steps(exit_code=rc, diagnosis=str(metadata["diagnosis"]))
-        except Exception as exc:
-            rc = 125
-            metadata = {
-                "diagnosis": "focused_test_runner_exception",
-                "exception_type": type(exc).__name__,
-                "error": str(exc),
-                "termination_reason": "runner_exception",
-            }
-            run.finish_interrupted_steps(
-                exit_code=rc,
-                diagnosis=str(metadata["diagnosis"]),
-                termination_reason="runner_exception",
-            )
-            sys.stderr.write(f"devtools test: unexpected runner exception: {exc}\n")
-        payload = run.finish(
-            exit_code=rc,
-            duration_s=time.monotonic() - started,
-            diagnosis=metadata.get("diagnosis"),
-            verification_scope="affected",
-            release_baseline_allowed=False,
-            final_git_head=git_head(ROOT),
-        )
-        append_verify_history(payload)
+    except KeyboardInterrupt:
+        rc = 130
+        elapsed = time.monotonic() - started
+        metadata = {"diagnosis": "pytest_interrupted", "termination_reason": "operator_interrupt"}
+    except Exception as exc:
+        rc = 125
+        metadata = {
+            "diagnosis": "focused_test_runner_exception",
+            "exception_type": type(exc).__name__,
+            "error": str(exc),
+            "termination_reason": "runner_exception",
+        }
+        elapsed = time.monotonic() - started
+        sys.stderr.write(f"devtools test: cannot start pytest: {exc}\n")
+    run.finish_step(
+        step_id=artifacts.step_id,
+        result={"duration_s": elapsed, "exit": rc, **metadata},
+    )
+    payload = run.finish(
+        exit_code=rc,
+        duration_s=elapsed,
+        diagnosis=metadata.get("diagnosis"),
+        verification_scope="affected",
+        release_baseline_allowed=False,
+        final_git_head=git_head(ROOT),
+    )
+    append_verify_history(payload)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     # The artifact-path footer is reference material, not a result. Printing six
@@ -372,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     if _verbose_output() or rc != 0:
         sys.stderr.write(
             f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} containment={PYTEST_CONTAINMENT_PATH} "
+            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} "
             f"output={PYTEST_OUTPUT_PATH}\n"
         )
     return rc
