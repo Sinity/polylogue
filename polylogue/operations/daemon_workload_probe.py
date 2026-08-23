@@ -25,6 +25,7 @@ from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.config import Config
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -33,7 +34,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 19
+REPORT_VERSION = 20
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -1320,22 +1321,31 @@ def _archive_single_tier_state(
     integrity_check: bool = False,
     exact_table_counts: bool = False,
 ) -> dict[str, Any]:
-    if not path.exists():
+    # Status surfaces share this probe for file presence, size, WAL size, and
+    # schema version. The workload report adds only its diagnostics-specific
+    # integrity and table-count facts, so it cannot disagree with daemon or
+    # direct-CLI status about the basic tier state.
+    tier_probe = probe_archive_tier(tier, path)
+    if not tier_probe.exists:
         return {
-            "path": str(path),
+            "path": tier_probe.path,
             "exists": False,
             "size_bytes": None,
-            "user_version": None,
+            "wal_size_bytes": 0,
+            "user_version": tier_probe.user_version,
+            "version_status": tier_probe.version_status,
             "integrity": "missing",
             "table_counts": {},
             "table_count_precision": {},
             "error": None,
         }
     payload: dict[str, Any] = {
-        "path": str(path),
+        "path": tier_probe.path,
         "exists": True,
-        "size_bytes": path.stat().st_size,
-        "user_version": None,
+        "size_bytes": tier_probe.size_bytes,
+        "wal_size_bytes": tier_probe.wal_size_bytes,
+        "user_version": tier_probe.user_version,
+        "version_status": tier_probe.version_status,
         "integrity": "not_checked",
         "table_counts": {},
         "table_count_precision": {},
@@ -1344,8 +1354,6 @@ def _archive_single_tier_state(
     try:
         conn = open_readonly_connection(path)
         try:
-            version_row = conn.execute("PRAGMA user_version").fetchone()
-            payload["user_version"] = int(version_row[0] or 0) if version_row is not None else 0
             if integrity_check:
                 integrity_row = conn.execute("PRAGMA quick_check").fetchone()
                 payload["integrity"] = str(integrity_row[0]) if integrity_row is not None else "unknown"
