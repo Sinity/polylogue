@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,7 @@ def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatc
         launched.update(command=command, kwargs=kwargs)
         return object()
 
-    monkeypatch.setattr(dev_loop_service.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
     dev_loop_service._start_daemon(
         repo_root=tmp_path,
