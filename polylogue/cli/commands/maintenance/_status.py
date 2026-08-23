@@ -58,6 +58,12 @@ def status_command(
     that the CLI ``plan``/``run`` commands, daemon HTTP, and MCP tools
     return.
     """
+    if operation_id is not None:
+        try:
+            operation_id = validate_operation_id(operation_id)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc), param_hint="--operation-id") from exc
+
     from polylogue.maintenance.envelope import envelope_from_operation
     from polylogue.maintenance.registry import MaintenanceOperationRegistry
 
@@ -68,12 +74,6 @@ def status_command(
         sources=[],
     )
     registry = MaintenanceOperationRegistry(config=config)
-
-    if operation_id is not None:
-        try:
-            operation_id = validate_operation_id(operation_id)
-        except ValueError as exc:
-            raise click.BadParameter(str(exc), param_hint="--operation-id") from exc
 
     if operation_id is not None:
         record = registry.get_operation(operation_id)
