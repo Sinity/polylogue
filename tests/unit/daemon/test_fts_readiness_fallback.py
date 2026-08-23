@@ -1,11 +1,9 @@
-"""FTS readiness recomputes exact coverage when the freshness cache is poisoned.
+"""FTS readiness reports durable freshness evidence without a new scan.
 
-On a fresh archive, daemon startup legitimately records ``messages_fts|ready|0|0``
-over an empty index. Trigger-maintained ingest then populates the index without
-ever triggering a rebuild that refreshes those counts, leaving the durable
-freshness row as the untrusted ``ready|0|0`` shape. Read surfaces (``status``,
-``/healthz``, ``/metrics``) funnel through ``fts_readiness_info`` and must report
-the real coverage instead of dividing 0/0 and showing 0% over a populated index.
+Status, health, and metrics must treat bounded or legacy evidence as stale.
+They may calculate a read-only fallback for callers that explicitly request an
+exact answer, but ordinary status reads do not publish or trigger a new exact
+invariant snapshot.
 """
 
 from __future__ import annotations
@@ -14,14 +12,18 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.fts.freshness import (
+    record_fts_invariant_snapshot_sync,
     record_fts_surface_stale_preserving_counts_sync,
     record_fts_surface_state_sync,
 )
+from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -51,28 +53,37 @@ def _populated_index(db: Path) -> None:
         conn.close()
 
 
-def test_readiness_falls_back_to_exact_when_freshness_poisoned(tmp_path: Path) -> None:
+def test_status_reads_nonexact_evidence_without_triggering_a_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = tmp_path / "index.db"
     _populated_index(db)
 
-    # Poison the durable freshness cache with the empty-archive ready|0|0 shape.
+    # A bounded observation is deliberately not READY-capable proof.
     conn = sqlite3.connect(db)
     try:
-        record_fts_surface_state_sync(conn, surface="messages_fts", state="ready", source_rows=0, indexed_rows=0)
+        record_fts_surface_state_sync(conn, surface="messages_fts", state="stale", source_rows=0, indexed_rows=0)
         conn.commit()
     finally:
         conn.close()
 
+    monkeypatch.setattr(
+        "polylogue.daemon.fts_status.fts_invariant_snapshot_sync",
+        lambda _conn: (_ for _ in ()).throw(AssertionError("status ran an exact FTS scan")),
+    )
     fts = fts_readiness_info(db, exact=False)
 
-    indexable = int(cast(int, fts["message_indexable_count"]))
-    indexed = int(cast(int, fts["message_indexed_count"]))
+    assert fts["messages_ready"] is False
+    assert fts["coverage_exact"] is False
+
+    monkeypatch.undo()
+    exact = fts_readiness_info(db, exact=True)
+    indexable = int(cast(int, exact["message_indexable_count"]))
+    indexed = int(cast(int, exact["message_indexed_count"]))
     assert indexable > 0
     assert indexed == indexable
-    assert fts["coverage_pct"] == 100.0
-    assert fts["messages_ready"] is True
-    # The fallback recomputed exact counts rather than trusting the cache.
-    assert fts["coverage_exact"] is True
+    assert exact["coverage_pct"] == 100.0
+    assert exact["messages_ready"] is True
 
 
 def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
@@ -137,14 +148,7 @@ def test_readiness_trusts_a_healthy_freshness_record_without_recompute(tmp_path:
 
     conn = sqlite3.connect(db)
     try:
-        indexed = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
-        record_fts_surface_state_sync(
-            conn,
-            surface="messages_fts",
-            state="ready",
-            source_rows=indexed,
-            indexed_rows=indexed,
-        )
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.commit()
     finally:
         conn.close()
@@ -177,15 +181,7 @@ def test_single_session_defer_does_not_falsely_zero_archive_wide_coverage(tmp_pa
     try:
         indexed = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0])
         assert indexed > 0
-        # Real, healthy archive-wide coverage recorded (e.g. by a prior
-        # invariant snapshot / bounded repair).
-        record_fts_surface_state_sync(
-            conn,
-            surface="messages_fts",
-            state="ready",
-            source_rows=indexed,
-            indexed_rows=indexed,
-        )
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.commit()
 
         # Simulate a single session's FTS repair being deferred during a live

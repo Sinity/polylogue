@@ -428,6 +428,8 @@ def test_archive_tiers_writer_splits_provider_user_from_authored_user_counts(tmp
         "user_word_count": 17,
         "authored_user_word_count": 5,
     }
+    material_origins = [row[0] for row in conn.execute("SELECT material_origin FROM messages ORDER BY position")]
+    assert material_origins == ["runtime_protocol", "generated_context_pack", "human_authored"]
 
 
 def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> None:

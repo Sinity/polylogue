@@ -404,8 +404,8 @@ def test_apply_index_fast_forward_dispatches_unknown_kind_generically() -> None:
         conn.close()
 
 
-def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path) -> None:
-    """A pre-existing poisoned 'ready' row is downgraded, not rejected, by the v51 copy.
+def test_v71_to_v72_sanitizes_legacy_fts_freshness_ready_rows(tmp_path: Path) -> None:
+    """v72 downgrades every v71 count-only READY row while retaining counters.
 
     polylogue-rlvj: before this fix, ``_mark_message_fts_ready_after_targeted_repair``
     could write ``state='ready'`` with ``source_rows != indexed_rows`` on the
@@ -437,7 +437,7 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
     path = tmp_path / "scratch.db"
     conn = sqlite3.connect(path)
     try:
-        # Pre-v51 shape: no invariant CHECK, only the state-vocabulary CHECK.
+        # v71 has count and identity evidence but no exact-snapshot columns.
         conn.execute(
             """
             CREATE TABLE fts_freshness_state (
@@ -449,6 +449,7 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
                 missing_rows INTEGER NOT NULL DEFAULT 0,
                 excess_rows INTEGER NOT NULL DEFAULT 0,
                 duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                identity_mismatch_rows INTEGER NOT NULL DEFAULT 0,
                 detail TEXT
             ) STRICT
             """
@@ -457,10 +458,10 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
             """
             INSERT INTO fts_freshness_state (
                 surface, state, checked_at, source_rows, indexed_rows,
-                missing_rows, excess_rows, duplicate_rows, detail
+                missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
             ) VALUES (
                 'messages_fts', 'ready', '2026-07-31T00:00:00+00:00',
-                4970352, 4957693, 0, 0, 0, 'targeted changed-session repair complete'
+                4970352, 4970352, 0, 0, 0, 0, 'legacy balanced count-only ready'
             )
             """
         )
@@ -468,10 +469,10 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
             """
             INSERT INTO fts_freshness_state (
                 surface, state, checked_at, source_rows, indexed_rows,
-                missing_rows, excess_rows, duplicate_rows, detail
+                missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
             ) VALUES (
                 'threads_fts', 'stale', '2026-07-31T00:00:00+00:00',
-                15411, 15401, 10, 0, 0, 'exact invariant failed'
+                15411, 15401, 10, 0, 0, 0, 'exact invariant failed'
             )
             """
         )
@@ -483,19 +484,21 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
         rows = {
             str(row[0]): row
             for row in conn.execute(
-                "SELECT surface, state, source_rows, indexed_rows, missing_rows FROM fts_freshness_state"
+                "SELECT surface, state, source_rows, indexed_rows, missing_rows, verification_kind, exact_checked_at "
+                "FROM fts_freshness_state"
             ).fetchall()
         }
     finally:
         conn.close()
 
-    # The poisoned row is downgraded to an honest 'stale' -- counts survive
-    # (nothing measured is lost) but the false 'ready' claim does not.
+    # The legacy READY row is downgraded. Its counts survive, but v72 does
+    # not misrepresent count-only evidence as an exact snapshot.
     assert rows["messages_fts"][1] == "stale"
-    assert rows["messages_fts"][2:] == (4970352, 4957693, 0)
+    assert rows["messages_fts"][2:5] == (4970352, 4970352, 0)
+    assert rows["messages_fts"][5:] == ("unknown", None)
     # An already-honest row is untouched.
     assert rows["threads_fts"][1] == "stale"
-    assert rows["threads_fts"][2:] == (15411, 15401, 10)
+    assert rows["threads_fts"][2:5] == (15411, 15401, 10)
 
 
 def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Path) -> None:

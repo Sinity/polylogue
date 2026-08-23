@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -44,23 +45,36 @@ def _run(
     return subprocess.run(list(cmd), cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
-def _branch_exists(root: Path, branch: str) -> bool:
-    return _run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]).returncode == 0
-
-
 def _ensure_worktree(root: Path, worktree: Path, branch: str, base: str) -> str | None:
-    """Create the worktree/branch if missing. Returns an error string or None."""
+    """Create a missing lane through AgentCTL; verify an existing Git worktree."""
     if worktree.exists():
         probe = _run(["git", "-C", str(worktree), "rev-parse", "--show-toplevel"])
         if probe.returncode != 0:
             return f"{worktree} exists but is not a git worktree"
         return None
-    if _branch_exists(root, branch):
-        result = _run(["git", "-C", str(root), "worktree", "add", str(worktree), branch])
-    else:
-        result = _run(["git", "-C", str(root), "worktree", "add", "-b", branch, str(worktree), base])
+    result = _run(
+        [
+            "agentctl",
+            "workspace",
+            "create",
+            "polylogue",
+            worktree.name,
+            "--branch",
+            branch,
+            "--base",
+            base,
+        ],
+        cwd=root,
+    )
     if result.returncode != 0:
-        return f"git worktree add failed: {result.stderr.strip()}"
+        return f"AgentCTL workspace create failed: {result.stderr.strip() or result.stdout.strip()}"
+    try:
+        response = json.loads(result.stdout)
+        value = response["payload"]["value"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return "AgentCTL workspace create returned an invalid response"
+    if response.get("ok") is not True or value.get("path") != str(worktree) or value.get("branch") != branch:
+        return "AgentCTL workspace create returned a mismatched workspace identity"
     return None
 
 

@@ -15,13 +15,11 @@ from tests.infra.pathology_zoo import (
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
-    _validate_artifact_with_retry,
     build_seeded_archive,
     clone_seeded_archive,
     default_cache_root,
     named_corpus_specs,
     schema_coverage_corpus_specs,
-    seeded_archive_key,
 )
 
 
@@ -83,38 +81,35 @@ def named_seeded_archive(
 
 
 @pytest.fixture
-def named_seeded_archive_ro(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Path]:
-    """Point this test's archive root straight at an immutable shared artifact.
+def named_seeded_archive_ro(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+    request: pytest.FixtureRequest,
+) -> Callable[[str], Path]:
+    """Give path-based read consumers a private immutable-artifact clone.
 
-    Published artifacts are already chmod-read-only with their WAL collapsed
-    into a DELETE journal, so any number of processes and xdist workers can
-    open them read-only at once. A read-only consumer therefore does not need
-    its own copy, and the per-test reflink clone it was paying for is pure
-    cost: ``tests/unit/cli/test_plain_cli_snapshots.py`` spent 95% of its
-    worker-seconds in fixture setup for tests that only run query verbs.
-
-    This intentionally does not depend on ``workspace_env``: the autouse
-    ``_clear_polylogue_env`` fixture already strips inherited ``POLYLOGUE_*``
-    configuration and redirects the XDG roots into ``tmp_path``, so the only
-    thing left to set is where the archive lives. Taking ``workspace_env``
-    would additionally clone an empty archive template per test that nothing
-    then reads.
-
-    A consumer that writes must take ``named_seeded_archive`` instead. Writes
-    here fail loudly on the artifact's read-only mode bits rather than
-    silently mutating the cache every other test shares.
+    CLI and completion tests open ``POLYLOGUE_ARCHIVE_ROOT`` by ordinary
+    filesystem paths, so they cannot receive the query lease's descriptor-
+    bound read-only guard.  A private clone preserves their existing surface
+    while making an accidental write test-local rather than cache-global.
     """
+
+    clones: list[SeededArchiveClone] = []
+
+    def close_clones() -> None:
+        for clone in reversed(clones):
+            clone.close()
+
+    request.addfinalizer(close_clones)
 
     def seed(name: str) -> Path:
         specs = named_corpus_specs(name)
         artifact = build_seeded_archive(specs)
-        validated = _validate_artifact_with_retry(artifact.root, seeded_archive_key(specs))
-        if validated is None or validated.manifest.manifest_id != artifact.manifest.manifest_id:
-            raise RuntimeError("shared seeded archive failed query-only lease validation")
-        if artifact.root.parent.name != "artifacts":
-            raise RuntimeError("shared seeded archive is outside the authenticated artifact placement")
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
-        return artifact.root / "index.db"
+        clone = clone_seeded_archive(artifact, workspace_env["archive_root"])
+        clones.append(clone)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
+        monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
+        return clone.root / "index.db"
 
     return seed
 

@@ -11,8 +11,14 @@ import aiosqlite
 from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.raw.models import RawSessionState, RawSessionStateUpdate
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    RawAdmissionExecution,
+    RawAdmissionRequest,
+    plan_raw_admission,
+)
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import raw as raw_queries
+from polylogue.storage.sqlite.queries import raw_writes
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
@@ -104,6 +110,12 @@ class SQLiteRawMixin:
         """
         async with self._get_connection() as conn:
             return await raw_queries.save_raw_session(conn, record, self._transaction_depth)
+
+    async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution:
+        """Apply one normal acquisition admission through the shared planner."""
+        plan = plan_raw_admission(request)
+        async with self._get_connection() as conn:
+            return await raw_writes.execute_raw_admission_plan_async(conn, plan, self._transaction_depth)
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
         """Persist or refresh one durable artifact observation."""

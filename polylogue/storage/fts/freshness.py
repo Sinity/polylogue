@@ -15,6 +15,9 @@ FRESHNESS_TABLE = "fts_freshness_state"
 READY = "ready"
 STALE = "stale"
 UNKNOWN = "unknown"
+EXACT = "exact"
+BOUNDED = "bounded"
+UNKNOWN_EVIDENCE = "unknown"
 MESSAGE_SURFACE = "messages_fts"
 _MESSAGE_FTS_TRIGGER_NAMES = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
@@ -31,6 +34,9 @@ _COLUMN_UPGRADES: tuple[tuple[str, str], ...] = (
     # the same backward-compatible-default shape the other counters already
     # use here.
     ("identity_mismatch_rows", "INTEGER NOT NULL DEFAULT 0"),
+    ("verification_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
+    ("exact_checked_at", "TEXT"),
+    ("exact_generation", "INTEGER"),
     ("detail", "TEXT"),
 )
 
@@ -57,6 +63,16 @@ def _int_or_zero(value: object) -> int:
         return 0
 
 
+def _index_generation_sync(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return _int_or_zero(None if row is None else row[0])
+
+
+async def _index_generation_async(conn: aiosqlite.Connection) -> int:
+    row = await (await conn.execute("PRAGMA user_version")).fetchone()
+    return _int_or_zero(None if row is None else row[0])
+
+
 def freshness_ready_record_trusted(
     *,
     state: str | None,
@@ -67,20 +83,22 @@ def freshness_ready_record_trusted(
     duplicate_rows: int,
     source_has_rows: bool | None,
     identity_mismatch_rows: int = 0,
+    verification_kind: str | None = None,
+    exact_checked_at: str | None = None,
+    exact_generation: int | None = None,
+    current_generation: int | None = None,
 ) -> bool:
     """Return whether a durable freshness row is safe to use as ready.
 
     A ``ready`` row must be internally clean. The historical poisoned shape
     ``source_rows=0`` and ``indexed_rows=0`` is trusted only after proving the
-    source table has no rows; otherwise readiness is unknown and must be
-    recomputed by repair/search paths. ``identity_mismatch_rows`` (default 0,
-    polylogue-1xc.12) is the rowid-reuse/changed-text/changed-recipe check the
-    ledger provides beyond a plain count comparison -- callers that never
-    compute it (bounded startup/repair paths that only compare counts) keep
-    the historical behavior by construction; callers that DID compute a
-    nonzero value must not silently drop it here.
+    source table has no rows. READY also requires an exact snapshot timestamp
+    and index generation. ``identity_mismatch_rows`` is the rowid-reuse,
+    changed-text, and changed-recipe check beyond plain count comparison.
     """
-    if state != READY:
+    if state != READY or verification_kind != EXACT or exact_checked_at is None or exact_generation is None:
+        return False
+    if current_generation is not None and exact_generation != current_generation:
         return False
     counters = (source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows)
     if any(counter < 0 for counter in counters):
@@ -156,23 +174,36 @@ def record_fts_surface_state_sync(
     identity_mismatch_rows: int = 0,
     detail: str | None = None,
 ) -> None:
+    """Record a bounded observation.
+
+    A caller with a scoped view cannot publish READY. When an exact snapshot
+    already exists, retain its counters and evidence while exposing the new
+    stale verdict. ``record_fts_invariant_snapshot_sync`` is the sole public
+    READY publisher.
+    """
+    if state == READY:
+        raise ValueError("READY requires record_fts_invariant_snapshot_sync")
     ensure_fts_freshness_table_sync(conn)
     conn.execute(
         """
         INSERT INTO fts_freshness_state (
             surface, state, checked_at, source_rows, indexed_rows,
-            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
+            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows,
+            verification_kind, exact_checked_at, exact_generation, detail
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'bounded', NULL, NULL, ?)
         ON CONFLICT(surface) DO UPDATE SET
             state=excluded.state,
             checked_at=excluded.checked_at,
-            source_rows=excluded.source_rows,
-            indexed_rows=excluded.indexed_rows,
-            missing_rows=excluded.missing_rows,
-            excess_rows=excluded.excess_rows,
-            duplicate_rows=excluded.duplicate_rows,
-            identity_mismatch_rows=excluded.identity_mismatch_rows,
+            source_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.source_rows ELSE excluded.source_rows END,
+            indexed_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.indexed_rows ELSE excluded.indexed_rows END,
+            missing_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.missing_rows ELSE excluded.missing_rows END,
+            excess_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.excess_rows ELSE excluded.excess_rows END,
+            duplicate_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.duplicate_rows ELSE excluded.duplicate_rows END,
+            identity_mismatch_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.identity_mismatch_rows ELSE excluded.identity_mismatch_rows END,
+            verification_kind=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN 'exact' ELSE 'bounded' END,
+            exact_checked_at=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.exact_checked_at ELSE NULL END,
+            exact_generation=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.exact_generation ELSE NULL END,
             detail=excluded.detail
         """,
         (
@@ -203,23 +234,29 @@ async def record_fts_surface_state_async(
     identity_mismatch_rows: int = 0,
     detail: str | None = None,
 ) -> None:
+    if state == READY:
+        raise ValueError("READY requires record_fts_invariant_snapshot_sync")
     await ensure_fts_freshness_table_async(conn)
     await conn.execute(
         """
         INSERT INTO fts_freshness_state (
             surface, state, checked_at, source_rows, indexed_rows,
-            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, detail
+            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows,
+            verification_kind, exact_checked_at, exact_generation, detail
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'bounded', NULL, NULL, ?)
         ON CONFLICT(surface) DO UPDATE SET
             state=excluded.state,
             checked_at=excluded.checked_at,
-            source_rows=excluded.source_rows,
-            indexed_rows=excluded.indexed_rows,
-            missing_rows=excluded.missing_rows,
-            excess_rows=excluded.excess_rows,
-            duplicate_rows=excluded.duplicate_rows,
-            identity_mismatch_rows=excluded.identity_mismatch_rows,
+            source_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.source_rows ELSE excluded.source_rows END,
+            indexed_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.indexed_rows ELSE excluded.indexed_rows END,
+            missing_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.missing_rows ELSE excluded.missing_rows END,
+            excess_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.excess_rows ELSE excluded.excess_rows END,
+            duplicate_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.duplicate_rows ELSE excluded.duplicate_rows END,
+            identity_mismatch_rows=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.identity_mismatch_rows ELSE excluded.identity_mismatch_rows END,
+            verification_kind=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN 'exact' ELSE 'bounded' END,
+            exact_checked_at=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.exact_checked_at ELSE NULL END,
+            exact_generation=CASE WHEN fts_freshness_state.verification_kind = 'exact' THEN fts_freshness_state.exact_generation ELSE NULL END,
             detail=excluded.detail
         """,
         (
@@ -296,9 +333,61 @@ def record_fts_surface_stale_preserving_counts_sync(
     )
 
 
+def _record_fts_exact_surface_state_sync(
+    conn: sqlite3.Connection,
+    *,
+    surface: str,
+    state: str,
+    source_rows: int,
+    indexed_rows: int,
+    missing_rows: int,
+    excess_rows: int,
+    duplicate_rows: int,
+    identity_mismatch_rows: int,
+    detail: str | None,
+) -> None:
+    exact_checked_at = _now_iso()
+    exact_generation = _index_generation_sync(conn)
+    conn.execute(
+        """
+        INSERT INTO fts_freshness_state (
+            surface, state, checked_at, source_rows, indexed_rows,
+            missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows,
+            verification_kind, exact_checked_at, exact_generation, detail
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?)
+        ON CONFLICT(surface) DO UPDATE SET
+            state=excluded.state, checked_at=excluded.checked_at,
+            source_rows=excluded.source_rows, indexed_rows=excluded.indexed_rows,
+            missing_rows=excluded.missing_rows, excess_rows=excluded.excess_rows,
+            duplicate_rows=excluded.duplicate_rows,
+            identity_mismatch_rows=excluded.identity_mismatch_rows,
+            verification_kind=excluded.verification_kind,
+            exact_checked_at=excluded.exact_checked_at,
+            exact_generation=excluded.exact_generation,
+            detail=excluded.detail
+        """,
+        (
+            surface,
+            state,
+            exact_checked_at,
+            source_rows,
+            indexed_rows,
+            missing_rows,
+            excess_rows,
+            duplicate_rows,
+            identity_mismatch_rows,
+            exact_checked_at,
+            exact_generation,
+            detail,
+        ),
+    )
+
+
 def record_fts_invariant_snapshot_sync(conn: sqlite3.Connection, snapshot: Any) -> None:
+    """Publish a transaction-bound exact FTS snapshot, the only READY path."""
+    ensure_fts_freshness_table_sync(conn)
     for surface in snapshot.surfaces:
-        record_fts_surface_state_sync(
+        _record_fts_exact_surface_state_sync(
             conn,
             surface=str(surface.name),
             state=READY if bool(surface.ready) else STALE,
@@ -376,6 +465,9 @@ def _message_fts_record_sync(conn: sqlite3.Connection) -> dict[str, object] | No
         "excess_rows",
         "duplicate_rows",
         "identity_mismatch_rows",
+        "verification_kind",
+        "exact_checked_at",
+        "exact_generation",
     ):
         if name in columns:
             selected.append(name)
@@ -401,6 +493,9 @@ async def _message_fts_record_async(conn: aiosqlite.Connection) -> dict[str, obj
         "excess_rows",
         "duplicate_rows",
         "identity_mismatch_rows",
+        "verification_kind",
+        "exact_checked_at",
+        "exact_generation",
     ):
         if name in columns:
             selected.append(name)
@@ -422,6 +517,7 @@ def _recorded_counter(record: dict[str, object], name: str) -> int:
 def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, object]) -> bool:
     source_rows = _recorded_counter(record, "source_rows")
     indexed_rows = _recorded_counter(record, "indexed_rows")
+    exact_checked_at = record.get("exact_checked_at")
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
@@ -430,6 +526,10 @@ def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, objec
         excess_rows=_recorded_counter(record, "excess_rows"),
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
         identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
+        verification_kind=str(record.get("verification_kind")),
+        exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
+        exact_generation=_recorded_counter(record, "exact_generation"),
+        current_generation=_index_generation_sync(conn),
         source_has_rows=_message_fts_source_has_rows_sync(conn) if source_rows == 0 and indexed_rows == 0 else False,
     )
 
@@ -437,6 +537,7 @@ def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, objec
 async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[str, object]) -> bool:
     source_rows = _recorded_counter(record, "source_rows")
     indexed_rows = _recorded_counter(record, "indexed_rows")
+    exact_checked_at = record.get("exact_checked_at")
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
@@ -445,6 +546,10 @@ async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[s
         excess_rows=_recorded_counter(record, "excess_rows"),
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
         identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
+        verification_kind=str(record.get("verification_kind")),
+        exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
+        exact_generation=_recorded_counter(record, "exact_generation"),
+        current_generation=await _index_generation_async(conn),
         source_has_rows=await _message_fts_source_has_rows_async(conn)
         if source_rows == 0 and indexed_rows == 0
         else False,
@@ -536,10 +641,13 @@ async def message_fts_recorded_ready_trusted_async(conn: aiosqlite.Connection) -
 
 __all__ = [
     "FRESHNESS_TABLE",
+    "BOUNDED",
+    "EXACT",
     "MESSAGE_SURFACE",
     "READY",
     "STALE",
     "UNKNOWN",
+    "UNKNOWN_EVIDENCE",
     "ensure_fts_freshness_table_async",
     "ensure_fts_freshness_table_sync",
     "freshness_ready_record_trusted",

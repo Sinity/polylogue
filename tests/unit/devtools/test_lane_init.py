@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -261,7 +262,12 @@ def test_public_lane_init_bootstraps_an_existing_lane_with_inherited_coordinator
     )
     coordinator_python.chmod(0o755)
     branch = "feature/test/public-lane-bootstrap"
-    assert lane_init._ensure_worktree(coordinator, lane, branch, "HEAD") is None
+    subprocess.run(
+        ["git", "-C", str(coordinator), "worktree", "add", "-b", branch, str(lane), "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     for relative_path in ("devtools/click_dispatch.py", "devtools/lane_init.py"):
         shutil.copy2(project_root / relative_path, lane / relative_path)
 
@@ -292,7 +298,7 @@ def test_public_lane_init_bootstraps_an_existing_lane_with_inherited_coordinator
 
     rerouted = subprocess.run(
         [
-            str(coordinator_python),
+            str(lane / ".venv" / "bin" / "python"),
             "-m",
             "devtools",
             "workspace",
@@ -302,11 +308,52 @@ def test_public_lane_init_bootstraps_an_existing_lane_with_inherited_coordinator
             branch,
         ],
         cwd=lane,
-        env=poisoned_env,
+        env=lane_init.lane_command_env(lane),
         capture_output=True,
         text=True,
     )
     assert rerouted.returncode == 0, rerouted.stdout + rerouted.stderr
+
+
+def test_missing_lane_creation_delegates_to_agentctl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: replacing agentctl with git worktree add fails the command assertion."""
+    root = tmp_path / "root"
+    worktree = tmp_path / "agentctl-lane"
+    root.mkdir()
+    observed: list[list[str]] = []
+
+    def fake_run(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        observed.append(list(cmd))
+        payload = {
+            "ok": True,
+            "payload": {
+                "kind": "inline",
+                "value": {"path": str(worktree), "branch": "feature/test/agentctl-lane"},
+            },
+        }
+        return CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+
+    assert lane_init._ensure_worktree(root, worktree, "feature/test/agentctl-lane", "origin/master") is None
+    assert observed == [
+        [
+            "agentctl",
+            "workspace",
+            "create",
+            "polylogue",
+            "agentctl-lane",
+            "--branch",
+            "feature/test/agentctl-lane",
+            "--base",
+            "origin/master",
+        ]
+    ]
 
 
 # ---------------------------------------------------------------------------

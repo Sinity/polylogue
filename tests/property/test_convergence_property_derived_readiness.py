@@ -40,15 +40,16 @@ def test_production_insights_convergence_publishes_final_fts_freshness(tmp_path:
     with sqlite3.connect(archive.root / "index.db") as conn:
         row = conn.execute(
             """
-            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, verification_kind
             FROM fts_freshness_state
             WHERE surface = 'session_work_events_fts'
             """
         ).fetchone()
 
     assert row is not None
-    state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows = row
+    state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, verification_kind = row
     assert state == "ready"
+    assert verification_kind == "exact"
     assert source_rows > 0
     assert indexed_rows == source_rows
     assert (missing_rows, excess_rows, duplicate_rows) == (0, 0, 0)

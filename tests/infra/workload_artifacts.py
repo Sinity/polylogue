@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from itertools import chain
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from unittest.mock import patch
 
 from polylogue.config import Config, Source
@@ -53,6 +53,9 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _ARTIFACT_PROTOCOL_VERSION = 2
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
@@ -188,41 +191,92 @@ class SeededArchiveClone:
     source_manifest_id: str
     clone_method: str
     _integrity_fd: int = field(default=-1, repr=False, compare=False)
-    _ancestor_fd: int = field(default=-1, repr=False, compare=False)
-    _parent_fd: int = field(default=-1, repr=False, compare=False)
-    _ancestor_mode: int | None = field(default=None, repr=False, compare=False)
-    _parent_mode: int | None = field(default=None, repr=False, compare=False)
 
     def close(self) -> None:
-        """Release the pinned return capability and its publication domain."""
+        """Release this clone root's pinned integrity capability."""
         if self._integrity_fd >= 0:
             with contextlib.suppress(OSError):
                 os.close(self._integrity_fd)
             self._integrity_fd = -1
-        if self._parent_fd >= 0:
-            if self._parent_mode is not None:
-                with contextlib.suppress(OSError):
-                    os.fchmod(self._parent_fd, self._parent_mode)
-            with contextlib.suppress(OSError):
-                fcntl.flock(self._parent_fd, fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(self._parent_fd)
-            self._parent_fd = -1
-        if self._ancestor_fd >= 0:
-            if self._ancestor_mode is not None:
-                with contextlib.suppress(OSError):
-                    os.fchmod(self._ancestor_fd, self._ancestor_mode)
-            with contextlib.suppress(OSError):
-                fcntl.flock(self._ancestor_fd, fcntl.LOCK_UN)
-            with contextlib.suppress(OSError):
-                os.close(self._ancestor_fd)
-            self._ancestor_fd = -1
 
     def __del__(self) -> None:
         with contextlib.suppress(BaseException):
             self.close()
 
     def __enter__(self) -> SeededArchiveClone:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+@dataclass
+class SeededArchiveQueryLease:
+    """Pinned capability that authenticates a shared artifact at consumer open."""
+
+    artifact: SeededArchiveArtifact
+    key: SeededArchiveKey
+    _root_fd: int = field(default=-1, repr=False, compare=False)
+
+    @property
+    def root(self) -> Path:
+        return self.artifact.root
+
+    @property
+    def path(self) -> Path:
+        return self.root / "index.db"
+
+    def __fspath__(self) -> str:
+        return os.fspath(self.path)
+
+    def __getattr__(self, name: str) -> object:
+        """Keep existing path-only fixture consumers source-compatible."""
+        return getattr(self.path, name)
+
+    def _assert_current(self) -> None:
+        if self._root_fd < 0:
+            raise RuntimeError("query-only capability is finalized")
+        if self.root.parent.name != "artifacts":
+            raise RuntimeError("query-only capability source placement changed")
+        try:
+            placed = os.lstat(self.root)
+            pinned = os.fstat(self._root_fd)
+        except OSError as exc:
+            raise RuntimeError("query-only capability source placement changed") from exc
+        if (
+            not stat.S_ISDIR(placed.st_mode)
+            or stat.S_ISLNK(placed.st_mode)
+            or (placed.st_dev, placed.st_ino) != (pinned.st_dev, pinned.st_ino)
+        ):
+            raise RuntimeError("query-only capability source placement changed")
+        validated = _validate_artifact_with_retry(self.root, self.key)
+        if validated is None or validated.manifest.manifest_id != self.artifact.manifest.manifest_id:
+            raise RuntimeError("query-only capability source content changed")
+
+    def open(self, *, read_only: bool = True) -> ArchiveStore:
+        """Open only a revalidated, descriptor-bound read connection."""
+        if not read_only:
+            raise RuntimeError("query-only capability refuses write-capable connections")
+        self._assert_current()
+        index_fd = -1
+        try:
+            index_fd = _open_file_fd(self.path)
+            self._assert_current()
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            return ArchiveStore.open_existing(self.root, read_only=True, opened_main_fd=index_fd)
+        finally:
+            if index_fd >= 0:
+                os.close(index_fd)
+
+    def close(self) -> None:
+        """Finalize the capability and refuse later opens."""
+        if self._root_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self._root_fd)
+            self._root_fd = -1
+
+    def __enter__(self) -> SeededArchiveQueryLease:
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -2299,6 +2353,25 @@ def _authenticate_clone_copy(
             os.close(clone_manifest_fd)
 
 
+def acquire_query_only_seeded_archive(
+    artifact: SeededArchiveArtifact,
+    key: SeededArchiveKey,
+) -> SeededArchiveQueryLease:
+    """Pin a shared source and validate it before every lease-mediated use."""
+    root_fd = -1
+    try:
+        root_fd = _open_pinned_dir(artifact.root)
+        fcntl.flock(root_fd, fcntl.LOCK_SH)
+        lease = SeededArchiveQueryLease(artifact=artifact, key=key, _root_fd=root_fd)
+        lease._assert_current()
+        return lease
+    except BaseException:
+        if root_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(root_fd)
+        raise
+
+
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
     """Create an authenticated private clone with a clone-scoped capability.
 
@@ -2325,7 +2398,12 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         _remove_tree(destination)
-        _copy_tree(artifact.root, destination)
+        try:
+            _copy_tree(artifact.root, destination)
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                _remove_tree(destination)
+            raise
         method = "copy"
     integrity_fd = -1
     try:
@@ -2368,6 +2446,8 @@ __all__ = [
     "BenchmarkWorkloadProfile",
     "BenchmarkWorkloadTier",
     "SeededArchiveArtifact",
+    "SeededArchiveQueryLease",
+    "acquire_query_only_seeded_archive",
     "build_immutable_tree",
     "clone_immutable_tree",
     "SeededArchiveClone",

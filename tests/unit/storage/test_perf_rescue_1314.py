@@ -20,6 +20,7 @@ hosts and CI shapes.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -86,21 +87,18 @@ def test_session_insight_rebuild_page_size_is_at_least_50() -> None:
 
 def test_search_session_hits_uses_freshness_ledger_before_match(isolated_bench_db_1k: Path) -> None:
     """Search should not pay archive-scale COUNT(*) probes after daemon readiness."""
-    from polylogue.storage.fts.freshness import READY, record_fts_surface_state_async
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+    with sqlite3.connect(isolated_bench_db_1k) as conn:
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+        conn.commit()
 
     with open_bench_store(isolated_bench_db_1k) as store:
         backend = store.backend
 
         async def _run(statements: list[str]) -> None:
             async with backend.connection() as conn:
-                await record_fts_surface_state_async(
-                    conn,
-                    surface="messages_fts",
-                    state=READY,
-                    source_rows=1,
-                    indexed_rows=1,
-                )
-                await conn.commit()
                 await search_session_hits(conn, "analysis", limit=5)
 
         with _capture_aiosqlite_sql() as statements:
