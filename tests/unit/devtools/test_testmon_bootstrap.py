@@ -510,6 +510,49 @@ def test_native_inspection_rejects_hardlinked_database_and_sidecars(tmp_path: Pa
     assert outside.read_text(encoding="utf-8") == "external state"
 
 
+@pytest.mark.parametrize("alias_suffix", ("foreign.tmp", "123-not-a-uuid.tmp"))
+def test_source_binding_preserves_foreign_or_malformed_same_inode_alias(
+    tmp_path: Path,
+    alias_suffix: str,
+) -> None:
+    """Reclamation must not delete arbitrary same-inode private-looking names."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    alias = source_data.with_name(f".{source_data.name}.bound-{alias_suffix}")
+    os.link(source_data, alias)
+
+    with pytest.raises(NativeTestmonRepairError, match="child changed while binding"):
+        with native_testmon_source_binding(source_data):
+            pytest.fail("a foreign or malformed alias must reject the source bind")
+
+    assert alias.exists(), "a foreign or malformed alias was reclaimed by broad prefix matching"
+    assert source_data.stat().st_nlink == 2
+
+
+def test_source_binding_reclaims_exactly_shaped_stale_same_inode_alias(tmp_path: Path) -> None:
+    """A crash-left alias produced by this module remains reclaimable."""
+    source_root = tmp_path / "source"
+    (source_root / "tests").mkdir(parents=True)
+    source_data = _seed_partial_native_graph(
+        source_root,
+        environment_name="owned-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+    alias = source_data.with_name(f".{source_data.name}.bound-123-{'a' * 32}.tmp")
+    os.link(source_data, alias)
+
+    with native_testmon_source_binding(source_data) as binding:
+        assert binding is not None
+
+    assert not alias.exists()
+    assert source_data.stat().st_nlink == 1
+
+
 def test_native_inspection_recovers_sidecars_through_retained_source_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
