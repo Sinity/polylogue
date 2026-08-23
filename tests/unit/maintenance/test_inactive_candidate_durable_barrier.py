@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 import polylogue.sources.revision_backfill as revision_backfill_module
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import resolve_or_start_daemon_bulk_rebuild_transaction
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
@@ -65,8 +64,11 @@ def _optional_path_evidence(path: Path) -> tuple[int, int, str] | None:
 
 
 def _assert_no_candidate_bookkeeping(root: Path) -> None:
-    assert not (root / ".index-generations").exists()
-    assert not (root / ".index-rebuild-transactions").exists()
+    # Active-archive bootstrap owns empty lifecycle directories. Candidate
+    # allocation is evidenced by a generation/transaction record inside them,
+    # not by the directories' existence.
+    assert not tuple((root / ".index-generations").glob("gen-*/generation.json"))
+    assert not tuple((root / ".index-rebuild-transactions").glob("*.json"))
 
 
 def _chatgpt_bundle(*native_ids: str) -> bytes:
@@ -559,28 +561,32 @@ def test_candidate_rejects_poisoned_typed_append_census_before_allocation(
     _prepare_frozen_source(root, monkeypatch)
     with sqlite3.connect(root / "source.db") as source:
         baseline_raw_id, logical_key = source.execute("SELECT raw_id, logical_source_key FROM raw_sessions").fetchone()
-    append_payload = b'{"type":"response_item","payload":{"type":"message","id":"append"}}\n'
+    append_payload = (
+        b'{"type":"session_meta","payload":{"id":"poisoned-append-session",'
+        b'"timestamp":"2026-06-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"append"}}\n'
+    )
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         append_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=append_payload,
             source_path="current/append.jsonl",
-            source_index=-1,
+            source_index=1,
             acquired_at_ms=2,
-            revision=RawRevisionEnvelope(
-                logical_source_key=str(logical_key),
-                kind=RawRevisionKind.APPEND,
-                source_revision="append-revision",
-                predecessor_source_revision=str(baseline_raw_id),
-                predecessor_raw_id=str(baseline_raw_id),
-                baseline_raw_id=str(baseline_raw_id),
-                acquisition_generation=1,
-                append_start_offset=0,
-                append_end_offset=len(append_payload),
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
+            raw_id=hashlib.sha256(b"poisoned-typed-append-census").hexdigest(),
         )
     with sqlite3.connect(root / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = 'append', source_revision = 'append-revision',
+                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                append_start_offset = 0, append_end_offset = ?, acquisition_generation = 1,
+                revision_authority = 'byte_proven'
+            WHERE raw_id = ?
+            """,
+            (logical_key, baseline_raw_id, baseline_raw_id, baseline_raw_id, len(append_payload), append_raw_id),
+        )
         source.execute(
             "UPDATE raw_sessions SET logical_source_key = ? WHERE raw_id = ?",
             ("codex-session:poisoned-append-key", append_raw_id),
