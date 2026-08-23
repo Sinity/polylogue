@@ -12,7 +12,7 @@ from polylogue.cli.commands.maintenance import _rebuild_index_status as rebuild_
 from polylogue.cli.commands.maintenance import _status as status_module
 from polylogue.cli.shared.types import AppEnv
 
-INVALID_OPERATION_ID = "../escape"
+INVALID_OPERATION_ID = "../not-an-opaque-id"
 
 
 def test_status_rejects_invalid_operation_id_before_registry_lookup(
@@ -33,7 +33,7 @@ def test_status_rejects_invalid_operation_id_before_registry_lookup(
     )
 
     assert result.exit_code != 0
-    assert result.exception is not None
+    assert "operation_id must not contain path separators" in result.output
 
 
 def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(
@@ -53,7 +53,7 @@ def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(
     )
 
     assert result.exit_code != 0
-    assert result.exception is not None
+    assert "operation_id must not contain path separators" in result.output
 
 
 def test_raw_authority_recovery_rejects_invalid_operation_id_before_recovery(
@@ -66,8 +66,9 @@ def test_raw_authority_recovery_rejects_invalid_operation_id_before_recovery(
     monkeypatch.setattr(raw_module, "resume_raw_authority_recovery", fail_recovery)
     result = CliRunner().invoke(
         raw_module.raw_authority_recovery_command,
-        ["--operation", "reset", "--operation-id", INVALID_OPERATION_ID],
+        ["--operation", "reset_raw_authority_census", "--operation-id", INVALID_OPERATION_ID],
+        obj=AppEnv(),
     )
 
     assert result.exit_code != 0
-    assert result.exception is not None
+    assert "operation_id must not contain path separators" in result.output
