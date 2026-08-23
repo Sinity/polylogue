@@ -22,7 +22,6 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
-from devtools.verify_runs import apply_managed_pytest_runtime_policy, force_managed_pytest_scratch
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
@@ -98,6 +97,7 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
 
     with tempfile.TemporaryDirectory(prefix="verify-slos-") as tmpdir:
         json_path = Path(tmpdir) / "benchmark.json"
+        pytest_basetemp = Path(tmpdir) / "pytest"
 
         cmd = [
             sys.executable,
@@ -109,17 +109,13 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
             "0",
             "-p",
             "no:randomly",
+            f"--basetemp={pytest_basetemp}",
             "--benchmark-enable",
             f"--benchmark-json={json_path}",
             *sorted(test_ids),
         ]
 
-        env, _policy = apply_managed_pytest_runtime_policy(
-            force_managed_pytest_scratch(os.environ),
-            worker_count=0,
-            full_suite=False,
-        )
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=dict(os.environ))
 
         if not json_path.exists() or json_path.stat().st_size == 0:
             print("verify-slos: no benchmark results produced", file=sys.stderr)

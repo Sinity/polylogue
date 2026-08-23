@@ -22,14 +22,12 @@ import io
 import json
 import os
 import subprocess
-from collections.abc import Mapping
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
 
 from devtools import verify_slos
-from devtools.verify_runs import PytestRuntimePolicy
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CATALOG_PATH = REPO_ROOT / "docs" / "plans" / "slo-catalog.yaml"
@@ -38,7 +36,7 @@ BENCH_FIXTURE_DIR = REPO_ROOT / "tests" / "data" / "pytest-benchmark"
 REQUIRED_SURFACES = ("query", "reader", "facets", "context", "cost")
 
 
-def test_benchmark_runner_routes_inherited_tmpfs_root_to_managed_scratch(
+def test_benchmark_runner_uses_private_basetemp_despite_inherited_tmpfs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inherited_env = {
@@ -50,33 +48,26 @@ def test_benchmark_runner_routes_inherited_tmpfs_root_to_managed_scratch(
     }
     monkeypatch.setattr(os, "environ", inherited_env)
     captured: dict[str, object] = {}
-
-    def fake_policy(
-        env: Mapping[str, str], *, worker_count: int | None, full_suite: bool
-    ) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
-        captured["policy_env"] = dict(env)
-        captured["worker_count"] = worker_count
-        captured["full_suite"] = full_suite
-        return dict(env), None
+    captured_command: list[str] = []
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        captured["command"] = command
+        captured_command.extend(command)
         captured["env"] = kwargs["env"]
+        basetemp = Path(next(argument.split("=", 1)[1] for argument in command if argument.startswith("--basetemp=")))
+        assert basetemp.parent.is_dir()
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(verify_slos, "apply_managed_pytest_runtime_policy", fake_policy)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert verify_slos._run_benchmarks({"tests/benchmarks/test_reader_api.py::test_bench_reader_status"}) == {}
-    assert captured["policy_env"] == {
+    assert captured["env"] == {
         "POLYLOGUE_VERIFY_RUN_ID": "verify-run-123",
         "POLYLOGUE_PYTEST_RUN_ID": "verify-run-123",
-        "POLYLOGUE_PYTEST_TMPFS": "0",
+        "POLYLOGUE_PYTEST_TMPFS": "1",
         "POLYLOGUE_PYTEST_TMPFS_MAX_MB": "512",
+        "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/inherited-benchmark",
     }
-    assert captured["worker_count"] == 0
-    assert captured["full_suite"] is False
-    assert captured["env"] == captured["policy_env"]
+    assert any(argument.startswith("--basetemp=") for argument in captured_command)
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
