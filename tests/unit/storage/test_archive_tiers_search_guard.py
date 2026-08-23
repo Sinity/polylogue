@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.errors import DatabaseError
-from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -52,18 +51,10 @@ def test_hyphenated_token_does_not_raise(workspace_env: dict[str, Path]) -> None
 def test_search_rejects_ready_freshness_row_when_triggers_missing(workspace_env: dict[str, Path]) -> None:
     archive_root = _seed(workspace_env)
     with sqlite3.connect(archive_root / "index.db") as conn:
-        source_rows = int(conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0] or 0)
-        indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
-        record_fts_surface_state_sync(
-            conn,
-            surface="messages_fts",
-            state="ready",
-            source_rows=source_rows,
-            indexed_rows=indexed_rows,
-            missing_rows=0,
-            excess_rows=0,
-            duplicate_rows=0,
-        )
+        from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.executescript(
             """
             DROP TRIGGER IF EXISTS messages_fts_ai;

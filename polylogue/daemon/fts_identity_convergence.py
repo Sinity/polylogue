@@ -8,18 +8,11 @@ call sites is a *scheduled*, quiet-cadence pass whose sole job is recomputing
 the exact snapshot and re-recording it -- they all run opportunistically,
 attached to some other event (a rebuild, a repair pass, a boot).
 
-That matters because ``daemon/fts_startup.py``'s bounded STALE-write path
-(``_ensure_archive_messages_fts_startup_readiness_sync``) can call
-``record_fts_surface_state_sync`` with only the bounded ``source_rows``/
-``indexed_rows``/``missing_rows``/``excess_rows`` counts it has on hand,
-never ``identity_mismatch_rows`` -- the parameter defaults to ``0`` and the
-``ON CONFLICT`` upsert overwrites the freshness row unconditionally, so a
-previously recorded nonzero ``identity_mismatch_rows`` silently resets to 0
-without ever being recomputed. This module is the scheduled recompute
-authority that corrects that: a periodic, quiet-cadence pass that always
-runs the real exact reconciliation (``fts_invariant_snapshot_sync``) and
-records its real ``identity_mismatch_rows``, rather than trusting whatever a
-narrower bounded caller last wrote.
+Bounded startup and repair writes preserve the last exact counters while
+marking the ledger stale. This module remains the scheduled recompute
+authority: it runs the real exact reconciliation
+(``fts_invariant_snapshot_sync``), refreshes ``identity_mismatch_rows``, and
+records the only READY-capable snapshot.
 
 Deliberately NOT a ``DaemonConverger``/``ConvergenceStage`` (see
 ``docs/retro/2026-05-24-1498-cascade.md``: ``convergence_stages.py`` is
@@ -75,11 +68,10 @@ def run_fts_identity_drift_recompute_once_sync(db_path: Path) -> FtsIdentityDrif
     :func:`polylogue.storage.fts.freshness.record_fts_invariant_snapshot_sync`
     and appends an ops.db drift-magnitude sample via
     :func:`polylogue.storage.fts.drift_sampling.sample_fts_drift_to_ops_sync`.
-    This is the same three-call composition already used by
-    ``fts_lifecycle.py``'s rebuild/repair paths and
-    ``fts_startup.py``'s successful-startup path -- this module's only job is
-    scheduling that composition on a standalone quiet cadence, independent of
-    any other event.
+    Full rebuilds and successful startup use the same snapshot publisher.
+    Scoped repair paths intentionally remain stale instead. This module's only
+    job is scheduling the exact composition on a standalone quiet cadence,
+    independent of any other event.
 
     A missing ``db_path`` (archive not yet initialized) or any
     ``sqlite3.Error`` is a bounded no-op, matching every other periodic

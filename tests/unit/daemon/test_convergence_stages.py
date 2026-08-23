@@ -1122,17 +1122,8 @@ def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
         assert stages._fts_repair_needs_for_sessions(conn, [session_id]) == stages._FtsRepairNeeds()
 
 
-def test_targeted_fts_ready_marker_records_real_archive_counts(tmp_path: Path) -> None:
-    """The marker writes the real exact archive-wide invariant, not a stale carry-over.
-
-    Regression guard for polylogue-rlvj: this used to *preserve* whatever
-    counts a prior exact snapshot had recorded (100/99/missing=1) unchanged
-    while flipping state to 'ready' -- a self-contradictory row
-    (source_rows != indexed_rows yet state='ready') driven by a cheap
-    existence check, not a real recount. The fix always recomputes the true
-    counts, so a single fully-indexed session must report the real (1, 1, 0)
-    triple, discarding the stale placeholder.
-    """
+def test_targeted_fts_ready_marker_preserves_prior_counts_without_publishing_ready(tmp_path: Path) -> None:
+    """A scoped repair stays stale and retains the last exact counters."""
     from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 
     db_path = tmp_path / "index.db"
@@ -1157,13 +1148,13 @@ def test_targeted_fts_ready_marker_records_real_archive_counts(tmp_path: Path) -
         ).fetchone()
 
     assert tuple(row) == (
-        "ready",
+        "stale",
+        100,
+        99,
         1,
-        1,
         0,
         0,
-        0,
-        "targeted changed-session repair complete",
+        "targeted changed-session repair requires exact invariant verification",
     )
 
 
@@ -1203,12 +1194,10 @@ def test_targeted_fts_ready_marker_stays_stale_for_an_untouched_gap(tmp_path: Pa
         ).fetchone()
 
     assert row[0] == "stale"
-    assert row[1] == 2  # both blocks are indexable
-    assert row[2] == 1  # only the fixed session's block is actually indexed
-    assert row[3] == 1  # the orphan's gap is reported honestly, not zeroed
+    assert row[1:6] == (0, 0, 0, 0, 0)
     assert row[4] == 0
     assert row[5] == 0
-    assert row[6] == "targeted changed-session repair left an archive-wide FTS gap"
+    assert row[6] == "targeted changed-session repair requires exact invariant verification"
 
 
 def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path) -> None:
@@ -1237,13 +1226,13 @@ def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path
         ).fetchone()
 
     assert tuple(row) == (
-        "ready",
-        1,
-        1,
+        "stale",
         0,
         0,
         0,
-        "targeted changed-session repair complete",
+        0,
+        0,
+        "targeted changed-session repair requires exact invariant verification",
     )
 
 

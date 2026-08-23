@@ -316,6 +316,10 @@ class TestFormatMetricsReadsArchiveState:
                     missing_rows INTEGER NOT NULL DEFAULT 0,
                     excess_rows INTEGER NOT NULL DEFAULT 0,
                     duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                    identity_mismatch_rows INTEGER NOT NULL DEFAULT 0,
+                    verification_kind TEXT NOT NULL DEFAULT 'unknown',
+                    exact_checked_at TEXT,
+                    exact_generation INTEGER,
                     detail TEXT
                 );
                 CREATE TABLE live_convergence_debt (
@@ -376,9 +380,13 @@ class TestFormatMetricsReadsArchiveState:
                 ],
             )
             conn.executemany(
-                "INSERT INTO fts_freshness_state (surface, state, checked_at) VALUES (?, ?, ?)",
+                """
+                INSERT INTO fts_freshness_state (
+                    surface, state, checked_at, verification_kind, exact_checked_at, exact_generation
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 [
-                    ("messages_fts", "ready", "2026-05-01T00:00:04Z"),
+                    ("messages_fts", "ready", "2026-05-01T00:00:04Z", "exact", "2026-05-01T00:00:04Z", 0),
                 ],
             )
             conn.executemany(
@@ -635,7 +643,12 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 23.0' in body
 
     def test_archive_fts_metrics_follow_bounded_readiness_not_stale_optional_ledger(self, tmp_path: Path) -> None:
-        from polylogue.storage.fts.freshness import ensure_fts_freshness_table_sync, record_fts_surface_state_sync
+        from polylogue.storage.fts.freshness import (
+            ensure_fts_freshness_table_sync,
+            record_fts_invariant_snapshot_sync,
+            record_fts_surface_state_sync,
+        )
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -643,7 +656,7 @@ class TestFormatMetricsReadsArchiveState:
         initialize_archive_database(index_db, ArchiveTier.INDEX)
         with sqlite3.connect(index_db) as conn:
             ensure_fts_freshness_table_sync(conn)
-            record_fts_surface_state_sync(conn, surface="messages_fts", state="ready", detail="bounded startup")
+            record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
             record_fts_surface_state_sync(
                 conn,
                 surface="session_work_events_fts",

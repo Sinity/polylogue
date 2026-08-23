@@ -77,9 +77,11 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
         "excess_rows",
         "duplicate_rows",
         "identity_mismatch_rows",
+        "exact_generation",
     )
     selected = ["surface", "state"]
     selected.extend(name for name in numeric_columns if name in columns)
+    selected.extend(name for name in ("verification_kind", "exact_checked_at") if name in columns)
     if "detail" in columns:
         selected.append("detail")
     rows = conn.execute(f"SELECT {', '.join(selected)} FROM fts_freshness_state").fetchall()
@@ -94,6 +96,13 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
             "excess_rows": _row_int(record.get("excess_rows")),
             "duplicate_rows": _row_int(record.get("duplicate_rows")),
             "identity_mismatch_rows": _row_int(record.get("identity_mismatch_rows")),
+            "verification_kind": None
+            if "verification_kind" not in record or record["verification_kind"] is None
+            else str(record["verification_kind"]),
+            "exact_checked_at": None
+            if "exact_checked_at" not in record or record["exact_checked_at"] is None
+            else str(record["exact_checked_at"]),
+            "exact_generation": _row_int(record.get("exact_generation")),
             "detail": None if "detail" not in record or record["detail"] is None else str(record["detail"]),
         }
     return records
@@ -241,6 +250,9 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
     excess_rows = 0 if freshness is None else _row_int(freshness.get("excess_rows"))
     duplicate_rows = 0 if freshness is None else _row_int(freshness.get("duplicate_rows"))
     identity_mismatch_rows = 0 if freshness is None else _row_int(freshness.get("identity_mismatch_rows"))
+    verification_kind = None if freshness is None else freshness.get("verification_kind")
+    exact_checked_at = None if freshness is None else freshness.get("exact_checked_at")
+    exact_generation = None if freshness is None else _row_int(freshness.get("exact_generation"))
     recorded_state = None if freshness is None else str(freshness.get("state"))
     source_has_rows = (
         _source_has_rows(conn, "blocks")
@@ -258,6 +270,10 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
             excess_rows=excess_rows,
             duplicate_rows=duplicate_rows,
             identity_mismatch_rows=identity_mismatch_rows,
+            verification_kind=verification_kind if isinstance(verification_kind, str) else None,
+            exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
+            exact_generation=exact_generation,
+            current_generation=_row_int(conn.execute("PRAGMA user_version").fetchone()[0]),
             source_has_rows=source_has_rows,
         )
     )
@@ -290,22 +306,6 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
         return None
     blocks = _archive_exact_blocks_surface(conn) if exact else _archive_blocks_surface(conn)
     effective_exact = exact
-    if not exact and blocks.get("freshness_state") == UNKNOWN and _source_has_rows(conn, "messages_fts_docsize"):
-        # The durable freshness cache is poisoned: the recorded state is "ready"
-        # but the counts are the 0/0 shape while the source actually has rows
-        # (a fresh-archive bootstrap recorded ready|0|0 over an empty archive and
-        # trigger-maintained ingest then populated the index without a rebuild to
-        # refresh the counts). Recompute exact counts ONLY when the FTS index is
-        # verifiably populated (``messages_fts_docsize`` has rows) so coverage
-        # reflects the populated index instead of reporting 0%. Merge the exact
-        # counts over the cheap surface so the freshness_* diagnostics survive.
-        #
-        # When the index is empty or unverifiable, the source genuinely has
-        # unindexed rows: leave the surface at freshness_state=UNKNOWN and do NOT
-        # scan source/FTS shadow tables (the #1003 request-safe contract, asserted
-        # by test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows).
-        blocks = {**blocks, **_archive_exact_blocks_surface(conn)}
-        effective_exact = True
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])

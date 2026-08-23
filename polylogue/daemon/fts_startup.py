@@ -211,6 +211,7 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
                 return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
+    rebuild_published_exact_snapshot = False
     if fts_exists and (not triggers_present or indexed_rows != source_rows):
         drift_rows = abs(source_rows - indexed_rows)
         if drift_rows <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS:
@@ -220,6 +221,7 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             rebuild_fts_index_sync(conn)
             indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
             triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
+            rebuild_published_exact_snapshot = True
         else:
             logger.warning(
                 "daemon: archive message FTS drift exceeds bounded startup reconciliation; "
@@ -232,7 +234,11 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             )
             _record_message_fts_surface_debt(db_path, _MESSAGE_FTS_STARTUP_DEBT_DETAIL)
 
-    ready = fts_exists and triggers_present and indexed_rows == source_rows
+    if rebuild_published_exact_snapshot:
+        # The full rebuild published a generation-bound exact snapshot. Do not
+        # replace it with this pre-rebuild bounded observation.
+        return True
+
     drift_detail = (
         "archive startup FTS readiness failed"
         if abs(source_rows - indexed_rows) <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS
@@ -241,12 +247,14 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
     record_fts_surface_state_sync(
         conn,
         surface="messages_fts",
-        state=READY if ready else STALE,
+        state=STALE,
         source_rows=source_rows,
         indexed_rows=indexed_rows,
         missing_rows=max(source_rows - indexed_rows, 0),
         excess_rows=max(indexed_rows - source_rows, 0),
-        detail=None if ready else drift_detail,
+        detail=drift_detail
+        if abs(source_rows - indexed_rows)
+        else "startup observation requires exact invariant verification",
     )
     return True
 

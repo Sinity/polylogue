@@ -385,6 +385,13 @@ FTS_FRESHNESS_STATE_SPEC = _make_table_spec(
         _raw_column("missing_rows", """missing_rows INTEGER NOT NULL DEFAULT 0"""),
         _raw_column("excess_rows", """excess_rows INTEGER NOT NULL DEFAULT 0"""),
         _raw_column("duplicate_rows", """duplicate_rows INTEGER NOT NULL DEFAULT 0"""),
+        _raw_column("identity_mismatch_rows", """identity_mismatch_rows INTEGER NOT NULL DEFAULT 0"""),
+        _raw_column(
+            "verification_kind",
+            f"""verification_kind TEXT NOT NULL DEFAULT 'unknown' CHECK ({literal_check("verification_kind", "unknown", "bounded", "exact")})""",
+        ),
+        _raw_column("exact_checked_at", """exact_checked_at TEXT"""),
+        _raw_column("exact_generation", """exact_generation INTEGER"""),
         _raw_column("detail", """detail TEXT"""),
     ),
     table_constraints=(
@@ -400,7 +407,11 @@ FTS_FRESHNESS_STATE_SPEC = _make_table_spec(
             missing_rows = 0
             AND excess_rows = 0
             AND duplicate_rows = 0
+            AND identity_mismatch_rows = 0
             AND source_rows = indexed_rows
+            AND verification_kind = 'exact'
+            AND exact_checked_at IS NOT NULL
+            AND exact_generation IS NOT NULL
         )
     )""",
     ),

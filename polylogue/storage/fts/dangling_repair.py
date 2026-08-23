@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from polylogue.storage.fts.freshness import READY, STALE, freshness_ready_record_trusted, record_fts_surface_state_sync
+from polylogue.storage.fts.freshness import STALE, freshness_ready_record_trusted, record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     _triggers_present_sync,
     insert_missing_message_rows_batched_sync,
@@ -135,10 +135,10 @@ def _record_optional_derived_surface(
     record_fts_surface_state_sync(
         conn,
         surface=surface,
-        state=READY if ready else STALE,
+        state=STALE,
         source_rows=source_rows,
         indexed_rows=indexed_rows,
-        detail=None if ready else f"{surface} count/trigger check failed after repair",
+        detail=f"{surface} targeted repair requires exact invariant verification",
     )
     return ready
 
@@ -275,10 +275,10 @@ def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcom
     record_fts_surface_state_sync(
         conn,
         surface="messages_fts",
-        state=READY if message_ready else STALE,
+        state=STALE,
         source_rows=source_messages,
         indexed_rows=after_messages,
-        detail=None if message_ready else "message FTS count/trigger check failed after repair",
+        detail="message FTS targeted repair requires exact invariant verification",
     )
     work_event_ready = _record_optional_derived_surface(
         conn,
