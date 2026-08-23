@@ -8,6 +8,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -58,15 +59,16 @@ def _seed(root: Path, count: int = 2) -> None:
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(count):
+            payload = _payload(f"gate-session-{index}", f"gate text {index}")
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=_payload(f"gate-session-{index}", f"gate text {index}"),
+                payload=payload,
                 source_path=f"current/{index}.jsonl",
                 acquired_at_ms=index + 1,
                 revision=RawRevisionEnvelope(
                     logical_source_key=f"codex-session:gate-session-{index}",
                     kind=RawRevisionKind.FULL,
-                    source_revision=f"seed-revision-{index}",
+                    source_revision=sha256(payload).hexdigest(),
                     acquisition_generation=0,
                     authority=RawRevisionAuthority.ASSERTED,
                 ),
@@ -1325,10 +1327,15 @@ def test_daemon_does_not_route_promoted_attestation_failure_back_to_rebuild(
         raise AssertionError("terminal daemon operation was routed back to rebuild")
 
     monkeypatch.setattr(rebuild_index_module, "rebuild_index_from_source_sync", unexpected_rebuild)
+
+    class _AdmissionReadyParseStage:
+        def writer_admission_ready(self) -> bool:
+            return True
+
     result = asyncio.run(
         bulk_rebuild_module.run_daemon_bulk_rebuild_pass(
             config=Config(archive_root=root, render_root=root / "render", sources=[]),
-            parse_stage=cast(Any, object()),
+            parse_stage=cast(Any, _AdmissionReadyParseStage()),
             max_payload_bytes=1,
         )
     )
