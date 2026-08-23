@@ -857,3 +857,128 @@ def test_native_formula_pour_materializes_supported_bindings_and_edges(tmp_path:
     combined_findings = verify_bead_graph.collect_campaign_findings(_campaign_fixture() + records)
     poured_ids = {str(record["id"]) for record in records}
     assert not [finding for finding in combined_findings if finding.bead_id in poured_ids], combined_findings
+
+
+def _commit(repo: Path, message: str) -> str:
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm", message],
+        cwd=repo,
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+
+def _write_snapshot(repo: Path, issues: list[dict[str, Any]]) -> None:
+    beads = repo / ".beads"
+    beads.mkdir(exist_ok=True)
+    (beads / "issues.jsonl").write_text(
+        "".join(json.dumps(issue, sort_keys=True) + "\n" for issue in issues), encoding="utf-8"
+    )
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _revision_pinned_genesis(repo: Path, input_revision: str, migration_revision: str, formula_revision: str) -> None:
+    input_blob = subprocess.run(
+        ["git", "show", f"{input_revision}:.beads/issues.jsonl"], cwd=repo, check=True, capture_output=True
+    ).stdout
+    migration_blob = subprocess.run(
+        ["git", "show", f"{migration_revision}:.beads/issues.jsonl"], cwd=repo, check=True, capture_output=True
+    ).stdout
+    formula_blob = subprocess.run(
+        ["git", "show", f"{formula_revision}:.beads/formulas/mol-polylogue-thematic-batch.formula.json"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    ).stdout
+    genesis = {
+        "schema": verify_bead_graph.CAMPAIGN_GENESIS_SCHEMA,
+        "campaign_id": verify_bead_graph.CAMPAIGN_ID,
+        "input_snapshot": {
+            "revision": input_revision,
+            "path": ".beads/issues.jsonl",
+            "sha256": _sha256_bytes(input_blob),
+        },
+        "migration_snapshot": {
+            "revision": migration_revision,
+            "path": ".beads/issues.jsonl",
+            "sha256": _sha256_bytes(migration_blob),
+        },
+        "formula_snapshot": {
+            "revision": formula_revision,
+            "path": ".beads/formulas/mol-polylogue-thematic-batch.formula.json",
+            "sha256": _sha256_bytes(formula_blob),
+        },
+    }
+    path = repo / verify_bead_graph.CAMPAIGN_GENESIS_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(genesis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _acceptance_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "acceptance"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    _write_snapshot(repo, [_issue("before")])
+    input_revision = _commit(repo, "input")
+    _write_snapshot(repo, [_issue("after")])
+    formula_path = repo / ".beads" / "formulas" / "mol-polylogue-thematic-batch.formula.json"
+    formula_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(__file__).parents[3] / formula_path.relative_to(repo), formula_path)
+    migration_revision = _commit(repo, "migration")
+    _revision_pinned_genesis(repo, input_revision, migration_revision, migration_revision)
+    _commit(repo, "acceptance genesis")
+    return repo
+
+
+def test_revision_pinned_campaign_acceptance_derives_and_verifies_named_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _acceptance_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(verify_bead_graph, "_registry_findings", lambda _issues: [])
+    output_dir = tmp_path / "witnesses"
+    provisional = output_dir / "placeholder.json"
+    assert verify_bead_graph.main(["--revision", "HEAD", "--acceptance-output", str(provisional), "--json"]) == 1
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert "acceptance output must be named" in error
+
+    revision, snapshot, issues = verify_bead_graph._load_revision_export("HEAD")
+    report = verify_bead_graph.build_report(issues, cycles_ok=True, cycles_output="")
+    acceptance = verify_bead_graph._build_campaign_acceptance(revision, snapshot, issues, report)
+    output = output_dir / f"reindex-2026-acceptance-{acceptance['acceptance_sha256']}.json"
+    assert verify_bead_graph.main(["--revision", "HEAD", "--acceptance-output", str(output), "--json"]) == 0
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["campaign_acceptance"]["derivation"]["changed_record_count"] == 2
+    assert verify_bead_graph.main(["--verify-acceptance-output", str(output), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["verified"] is True
+
+    tampered = json.loads(output.read_text(encoding="utf-8"))
+    tampered["snapshot"]["revision"] = "forged"
+    output.write_text(json.dumps(tampered), encoding="utf-8")
+    assert verify_bead_graph.main(["--verify-acceptance-output", str(output), "--json"]) == 1
+    assert "acceptance output digest is invalid" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_revision_pinned_campaign_acceptance_rejects_hand_forged_molecule_without_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _acceptance_repo(tmp_path)
+    _write_snapshot(repo, [_issue("after"), *_batch_group("forged")])
+    _commit(repo, "forge molecule")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(verify_bead_graph, "_registry_findings", lambda _issues: [])
+    revision, snapshot, issues = verify_bead_graph._load_revision_export("HEAD")
+    report = verify_bead_graph.build_report(issues, cycles_ok=True, cycles_output="")
+    acceptance = verify_bead_graph._build_campaign_acceptance(revision, snapshot, issues, report)
+    output = tmp_path / f"reindex-2026-acceptance-{acceptance['acceptance_sha256']}.json"
+    assert verify_bead_graph.main(["--revision", "HEAD", "--acceptance-output", str(output), "--json"]) == 1
+    emitted = json.loads(capsys.readouterr().out)
+    assert any(item["kind"] == "campaign-pour-receipt" for item in emitted["campaign_acceptance"]["findings"])
