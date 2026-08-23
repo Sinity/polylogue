@@ -69,6 +69,19 @@ def test_snapshot_captures_tracked_and_untracked_but_not_ignored(sample_repo: Pa
     assert not (snapshot / "ignored.log").exists(), "ignored files must stay out of the snapshot"
 
 
+def test_snapshot_default_uses_managed_work_root(
+    sample_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Implicit snapshots use the writable managed work area, not its index."""
+    from devtools import snapshot_run
+
+    monkeypatch.setattr(snapshot_run, "SNAPSHOT_ROOT", tmp_path / "work")
+
+    snapshot = materialize_snapshot(sample_repo)
+
+    assert snapshot.parent == tmp_path / "work"
+
+
 def test_snapshot_captures_uncommitted_edits_to_tracked_files(sample_repo: Path, tmp_path: Path) -> None:
     """Working-tree content, not HEAD content: the run tests what you have."""
     (sample_repo / "pkg" / "mod.py").write_text("VALUE = 'edited'\n", encoding="utf-8")
