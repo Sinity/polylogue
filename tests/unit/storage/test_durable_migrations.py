@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
+from polylogue.storage.sqlite.durable_change_train import DURABLE_MIGRATION_ADOPTION_FLOORS
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 
@@ -2411,3 +2412,75 @@ def test_backup_inventory_cache_signature_rejects_stale_entry_after_size_change(
 
     assert first_hash != second_hash
     assert second_hash == hashlib.sha256(b"mutated-bytes-are-longer").hexdigest()
+
+
+def test_historical_source_projection_matches_every_supported_train_target(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """Each admitted source train matches a genuine numbered migration chain.
+
+    The migrated side begins as an actual v1 tier and applies numbered SQL to
+    each target. The projected side begins at canonical current DDL and removes
+    later train riders, so the inventory comparison covers definitions as well
+    as table/index/trigger/view names.
+    """
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    db_path = workspace_env["archive_root"] / "source.db"
+
+    for target_version in range(floor, SOURCE_SCHEMA_VERSION + 1):
+        db_path.unlink(missing_ok=True)
+        _create_source_v1(db_path)
+        manifest = _verified_backup_manifest(tmp_path / f"source-projection-backup-v{target_version}")
+        with sqlite3.connect(db_path) as migrated:
+            result = migrate_archive_tier(
+                migrated,
+                ArchiveTier.SOURCE,
+                backup_manifest=manifest,
+                target_version=target_version,
+            )
+            assert result.to_version == target_version
+            with sqlite3.connect(":memory:") as projected:
+                projected.executescript(SOURCE_DDL)
+                projected.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+                migration_runner._prepare_fresh_connection_for_target(projected, ArchiveTier.SOURCE, target_version)
+                parity = migration_runner.prove_durable_fresh_ddl_parity(
+                    ArchiveTier.SOURCE,
+                    target_version,
+                    migrated_connection=migrated,
+                    fresh_connection=projected,
+                    evidence_ref=f"test:source-projection-matrix:v{target_version}",
+                )
+        assert parity.matches, parity
+
+
+def test_historical_source_projection_rejects_a_missing_replaced_index(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """Anti-vacuity: a v28 projection without its replaced index is rejected."""
+    target_version = 28
+    db_path = workspace_env["archive_root"] / "source.db"
+    db_path.unlink(missing_ok=True)
+    _create_source_v1(db_path)
+    manifest = _verified_backup_manifest(tmp_path / "source-projection-corruption-backup")
+
+    with sqlite3.connect(db_path) as migrated, sqlite3.connect(":memory:") as projected:
+        migrate_archive_tier(
+            migrated,
+            ArchiveTier.SOURCE,
+            backup_manifest=manifest,
+            target_version=target_version,
+        )
+        projected.executescript(SOURCE_DDL)
+        projected.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        migration_runner._prepare_fresh_connection_for_target(projected, ArchiveTier.SOURCE, target_version)
+        projected.execute("DROP INDEX idx_raw_artifacts_source_identity")
+        parity = migration_runner.prove_durable_fresh_ddl_parity(
+            ArchiveTier.SOURCE,
+            target_version,
+            migrated_connection=migrated,
+            fresh_connection=projected,
+            evidence_ref="test:source-projection-matrix:corruption",
+        )
+
+    assert parity.matches is False
+    assert parity.unexpected_objects == ("index:idx_raw_artifacts_source_identity",)
