@@ -27,6 +27,7 @@ from tests.infra.workload_artifacts import (
     NAMED_WORKLOAD_PROFILES,
     BenchmarkWorkloadTier,
     SeededArchiveQueryLease,
+    WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _open_no_follow,
@@ -100,10 +101,26 @@ def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_s
     assert first == second
     assert profile.purpose == "completion"
     assert {spec.provider for spec in first} == {"chatgpt", "claude-ai"}
+    assert {spec.seed for spec in first} == {1271}
+    assert {spec.origin for spec in first} == {"generated.test-workload-completion"}
     assert {spec.profile.primary_family_id for spec in first} == {"test-workload"}
     assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
     with pytest.raises(ValueError, match="unknown named seeded archive workload"):
         named_workload_profile("unknown")
+
+
+def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
+    """Both catalog adapters retain a common identity and native-spec constructor."""
+    catalog_profiles = (*NAMED_WORKLOAD_PROFILES, *BENCHMARK_WORKLOAD_PROFILES)
+
+    assert all(isinstance(profile.workload, WorkloadProfile) for profile in catalog_profiles)
+    assert all(profile.workload.name and profile.workload.purpose for profile in catalog_profiles)
+    assert all("provider-native" in profile.workload.profile_tokens for profile in catalog_profiles)
+
+    named = named_workload_profile("cli-mixed")
+    benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
+    assert {spec.origin for spec in named.corpus_specs()} == {named.workload.origin}
+    assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
 
 
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_path: Path) -> None:
