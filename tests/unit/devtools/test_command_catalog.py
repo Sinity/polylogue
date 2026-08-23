@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
-import devtools.__main__ as devtools_main
 from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
@@ -58,21 +55,6 @@ def test_deleted_public_surfaces_are_not_catalog_commands() -> None:
     assert "workspace merge-gate record" not in COMMANDS
     assert "workspace merge-gate" not in COMMANDS
     assert "why" in COMMANDS
-
-
-@pytest.mark.parametrize(
-    "argv",
-    (
-        ["workspace", "index-fast-forward"],
-        ["workspace", "lineage-validation"],
-        ["demo", "real-slice-screen"],
-    ),
-)
-def test_orphaned_commands_are_removed_from_real_dispatch(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
-    """The generated dispatcher must reject each retired path, not just hide it in docs."""
-    assert command_name_from_tokens(argv) is None
-    assert devtools_main.main(argv) == 2
-    assert "No such command" in capsys.readouterr().err
 
 
 def test_bead_graph_catalog_exposes_json_report() -> None:

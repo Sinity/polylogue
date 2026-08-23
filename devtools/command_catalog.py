@@ -15,7 +15,6 @@ CATEGORY_ORDER: tuple[str, ...] = (
     "generated surfaces",
     "release",
     "verification",
-    "verification",
     "benchmarking",
     "workspace",
 )
