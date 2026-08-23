@@ -2407,13 +2407,9 @@ def _archive_insights_execute_ids(
 def _clear_messages_fts_surface_debt(archive_root: Path) -> None:
     """Clear startup FTS debt only after an exact settled snapshot is ready."""
     try:
-        from polylogue.sources.live.cursor import CursorStore
+        from polylogue.daemon.fts_startup import clear_messages_fts_surface_debt
 
-        CursorStore(archive_root / "index.db").clear_convergence_debt(
-            stage="fts",
-            subject_type="fts_surface",
-            subject_id="messages_fts",
-        )
+        clear_messages_fts_surface_debt(archive_root / "index.db")
     except Exception:
         logger.warning("fts: failed to clear ready messages_fts surface debt", exc_info=True)
 
