@@ -267,10 +267,6 @@ npm test              # vitest
 npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
-npm run dev-loop-smoke # background worker -> local receiver smoke
-npm run dev-loop-browser-smoke # real Chromium/Chrome service worker -> local receiver smoke
-npm run dev-loop-provider-smoke # real Chromium/Chrome content scripts -> deterministic provider fixtures
-npm run dev-loop-live-provider-proof # visible copied-profile live provider proof
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```

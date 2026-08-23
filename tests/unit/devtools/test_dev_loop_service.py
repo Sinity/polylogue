@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 import tomllib
 
 from devtools import dev_loop_service
+from devtools.command_catalog import COMMAND_SPECS
 
 
 def test_declared_operation_has_fixed_json_service_contract() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["dev_loop_proof"]
 
-    assert operation["exec"] == ["devtools", "workspace", "dev-loop-service", "--json"]
+    assert operation["exec"] == ["python", "-m", "devtools.dev_loop_service", "--json"]
     assert operation["result"] == "json"
     assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 900
@@ -23,17 +25,34 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
         "ports": {
             "api": {"environment": "POLYLOGUE_API_PORT", "range": [48800, 48863]},
             "browser_capture": {"environment": "POLYLOGUE_BROWSER_CAPTURE_PORT", "range": [48864, 48927]},
+            "browser_cdp": {"environment": "POLYLOGUE_BROWSER_CDP_PORT", "range": [48928, 48991]},
         },
     }
+    assert descriptor["operations"]["verify_all"]["timeout_seconds"] == 14400
+    assert all(spec.module != "devtools.dev_loop_service" for spec in COMMAND_SPECS)
+
+
+def _admitted_agentctl_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    checkout = Path(__file__).resolve().parents[3]
+    head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
+    monkeypatch.setenv("SINNIXD_OPERATION", "dev_loop_proof")
+    monkeypatch.setenv("SINNIXD_JOB_ID", "2f8a6075-6d19-4814-896e-caeca1e4ea56")
+    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "worktree-0123456789abcdef")
+    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", head)
+    monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
+    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
+    monkeypatch.setenv("POLYLOGUE_BROWSER_CDP_PORT", "48929")
 
 
 def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _admitted_agentctl_environment(monkeypatch)
     monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
-    monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
-    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
     monkeypatch.setattr(dev_loop_service, "initialize_archive_tier_files", lambda **_kwargs: object())
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
     started: dict[str, object] = {}
@@ -50,11 +69,11 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     monkeypatch.setattr(dev_loop_service, "_poll_archive_state", lambda **_kwargs: True)
     monkeypatch.setattr(dev_loop_service, "_fetch_api_messages", lambda **_kwargs: True)
 
-    payload = dev_loop_service.run_proof(repo_root=tmp_path / "checkout")
+    payload = dev_loop_service.run_proof()
 
     assert payload == {
         "ok": True,
-        "ports": {"api": 48801, "browser_capture": 48865},
+        "ports": {"api": 48801, "browser_capture": 48865, "browser_cdp": 48929},
         "receiver_auth": {"ok": True},
         "provider_capture": {
             "providers": ["chatgpt", "claude"],
@@ -71,32 +90,28 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
 
 
 @pytest.mark.parametrize(
-    ("api_port", "capture_port", "message"),
+    ("environment", "value", "message"),
     [
-        (None, "48865", "POLYLOGUE_API_PORT must be injected"),
-        ("48801", None, "POLYLOGUE_BROWSER_CAPTURE_PORT must be injected"),
-        ("48801", "48801", "duplicate API and browser-capture ports"),
+        ("POLYLOGUE_API_PORT", None, "POLYLOGUE_API_PORT must be injected"),
+        ("POLYLOGUE_BROWSER_CAPTURE_PORT", "48801", "outside its descriptor-declared lease range"),
+        ("POLYLOGUE_BROWSER_CDP_PORT", "49000", "outside its descriptor-declared lease range"),
+        ("SINNIXD_OPERATION", "other", "requires the declared AgentCTL operation"),
     ],
 )
-def test_run_proof_rejects_missing_or_duplicated_lease_ports(
-    tmp_path: Path,
+def test_service_admission_rejects_wrong_or_missing_agentctl_contract(
     monkeypatch: pytest.MonkeyPatch,
-    api_port: str | None,
-    capture_port: str | None,
+    environment: str,
+    value: str | None,
     message: str,
 ) -> None:
-    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
-    for name, value in {
-        "POLYLOGUE_API_PORT": api_port,
-        "POLYLOGUE_BROWSER_CAPTURE_PORT": capture_port,
-    }.items():
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
+    _admitted_agentctl_environment(monkeypatch)
+    if value is None:
+        monkeypatch.delenv(environment, raising=False)
+    else:
+        monkeypatch.setenv(environment, value)
 
     with pytest.raises(ValueError, match=message):
-        dev_loop_service.run_proof(repo_root=tmp_path / "checkout")
+        dev_loop_service._require_agentctl_service_admission(Path(__file__).resolve().parents[3])
 
 
 def test_receiver_smoke_proves_auth_rejection_and_accepted_capture(tmp_path: Path) -> None:

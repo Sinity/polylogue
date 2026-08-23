@@ -1,8 +1,8 @@
 """Fixed AgentCTL-owned service proof for Polylogue browser capture.
 
-AgentCTL injects the two descriptor-declared ports and owns the enclosing
-systemd service, deadline, cancellation, lease, and result artifact.  This
-module owns only Polylogue semantics inside that fixed execution boundary.
+AgentCTL injects the descriptor-declared ports and owns the enclosing systemd
+service, deadline, cancellation, lease, and result artifact. This module owns
+only Polylogue semantics inside that fixed execution boundary.
 """
 
 from __future__ import annotations
@@ -13,24 +13,34 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
 from typing import Any
 from urllib.parse import quote, urlencode
+from uuid import UUID
+
+import tomllib
 
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.archive_init import initialize_archive_tier_files
 
 _API_PORT_ENV = "POLYLOGUE_API_PORT"
 _BROWSER_CAPTURE_PORT_ENV = "POLYLOGUE_BROWSER_CAPTURE_PORT"
+_BROWSER_CDP_PORT_ENV = "POLYLOGUE_BROWSER_CDP_PORT"
+_DECLARED_PORTS = {
+    _API_PORT_ENV: (48800, 48863),
+    _BROWSER_CAPTURE_PORT_ENV: (48864, 48927),
+    _BROWSER_CDP_PORT_ENV: (48928, 48991),
+}
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
 
 
-def _leased_port(name: str) -> int:
-    """Read one AgentCTL lease-injected loopback port, never a fallback."""
+def _leased_port(name: str, bounds: tuple[int, int]) -> int:
+    """Read one descriptor-bounded AgentCTL lease port, never a fallback."""
     raw = os.environ.get(name)
     if raw is None:
         raise ValueError(f"{name} must be injected by the declared AgentCTL service lease")
@@ -38,9 +48,76 @@ def _leased_port(name: str) -> int:
         port = int(raw)
     except ValueError as error:
         raise ValueError(f"{name} must be an integer lease port") from error
-    if not 1024 <= port <= 65535:
-        raise ValueError(f"{name} is outside the loopback port range")
+    if not bounds[0] <= port <= bounds[1]:
+        raise ValueError(f"{name} is outside its descriptor-declared lease range")
     return port
+
+
+def _declared_service_contract(checkout: Path) -> Mapping[str, object]:
+    """Load the fixed project contract from the checkout AgentCTL has bound."""
+    descriptor_path = checkout / ".agentctl" / "project.toml"
+    try:
+        descriptor = tomllib.loads(descriptor_path.read_text(encoding="utf-8"))
+        operation = descriptor["operations"]["dev_loop_proof"]
+    except (FileNotFoundError, KeyError, tomllib.TOMLDecodeError, TypeError) as error:
+        raise ValueError("declared AgentCTL dev-loop contract is unavailable") from error
+    if not isinstance(operation, Mapping):
+        raise ValueError("declared AgentCTL dev-loop contract is invalid")
+    if operation.get("exec") != ["python", "-m", "devtools.dev_loop_service", "--json"]:
+        raise ValueError("declared AgentCTL dev-loop executable route is invalid")
+    expected_service = {
+        "readiness": "project-command",
+        "lifetime": "job",
+        "ports": {
+            "api": {"environment": _API_PORT_ENV, "range": list(_DECLARED_PORTS[_API_PORT_ENV])},
+            "browser_capture": {
+                "environment": _BROWSER_CAPTURE_PORT_ENV,
+                "range": list(_DECLARED_PORTS[_BROWSER_CAPTURE_PORT_ENV]),
+            },
+            "browser_cdp": {
+                "environment": _BROWSER_CDP_PORT_ENV,
+                "range": list(_DECLARED_PORTS[_BROWSER_CDP_PORT_ENV]),
+            },
+        },
+    }
+    if operation.get("service") != expected_service:
+        raise ValueError("declared AgentCTL dev-loop service lease contract is invalid")
+    return operation
+
+
+def _require_agentctl_service_admission(checkout: Path) -> dict[str, int]:
+    """Fail closed unless the fixed exact-head AgentCTL service route admitted us.
+
+    Sinnixd's declared-job runner independently revalidates the registered
+    worktree and recorded head immediately before this module is executed. The
+    checks here bind the product runner to that fixed descriptor and reject
+    accidental shell invocation before it can create an archive or process.
+    """
+    _declared_service_contract(checkout)
+    if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue":
+        raise ValueError("dev-loop proof requires the AgentCTL Polylogue project route")
+    if os.environ.get("SINNIXD_OPERATION") != "dev_loop_proof":
+        raise ValueError("dev-loop proof requires the declared AgentCTL operation")
+    try:
+        UUID(os.environ["SINNIXD_JOB_ID"])
+    except (KeyError, ValueError) as error:
+        raise ValueError("dev-loop proof requires an AgentCTL job identity") from error
+    checkout_id = os.environ.get("SINNIXD_CHECKOUT_ID", "")
+    expected_head = os.environ.get("SINNIXD_CHECKOUT_HEAD", "")
+    if not checkout_id.startswith("worktree-") or len(expected_head) != 40:
+        raise ValueError("dev-loop proof requires an exact-head managed AgentCTL workspace")
+    actual_head = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if actual_head != expected_head:
+        raise ValueError("AgentCTL workspace head does not match its declared job binding")
+    ports = {name: _leased_port(name, bounds) for name, bounds in _DECLARED_PORTS.items()}
+    if len(set(ports.values())) != len(ports):
+        raise ValueError("AgentCTL injected duplicate dev-loop service lease ports")
+    return ports
 
 
 def _service_paths() -> tuple[Path, Path]:
@@ -206,6 +283,7 @@ def _run_provider_capture(
     receiver_url: str,
     session_id: str,
     api_url: str,
+    cdp_port: int,
 ) -> dict[str, object]:
     """Run the real extension/provider fixture contract under the leased receiver."""
     extension_root = repo_root / "browser-extension"
@@ -220,6 +298,7 @@ def _run_provider_capture(
             "POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR": str(artifact_root / "browser-profile"),
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN": _RECEIVER_TOKEN,
             "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL": receiver_url,
+            "POLYLOGUE_PROVIDER_SMOKE_CDP_PORT": str(cdp_port),
             "POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL": api_url,
             "POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID": _session_id_for_provider("chatgpt", session_id),
             "POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR": str(artifact_root / "browser-capture"),
@@ -227,7 +306,16 @@ def _run_provider_capture(
         }
     )
     completed = subprocess.run(
-        ["node", "scripts/dev-loop-provider-smoke.mjs"],
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            (
+                "import('./scripts/provider_capture_proof.mjs')"
+                ".then(({ runProviderCapture }) => runProviderCapture())"
+                ".catch((error) => { console.error(error.stack || error.message || error); process.exit(1); })"
+            ),
+        ],
         cwd=str(extension_root),
         env=environment,
         capture_output=True,
@@ -274,11 +362,11 @@ def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
 
 def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.0) -> dict[str, object]:
     """Run the bounded Polylogue semantics behind the AgentCTL service lease."""
-    api_port = _leased_port(_API_PORT_ENV)
-    capture_port = _leased_port(_BROWSER_CAPTURE_PORT_ENV)
-    if api_port == capture_port:
-        raise ValueError("AgentCTL injected duplicate API and browser-capture ports")
     checkout = (repo_root or Path(__file__).resolve().parents[1]).resolve()
+    ports = _require_agentctl_service_admission(checkout)
+    api_port = ports[_API_PORT_ENV]
+    capture_port = ports[_BROWSER_CAPTURE_PORT_ENV]
+    cdp_port = ports[_BROWSER_CDP_PORT_ENV]
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
     initialize_archive_tier_files(archive_root=archive_root, replace_existing=True)
@@ -308,6 +396,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         receiver_url=receiver_url,
         session_id=session_id,
         api_url=api_url,
+        cdp_port=cdp_port,
     )
     archive_ok = False
     api_ok = False
@@ -341,7 +430,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         raise RuntimeError("archive/API convergence proof failed")
     return {
         "ok": True,
-        "ports": {"api": api_port, "browser_capture": capture_port},
+        "ports": {"api": api_port, "browser_capture": capture_port, "browser_cdp": cdp_port},
         "receiver_auth": {"ok": True},
         "provider_capture": {
             "providers": sorted(str(name) for name in providers),

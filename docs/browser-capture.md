@@ -270,7 +270,7 @@ of dropping content silently.
 
 Use the declared `dev_loop_proof` AgentCTL operation when changing receiver,
 extension, or provider adapters from a branch. It binds the proof to a managed
-checkout, leases its API and receiver ports, proves receiver authentication and
+checkout, leases its API, receiver, and Chrome CDP ports, proves receiver authentication and
 deterministic provider capture, then reports archive and API convergence through
 the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
 wait, and result commands.
