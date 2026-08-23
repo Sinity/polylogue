@@ -1,60 +1,27 @@
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import hashlib
 import json
 import os
 import shutil
 import sqlite3
-import stat
-import subprocess
 import sys
-import tempfile
 import threading
-import time
-import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
-from typing import TYPE_CHECKING, Any, TextIO
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
-# Basetemp placement is selected once by ``resolve_pytest_basetemp_root``.
-# This conftest owns only pytest-side claims, stale-tree reclamation, and the
-# optional btrfs no-CoW mark for a disk-backed selection.
-from devtools import verify_runs
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
     resolved_polylogue_path,
 )
-from devtools.pytest_supervisor import _process_start_ticks
-from devtools.verify_runs import (
-    PytestResourceError,
-    clear_managed_pytest_basetemp_claim,
-    normalize_pytest_basetemp_env,
-    resolve_pytest_basetemp_root,
-)
-from devtools.verify_runs import pytest_basetemp_claim_path as _basetemp_claim_path
 
-# Aliased on import: pluggy treats every module-level ``pytest_``-prefixed name
-# in a conftest as a hook implementation and refuses the plugin outright.
-from devtools.verify_runs import pytest_run_id_belongs_to_verify_run as _run_id_belongs_to_verify_run
-
-# Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
-# before test execution can import product modules: a shared/editable venv's
-# `.pth` entry can point at a different checkout than the one this pytest
-# process is actually running from (e.g. a linked git worktree reusing the
-# main checkout's `.venv`), and whichever tree `import polylogue` resolves to
-# here is the one every test in this run uses (sys.modules caches by name).
-# The actual `pytest.UsageError` is raised from `pytest_configure` below —
-# matching the existing basetemp-preflight precedent in this file — so pytest
-# reports a clean usage error instead of a raw conftest-import traceback.
 _TESTS_REPO_ROOT = Path(__file__).resolve().parents[1]
 try:
     assert_polylogue_matches_checkout(_TESTS_REPO_ROOT, context="pytest (tests/conftest.py)")
@@ -68,17 +35,6 @@ pytest_plugins = (
     "tests.infra.pathology_zoo_fixtures",
 )
 
-# Pytest supports nested in-process ``pytest.main()`` calls. Every controller
-# invocation occupies this process-local stack, including caller-owned scopes.
-# A completed invocation therefore cannot authorize stale environment values,
-# and an unmanaged middle scope cannot resurrect a managed outer identity.
-_ACTIVE_PYTEST_SCOPES: list[tuple[str, str] | None] = []
-_ACTIVE_PYTEST_BASETEMPS: set[Path] = set()
-_PYTEST_SCOPE_ATTR = "_polylogue_pytest_scope"
-_PYTEST_SCOPE_BASETEMP_ATTR = "_polylogue_pytest_scope_basetemp"
-_PYTEST_SCOPE_ENV_ATTR = "_polylogue_pytest_scope_environment"
-_NESTED_BASETEMP_POLICY_ENV = ("POLYLOGUE_PYTEST_BASETEMP_ROOT", "POLYLOGUE_PYTEST_TMPFS")
-
 if TYPE_CHECKING:
     from click.testing import CliRunner
 
@@ -90,158 +46,12 @@ if TYPE_CHECKING:
     from tests.infra.storage_records import SessionBuilder
 
 
-def _set_managed_pytest_identity(identity: tuple[str, str] | None) -> None:
-    """Expose only the managed identity owned by the active invocation."""
-    if identity is None:
-        os.environ.pop("POLYLOGUE_PYTEST_RUN_ID", None)
-        os.environ.pop("POLYLOGUE_PYTEST_MANAGED_BASETEMP", None)
-        return
-    run_id, basetemp = identity
-    os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
-    os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = basetemp
-
-
-def _push_pytest_scope(
-    config: pytest.Config, identity: tuple[str, str] | None, *, basetemp: Path | None = None
-) -> None:
-    """Register one controller invocation, managed or caller-owned."""
-    _ACTIVE_PYTEST_SCOPES.append(identity)
-    setattr(config, _PYTEST_SCOPE_ATTR, identity)
-    if basetemp is not None:
-        claim_path = _basetemp_claim_path(basetemp, kind="lock")
-        _ACTIVE_PYTEST_BASETEMPS.add(claim_path)
-        setattr(config, _PYTEST_SCOPE_BASETEMP_ATTR, claim_path)
-
-
-def _force_nested_pytest_scratch(config: pytest.Config) -> None:
-    """Keep an unsupervised nested controller out of an outer tmpfs budget."""
-    previous = {name: os.environ.get(name) for name in _NESTED_BASETEMP_POLICY_ENV}
-    setattr(config, _PYTEST_SCOPE_ENV_ATTR, previous)
-    forced = verify_runs.force_managed_pytest_scratch(os.environ)
-    for name in _NESTED_BASETEMP_POLICY_ENV:
-        value = forced.get(name)
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
-
-
-def _restore_nested_pytest_scratch(config: pytest.Config) -> None:
-    previous = getattr(config, _PYTEST_SCOPE_ENV_ATTR, None)
-    if previous is None:
-        return
-    for name, value in previous.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
-
-
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers and choose the managed test temp root."""
+    """Refuse a test run that imports the product from another checkout."""
+    del config
     if _CHECKOUT_GUARD_ERROR is not None:
-        # Refuse before collection: every test in this run would otherwise
-        # exercise a `polylogue` package from a different checkout than the
-        # one this pytest process was invoked against (see
-        # devtools/checkout_guard.py for the full hazard writeup).
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
-    if config.option.basetemp is not None:
-        configured_basetemp = str(config.option.basetemp)
-        run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
-        managed_basetemp = os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP")
-        supervised_managed = (
-            run_id is not None
-            and _run_id_belongs_to_verify_run(run_id, os.environ.get("POLYLOGUE_VERIFY_RUN_ID"))
-            and managed_basetemp == configured_basetemp
-        )
-        if supervised_managed and not hasattr(config, "workerinput"):
-            assert run_id is not None
-            if _basetemp_claim_path(Path(configured_basetemp), kind="lock") in _ACTIVE_PYTEST_BASETEMPS:
-                raise pytest.UsageError(
-                    f"pytest: explicit basetemp is already active in this pytest process: {configured_basetemp}"
-                )
-            identity = (run_id, configured_basetemp)
-            _push_pytest_scope(config, identity, basetemp=Path(configured_basetemp))
-            return
-        # A second in-process pytest.main() inherits os.environ from the first
-        # run. Explicit basetemp ownership is per invocation, so stale managed
-        # markers must not turn the caller-owned diagnostic tree into cleanup
-        # fodder at session finish.
-        if not hasattr(config, "workerinput"):
-            _mark_caller_owned_basetemp(Path(configured_basetemp))
-            _push_pytest_scope(config, None, basetemp=Path(configured_basetemp))
-            _set_managed_pytest_identity(None)
-        return
-
-    if config.option.basetemp is None:
-        prior_scope = (
-            _ACTIVE_PYTEST_SCOPES[-1] if _ACTIVE_PYTEST_SCOPES and not hasattr(config, "workerinput") else None
-        )
-        if _ACTIVE_PYTEST_SCOPES and not hasattr(config, "workerinput"):
-            _set_managed_pytest_identity(None)
-            _force_nested_pytest_scratch(config)
-        normalized_basetemp_env = normalize_pytest_basetemp_env(os.environ)
-        configured_root = normalized_basetemp_env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-        unmanaged_tmpfs_root = configured_root is not None and verify_runs._is_beneath(
-            Path(configured_root), verify_runs.PYTEST_TMPFS_ROOT
-        )
-        if "POLYLOGUE_VERIFY_RUN_ID" not in os.environ and (
-            "POLYLOGUE_PYTEST_BASETEMP_ROOT" not in normalized_basetemp_env or unmanaged_tmpfs_root
-        ):
-            # Bare pytest has no devtools supervisor to enforce a tmpfs cap.
-            # Keep its basetemp on scratch; managed devtools runs carry the
-            # verify-run id and may opt into bounded tmpfs safely.
-            os.environ.pop("POLYLOGUE_PYTEST_BASETEMP_ROOT", None)
-            os.environ["POLYLOGUE_PYTEST_TMPFS"] = "0"
-        checkout = hashlib.sha1(str(config.rootpath).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
-        os.environ["POLYLOGUE_PYTEST_CHECKOUT"] = checkout
-        run_id = os.environ.get("POLYLOGUE_PYTEST_RUN_ID")
-        if not hasattr(config, "workerinput"):
-            _sweep_stale_polylogue_basetemps()
-        if run_id is None:
-            run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-            os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
-        try:
-            root, label = _managed_pytest_temp_root()
-            basetemp = root / f"pytest-polylogue-{checkout}-{run_id}"
-            if not hasattr(config, "workerinput"):
-                _mark_basetemp_owner(basetemp)
-        except PytestResourceError as exc:
-            _restore_nested_pytest_scratch(config)
-            _set_managed_pytest_identity(prior_scope)
-            # Fail loudly and early: refuse before pytest starts collecting,
-            # rather than crashing an unrelated command later with a bare
-            # OSError once the chosen basetemp fills up.
-            raise pytest.UsageError(f"pytest: {exc}") from exc
-        config.option.basetemp = str(basetemp)
-        os.environ["POLYLOGUE_PYTEST_MANAGED_BASETEMP"] = str(basetemp)
-        identity = (run_id, str(basetemp))
-        if hasattr(config, "workerinput"):
-            # An xdist worker does not own the tree, so it must not claim it —
-            # but it does carry the ambient identity, and a nested pytest run
-            # inside the worker unwinds through this stack. Without a base
-            # entry the pop restores "no invocation" and clears the worker's
-            # own POLYLOGUE_PYTEST_RUN_ID for every later test in the process.
-            _push_pytest_scope(config, identity)
-        else:
-            _push_pytest_scope(config, identity, basetemp=basetemp)
-        sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
-
-
-def pytest_unconfigure(config: pytest.Config) -> None:
-    """Restore or retire process-local managed ownership after one invocation."""
-    if not hasattr(config, _PYTEST_SCOPE_ATTR):
-        return
-    scope = getattr(config, _PYTEST_SCOPE_ATTR)
-    if not _ACTIVE_PYTEST_SCOPES or _ACTIVE_PYTEST_SCOPES[-1] != scope:
-        return
-    _ACTIVE_PYTEST_SCOPES.pop()
-    active_basetemp = getattr(config, _PYTEST_SCOPE_BASETEMP_ATTR, None)
-    if active_basetemp is not None:
-        _ACTIVE_PYTEST_BASETEMPS.discard(active_basetemp)
-    _restore_nested_pytest_scratch(config)
-    _set_managed_pytest_identity(_ACTIVE_PYTEST_SCOPES[-1] if _ACTIVE_PYTEST_SCOPES else None)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -255,293 +65,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         issue = timeout_marker_error(marker)
         if issue is not None:
             raise pytest.UsageError(f"{item.nodeid}: {issue}")
-
-
-# Per-run basetemps are freed on sessionfinish. A run killed before
-# sessionfinish (SIGKILL, OOM) leaks its basetemp, so the controller reclaims
-# clearly-dead orphans on startup. Seeded corpora (``pytest-polylogue-seeded-*``)
-# are excluded because they are shared, reusable across runs, and bounded to
-# one per checkout. Placement policy (which root, and whether it has enough
-# free space) is a single shared source of truth in
-# ``devtools.verify_runs.resolve_pytest_basetemp_root`` — this module only
-# adds the mkdir/no-CoW-marking side effects and the stale-directory sweep.
-_STALE_BASETEMP_MAX_AGE_S = 30 * 60
-_BASE_TEMP_CLAIM_LOCKS: dict[Path, TextIO] = {}
-_BASE_TEMP_CLAIM_THREAD_LOCKS: dict[Path, threading.Lock] = {}
-
-
-def _managed_pytest_temp_root() -> tuple[Path, str]:
-    """Return the temp root for managed pytest basetemps."""
-    root, label = resolve_pytest_basetemp_root(os.environ)
-    root.mkdir(parents=True, exist_ok=True)
-    if label in ("scratch", "disk fallback"):
-        # No-CoW marking is only meaningful (and only ever was applied) for
-        # the disk-backed NVMe/cloud-fallback candidates. It shells out to
-        # findmnt/lsattr/chattr with real subprocess-spawn latency, so it
-        # must stay off the tmpfs and explicit-override paths — both are
-        # startup-latency-sensitive (every managed pytest invocation pays
-        # this once) and tmpfs never benefits from a btrfs-specific flag.
-        _mark_btrfs_nocow(root)
-    return root, label
-
-
-def _mark_basetemp_owner(basetemp: Path) -> None:
-    """Claim a managed tree outside pytest's replaceable basetemp directory."""
-    handle = _acquire_basetemp_claim_lock(basetemp, blocking=False)
-    if handle is None:
-        raise PytestResourceError(f"managed pytest basetemp is already claimed: {basetemp}")
-    pid = os.getpid()
-    start_ticks = _process_start_ticks(pid)
-    identity = f"{pid}:{start_ticks}" if start_ticks is not None else str(pid)
-    try:
-        _basetemp_claim_path(basetemp, kind="managed").write_text(identity, encoding="utf-8")
-    except OSError as exc:
-        _release_basetemp_claim_lock(basetemp)
-        raise PytestResourceError(f"cannot record managed pytest basetemp claim: {basetemp}") from exc
-
-
-def _mark_caller_owned_basetemp(basetemp: Path) -> None:
-    """Claim an explicit ``--basetemp`` before pytest may replace its tree."""
-    lock_path = _basetemp_claim_path(basetemp, kind="lock")
-    if lock_path in _ACTIVE_PYTEST_BASETEMPS:
-        raise pytest.UsageError(f"pytest: explicit basetemp is already active in this pytest process: {basetemp}")
-    handle = _acquire_basetemp_claim_lock(basetemp, blocking=True)
-    if handle is None:
-        raise pytest.UsageError(f"pytest: cannot claim the explicit basetemp: {basetemp}")
-    with contextlib.suppress(OSError):
-        basetemp.mkdir(parents=True, exist_ok=True)
-        clear_managed_pytest_basetemp_claim(basetemp)
-        _basetemp_claim_path(basetemp, kind="caller-owned").write_text("explicit\n", encoding="utf-8")
-
-
-def _acquire_basetemp_claim_lock(basetemp: Path, *, blocking: bool) -> TextIO | None:
-    """Serialize a claim against a stale sweep for the same basetemp path."""
-    lock_path = _basetemp_claim_path(basetemp, kind="lock")
-    thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.setdefault(lock_path, threading.Lock())
-    if not thread_lock.acquire(blocking=blocking):
-        return None
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = lock_path.open("a+", encoding="utf-8")
-    except OSError:
-        thread_lock.release()
-        return None
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-    except OSError:
-        handle.close()
-        thread_lock.release()
-        return None
-    _BASE_TEMP_CLAIM_LOCKS[lock_path] = handle
-    return handle
-
-
-def _release_basetemp_claim_lock(basetemp: Path) -> None:
-    """Release this pytest process's claim lock after its session ends."""
-    lock_path = _basetemp_claim_path(basetemp, kind="lock")
-    handle = _BASE_TEMP_CLAIM_LOCKS.pop(lock_path, None)
-    if handle is not None:
-        with contextlib.suppress(OSError):
-            handle.close()
-    thread_lock = _BASE_TEMP_CLAIM_THREAD_LOCKS.get(lock_path)
-    if thread_lock is not None and thread_lock.locked():
-        thread_lock.release()
-
-
-def _remove_stale_basetemp(entry: Path) -> None:
-    """Remove an already-adjudicated stale tree, including read-only fixtures."""
-    if entry.is_symlink():
-        return
-    owner_directory_mode = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-    owner_file_mode = stat.S_IRUSR | stat.S_IWUSR
-    for current_root, directories, files in os.walk(entry):
-        root = Path(current_root)
-        with contextlib.suppress(OSError):
-            root.chmod(root.stat().st_mode | owner_directory_mode)
-        for name in directories:
-            child = root / name
-            if child.is_symlink():
-                continue
-            with contextlib.suppress(OSError):
-                child.chmod(child.stat().st_mode | owner_directory_mode)
-        for name in files:
-            child = root / name
-            if child.is_symlink():
-                continue
-            with contextlib.suppress(OSError):
-                child.chmod(child.stat().st_mode | owner_file_mode)
-    shutil.rmtree(entry)
-
-
-def _mark_btrfs_nocow(path: Path) -> None:
-    """Best-effort no-CoW marking for SQLite-heavy pytest scratch roots."""
-    if shutil.which("chattr") is None or _filesystem_type(path) != "btrfs":
-        return
-    try:
-        current = subprocess.run(["lsattr", "-d", str(path)], capture_output=True, text=True, timeout=2)
-        if current.returncode == 0 and current.stdout.split(maxsplit=1)[0].find("C") >= 0:
-            return
-        subprocess.run(["chattr", "+C", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-
-
-def _filesystem_type(path: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["findmnt", "-T", str(path), "-no", "FSTYPE"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
-
-
-def _polylogue_basetemp_roots() -> tuple[Path, ...]:
-    """Every root a current or past placement policy could have used.
-
-    Deliberately broader than "the root this run picked" so a placement
-    policy change (e.g. this fix) still reclaims leftovers on a root the
-    current run no longer chooses.
-    """
-    return verify_runs.pytest_basetemp_known_roots(os.environ)
-
-
-def _sweep_stale_polylogue_basetemps(
-    *, max_age_s: int = _STALE_BASETEMP_MAX_AGE_S, roots: tuple[Path, ...] | None = None
-) -> None:
-    """Best-effort reclaim of per-run basetemps left by crashed runs.
-
-    Safety invariant: reclamation requires a durable, positive managed claim
-    plus a confirmed-dead owner. Unknown paths are never deleted: they may be
-    an explicit caller path racing a startup sweep. The claim lock makes the
-    decision and a caller's claim mutually exclusive, while the claim itself
-    survives pytest's lazy replacement of the basetemp directory. Explicit
-    caller-owned paths carry their own durable claim and are excluded.
-    Seeded corpora
-    (``pytest-polylogue-*-seeded-*``) are never touched here — they are
-    shared, reusable, and built once behind their own ``.build.done`` guard.
-    """
-
-    cutoff = time.time() - max_age_s
-    for root in roots or _polylogue_basetemp_roots():
-        for entry in root.glob("pytest-polylogue-*"):
-            if "-seeded-" in entry.name:
-                continue
-            try:
-                if not entry.is_dir():
-                    continue
-                if _basetemp_claim_path(entry, kind="caller-owned").is_file():
-                    continue
-                if not _basetemp_claim_path(entry, kind="managed").is_file():
-                    continue
-                handle = _acquire_basetemp_claim_lock(entry, blocking=False)
-                if handle is None:
-                    continue
-                try:
-                    if _basetemp_claim_path(entry, kind="caller-owned").is_file():
-                        continue
-                    if not _basetemp_claim_path(entry, kind="managed").is_file():
-                        continue
-                    owner_alive = verify_runs.managed_pytest_basetemp_owner_alive(entry)
-                    if owner_alive is not False:
-                        continue
-                    if entry.stat().st_mtime < cutoff:
-                        _remove_stale_basetemp(entry)
-                        clear_managed_pytest_basetemp_claim(entry)
-                finally:
-                    _release_basetemp_claim_lock(entry)
-            except OSError:
-                pass
-
-
-def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Free this run's per-run tmpfs basetemp (controller only).
-
-    xdist workers share the controller's basetemp, so only the controller
-    (no ``PYTEST_XDIST_WORKER`` in env) removes it, and only when we minted
-    a per-run name — never a caller-supplied ``--basetemp`` or the shared
-    seeded corpus root. Parallel xdist runs leave their per-run basetemp for
-    the next startup sweep instead of deleting it during session-finish
-    teardown, where xdist/json-report may still be flushing controller/worker
-    artifacts.
-    """
-    basetemp = session.config.option.basetemp
-    if not basetemp:
-        return
-    basetemp_path = Path(str(basetemp))
-    try:
-        if os.environ.get("PYTEST_XDIST_WORKER"):
-            return
-        if not os.environ.get("POLYLOGUE_PYTEST_RUN_ID"):
-            return
-        numprocesses = getattr(session.config.option, "numprocesses", None)
-        if numprocesses not in (None, 0, "0"):
-            return
-        if str(basetemp_path) == os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP"):
-            shutil.rmtree(basetemp_path, ignore_errors=True)
-            if not basetemp_path.exists():
-                clear_managed_pytest_basetemp_claim(basetemp_path)
-    finally:
-        _release_basetemp_claim_lock(basetemp_path)
-
-
-@pytest.fixture
-def tmp_path(tmp_path: Path, request: pytest.FixtureRequest) -> Iterator[Path]:
-    """Redirect ``storage_scale``-marked tests' private trees to NVMe scratch.
-
-    One incident-scale test can hold >2 GiB live inside a single tmp_path
-    (the codex-804 proof measured 2.3 GiB), which no per-test reclaim can
-    help -- the tree is live while the test runs. Placing whole runs on NVMe
-    because one whale MIGHT be selected forfeits the tmpfs lane for the other
-    ~20,000 tests, so the whale itself moves instead: marked tests write
-    under the NVMe scratch root and everything else keeps tmpfs. Falls back
-    to the run's normal basetemp where the NVMe root is unavailable (cloud
-    sandboxes).
-    """
-    if request.node.get_closest_marker("storage_scale") is None:
-        yield tmp_path
-        return
-    root = verify_runs.DEFAULT_PYTEST_BASETEMP_ROOT / "storage-scale"
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        private = Path(tempfile.mkdtemp(prefix=f"{request.node.name[:40]}-", dir=root))
-    except OSError:
-        yield tmp_path
-        return
-    try:
-        yield private
-    finally:
-        shutil.rmtree(private, ignore_errors=True)
-
-
-@pytest.fixture(autouse=True)
-def _reclaim_test_tmp_path(
-    tmp_path: Path,
-    request: pytest.FixtureRequest,
-) -> Iterator[None]:
-    """Release each test's private tree as soon as its teardown finishes.
-
-    Failure evidence belongs in the managed event/longrepr/resource receipts,
-    not in an unbounded filesystem witness. Retaining every failed tree made
-    full-suite tmpfs usage proportional to the number of failures and caused
-    a calm 8-worker run to exceed 2 GiB before completing. A failing node can
-    still be rerun with an explicit basetemp when its files matter. That
-    explicit diagnostic path retains its per-test trees for inspection.
-    """
-    configured = getattr(request.config.option, "basetemp", None)
-    managed = os.environ.get("POLYLOGUE_PYTEST_MANAGED_BASETEMP")
-    if configured and str(configured) != managed:
-        yield
-        return
-    try:
-        yield
-    finally:
-        shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -600,11 +123,9 @@ _CONNECTION_MACHINERY = (
 )
 _TESTS_ROOT = str(Path(__file__).resolve().parent)
 
-# These variables are emitted by the managed verification supervisor and must
-# survive the host-configuration scrub below.  They are test-run evidence
-# plumbing, not operator configuration; removing them after collection makes
-# setup/call reports disappear from the event ledger while teardown still gets
-# recorded, which makes interrupted native runs look falsely successful.
+# These variables carry the run-scoped pytest receipt destinations. They are
+# evidence plumbing, not operator configuration, and must survive this host-env
+# scrub so setup, call, and teardown outcomes land in the same event ledger.
 _MANAGED_VERIFY_ENV = frozenset(
     {
         "POLYLOGUE_VERIFY_RUN_ID",
@@ -614,7 +135,6 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_PYTEST_SELECTION_PATH",
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
-        "POLYLOGUE_PYTEST_MANAGED_BASETEMP",
         "POLYLOGUE_VISUAL_EVIDENCE_DIR",
     }
 )
@@ -623,7 +143,6 @@ _MANAGED_VERIFY_ENV = frozenset(
 @pytest.fixture(autouse=True)
 def _close_test_opened_sqlite_connections(
     monkeypatch: pytest.MonkeyPatch,
-    _reclaim_test_tmp_path: None,
 ) -> Iterator[None]:
     """Close sync ``sqlite3`` connections that *test code* opened but never closed.
 
@@ -745,7 +264,6 @@ def _close_test_opened_sqlite_connections(
 def _clear_polylogue_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    _reclaim_test_tmp_path: None,
     request: pytest.FixtureRequest,
 ) -> None:
     # Close any cached SQLite connections to prevent WAL sidecar corruption

@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root
-from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
-from devtools.verify_runs import worktree_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,62 +66,6 @@ def _git(*args: str, cwd: Path) -> str:
 
 def _run(command: list[str], *, cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)
-
-
-def _worktree_is_clean(cwd: Path) -> bool:
-    result = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "."],
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0 and not result.stderr and not result.stdout
-
-
-def _current_provenance(cwd: Path) -> tuple[dict[str, object], str] | None:
-    """Return the live provenance required to trust a cached quick receipt."""
-    if not _worktree_is_clean(cwd):
-        return None
-    try:
-        environment = assert_polylogue_matches_checkout(cwd, context="pre-push").as_dict()
-    except (CheckoutImportMismatchError, ImportError, OSError, ValueError):
-        return None
-    fingerprint = worktree_fingerprint(cwd)
-    if fingerprint == "unavailable":
-        return None
-    return environment, fingerprint
-
-
-def _has_compatible_quick_receipt(
-    *,
-    cwd: Path,
-    head: str | None,
-    provenance: tuple[dict[str, object], str] | None,
-) -> bool:
-    """Accept only a successful receipt bound to this exact checkout state."""
-    if head is None or provenance is None:
-        return False
-    environment, fingerprint = provenance
-    receipt_path = cwd / ".cache" / "verify" / "current-run.json"
-    try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(receipt, Mapping):
-        return False
-    return (
-        receipt.get("tier") == "quick"
-        and receipt.get("status") == "success"
-        and type(receipt.get("exit_code")) is int
-        and receipt.get("exit_code") == 0
-        and receipt.get("git_head") == head
-        and receipt.get("final_git_head") == head
-        and receipt.get("checkout_root") == str(cwd.resolve())
-        and receipt.get("worktree_fingerprint") == fingerprint
-        and receipt.get("final_worktree_fingerprint") == fingerprint
-        and receipt.get("environment_fingerprint") == environment
-    )
 
 
 def _updates_match_head(updates: list[PushUpdate], head: str | None) -> bool:
