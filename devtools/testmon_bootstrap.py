@@ -8,13 +8,14 @@ does only the checkout boundary work that the plugin cannot do itself:
 * validate that the local SQLite database contains that environment;
 * require changed executable modules to occur in its dependency graph;
 * remove only an invalid checkout-owned database and its SQLite sidecars;
-* optionally copy a matching main-checkout database into a linked worktree by
-  SQLite online backup plus atomic rename.
+* report the current checkout's graph state without borrowing mutable state
+  from a sibling worktree.
 
-There are no seed markers, completion stamps, shard ledgers, or release grants.
-An absent graph is reported to the caller.  Only an explicitly requested
-complete-corpus run may build a new environment; plain verification reuses a
-compatible graph or refuses before pytest starts.
+There are no seed markers, completion stamps, shard ledgers, release grants,
+or cross-worktree database transfers. An absent graph is reported to the
+caller. Only an explicitly requested complete-corpus run may build a new
+environment; plain verification reuses a compatible graph or refuses before
+pytest starts.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -1554,9 +1555,8 @@ def prepare_native_testmon_environment(
     pytest_profile: str = "default",
     pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
-    source_lock_factory: Callable[[Path], contextlib.AbstractContextManager[bool]] | None = None,
 ) -> NativeTestmonPreparation:
-    """Repair derived local state and optionally reuse a matching main graph."""
+    """Inspect and repair derived state owned by this checkout only."""
     root = repo_root.resolve()
     _validate_owned_state_parents(root)
     environment_name = testmon_environment_digest(
@@ -1585,34 +1585,15 @@ def prepare_native_testmon_environment(
             missing_checkout_paths,
         )
     fallback_allowed = native_testmon_fallback_allowed(local)
-    info = linked_worktree_info(root, deadline_monotonic=deadline_monotonic)
-    linked = bool(info and info[0])
-    main_checkout = info[1] if linked and info is not None else None
     if local.valid:
-        violation = certified_attestation_violation(
-            root,
-            environment_name=environment_name,
-            current_nodeids=local.environment.nodeids if local.environment is not None else (),
-        )
-        if violation is not None:
-            # A coverage certificate governs a stronger release-attestation
-            # claim, not testmon's sound dependency selection. Keep selecting
-            # from the compatible graph; only an explicit --all run renews a
-            # stale certificate.
-            local = NativeTestmonState(
-                local.status,
-                f"attestation unavailable: {violation}",
-                local.environment,
-                local.missing_executable_paths,
-            )
         return NativeTestmonPreparation(
             environment_name,
             "affected",
             local,
             None,
             (),
-            linked,
-            main_checkout,
+            False,
+            None,
             fallback_allowed,
         )
 
@@ -1631,95 +1612,6 @@ def prepare_native_testmon_environment(
     if local.status == "invalid":
         removed = remove_invalid_native_testmon_state(root)
     _ensure_deadline(deadline_monotonic)
-    copied_from: Path | None = None
-    if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
-        source_lock = (
-            source_lock_factory(main_checkout) if source_lock_factory is not None else contextlib.nullcontext(True)
-        )
-        main = NativeTestmonState("absent", "optional main native testmon state unavailable")
-        with _optional_native_testmon_source_lock(source_lock) as source_available:
-            if source_available:
-                try:
-                    _validate_owned_state_parents(main_checkout)
-                except NativeTestmonRepairError as exc:
-                    main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
-                else:
-                    main_data = main_checkout / TESTMON_DATA_RELPATH
-                    main_binding_context = native_testmon_source_binding(main_data)
-                    try:
-                        main_binding = main_binding_context.__enter__()
-                    except NativeTestmonRepairError as exc:
-                        # The linked checkout is optional. A stale private hard link or
-                        # another source-only ownership violation must not turn an
-                        # otherwise safe local bootstrap into a rejected verify.
-                        main_binding = None
-                        main = NativeTestmonState("absent", f"optional main native testmon state unavailable: {exc}")
-                    else:
-                        try:
-                            if main_binding is None:
-                                # The public source path may appear immediately after
-                                # binding checked it. Without a retained descriptor it
-                                # is not safe to inspect or copy that mutable inode.
-                                main = NativeTestmonState(
-                                    "absent",
-                                    "optional main native testmon state unavailable before descriptor binding",
-                                )
-                            else:
-                                main = inspect_native_testmon_environment(
-                                    main_data,
-                                    environment_name=environment_name,
-                                    required_executable_paths=required_executable_paths,
-                                    data_fd=main_binding.descriptor,
-                                    bound_data_path=main_binding.data_path,
-                                    bound_sidecar_fds=dict(main_binding.sidecar_descriptors),
-                                    deadline_monotonic=deadline_monotonic,
-                                )
-                                if main.valid:
-                                    _atomic_copy_sqlite_database(
-                                        main_data,
-                                        local_data,
-                                        environment_name=environment_name,
-                                        required_executable_paths=required_executable_paths,
-                                        deadline_monotonic=deadline_monotonic,
-                                        source_fd=main_binding.descriptor,
-                                        bound_source_path=main_binding.data_path,
-                                    )
-                                    copied_from = main_data
-                        finally:
-                            main_binding_context.__exit__(None, None, None)
-        fallback_allowed = native_testmon_fallback_allowed(local, main)
-
-        if copied_from is not None:
-            local = inspect_native_testmon_environment(
-                local_data,
-                environment_name=environment_name,
-                required_executable_paths=required_executable_paths,
-                deadline_monotonic=deadline_monotonic,
-            )
-            if not local.valid:
-                raise NativeTestmonRepairError(f"published native testmon copy is invalid: {local.reason}")
-            violation = certified_attestation_violation(
-                root,
-                environment_name=environment_name,
-                current_nodeids=local.environment.nodeids if local.environment is not None else (),
-            )
-            if violation is not None:
-                local = NativeTestmonState(
-                    local.status,
-                    f"attestation unavailable: {violation}",
-                    local.environment,
-                    local.missing_executable_paths,
-                )
-            return NativeTestmonPreparation(
-                environment_name,
-                "affected",
-                local,
-                copied_from,
-                removed,
-                linked,
-                main_checkout,
-                fallback_allowed,
-            )
 
     if local.resumable:
         # OPERATOR DECISION 2026-08-18: prefer the hazard to the standstill.
@@ -1733,18 +1625,9 @@ def prepare_native_testmon_environment(
         # the run still records edges for everything it executes. The uncovered
         # paths are named in the receipt rather than paid for every time.
         return NativeTestmonPreparation(
-            environment_name, "affected", local, copied_from, removed, linked, main_checkout, fallback_allowed
+            environment_name, "affected", local, None, removed, False, None, fallback_allowed
         )
-    return NativeTestmonPreparation(
-        environment_name,
-        "bootstrap",
-        local,
-        copied_from,
-        removed,
-        linked,
-        main_checkout,
-        fallback_allowed,
-    )
+    return NativeTestmonPreparation(environment_name, "bootstrap", local, None, removed, False, None, fallback_allowed)
 
 
 __all__ = [
@@ -1755,18 +1638,13 @@ __all__ = [
     "NativeTestmonLifecycleLockTimeoutError",
     "NativeTestmonPreparation",
     "NativeTestmonRepairError",
-    "NativeTestmonSourceBinding",
     "NativeTestmonState",
     "TESTMON_DATA_RELPATH",
     "classify_source_ast",
     "classify_native_testmon_changes",
     "executable_python_paths",
     "inspect_native_testmon_environment",
-    "linked_worktree_info",
     "native_testmon_fallback_allowed",
-    "native_testmon_lifecycle_lock",
-    "native_testmon_lifecycle_locks",
-    "native_testmon_source_binding",
     "prepare_native_testmon_environment",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",

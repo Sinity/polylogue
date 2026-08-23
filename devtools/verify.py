@@ -86,7 +86,6 @@ from devtools.testmon_bootstrap import (
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
-    write_certified_corpus,
 )
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
@@ -1980,29 +1979,8 @@ def _run(
     run: VerifyRun | None = None,
     timeout_s: float | None = None,
 ) -> tuple[int, float, dict[str, Any]]:
-    if not label.startswith("pytest native"):
-        return _run_step(label, cmd, cwd=cwd, run=run, timeout_s=timeout_s)
-    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
-    temporary_state = state is None
-    if state is None:
-        state = _open_owned_native_testmon_state(ROOT)
-    try:
-        # The descriptor binds verify's own inspection to one checked inode.
-        # Pytest crosses systemd and xdist exec boundaries that do not promise
-        # arbitrary descriptor inheritance, so its workers receive the checked
-        # checkout-local path instead.  Native containment remains the
-        # supervisor's process-group/systemd scope contract, not an FD contract.
-        return _run_step(
-            label,
-            cmd,
-            cwd=cwd,
-            run=run,
-            timeout_s=timeout_s,
-            native_testmon_data=state.data_path,
-        )
-    finally:
-        if temporary_state:
-            state.close()
+    """Run one semantic verification step in the caller's foreground job."""
+    return _run_step(label, cmd, cwd=cwd, run=run, timeout_s=timeout_s)
 
 
 def _run_step(
@@ -2019,9 +1997,10 @@ def _run_step(
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
     managed_native_lane = label.startswith("pytest native")
-    agentctl_declared = bool(
-        _ACTIVE_VERIFY_RUN is not None and getattr(_ACTIVE_VERIFY_RUN, "agentctl_operation", None) is not None
-    )
+    # Process placement, cancellation, resource admission, and timeout policy
+    # are execution-host concerns. The verifier always remains a foreground
+    # semantic child, whether its host is AgentCTL or an external CI runner.
+    agentctl_declared = True
     closed_world_command = _native_pytest_command_is_closed_world(label, cmd)
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
@@ -3075,19 +3054,11 @@ def _native_environment_after_run(
     *,
     required_executable_paths: Sequence[str],
 ) -> NativeTestmonState:
-    state = _ACTIVE_VERIFY_RUN.owned_native_testmon_state if _ACTIVE_VERIFY_RUN is not None else None
-    temporary_state = state is None
-    if state is None:
-        state = _open_owned_native_testmon_state(ROOT)
-    try:
-        return inspect_native_testmon_environment(
-            state.data_path,
-            environment_name=preparation.environment_name,
-            required_executable_paths=required_executable_paths,
-        )
-    finally:
-        if temporary_state:
-            state.close()
+    return inspect_native_testmon_environment(
+        ROOT / TESTMON_DATA,
+        environment_name=preparation.environment_name,
+        required_executable_paths=required_executable_paths,
+    )
 
 
 def _release_baseline_allowed(
@@ -3369,18 +3340,11 @@ def _main(
             )
             runtime_data_paths = change_impact.runtime_data_paths
 
-            def source_lock_factory(main_checkout: Path) -> contextlib.AbstractContextManager[bool]:
-                return _native_testmon_source_lifecycle_lock(
-                    main_checkout=main_checkout,
-                    timeout_s=_native_testmon_source_lock_timeout_s(),
-                )
-
             preparation = prepare_native_testmon_environment(
                 ROOT,
                 required_executable_paths=preparation_required_executable_paths,
                 pytest_profile=_pytest_profile(),
                 pytest_environment=native_pytest_environment,
-                source_lock_factory=source_lock_factory,
             )
             if (
                 preparation.selection_mode == "bootstrap"
@@ -3393,10 +3357,7 @@ def _main(
                     required_executable_paths=preparation_required_executable_paths,
                     pytest_profile=_pytest_profile(),
                     pytest_environment=native_pytest_environment,
-                    source_lock_factory=source_lock_factory,
                 )
-            assert _ACTIVE_VERIFY_RUN is not None
-            _ACTIVE_VERIFY_RUN.owned_native_testmon_state = _open_owned_native_testmon_state(ROOT)
         except NativeTestmonDeadlineError as exc:
             return _finalize_preflight_failure(
                 verify_run,
@@ -3751,16 +3712,6 @@ def _main(
             invocation_duration_s=total_duration,
             attestation_sound=attestation_sound,
         )
-        if (
-            testmon_mode in ("all", "full", "bootstrap")
-            and pytest_aggregate.get("complete_corpus_covered") is True
-            and native_environment is not None
-        ):
-            # A completed covered run certifies its corpus next to the graph;
-            # future attestation is checked against this certificate, because
-            # the graph's own row set is blind to its losses (an interrupted
-            # lane shrinks the corpus and the coverage claim together).
-            write_certified_corpus(ROOT, preparation.environment_name, native_environment.nodeids)
 
     # Finalization can outlast the last pytest lane, so wall_s is taken here
     # rather than from the lanes alone.
@@ -4075,8 +4026,6 @@ def main(argv: list[str] | None = None) -> int:
     _ACTIVE_VERIFY_RUN = None
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     agentctl_operation = _declared_agentctl_operation(raw_argv)
-    if agentctl_operation is None and _should_isolate(raw_argv):
-        return _reexec_isolated(raw_argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--plan"))
     if os.environ.get("PYTEST_CURRENT_TEST"):
         # A verify invoked from inside a test must not contend for THIS
@@ -4094,8 +4043,12 @@ def main(argv: list[str] | None = None) -> int:
         # nothing, and the lock's real contract -- one lifecycle per checkout at
         # a time -- is still enforced for every non-test invocation.
         native_pytest_enabled = False
-    lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
-    termination_context = contextlib.nullcontext() if agentctl_operation is not None else _terminate_as_interrupt()
+    del native_pytest_enabled
+    # AgentCTL owns lifecycle for declared jobs; direct CI and hooks are
+    # ordinary foreground processes. Neither route installs a second local
+    # lock, snapshot, signal handler, or timeout authority.
+    lock = contextlib.nullcontext()
+    termination_context = contextlib.nullcontext()
     try:
         with termination_context, lock:
             try:

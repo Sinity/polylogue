@@ -3501,13 +3501,7 @@ def test_busy_main_source_wait_has_bounded_liveness(
         holder = pool.submit(hold_main_lock)
         assert holder_entered.wait(timeout=2)
         started = time.monotonic()
-        preparation = prepare_native_testmon_environment(
-            lane,
-            source_lock_factory=lambda main_checkout: verify._native_testmon_source_lifecycle_lock(
-                main_checkout=main_checkout,
-                timeout_s=verify._native_testmon_source_lock_timeout_s(),
-            ),
-        )
+        preparation = prepare_native_testmon_environment(lane)
         elapsed = time.monotonic() - started
         release_holder.set()
         holder.result(timeout=2)

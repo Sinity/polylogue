@@ -1271,10 +1271,7 @@ def test_optional_main_invalid_parent_falls_back_to_lane_local_bootstrap(
 
     monkeypatch.setattr(testmon_bootstrap, "_validate_owned_state_parents", reject_main_parent)
 
-    preparation = prepare_native_testmon_environment(
-        lane,
-        source_lock_factory=lambda _main_checkout: contextlib.nullcontext(True),
-    )
+    preparation = prepare_native_testmon_environment(lane)
 
     assert preparation.selection_mode == "bootstrap"
     assert preparation.copied_from is None
