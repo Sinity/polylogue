@@ -4460,13 +4460,6 @@ x-polylogue-route-contracts:
   response_contract: bounded cockpit overview
   notes: Privacy-safe landing aggregates, readiness, and a fixed recent-session page.
 - method: GET
-  pattern: /api/dev-loop
-  kind: operational
-  stability: shell_supported
-  auth_policy: credential_if_configured
-  response_contract: DevLoopDebugPayload
-  notes: Branch-local launcher metadata for the web shell; allowlisted fields only, no raw environment dump.
-- method: GET
   pattern: /api/events
   kind: operational
   stability: stable

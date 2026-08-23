@@ -4046,16 +4046,6 @@ class TestReaderInformability:
         assert "artifact_path" not in capture
         assert "browser_capture" in readiness
 
-    def test_dev_loop_chip_consumes_branch_local_metadata(self, workspace_env: dict[str, Path]) -> None:
-        """The web shell can surface branch-local run metadata when present."""
-
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert 'id="status-dev-loop"' in body
-        assert "function renderDevLoopChip(" in body
-        assert "/api/dev-loop" in body
-
     def test_web_shell_surfaces_latest_api_request_diagnostics(self, workspace_env: dict[str, Path]) -> None:
         """The web shell has local request diagnostics for UI/API failures."""
 

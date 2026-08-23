@@ -335,7 +335,6 @@ _STATUS_FUNCS = [
     "updateStatusCountsUnknown",
     "setChipQuality",
     "renderFacets",
-    "renderDevLoopChip",
     "renderDaemonBanner",
     "retryDaemonHealth",
     "scheduleDaemonRetry",

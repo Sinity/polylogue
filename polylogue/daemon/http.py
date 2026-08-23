@@ -8,7 +8,6 @@ import functools
 import hashlib
 import hmac
 import json
-import os
 import select
 import socket
 import sqlite3
@@ -311,7 +310,6 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/webui/observability", "_handle_webui_observability"),
         _static_get_route("/api/webui/freshness", "_handle_webui_source_freshness", passes_params=True),
         _static_get_route("/api/overview", "_handle_overview"),
-        _static_get_route("/api/dev-loop", "_handle_dev_loop"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
         _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
@@ -363,82 +361,6 @@ def _normalize_session_route_id(identifier: str) -> str:
     """Accept session target-ref identity keys in session route ids."""
 
     return identifier.removeprefix("session:")
-
-
-def _parse_optional_int_env(name: str) -> int | None:
-    value = os.environ.get(name)
-    if not value:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
-
-
-def _dev_loop_current_commit(cwd: str) -> str | None:
-    """Return the checkout's current short HEAD commit, or ``None`` if unknown.
-
-    Used only to detect the stale-run-dir trap (see ``_dev_loop_payload``);
-    never raises on a non-git checkout, missing ``git``, or a slow/hung call.
-    """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    value = result.stdout.strip()
-    return value or None
-
-
-def _dev_loop_payload() -> JSONDocument:
-    # Deliberately raw os.environ reads, not load_polylogue_config(): this
-    # endpoint reports whether the dev-loop LAUNCHER set these vars in the
-    # daemon's own environment (harness diagnosis), not the resolved
-    # 5-layer config value -- resolving through config.py would mask an
-    # unset env var behind a TOML/default fallback and defeat the probe.
-    # RUN_ID/LOG_DIR are launcher-injected correlation metadata (structurally
-    # identical to CODEX_SESSION_ID), deliberately excluded from config.py's
-    # layered inventory (polylogue-uu8r judgment call; see
-    # docs/configuration.md). ARCHIVE_ROOT itself IS an inventoried setting
-    # (config.py's `archive_root`) but is read raw here for the same
-    # env-presence-diagnostic reason.
-    run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
-    log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
-    archive_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
-    enabled = any((run_id, log_dir))
-    # Stale-run-dir trap (devloop-runtime memory, polylogue-5en): a branch
-    # switch/pull/rebase on disk after this process was launched does NOT
-    # change what code is actually running -- Python already imported the
-    # old modules. `launch_commit` is the HEAD the launcher recorded at
-    # start; `current_commit` is read fresh from the checkout on every call.
-    # A mismatch means this daemon is serving stale code and must be
-    # restarted, not just re-preflighted.
-    launch_commit = os.environ.get("POLYLOGUE_DEV_LOOP_LAUNCH_COMMIT")
-    current_commit = _dev_loop_current_commit(os.getcwd()) if launch_commit else None
-    stale = bool(launch_commit and current_commit and launch_commit != current_commit)
-    return {
-        "ok": True,
-        "enabled": enabled,
-        "run_id": run_id,
-        "log_dir": log_dir,
-        "archive_root": archive_root,
-        "api_port": _parse_optional_int_env("POLYLOGUE_API_PORT"),
-        "browser_capture_port": _parse_optional_int_env("POLYLOGUE_BROWSER_CAPTURE_PORT"),
-        "pid": os.getpid(),
-        "cwd": os.getcwd(),
-        "launch_commit": launch_commit,
-        "current_commit": current_commit,
-        "stale": stale,
-    }
 
 
 def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
@@ -2932,10 +2854,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
 
     @daemon_safe_handler
-    def _handle_dev_loop(self) -> None:
-        self._send_json(HTTPStatus.OK, _dev_loop_payload())
-
-    # ------------------------------------------------------------------
     # Handlers: events (SSE + JSON poll) — implementation in events_http
     # ------------------------------------------------------------------
 

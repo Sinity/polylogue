@@ -17,7 +17,3 @@ devtools render visual-tapes --output-dir docs/examples/visual-tapes --capture
   failed and successful test outcomes.
 - `reader-evidence-tour.tape` / `reader-evidence-tour.gif` — browserless reader
   evidence lane against synthetic fixtures.
-- `browser-capture-tour.tape` / `browser-capture-tour.gif` — headless Chrome
-  proof that deterministic ChatGPT and Claude fixture pages are captured through
-  the unpacked browser extension, receiver, archive/API convergence, popup/debug
-  UI, and the daemon web reader DOM.

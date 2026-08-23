@@ -2565,12 +2565,6 @@ async def _emit_daemon_lifecycle_event(
     """Persist a daemon lifecycle event without making observability fatal."""
     from polylogue.daemon.events import emit_daemon_event
 
-    # POLYLOGUE_DEV_LOOP_RUN_ID/LOG_DIR are launcher-injected correlation
-    # metadata for THIS process invocation, structurally identical to
-    # CODEX_SESSION_ID/CLAUDE_SESSION_ID -- not an operator TOML preference.
-    # Deliberately excluded from config.py's layered inventory
-    # (polylogue-uu8r judgment call; see docs/configuration.md).
-    run_id = os.environ.get("POLYLOGUE_DEV_LOOP_RUN_ID")
     event_payload: dict[str, object] = {
         "phase": phase,
         "status": status,
@@ -2580,11 +2574,6 @@ async def _emit_daemon_lifecycle_event(
     }
     if component is not None:
         event_payload["component"] = component
-    log_dir = os.environ.get("POLYLOGUE_DEV_LOOP_LOG_DIR")
-    if run_id:
-        event_payload["dev_loop_run_id"] = run_id
-    if log_dir:
-        event_payload["dev_loop_log_dir"] = log_dir
     if payload:
         event_payload.update(payload)
     try:
@@ -2593,7 +2582,7 @@ async def _emit_daemon_lifecycle_event(
                 f"daemon.lifecycle.{phase}",
                 emit_daemon_event,
                 "daemon.lifecycle",
-                operation_id=run_id,
+                operation_id=None,
                 payload=event_payload,
             )
     except TimeoutError:

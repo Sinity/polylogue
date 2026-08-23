@@ -419,15 +419,11 @@ Common runtime overrides:
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight payload budget for the watcher prefetch cache. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `live_watcher_parse_stage_warm_timeout_seconds` | Timeout for a watcher prefetch `warm()` pass. |
 
-Three `POLYLOGUE_*`-namespaced variables are deliberately **not** layered
-config keys (polylogue-uu8r judgment call): `POLYLOGUE_DEV_LOOP_RUN_ID`,
-`POLYLOGUE_DEV_LOOP_LOG_DIR`, and `POLYLOGUE_SESSION_REF` are
-launcher/harness-injected correlation metadata for one process invocation
-(dev-loop run/log identity, cross-agent session correlation), structurally
-identical to `CODEX_SESSION_ID`/`CLAUDE_SESSION_ID` rather than an operator
-TOML preference. They stay direct `os.environ` reads at their call sites
-(`polylogue/daemon/cli.py`, `polylogue/daemon/http.py`,
-`polylogue/coordination/envelope.py`). `POLYLOGUE_CONFIG` is similarly
+`POLYLOGUE_SESSION_REF` is deliberately not a layered config key. It is
+launcher/harness-injected correlation metadata for one process invocation,
+structurally identical to `CODEX_SESSION_ID`/`CLAUDE_SESSION_ID` rather than
+an operator TOML preference. It stays a direct `os.environ` read in
+`polylogue/coordination/envelope.py`. `POLYLOGUE_CONFIG` is similarly
 exempt: it is the bootstrap variable that selects *which* user TOML file to
 load, so it cannot itself be resolved through the layered reader it
 configures — `polylogue/cli/commands/embed.py::_resolve_user_config_path`

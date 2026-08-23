@@ -24,8 +24,7 @@ Representative media has to be evidence, not decoration. Public evidence must
 point to commands that run against synthetic fixtures or an explicitly local
 operator profile and produce a named artifact: the DOM smoke lane below,
 `devtools verify scenario run reader-visual-smoke`,
-`devtools workspace dev-loop --tui-plan`,
-`devtools workspace dev-loop --browser-provider-smoke`, or
+the declared `dev_loop_proof` AgentCTL operation, or
 `devtools workspace deployment-smoke --browser`. Screenshots, screencasts, and
 store-listing images are useful only when they point back to one of those run
 artifacts; standalone mockups belong in design notes, not release evidence.
@@ -43,12 +42,6 @@ The default specs are deliberately self-contained and private-data-free:
   successful rerun, and a prose-only negative control.
 - `reader-evidence-tour` runs the browserless reader smoke lane and renders the
   JSON report header.
-- `browser-capture-tour` runs `devtools workspace dev-loop
-  --browser-provider-live-follow --json`, which opens deterministic ChatGPT and
-  Claude fixture pages in headless Chrome, loads the unpacked extension,
-  captures both pages through the receiver, waits for archive/API convergence,
-  opens the daemon web reader, and prints the redacted provider/popup/reader
-  proof summary.
 
 These are product evidence specs, not ad hoc recordings. If the command flow
 changes, update the spec and regenerate the media rather than editing a GIF by
@@ -60,7 +53,6 @@ Current example renders:
 - [`evidence-receipt.png`](examples/visual-tapes/evidence-receipt.png) — the
   static README frame; regenerate the tape when the underlying flow changes.
 - [`reader-evidence-tour.gif`](examples/visual-tapes/reader-evidence-tour.gif)
-- [`browser-capture-tour.gif`](examples/visual-tapes/browser-capture-tour.gif)
 
 ## Running the lane
 
