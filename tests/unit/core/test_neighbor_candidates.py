@@ -53,16 +53,28 @@ async def test_same_title_different_body_is_explainable_candidate(db_path: Path)
         SessionBuilder(db_path, "target")
         .provider("claude-ai")
         .title("Vault Analysis")
+        .created_at("2026-04-22T10:00:00+00:00")
         .updated_at("2026-04-22T10:00:00+00:00")
-        .add_message("target-user", role="user", text="Map the archive verification roadmap.")
+        .add_message(
+            "target-user",
+            role="user",
+            text="Map the archive verification roadmap.",
+            timestamp="2026-04-22T10:00:00+00:00",
+        )
         .save()
     )
     (
         SessionBuilder(db_path, "candidate")
         .provider("claude-ai")
         .title("Vault Analysis")
+        .created_at("2026-04-20T10:00:00+00:00")
         .updated_at("2026-04-20T10:00:00+00:00")
-        .add_message("candidate-user", role="user", text="Discuss unrelated dashboard styling decisions.")
+        .add_message(
+            "candidate-user",
+            role="user",
+            text="Discuss unrelated dashboard styling decisions.",
+            timestamp="2026-04-20T10:00:00+00:00",
+        )
         .save()
     )
 
@@ -85,24 +97,42 @@ async def test_nearby_similar_content_gets_time_and_content_reasons(db_path: Pat
         SessionBuilder(db_path, "target")
         .provider("codex")
         .title("Checkpoint Failure")
+        .created_at("2026-04-22T12:00:00+00:00")
         .updated_at("2026-04-22T12:00:00+00:00")
-        .add_message("target-user", role="user", text="Debug sqlite checkpoint lock retry recovery in archive writes.")
+        .add_message(
+            "target-user",
+            role="user",
+            text="Debug sqlite checkpoint lock retry recovery in archive writes.",
+            timestamp="2026-04-22T12:00:00+00:00",
+        )
         .save()
     )
     (
         SessionBuilder(db_path, "candidate")
         .provider("codex")
         .title("Archive Lock Retries")
+        .created_at("2026-04-22T14:00:00+00:00")
         .updated_at("2026-04-22T14:00:00+00:00")
-        .add_message("candidate-user", role="user", text="Investigate sqlite checkpoint lock retry recovery behavior.")
+        .add_message(
+            "candidate-user",
+            role="user",
+            text="Investigate sqlite checkpoint lock retry recovery behavior.",
+            timestamp="2026-04-22T14:00:00+00:00",
+        )
         .save()
     )
     (
         SessionBuilder(db_path, "distractor")
         .provider("codex")
         .title("Visual Cleanup")
+        .created_at("2026-04-22T13:00:00+00:00")
         .updated_at("2026-04-22T13:00:00+00:00")
-        .add_message("distractor-user", role="user", text="Adjust typography and color spacing.")
+        .add_message(
+            "distractor-user",
+            role="user",
+            text="Adjust typography and color spacing.",
+            timestamp="2026-04-22T13:00:00+00:00",
+        )
         .save()
     )
 
@@ -125,16 +155,28 @@ async def test_source_content_seed_finds_similar_candidate_outside_time_window(d
         SessionBuilder(db_path, "target")
         .provider("codex")
         .title("Checkpoint Failure")
+        .created_at("2026-04-22T12:00:00+00:00")
         .updated_at("2026-04-22T12:00:00+00:00")
-        .add_message("target-user", role="user", text="Debug sqlite checkpoint lock retry recovery in archive writes.")
+        .add_message(
+            "target-user",
+            role="user",
+            text="Debug sqlite checkpoint lock retry recovery in archive writes.",
+            timestamp="2026-04-22T12:00:00+00:00",
+        )
         .save()
     )
     (
         SessionBuilder(db_path, "candidate")
         .provider("codex")
         .title("Different Title")
+        .created_at("2026-04-18T12:00:00+00:00")
         .updated_at("2026-04-18T12:00:00+00:00")
-        .add_message("candidate-user", role="user", text="Investigate sqlite checkpoint lock retry recovery behavior.")
+        .add_message(
+            "candidate-user",
+            role="user",
+            text="Investigate sqlite checkpoint lock retry recovery behavior.",
+            timestamp="2026-04-18T12:00:00+00:00",
+        )
         .save()
     )
 
