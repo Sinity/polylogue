@@ -10,7 +10,7 @@ Tiers:
   --all/--full
              Complete pytest correctness corpus in the current native
              testmon environment (performance benchmarks excluded).
-  --lab      Default testmon baseline plus lab smoke and SLO checks.
+  --lab      Default testmon baseline plus scenario and SLO checks.
 
 Output formats:
   --json     Machine-readable JSON to stdout (human progress to stderr).
@@ -42,7 +42,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
-from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -90,6 +89,7 @@ from devtools.testmon_bootstrap import (
     write_certified_corpus,
 )
 from devtools.verification_contracts import VerificationScope
+from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -99,7 +99,6 @@ from devtools.verify_runs import (
     PYTEST_CANONICAL_REPORT_NAME,
     PYTEST_EXPLICIT_BASETEMP_ENV,
     VERIFY_HISTORY_PATH,
-    AgentctlDeclaredJobBinding,
     CheckoutMutationMonitor,
     CheckoutMutationObservation,
     PytestResourceError,
@@ -107,7 +106,6 @@ from devtools.verify_runs import (
     ResourceSampler,
     VerifyRun,
     adaptive_pytest_worker_count,
-    agentctl_declared_job_binding,
     aggregate_native_testmon_run,
     append_verify_history,
     apply_managed_pytest_runtime_policy,
@@ -257,11 +255,16 @@ def _native_testmon_source_lock_timeout_s() -> float:
     return _float_env(TESTMON_SOURCE_LOCK_TIMEOUT_ENV, DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S)
 
 
-def _agentctl_lifecycle_free_binding(raw_argv: Sequence[str]) -> AgentctlDeclaredJobBinding | None:
-    binding = agentctl_declared_job_binding(ROOT)
-    if binding is None or tuple(raw_argv) != _AGENTCTL_OPERATION_ARGV[binding.operation]:
-        return None
-    return binding
+def _declared_agentctl_operation(raw_argv: Sequence[str]) -> str | None:
+    """Recognize the fixed verifier argv supplied by an AgentCTL job.
+
+    AgentCTL owns job identity, workspace binding, service containment, result
+    capture, and logs. Devtools only selects its declared semantic route so it
+    does not install a second supervisor inside that service.
+    """
+    operation = os.environ.get("SINNIXD_OPERATION")
+    expected_argv = _AGENTCTL_OPERATION_ARGV.get(operation or "")
+    return operation if expected_argv == tuple(raw_argv) else None
 
 
 def _anchor_verification_paths() -> None:
@@ -680,7 +683,6 @@ def _pytest_workload_receipt(
     basetemp_cleanup: Path | None,
     concurrency: int,
     timeout_s: float,
-    lifecycle_authority: str = "devtools",
 ) -> dict[str, Any]:
     """Adapt managed-pytest accounting to the shared workload receipt."""
     input_digest = hashlib.sha256(
@@ -823,11 +825,7 @@ def _pytest_workload_receipt(
         cancellation_requested=termination_reason is not None,
         cleanup_complete=True if basetemp_cleanup is not None else None,
         notes=(
-            (
-                "AgentCTL owns process-tree lifecycle; local sampler evidence is unavailable."
-                if lifecycle_authority == "agentctl"
-                else "Managed pytest process-tree sampler adapter."
-            ),
+            "Managed pytest workload semantic adapter.",
             (
                 f"Logical basetemp peak retained as diagnostic evidence: {logical_basetemp_kb * 1024} bytes."
                 if isinstance(logical_basetemp_kb, int)
@@ -2021,7 +2019,9 @@ def _run_step(
     sys.stderr.flush()
     is_pytest = label.startswith("pytest")
     managed_native_lane = label.startswith("pytest native")
-    agentctl_lifecycle_free = bool(_ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.agentctl_binding is not None)
+    agentctl_declared = bool(
+        _ACTIVE_VERIFY_RUN is not None and getattr(_ACTIVE_VERIFY_RUN, "agentctl_operation", None) is not None
+    )
     closed_world_command = _native_pytest_command_is_closed_world(label, cmd)
     # ``bench slo`` starts pytest-benchmark itself, so it needs the same
     # bounded temp policy and run marker as a direct pytest step.
@@ -2129,21 +2129,25 @@ def _run_step(
     interrupted = False
     pytest_containment_quiescent = True
     containment_error: str | None = None
-    if is_pytest:
+    result: subprocess.CompletedProcess[Any]
+    if agentctl_declared:
+        try:
+            result = subprocess.run(cmd, cwd=cwd, stdout=sys.stderr, stderr=sys.stderr, env=env)
+        except KeyboardInterrupt:
+            interrupted = True
+            result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
+    elif is_pytest:
         try:
             try:
-                if agentctl_lifecycle_free:
-                    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
-                else:
-                    result = _run_pytest_with_heartbeat(
-                        cmd,
-                        cwd=cwd,
-                        env=env,
-                        t0=t0,
-                        run=run,
-                        artifacts=artifacts,
-                        timeout_override_s=timeout_s,
-                    )
+                result = _run_pytest_with_heartbeat(
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    t0=t0,
+                    run=run,
+                    artifacts=artifacts,
+                    timeout_override_s=timeout_s,
+                )
             except PytestContainmentError as exc:
                 pytest_containment_quiescent = False
                 containment_error = str(exc)
@@ -2174,6 +2178,8 @@ def _run_step(
             interrupted = True
             result = subprocess.CompletedProcess(args=cmd, returncode=130, stdout="", stderr="")
     elapsed = time.monotonic() - t0
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    stderr = result.stderr if isinstance(result.stderr, str) else ""
     metadata: dict[str, Any] = {}
     if artifacts is not None:
         metadata["run_id"] = run.run_id if run is not None else None
@@ -2186,27 +2192,23 @@ def _run_step(
         metadata["external_addopts_neutralized"] = external_addopts_neutralized
         metadata["external_plugins_neutralized"] = external_plugins_neutralized
         metadata["closed_world_collection"] = closed_world_collection
-        if agentctl_lifecycle_free:
-            metadata["lifecycle_authority"] = "agentctl"
-        metadata["heartbeat_s"] = None if agentctl_lifecycle_free else _pytest_heartbeat_interval()
-        metadata["timeout_s"] = (
-            None if agentctl_lifecycle_free else (_pytest_timeout_s() if timeout_s is None else timeout_s)
-        )
-        metadata["stall_timeout_s"] = None if agentctl_lifecycle_free else _pytest_stall_timeout_s()
-        metadata["term_grace_s"] = None if agentctl_lifecycle_free else _pytest_term_grace_s()
-        metadata["resource_interval_s"] = None if agentctl_lifecycle_free else _pytest_resource_interval_s()
+        metadata["heartbeat_s"] = None if agentctl_declared else _pytest_heartbeat_interval()
+        metadata["timeout_s"] = None if agentctl_declared else (_pytest_timeout_s() if timeout_s is None else timeout_s)
+        metadata["stall_timeout_s"] = None if agentctl_declared else _pytest_stall_timeout_s()
+        metadata["term_grace_s"] = None if agentctl_declared else _pytest_term_grace_s()
+        metadata["resource_interval_s"] = None if agentctl_declared else _pytest_resource_interval_s()
         metadata["pytest_tmpfs"] = pytest_tmpfs
         metadata["pytest_tmpfs_budget_mb"] = pytest_tmpfs_budget_mb
         metadata["pytest_runtime_policy"] = runtime_policy.to_dict() if runtime_policy is not None else None
-        metadata["progress_path"] = str(PYTEST_PROGRESS_PATH)
-        metadata["events_path"] = str(PYTEST_EVENTS_PATH)
-        metadata["events_dir"] = str(PYTEST_EVENTS_DIR)
-        metadata["selection_path"] = str(PYTEST_SELECTION_PATH)
-        metadata["summary_path"] = str(PYTEST_SUMMARY_PATH)
-        metadata["output_path"] = str(PYTEST_OUTPUT_PATH)
-        metadata["resources_path"] = None if agentctl_lifecycle_free else str(CURRENT_RESOURCES_PATH)
-        metadata["postmortem_path"] = None if agentctl_lifecycle_free else str(CURRENT_POSTMORTEM_PATH)
-        metadata["containment_path"] = None if agentctl_lifecycle_free else str(PYTEST_CONTAINMENT_PATH)
+        metadata["progress_path"] = None if agentctl_declared else str(PYTEST_PROGRESS_PATH)
+        metadata["events_path"] = None if agentctl_declared else str(PYTEST_EVENTS_PATH)
+        metadata["events_dir"] = None if agentctl_declared else str(PYTEST_EVENTS_DIR)
+        metadata["selection_path"] = None if agentctl_declared else str(PYTEST_SELECTION_PATH)
+        metadata["summary_path"] = None if agentctl_declared else str(PYTEST_SUMMARY_PATH)
+        metadata["output_path"] = None if agentctl_declared else str(PYTEST_OUTPUT_PATH)
+        metadata["resources_path"] = None if agentctl_declared else str(CURRENT_RESOURCES_PATH)
+        metadata["postmortem_path"] = None if agentctl_declared else str(CURRENT_POSTMORTEM_PATH)
+        metadata["containment_path"] = None if agentctl_declared else str(PYTEST_CONTAINMENT_PATH)
         metadata["basetemp_cleanup"] = str(basetemp_cleanup) if basetemp_cleanup is not None else None
         metadata["basetemp_swept"] = [str(path) for path in swept]
         junit_paths = [
@@ -2236,7 +2238,7 @@ def _run_step(
             # Fallback: terminal scraping when the structured report is
             # missing (pytest crashed before writing it, or the plugin is
             # disabled in some lab profile).
-            fallback = _parse_pytest_test_count(result.stdout + "\n" + result.stderr)
+            fallback = _parse_pytest_test_count(stdout + "\n" + stderr)
             if fallback is not None:
                 metadata["count"] = fallback
             metadata["report_path"] = None
@@ -2428,11 +2430,10 @@ def _run_step(
             tmpfs_budget_mb=pytest_tmpfs_budget_mb,
             basetemp_cleanup=basetemp_cleanup,
             concurrency=max(1, pytest_concurrency),
-            timeout_s=(0 if agentctl_lifecycle_free else _pytest_timeout_s() if timeout_s is None else timeout_s),
-            lifecycle_authority="agentctl" if agentctl_lifecycle_free else "devtools",
+            timeout_s=(0 if agentctl_declared else _pytest_timeout_s() if timeout_s is None else timeout_s),
         )
         metadata["workload_receipt"] = workload_receipt
-        if artifacts is not None:
+        if artifacts is not None and not agentctl_declared:
             postmortem = {
                 "updated_at": utc_now(),
                 "diagnosis": diagnosis,
@@ -2457,11 +2458,11 @@ def _run_step(
         sys.stderr.write(f"ok ({elapsed:.1f}s)\n")
     else:
         sys.stderr.write(f"FAILED ({elapsed:.1f}s)\n")
-        if result.stdout.strip():
-            sys.stderr.write(result.stdout + "\n")
-        if result.stderr.strip():
-            sys.stderr.write(result.stderr + "\n")
-    if not is_pytest and artifacts is not None and (result.stdout.strip() or result.stderr.strip()):
+        if stdout.strip():
+            sys.stderr.write(stdout + "\n")
+        if stderr.strip():
+            sys.stderr.write(stderr + "\n")
+    if not agentctl_declared and not is_pytest and artifacts is not None and (stdout.strip() or stderr.strip()):
         # Static steps (mypy, ruff, render) previously left NO durable output:
         # a failing mypy step showed exit=1 in the receipt and nothing else,
         # and `devtools why` could not name the errors (2026-08-18: two
@@ -2470,7 +2471,7 @@ def _run_step(
         try:
             artifacts.step_dir.mkdir(parents=True, exist_ok=True)
             (artifacts.step_dir / "output.log").write_text(
-                result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr,
+                stdout + ("\n" if stdout and stderr else "") + stderr,
                 encoding="utf-8",
             )
             metadata["output_path"] = str(artifacts.step_dir / "output.log")
@@ -2484,7 +2485,7 @@ def _run_step(
             for key in ("statistics", "statistics_path"):
                 if key in finalized_step:
                     metadata[key] = finalized_step[key]
-    if is_pytest and artifacts is not None:
+    if is_pytest and artifacts is not None and not agentctl_declared:
         copy_current_pytest_artifacts(
             Path.cwd(),
             artifacts,
@@ -2805,11 +2806,16 @@ def _print_json(result: dict[str, Any]) -> None:
     sys.stdout.write("\n")
 
 
-def _emit_machine_result(result: dict[str, Any], *, use_json: bool) -> None:
-    """Emit the bounded declared-operation result, or the legacy JSON ledger."""
-    agentctl_receipt = agentctl_verification_receipt(result)
-    if agentctl_receipt is not None:
-        json.dump(agentctl_receipt, sys.stdout, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def _emit_machine_result(result: dict[str, Any], *, use_json: bool, declared_operation: str | None = None) -> None:
+    """Emit the declared verifier result or the local JSON ledger."""
+    if declared_operation is not None:
+        json.dump(
+            declared_verification_result(result, operation=declared_operation),
+            sys.stdout,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
         sys.stdout.write("\n")
     elif use_json:
         _print_json(result)
@@ -2969,7 +2975,7 @@ class _ActiveVerifyRun:
     started_at: float
     verification_scope: VerificationScope
     head: str | None
-    agentctl_binding: AgentctlDeclaredJobBinding | None = None
+    agentctl_operation: str | None = None
     mutation_monitor: CheckoutMutationMonitor | None = None
     initial_worktree_fingerprint: str | None = None
     owned_native_testmon_state: _OwnedNativeTestmonState | None = None
@@ -3127,7 +3133,7 @@ def _finalize_preflight_failure(
     initial_worktree_fingerprint: str | None = None,
 ) -> int:
     """Persist one normalized failed invocation before pytest can start."""
-    externally_bound = bool(_ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.agentctl_binding is not None)
+    externally_bound = bool(_ACTIVE_VERIFY_RUN is not None and _ACTIVE_VERIFY_RUN.agentctl_operation is not None)
     final_head = _git_head()
     try:
         final_worktree_fingerprint = (
@@ -3199,7 +3205,11 @@ def _finalize_preflight_failure(
     if (recorded_selection := run.testmon_selection) is not None:
         history_entry["testmon_selection"] = recorded_selection
     _save_history(history_entry)
-    _emit_machine_result(history_entry, use_json=use_json)
+    _emit_machine_result(
+        history_entry,
+        use_json=use_json,
+        declared_operation=_ACTIVE_VERIFY_RUN.agentctl_operation if _ACTIVE_VERIFY_RUN is not None else None,
+    )
     sys.stderr.write(f"verify: {message}\n")
     return exit_code
 
@@ -3207,7 +3217,7 @@ def _finalize_preflight_failure(
 def _main(
     argv: list[str] | None = None,
     *,
-    agentctl_binding: AgentctlDeclaredJobBinding | None = None,
+    agentctl_operation: str | None = None,
 ) -> int:
     global _ACTIVE_VERIFY_RUN
     started_at = time.monotonic()
@@ -3260,13 +3270,14 @@ def _main(
         tier=tier,
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
+        mirror_current=agentctl_operation is None,
     )
     _ACTIVE_VERIFY_RUN = _ActiveVerifyRun(
         run=verify_run,
         started_at=started_at,
         verification_scope=planned_scope,
         head=head,
-        agentctl_binding=agentctl_binding,
+        agentctl_operation=agentctl_operation,
     )
 
     optimization_level = _python_optimization_level()
@@ -3309,7 +3320,7 @@ def _main(
     sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
 
     mutation_monitor: CheckoutMutationMonitor | None = None
-    if agentctl_binding is not None:
+    if agentctl_operation is not None:
         checkout_fingerprint = worktree_fingerprint(ROOT)
     else:
         mutation_monitor = CheckoutMutationMonitor(ROOT)
@@ -3853,7 +3864,11 @@ def _main(
         pytest_aggregate=pytest_aggregate,
     )
     history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
-    _emit_machine_result(history_entry, use_json=bool(use_json))
+    _emit_machine_result(
+        history_entry,
+        use_json=bool(use_json),
+        declared_operation=agentctl_operation,
+    )
     if not use_json and exit_code == 0:
         flags = _compare_against_last(step_results)
         sys.stderr.write(f"\nverify: all checks passed ({total_duration:.1f}s total)")
@@ -3898,7 +3913,7 @@ def _finalize_verify_runner_exception(
             mutation_observation = _finish_active_checkout_mutation_monitor(active.mutation_monitor)
         except Exception:
             mutation_observation = None
-    elif active.agentctl_binding is not None:
+    elif active.agentctl_operation is not None:
         mutation_observation = CheckoutMutationObservation(changed=False, unavailable=False)
     _close_active_native_testmon_state()
     run.finish_interrupted_steps(
@@ -3937,7 +3952,7 @@ def _finalize_verify_runner_exception(
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
     _save_history(payload)
-    _emit_machine_result(payload, use_json=use_json)
+    _emit_machine_result(payload, use_json=use_json, declared_operation=active.agentctl_operation)
     sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
     return exit_code
 
@@ -4060,8 +4075,8 @@ def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VERIFY_RUN
     _ACTIVE_VERIFY_RUN = None
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    agentctl_binding = _agentctl_lifecycle_free_binding(raw_argv)
-    if agentctl_binding is None and _should_isolate(raw_argv):
+    agentctl_operation = _declared_agentctl_operation(raw_argv)
+    if agentctl_operation is None and _should_isolate(raw_argv):
         return _reexec_isolated(raw_argv)
     native_pytest_enabled = not any(flag in raw_argv for flag in ("--quick", "--commit", "--plan"))
     if os.environ.get("PYTEST_CURRENT_TEST"):
@@ -4081,10 +4096,11 @@ def main(argv: list[str] | None = None) -> int:
         # a time -- is still enforced for every non-test invocation.
         native_pytest_enabled = False
     lock = _native_testmon_lifecycle_lock(ROOT) if native_pytest_enabled else contextlib.nullcontext()
+    termination_context = contextlib.nullcontext() if agentctl_operation is not None else _terminate_as_interrupt()
     try:
-        with _terminate_as_interrupt(), lock:
+        with termination_context, lock:
             try:
-                return _main(argv, agentctl_binding=agentctl_binding)
+                return _main(argv, agentctl_operation=agentctl_operation)
             except KeyboardInterrupt as exc:
                 if _ACTIVE_VERIFY_RUN is None:
                     raise

@@ -15,8 +15,6 @@ from devtools import run_tests, verify
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
-    VERIFICATION_INVOCATION_ID_ENV,
-    VERIFICATION_RECEIPT_PATH_ENV,
     git_head,
     pytest_command_worker_request,
 )
@@ -194,12 +192,11 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     assert command[command.index("--junit-xml") + 1] == str(invocation / "reports" / "results.xml")
 
 
-def test_main_persists_interrupted_direct_cli_receipt_to_all_run_artifacts(
+def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     history: dict[str, Any] = {}
-    receipt = tmp_path / "receipt.json"
 
     def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         raise KeyboardInterrupt
@@ -212,8 +209,6 @@ def test_main_persists_interrupted_direct_cli_receipt_to_all_run_artifacts(
         lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
     )
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setenv(VERIFICATION_INVOCATION_ID_ENV, "focused-interrupt")
-    monkeypatch.setenv(VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", interrupt)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
@@ -223,13 +218,11 @@ def test_main_persists_interrupted_direct_cli_receipt_to_all_run_artifacts(
 
     run_payload = json.loads((tmp_path / history["artifact_dir"] / "run.json").read_text())
     current_payload = json.loads((tmp_path / CURRENT_RUN_PATH).read_text())
-    receipt_payload = json.loads(receipt.read_text())
-    for payload in (history, run_payload, current_payload, receipt_payload):
+    for payload in (history, run_payload, current_payload):
         assert payload["diagnosis"] == "pytest_interrupted"
         assert payload["pytest_aggregate"]["selection_mode"] == "focused"
         assert payload["git_head"] == "head"
         assert payload["final_git_head"] == "head"
-    assert history["pytest_aggregate"] == receipt_payload["pytest_aggregate"]
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(

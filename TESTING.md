@@ -13,8 +13,10 @@ devtools verify
 # selection through the managed harness (repo env, single-process by default,
 # live output, current-node progress artifacts, stall/runtime timeouts) and
 # serializes overlapping runs from the same checkout so two suites do not race.
-# It records direct CLI evidence in the managed run ledger. Exact worktree
-# authority and AgentCTL receipts belong to declared `devtools verify` routes.
+# It records direct CLI evidence in the managed run ledger. AgentCTL-declared
+# `devtools verify` jobs own workspace identity, lifecycle, logs, and result
+# capture; devtools retains testmon selection/graph evidence, import-root
+# validation, and before/after byte attestation.
 # Any pytest arguments go after the command name.
 devtools test tests/unit/storage/test_hybrid_laws.py
 devtools test -k "test_name"
@@ -185,8 +187,8 @@ changed-dependency, never-recorded, and previously-failing tests execute, and
 the rest is attested from unchanged recorded greens. There is no seed,
 repair, shard, or registry command, and no separate full-corpus flag.
 
-`devtools verify` and `devtools test` treat pytest as a bounded, supervised
-child workload, not an unowned shell. Each pytest step gets a run directory
+Direct `devtools verify` and `devtools test` invocations treat pytest as a
+bounded, supervised child workload, not an unowned shell. Each pytest step gets a run directory
 under `.cache/verify/runs/<run-id>/` with stdout/stderr, progress, selection,
 summary, merged worker events, raw per-worker event files, resource samples,
 and a postmortem diagnosis. The latest run is mirrored to
@@ -205,11 +207,11 @@ and a postmortem diagnosis. The latest run is mirrored to
   the same file is retained under each run's `steps/*/statistics.json`.
 - `.cache/verify/current-pytest-output.log`
 
-The devtools process drains pytest output, prints periodic heartbeat lines, and
-samples the pytest process tree and host memory/pressure state. A separate
-supervisor owns the pytest controller's process group and watches the devtools
-owner process. One 3600-second deadline covers the complete `devtools verify`
-invocation. Each step, including both pytest lanes, receives only the time
+For direct invocations, the devtools process drains pytest output, prints
+periodic heartbeat lines, and samples the pytest process tree and host
+memory/pressure state. A separate supervisor owns the pytest controller's
+process group and watches the devtools owner process. One 3600-second deadline
+covers the complete direct `devtools verify` invocation. Each step, including both pytest lanes, receives only the time
 remaining from that same budget. Termination sends SIGTERM to that exact group,
 then SIGKILL after
 `POLYLOGUE_VERIFY_PYTEST_TERM_GRACE_S` (default 5 seconds). On Sinnix, the
@@ -230,7 +232,10 @@ pytest produces no output for
 sampled less frequently; `POLYLOGUE_VERIFY_BASETEMP_SIZE_INTERVAL_S` controls
 that cadence (default 15 seconds, `0` disables the size walk). Focused
 `devtools test` runs retain their command-specific timeout control; it does not
-compose with or extend the verify invocation deadline.
+compose with or extend the verify invocation deadline. The three declared
+AgentCTL verification jobs receive their deadline, process-tree cancellation,
+logs, and typed result artifact from AgentCTL. Devtools does not start a second
+supervisor or write a parallel invocation receipt on that route.
 
 Tests marked `storage_scale` move their private `tmp_path` tree to NVMe scratch
 and emit a periodic typed activity heartbeat while the marked node runs. The

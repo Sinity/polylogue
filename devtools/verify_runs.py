@@ -29,11 +29,6 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
-from devtools.agentctl_verification_receipt import (
-    SUPPORTED_OPERATIONS,
-    agentctl_verification_operation,
-    agentctl_verification_receipt,
-)
 from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from devtools.pytest_supervisor import force_rmtree
 from devtools.testmon_bootstrap import canonical_test_nodeid
@@ -57,8 +52,6 @@ VERIFY_HISTORY_PATH = (
     else DEVTOOLS_STATE_DIR / "verify-history.jsonl"
 )
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
-VERIFICATION_INVOCATION_ID_ENV = "POLYLOGUE_VERIFICATION_INVOCATION_ID"
-VERIFICATION_RECEIPT_PATH_ENV = "POLYLOGUE_VERIFICATION_RECEIPT_PATH"
 CURRENT_RESOURCES_PATH = VERIFY_CACHE / "current-pytest-resources.jsonl"
 CURRENT_POSTMORTEM_PATH = VERIFY_CACHE / "current-pytest-postmortem.json"
 CURRENT_CONTAINMENT_PATH = VERIFY_CACHE / "current-pytest-containment.json"
@@ -100,64 +93,6 @@ PYTEST_CGROUP_OVERHEAD_FLOOR_KB = max(
 
 class PytestResourceError(RuntimeError):
     """Raised when the host cannot safely start a managed pytest run."""
-
-
-@dataclass(frozen=True)
-class AgentctlDeclaredJobBinding:
-    """Validated outer lifecycle and exact-checkout authority for verification."""
-
-    operation: str
-    job_id: str
-    checkout_id: str
-    checkout_head: str
-
-
-def agentctl_declared_job_binding(
-    root: Path,
-    *,
-    env: Mapping[str, str] | None = None,
-    cgroup_text: str | None = None,
-    current_head: str | None = None,
-) -> AgentctlDeclaredJobBinding | None:
-    """Prove that this process is the exact checkout-bound declared job."""
-    values = os.environ if env is None else env
-    operation = agentctl_verification_operation(values)
-    if operation not in SUPPORTED_OPERATIONS or values.get("SINNIXD_PROJECT_ID") != "polylogue":
-        return None
-
-    job_id = values.get("SINNIXD_JOB_ID", "")
-    correlation_id = values.get("SINNIXD_CORRELATION_ID", "")
-    try:
-        if str(uuid.UUID(job_id)) != job_id or str(uuid.UUID(correlation_id)) != correlation_id:
-            return None
-    except (ValueError, AttributeError):
-        return None
-
-    declared_head = values.get("SINNIXD_CHECKOUT_HEAD", "")
-    if not re.fullmatch(r"[0-9a-f]{40}", declared_head):
-        return None
-    observed_head = current_head if current_head is not None else git_head(root)
-    if observed_head != declared_head:
-        return None
-
-    checkout_id = values.get("SINNIXD_CHECKOUT_ID", "")
-    if not checkout_id:
-        return None
-
-    if cgroup_text is None:
-        try:
-            cgroup_text = Path("/proc/self/cgroup").read_text()
-        except OSError:
-            return None
-    unit = f"sinnixd-job-{job_id}.service"
-    if not any(unit == component for line in cgroup_text.splitlines() for component in line.split("/")):
-        return None
-    return AgentctlDeclaredJobBinding(
-        operation=operation,
-        job_id=job_id,
-        checkout_id=checkout_id,
-        checkout_head=declared_head,
-    )
 
 
 def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:
@@ -1811,8 +1746,10 @@ class VerifyRun:
         polylogue_import_path: str | None = None,
         environment_fingerprint: Mapping[str, Any] | None = None,
         worktree_fingerprint: str | None = None,
+        mirror_current: bool = True,
     ) -> None:
         self.root = root or Path.cwd()
+        self.mirror_current = mirror_current
         self.run_id = make_run_id(tier=tier)
         self.run_dir = self.root / VERIFY_RUNS_DIR / self.run_id
         self._payload: dict[str, Any] = {
@@ -1839,9 +1776,6 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
-        invocation_id = os.environ.get(VERIFICATION_INVOCATION_ID_ENV)
-        if invocation_id:
-            self._payload["invocation_id"] = invocation_id
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 
@@ -1851,9 +1785,8 @@ class VerifyRun:
 
     def write(self) -> None:
         _write_json(self.run_dir / "run.json", self._payload)
-        invocation_receipt = os.environ.get(VERIFICATION_RECEIPT_PATH_ENV)
-        if invocation_receipt:
-            _write_json(Path(invocation_receipt), agentctl_verification_receipt(self._payload) or self._payload)
+        if not self.mirror_current:
+            return
         current_path = self.root / CURRENT_RUN_PATH
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
@@ -1998,8 +1931,9 @@ class VerifyRun:
                         step_result=result,
                     )
                     _write_json(statistics_path, statistics)
-                    with contextlib.suppress(OSError):
-                        shutil.copyfile(statistics_path, self.root / CURRENT_STATISTICS_PATH)
+                    if self.mirror_current:
+                        with contextlib.suppress(OSError):
+                            shutil.copyfile(statistics_path, self.root / CURRENT_STATISTICS_PATH)
                     step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
                     # Keep the compact aggregate in the cross-worktree history
                     # itself. The detailed artifact path is checkout-local and
@@ -2097,11 +2031,6 @@ def pytest_run_id_belongs_to_verify_run(pytest_run_id: str | None, verify_run_id
 
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
-    # The invocation receipt belongs to the top-level devtools process.
-    # Pytest and any nested harness commands must not inherit the
-    # token and overwrite that receipt with a child run.
-    updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
-    updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)
     updated["POLYLOGUE_VERIFY_RUN_ID"] = run.run_id
     updated["POLYLOGUE_PYTEST_RUN_ID"] = pytest_step_run_id(run.run_id, artifacts.step_id)
     updated["POLYLOGUE_PYTEST_EVENTS_DIR"] = str(artifacts.events_dir)
