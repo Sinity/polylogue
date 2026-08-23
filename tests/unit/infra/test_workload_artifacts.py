@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
+    NAMED_WORKLOAD_PROFILES,
     BenchmarkWorkloadTier,
     SeededArchiveQueryLease,
     _assert_lock_identity,
@@ -39,6 +40,8 @@ from tests.infra.workload_artifacts import (
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
+    named_corpus_specs,
+    named_workload_profile,
     seeded_archive_key,
 )
 
@@ -78,6 +81,29 @@ def test_benchmark_profile_selection_is_deterministic_and_rejects_legacy_ad_hoc_
     assert benchmark_workload_profile("representative").target_messages == 5_000
     with pytest.raises(ValueError, match="no named benchmark workload"):
         benchmark_workload_tier(7_500)
+
+
+def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_specs() -> None:
+    """Fixture workloads retain purpose and provider-native artifact identity."""
+    assert {profile.name for profile in NAMED_WORKLOAD_PROFILES} == {
+        "schema-small",
+        "schema-medium",
+        "cli-chatgpt",
+        "cli-mixed",
+        "completion",
+    }
+
+    profile = named_workload_profile("completion")
+    first = named_corpus_specs(profile.name)
+    second = profile.corpus_specs()
+
+    assert first == second
+    assert profile.purpose == "completion"
+    assert {spec.provider for spec in first} == {"chatgpt", "claude-ai"}
+    assert {spec.profile.primary_family_id for spec in first} == {"test-workload"}
+    assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
+    with pytest.raises(ValueError, match="unknown named seeded archive workload"):
+        named_workload_profile("unknown")
 
 
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_path: Path) -> None:

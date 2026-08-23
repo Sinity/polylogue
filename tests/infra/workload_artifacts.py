@@ -422,30 +422,66 @@ def schema_coverage_corpus_specs() -> tuple[CorpusSpec, ...]:
     )
 
 
+@dataclass(frozen=True)
+class NamedWorkloadProfile:
+    """A semantic, deterministic workload used by shared test fixtures."""
+
+    name: str
+    purpose: str
+    provider_session_counts: tuple[tuple[str, int], ...]
+    seed: int = 42
+    messages_min: int = 4
+    messages_max: int = 11
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.purpose:
+            raise ValueError("named workload profile requires a name and purpose")
+        if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
+            raise ValueError("named workload profile requires positive provider session counts")
+        if self.messages_min < 1 or self.messages_max < self.messages_min:
+            raise ValueError("named workload profile has invalid message bounds")
+
+    def corpus_specs(self) -> tuple[CorpusSpec, ...]:
+        profile = CorpusProfile(
+            family_ids=("test-workload",),
+            profile_tokens=(self.name, self.purpose, "provider-native"),
+            artifact_kind="archive",
+        )
+        return tuple(
+            CorpusSpec.for_provider(
+                provider,
+                count=count,
+                messages_min=self.messages_min,
+                messages_max=self.messages_max,
+                seed=self.seed,
+                profile=profile,
+                origin=f"generated.test-workload-{self.name}",
+                tags=("synthetic", "test", self.name, self.purpose),
+            )
+            for provider, count in self.provider_session_counts
+        )
+
+
+NAMED_WORKLOAD_PROFILES = (
+    NamedWorkloadProfile("schema-small", "schema-scaling", (("chatgpt", 10),)),
+    NamedWorkloadProfile("schema-medium", "schema-scaling", (("chatgpt", 50),)),
+    NamedWorkloadProfile("cli-chatgpt", "cli-read", (("chatgpt", 2),)),
+    NamedWorkloadProfile("cli-mixed", "cli-read", (("chatgpt", 2), ("claude-code", 2))),
+    NamedWorkloadProfile("completion", "completion", (("chatgpt", 3), ("claude-ai", 3)), seed=1271),
+)
+
+
+def named_workload_profile(name: str) -> NamedWorkloadProfile:
+    """Resolve one finite, semantically named test workload."""
+    try:
+        return next(profile for profile in NAMED_WORKLOAD_PROFILES if profile.name == name)
+    except StopIteration as exc:
+        raise ValueError(f"unknown named seeded archive workload {name!r}") from exc
+
+
 def named_corpus_specs(name: str) -> tuple[CorpusSpec, ...]:
     """Resolve the finite shared workload catalog used by test consumers."""
-    profiles: dict[str, tuple[tuple[str, int], ...]] = {
-        "schema-small": (("chatgpt", 10),),
-        "schema-medium": (("chatgpt", 50),),
-        "cli-chatgpt": (("chatgpt", 2),),
-        "cli-mixed": (("chatgpt", 2), ("claude-code", 2)),
-        "completion": (("chatgpt", 3), ("claude-ai", 3)),
-    }
-    selected = profiles.get(name)
-    if selected is None:
-        raise ValueError(f"unknown named seeded archive workload {name!r}")
-    return tuple(
-        CorpusSpec.for_provider(
-            provider,
-            count=count,
-            messages_min=4,
-            messages_max=11,
-            seed=1271 if name == "completion" else 42,
-            origin=f"generated.test-workload-{name}",
-            tags=("synthetic", "test", name),
-        )
-        for provider, count in selected
-    )
+    return named_workload_profile(name).corpus_specs()
 
 
 class BenchmarkWorkloadTier(str, Enum):
@@ -2444,6 +2480,8 @@ __all__ = [
     "BENCHMARK_WORKLOAD_PROFILES",
     "BenchmarkWorkloadProfile",
     "BenchmarkWorkloadTier",
+    "NAMED_WORKLOAD_PROFILES",
+    "NamedWorkloadProfile",
     "SeededArchiveArtifact",
     "SeededArchiveQueryLease",
     "acquire_query_only_seeded_archive",
@@ -2461,6 +2499,7 @@ __all__ = [
     "clone_seeded_archive",
     "default_cache_root",
     "named_corpus_specs",
+    "named_workload_profile",
     "schema_coverage_corpus_specs",
     "seeded_archive_key",
 ]
