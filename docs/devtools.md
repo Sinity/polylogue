@@ -159,7 +159,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
-| `devtools workspace carrier-dispositions` | Apply a merged PR's typed carrier dispositions in one explicit Beads batch and prepare a follow-on export. |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
@@ -169,9 +168,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace lane-finish` | Package a clean lane's exact commits and changed paths for coordinator assimilation. |
 | `devtools workspace lane-init` | Provision a lane worktree with an isolated, guard-verified interpreter. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh exact-head receipt, then records the carrier attestation in the merge ledger. |
-| `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local verification + resolved review threads. |
-| `devtools workspace pr-scope` | Render stable PR scope intent and inspect its mutable merge attestation. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-artifact-census` | Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |

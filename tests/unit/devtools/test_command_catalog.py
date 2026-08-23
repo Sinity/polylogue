@@ -56,7 +56,7 @@ def test_catalog_uses_command_ownership_categories() -> None:
 def test_deleted_public_surfaces_are_not_catalog_commands() -> None:
     assert "workspace degraded-archive-proof" not in COMMANDS
     assert "workspace merge-gate record" not in COMMANDS
-    assert "workspace merge-gate" in COMMANDS
+    assert "workspace merge-gate" not in COMMANDS
     assert "why" in COMMANDS
 
 

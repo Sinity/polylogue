@@ -3816,14 +3816,6 @@ def _main(argv: list[str] | None = None) -> int:
 
     if exit_code == 0:
         _stamp_head()
-        if pytest_enabled and release_baseline_allowed is True and head is not None:
-            # The merge-train ledger's terminal step is "one green
-            # complete-corpus verify on the merged master"; any plain verify
-            # that earns release authority AT origin/master IS that step, so
-            # it records itself instead of requiring a separate incantation.
-            from devtools.merge_boundary import record_accepted_terminal_verify
-
-            record_accepted_terminal_verify(git_head=head, duration_s=total_duration)
     return exit_code
 
 

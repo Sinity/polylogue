@@ -65,31 +65,12 @@ jobs:
             - mypy-v1-master
             - mypy-v1-
       - run:
-          name: Structured PR scope carrier
-          command: |
-            set -o pipefail
-            if [ -n "${CIRCLE_PULL_REQUEST:-}" ]; then
-              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-                --pr "${CIRCLE_PULL_REQUEST##*/}" \
-                --repo "Sinity/polylogue" \
-                --expected-head-sha "${CIRCLE_SHA1}" 2>&1 | tee /tmp/polylogue-pr-scope.log
-            else
-              ~/.local/bin/uv run devtools workspace pr-scope check-ci \
-                --repo "Sinity/polylogue" \
-                --expected-head-sha "${CIRCLE_SHA1}" \
-                --allow-default-branch 2>&1 | tee /tmp/polylogue-pr-scope.log
-            fi
-      - run:
           name: devtools verify --quick
           command: ~/.local/bin/uv run devtools verify --quick
       - save_cache:
           key: mypy-v1-{{ .Branch }}-{{ epoch }}
           paths:
             - .mypy_cache
-      - store_artifacts:
-          path: /tmp/polylogue-pr-scope.log
-          destination: diagnostics
-          when: always
 
   lab-policies:
     docker:
