@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
@@ -1116,8 +1115,6 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     surface="mcp",
                     route="mcp.status.coordination",
                     verb="detail" if is_detail else "compact",
-                    # Tie MCP latency evidence to the producer revision.
-                    git_head_cwd=Path.cwd(),
                 ) as obs:
                     if is_detail:
                         envelope = build_coordination_envelope(view="status", detail=True)
