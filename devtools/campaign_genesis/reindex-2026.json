@@ -1,0 +1,19 @@
+{
+  "schema": "polylogue.campaign-genesis/v1",
+  "campaign_id": "reindex-2026",
+  "input_snapshot": {
+    "revision": "1a6bce13ff0ed9aaa5de6cb6d992968145d44c64",
+    "path": ".beads/issues.jsonl",
+    "sha256": "12f6be2b3470c3d5a1b48db1a406203b9afa3922fbed209e1ca1a98182ba4093"
+  },
+  "migration_snapshot": {
+    "revision": "317b59f41f938884d289d48737cfe87ec00bd769",
+    "path": ".beads/issues.jsonl",
+    "sha256": "1f4ad936d690de3bbda854cd737741eb92de631167c82294fe661f536045f64b"
+  },
+  "formula_snapshot": {
+    "revision": "d250e578bf7353519f667a96fafd7ea7d43f8e0b",
+    "path": ".beads/formulas/mol-polylogue-thematic-batch.formula.json",
+    "sha256": "465a7032fa2c1c2f450cd58f96cee7e32dab2751b553590056e54b4bd7cff2b2"
+  }
+}
