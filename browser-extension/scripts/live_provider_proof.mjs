@@ -285,7 +285,7 @@ async function runLiveProviderProof() {
   const chrome = launchFixedChrome(chromeBinary, [
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${cdpPort}`,
-    "--no-first-run", "--disable-default-apps", "--no-default-browser-check", "--enable-unsafe-extension-debugging",
+    "--disable-gpu", "--no-first-run", "--disable-default-apps", "--no-default-browser-check", "--enable-unsafe-extension-debugging",
     `--unsafely-treat-insecure-origin-as-secure=${receiverBaseUrl}`,
     `--disable-extensions-except=${extensionRoot}`, `--load-extension=${extensionRoot}`, "--new-window", "about:blank",
   ], { detached: true, stdio: "ignore" });

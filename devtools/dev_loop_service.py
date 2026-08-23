@@ -172,11 +172,11 @@ def _await_api(*, base_url: str, timeout_s: float) -> None:
     last_error = "API did not answer"
     while time.monotonic() <= deadline:
         try:
-            status, payload = _http_get_json(f"{base_url}/api/status", timeout_s=2.0)
+            status, payload = _http_get_json(f"{base_url}/healthz/live", timeout_s=2.0)
         except OSError as error:
             last_error = f"{type(error).__name__}: {error}"
         else:
-            if status == 200 and payload.get("ok") is True:
+            if status == 200 and payload.get("status") == "alive":
                 return
             last_error = f"HTTP {status}"
         time.sleep(0.1)
