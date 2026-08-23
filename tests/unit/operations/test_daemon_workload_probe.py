@@ -998,6 +998,8 @@ def test_probe_reads_ops_convergence_debt(tmp_path: Path) -> None:
     payload = probe(db)
 
     assert payload["convergence_debt"] == {
+        "available": True,
+        "error": None,
         "failed_count": 2,
         "deferred_count": 0,
         "unresolved_count": 2,
@@ -1033,6 +1035,8 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
     payload = probe(db)
 
     assert payload["convergence_debt"] == {
+        "available": True,
+        "error": None,
         "failed_count": 0,
         "deferred_count": 1,
         "unresolved_count": 1,
@@ -1045,6 +1049,22 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
             }
         ],
     }
+
+
+def test_probe_reports_unavailable_authoritative_convergence_ledger(tmp_path: Path) -> None:
+    db = tmp_path / "archive.sqlite"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+    db.with_name("ops.db").write_text("not a sqlite database")
+
+    payload = probe(db)
+
+    debt = payload["convergence_debt"]
+    assert debt["available"] is False
+    assert str(debt["error"]).startswith("convergence debt status unavailable:")
+    assert debt["failed_count"] == 0
+    assert debt["deferred_count"] == 0
+    assert debt["unresolved_count"] == 0
+    assert debt["by_stage"] == []
 
 
 def test_probe_reads_ops_cursor_lag_baselines(tmp_path: Path) -> None:
