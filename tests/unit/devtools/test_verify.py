@@ -125,3 +125,34 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         assert payload["pytest_aggregate"]["termination_reason"] == "sigterm"
         assert payload["steps"][0]["status"] == "failed"
         assert payload["steps"][0]["termination_reason"] == "sigterm"
+
+
+def test_verify_emits_shared_workload_receipt_for_step_timing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.25, {"diagnosis": "gate_passed"}))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify._main(["--quick"]) == 0
+
+    receipt = history["workload_receipt"]
+    assert receipt["spec"]["workload_id"] == "devtools:verify:quick"
+    assert receipt["spec"]["measurement_scope"] == "process-tree"
+    assert receipt["phases"] == [
+        {
+            "name": "ruff check",
+            "measurement_scope": None,
+            "wall_ms": 250.0,
+            "cleanup_complete": None,
+            "quiescent": False,
+            "unavailable": list(verify._UNMEASURED_WORKLOAD_DIMENSIONS),
+        }
+    ]

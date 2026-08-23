@@ -43,6 +43,14 @@ from devtools.verify_runs import (
     env_for_pytest_step,
     git_head,
 )
+from polylogue.scenarios import (
+    MeasurementScope,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTMON_DATA = TESTMON_DATA_RELPATH
@@ -58,6 +66,28 @@ PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
 SERIAL_LANE_MAX_WORKERS = 4
 STORAGE_SCALE_LANE_MAX_WORKERS = 1
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
+_UNMEASURED_WORKLOAD_DIMENSIONS = (
+    "cpu_ms",
+    "current_rss_bytes",
+    "peak_rss_bytes",
+    "current_pss_bytes",
+    "peak_pss_bytes",
+    "anon_bytes",
+    "file_cache_bytes",
+    "swap_bytes",
+    "temp_storage_bytes",
+    "storage_bytes",
+    "read_io_bytes",
+    "write_io_bytes",
+    "response_bytes",
+    "cancellation_latency_ms",
+    "progress_completed",
+    "progress_total",
+    "queue_depth",
+    "backpressure_ms",
+    "cleanup_reclaimed_bytes",
+    "sqlite_vm_steps",
+)
 
 
 class VerificationInterrupted(KeyboardInterrupt):
@@ -382,6 +412,45 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+def _verification_workload_receipt(
+    *,
+    tier: str,
+    git_head: str | None,
+    results: Sequence[Mapping[str, Any]],
+    exit_code: int,
+) -> dict[str, Any]:
+    """Adapt verifier step timing into the shared workload receipt contract."""
+    phases = tuple(str(result["name"]) for result in results)
+    spec = WorkloadEnvelopeSpec(
+        workload_id=f"devtools:verify:{tier}",
+        family_id="verification",
+        version=1,
+        inputs=(WorkloadInputRef(input_id=f"git:{git_head}" if git_head else "git:unavailable"),),
+        phases=phases,
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+    )
+    observations = tuple(
+        WorkloadPhaseObservation(
+            name=str(result["name"]),
+            wall_ms=float(result["duration_s"]) * 1_000,
+            unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS,
+        )
+        for result in results
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
+        build_id=f"git:{git_head}" if git_head else None,
+        runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=observations,
+        notes=("Verifier adapter records step wall time only; resource dimensions are explicitly unavailable.",),
+    )
+    return receipt.to_payload()
+
+
 def _finish_interrupted_verification(
     *,
     run: VerifyRun,
@@ -442,8 +511,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         sys.stderr.write(f"verify: {exc}\n")
         return 125
     head = git_head(ROOT)
+    tier = "quick" if args.quick else "commit" if args.commit else "all" if args.all_tests else "affected"
     run = VerifyRun(
-        tier="quick" if args.quick else "commit" if args.commit else "all" if args.all_tests else "affected",
+        tier=tier,
         argv=list(argv or []),
         git_head=head,
         root=ROOT,
@@ -548,6 +618,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate=aggregate,
+        workload_receipt=_verification_workload_receipt(
+            tier=tier,
+            git_head=head,
+            results=results,
+            exit_code=exit_code,
+        ),
     )
     append_verify_history(payload)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
