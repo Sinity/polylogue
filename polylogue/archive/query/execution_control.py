@@ -434,7 +434,14 @@ class InterruptibleSQLiteRead:
             with suppress(Exception):  # pragma: no cover
                 store.interrupt_reads()
 
-    def run(self, archive_root: Path, work: Callable[[ArchiveStore], T], *, read_timeout: float = 5.0) -> T:
+    def run(
+        self,
+        archive_root: Path,
+        work: Callable[[ArchiveStore], T],
+        *,
+        read_timeout: float = 5.0,
+        store_factory: Callable[[], ArchiveStore] | None = None,
+    ) -> T:
         """Execute ``work`` against a dedicated read-only store (worker thread)."""
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -449,7 +456,11 @@ class InterruptibleSQLiteRead:
             ctx.record_sqlite_progress(progress_opcodes)
             return 1 if ctx.should_abort() else 0
 
-        store = ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+        store = (
+            store_factory()
+            if store_factory is not None
+            else ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+        )
         with self._store_lock:
             self._store = store
         try:

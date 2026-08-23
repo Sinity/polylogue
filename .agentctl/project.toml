@@ -6,10 +6,33 @@ display_name = "Polylogue"
 root_markers = ["pyproject.toml", "polylogue"]
 
 [environment]
-kind = "plain"
-command = ["env"]
-inherit = ["HOME", "POLYLOGUE_ARCHIVE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
-unset = []
+kind = "nix-develop"
+command = ["nix", "develop", "--accept-flake-config", "--command"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "POLYLOGUE_ARCHIVE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
+
+[operations.verify_affected]
+description = "Run Polylogue's affected-test verification plan"
+exec = ["devtools", "verify"]
+pool = "normal"
+result = "pytest"
+cache = "tree+environment"
+exclusive_keys = ["polylogue:testmon-graph"]
+
+[operations.verify_quick]
+description = "Run Polylogue's static fast verification gates"
+exec = ["devtools", "verify", "--quick"]
+pool = "normal"
+result = "exit"
+cache = "tree+environment"
+
+[operations.verify_all]
+description = "Run Polylogue's explicit complete-corpus verification plan"
+exec = ["devtools", "verify", "--all"]
+pool = "bulk"
+result = "pytest"
+cache = "tree+environment"
+exclusive_keys = ["polylogue:testmon-graph"]
 
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
@@ -21,4 +44,4 @@ source_scoped = true
 source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
-documentation = "Bounded Polylogue archive status."
+documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
