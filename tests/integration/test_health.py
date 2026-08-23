@@ -309,10 +309,7 @@ class TestMaintenanceSelection:
         results = run_safe_repairs(config, dry_run=False)
 
         assert isinstance(results, list)
-        assert {r.name for r in results} == {
-            "session_insights",
-            "message_type_backfill",
-        }
+        assert {r.name for r in results} == {"session_insights"}
         assert all(r.destructive is False for r in results)
         assert all(r.category.value == "derived_repair" for r in results)
 

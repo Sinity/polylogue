@@ -29,6 +29,11 @@ def test_command_specs_have_unique_names_and_known_categories() -> None:
     assert {spec.category for spec in COMMAND_SPECS}.issubset(set(CATEGORY_ORDER))
 
 
+def test_every_declared_command_resolves_to_a_callable_entrypoint() -> None:
+    for spec in COMMAND_SPECS:
+        assert callable(spec.resolve_main())
+
+
 def test_grouped_command_specs_preserves_declared_category_order() -> None:
     grouped = grouped_command_specs()
     assert tuple(grouped) == tuple(category for category in CATEGORY_ORDER if grouped.get(category))

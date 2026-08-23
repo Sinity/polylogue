@@ -47,8 +47,8 @@ Load-bearing policy files are parsed and enforced by the gate that owns their se
 ### Schema versioning: two regimes keyed by tier durability
 - **Chosen**: per-tier version constants are the authority; mismatch is rejected.
   Two evolution regimes (see `docs/internals.md` § Schema Versioning Model):
-  - **Durable tiers** (`source.db`, `user.db`) use explicit *additive* numbered SQL
-    migrations under `storage/sqlite/migrations/{source,user}/NNN_*.sql`, advancing
+  - **Durable tiers** (`source.db`, `user.db`, `audit.db`) use explicit *additive* numbered SQL
+    migrations under `storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, advancing
     `PRAGMA user_version` one step at a time behind a **verified backup manifest**.
     Additive = `CREATE TABLE`/`CREATE INDEX`/`ADD COLUMN`/bounded backfill;
     destructive durable changes need copy-forward + explicit operator consent.

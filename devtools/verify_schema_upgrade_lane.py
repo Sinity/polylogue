@@ -16,7 +16,7 @@ What this lint checks
 
 1. Fail when the current index schema version lacks a delta-class declaration.
    Durable-tier migrations
-   must live under ``polylogue/storage/sqlite/migrations/{source,user}/`` as
+   must live under ``polylogue/storage/sqlite/migrations/{source,user,audit}/`` as
    numbered SQL resources.
 
 2. Validate every entry in the index-tier benign-DDL convergence registry

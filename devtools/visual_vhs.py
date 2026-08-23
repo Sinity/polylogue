@@ -106,7 +106,7 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
     VHSTapeSpec(
         name="reader-evidence-tour",
         description="Browserless local reader evidence lane against synthetic fixtures",
-        display_command=("devtools", "lab", "smoke", "run", "reader-visual-smoke"),
+        display_command=("devtools", "verify", "scenario", "run", "reader-visual-smoke"),
         capture_steps=(
             # Run the slow part (pytest collection over tests/visual, ~20s+
             # and highly load-dependent) off-camera with a completion marker,

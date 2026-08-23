@@ -384,22 +384,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "demo real-slice-screen",
+        "workspace dev-loop-service",
         "workspace",
-        "Read-only extraction + privacy screening of a candidate real-archive session slice.",
-        "devtools.proof_world_real_slice",
+        "Run the fixed Polylogue browser-capture proof inside an AgentCTL service lease.",
+        "devtools.dev_loop_service",
         use_when=(
-            "Assembling a candidate real-archive slice for the shared demo proof world "
-            "(polylogue-212.11): pulls sessions read-only via the Polylogue API, flattens them "
-            "to text, and screens for secret/credential and PII-adjacent patterns before any "
-            "operator decides to fold the slice into a shared fixture. Never mutates the source "
-            "archive and never writes into polylogue/scenarios/ on its own."
+            "AgentCTL invokes this fixed command through the declared dev_loop_proof operation. "
+            "Start that operation with agentctl so exact checkout binding, ports, lifecycle, cancellation, and results stay canonical."
         ),
         examples=(
-            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
-            "--session claude-code-session:<id>:<agent> --out .agent/scratch/real-slice",
-            "devtools demo real-slice-screen --archive-root /realm/state/polylogue "
-            "--refs-file refs.txt --out .agent/scratch/real-slice",
+            "agentctl job start polylogue dev_loop_proof --workspace <workspace-id>",
+            "agentctl job result <job-id>",
         ),
     ),
     CommandSpec(
@@ -415,6 +410,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace deployment-smoke",
             "devtools workspace deployment-smoke --json",
+            "devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/sinity/bin/google-chrome",
             "devtools workspace deployment-smoke --daemon-url http://127.0.0.1:8766 --receiver-url http://127.0.0.1:8765",
         ),
     ),
@@ -488,7 +484,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Classify quarantined raw evidence against its live source file's current bytes.",
         "devtools.raw_live_source_reconciliation_report",
         use_when=(
-            "polylogue-u19l: before deciding whether to act on the ~59GB of quarantined "
+            "Before deciding whether to act on quarantined "
             "raw_sessions rows, get a read-only classification of how much of it is still "
             "directly re-verifiable against still-present live source files -- no "
             "revision-graph reasoning required. Never mutates authority state or blobs; "
@@ -506,7 +502,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Promote quarantined raw evidence proven correct by live-source verification.",
         "devtools.raw_live_source_reconciliation_apply",
         use_when=(
-            "polylogue-u19l: act on the classifier's report -- promote ONLY exact_match / "
+            "Act on the classifier's report -- promote ONLY exact_match / "
             "codex_header_strip_match quarantined raw_sessions rows to revision_authority="
             "'byte_proven' (never diverged/source_missing). Default is dry-run; --apply "
             "requires --backup-manifest pointing at a verified source-tier backup "
@@ -567,8 +563,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Propagate already-decided membership verdicts onto raw_sessions.revision_authority.",
         "devtools.raw_membership_writeback_apply",
         use_when=(
-            "polylogue-lb39z (Phase 1, item 2): 15,737 quarantined raw_sessions rows "
-            "(42.95GB, measured 2026-08-02) already have a decided raw_session_memberships "
+            "Use when quarantined raw_sessions rows already have a decided raw_session_memberships "
             "verdict (applied/superseded_equivalent/superseded_prefix, membership "
             "revision_authority='byte_proven') that was never written back -- pure fact "
             "transfer, not new judgment. Default is dry-run; --apply requires "
@@ -606,7 +601,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Promote membershipless append raws proven correct by live-source verification.",
         "devtools.raw_append_chain_backfill_apply",
         use_when=(
-            "polylogue-lb39z (Phase 1, item 3): 2,712 raw_sessions rows (measured 2026-08-02) are "
+            "Use when raw_sessions rows are "
             "revision_kind='append', revision_authority='quarantined', and have no "
             "raw_session_memberships row at all -- a genuine fixed point, because the only mechanism "
             "that ever promotes an append raw (_promote_contiguous_append_evidence) requires its "
@@ -685,8 +680,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc).",
         "devtools.binary_artifact_sweep_report",
         use_when=(
-            "polylogue-hbtj2: the 2026-08-02 authority-dataflow audit found ~450MB of "
-            "SQLite databases (Hermes state.db/verification_evidence.db, Codex "
+            "Use when acquisition may have captured "
+            "SQLite databases (for example Hermes state.db/verification_evidence.db or Codex "
             "state_5.sqlite) miscaptured as session content and marked 'genuinely "
             "diverged' by the byte-diff classifier. This read-only report classifies "
             "every raw_sessions row by magic bytes (core.binary_signatures) and reports "
@@ -722,7 +717,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Persist raw_artifacts classification for binary-shaped raw rows.",
         "devtools.binary_artifact_reclassify_apply",
         use_when=(
-            "polylogue-hbtj2: act on the sweep's report by writing raw_artifacts rows "
+            "Act on the sweep's report by writing raw_artifacts rows "
             "(materialize_artifact_observations) for the flagged binary content, so it "
             "carries an explicit non-session classification instead of sitting "
             "unclassified. Does not touch revision_authority or delete anything -- "
@@ -781,8 +776,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "List antigravity-session rows that are brain-metadata phantom fragments.",
         "devtools.antigravity_phantom_sweep_report",
         use_when=(
-            "polylogue-eo81 / polylogue-msia: every antigravity-session row (116/116, "
-            "measured 2026-07-31) is a 1-message fragment materialized from a "
+            "Use when antigravity-session rows are 1-message fragments materialized from a "
             "*.md.metadata.json sidecar under ~/.gemini/antigravity/brain/, tagged "
             "degraded:brain-metadata-fragment at ingest time (PR #1856). Real "
             "conversation content lives in conversations/*.pb, acquired separately by "
@@ -801,7 +795,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Delete antigravity brain-metadata phantom sessions and reclassify their raw rows.",
         "devtools.antigravity_phantom_purge_apply",
         use_when=(
-            "polylogue-eo81 / polylogue-msia: act on the sweep's report by deleting the "
+            "Act on the sweep's report by deleting the "
             "flagged sessions (ArchiveStore.delete_sessions -- rebuild-safe, since PR "
             "#3441's ingest-side content classifier already refuses "
             "*.md.metadata.json as session content) and persisting a scoped "
