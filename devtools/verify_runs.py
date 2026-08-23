@@ -219,6 +219,7 @@ class VerifyRun:
         verification_scope: str | None = None,
         final_git_head: str | None = None,
         pytest_aggregate: Mapping[str, Any] | None = None,
+        workload_receipt: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._payload.update(
             {
@@ -239,6 +240,8 @@ class VerifyRun:
             self._payload["pytest_aggregate"] = {
                 "selection_mode": "focused" if self._payload["tier"] == "focused-test" else "none"
             }
+        if workload_receipt is not None:
+            self._payload["workload_receipt"] = dict(workload_receipt)
         self.write()
         return dict(self._payload)
 
