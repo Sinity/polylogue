@@ -164,8 +164,8 @@ def _sha256_executable_content(path: Path) -> str | None:
     same package version therefore hash differently purely because of which
     venv root happened to answer the PATH lookup -- a worktree's own
     dedicated ``.venv`` versus a shared checkout's ``.venv``, both synced
-    from the same lockfile, is a routine, harmless lane-lifecycle transition
-    (see `devtools workspace lane-init`), not toolchain drift. Stripping a
+    from the same lockfile, is a harmless install-location difference, not
+    toolchain drift. Stripping a
     leading ``#!`` line before hashing removes exactly that install-location
     noise. It is a no-op for a compiled/native executable such as ruff's
     binary (never starts with ``#!``), so genuine content drift -- a

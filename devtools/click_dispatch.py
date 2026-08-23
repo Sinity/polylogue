@@ -10,8 +10,6 @@ Generates Click commands from the CommandSpec catalog and preserves:
 from __future__ import annotations
 
 import json as json_mod
-import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,14 +19,12 @@ import click
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
-    find_git_worktree_root,
 )
 from devtools.command_catalog import (
     COMMAND_SPECS,
     CommandSpec,
     grouped_command_specs,
 )
-from devtools.lane_exec import reexec_into_lane
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -264,58 +260,14 @@ def _dispatch(argv: list[str]) -> int:
         return code if isinstance(code, int) else 0
 
 
-def _is_lane_init_bootstrap(argv: list[str]) -> bool:
-    """Return whether ``argv`` names the sole self-provisioning command.
-
-    A harness-created worktree may inherit the coordinator's environment, so
-    it cannot pass the ordinary import guard until its first lane-init has
-    built a local venv. Every other command remains guarded before dispatch.
-    """
-    normalized = list(argv)
-    if normalized[:1] == ["--json"]:
-        normalized.pop(0)
-    return normalized[:2] == ["workspace", "lane-init"]
-
-
-def _run_from_invoking_lane(argv: list[str]) -> int | None:
-    """Re-exec from an invoking lane's source and interpreter when possible.
-
-    Console scripts installed in the coordinator's editable venv resolve their
-    own modules from that coordinator. A linked worktree is the authority for
-    its source and, after bootstrap, its interpreter. Detecting that boundary
-    here removes the exported-VIRTUAL_ENV ritual from every worker command.
-    """
-    worktree = find_git_worktree_root(Path.cwd())
-    if worktree is None:
-        return None
-    exit_code = reexec_into_lane("devtools", argv, cwd=Path.cwd())
-    if exit_code is not None:
-        return exit_code
-    if worktree != _REPO_ROOT and _is_lane_init_bootstrap(argv):
-        # No lane interpreter exists yet. Re-enter with ``-m`` from the
-        # worktree so module resolution uses its source before the bootstrap
-        # provenance check allows the one exception to the ordinary guard.
-        return subprocess.run(
-            [sys.executable, "-m", "devtools", *argv],
-            cwd=worktree,
-            env=os.environ.copy(),
-            check=False,
-        ).returncode
-    return None
-
-
 def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI."""
 
     command_argv = list(argv or [])
-    lane_exit_code = _run_from_invoking_lane(command_argv)
-    if lane_exit_code is not None:
-        return lane_exit_code
-    if not _is_lane_init_bootstrap(command_argv):
-        try:
-            assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
-        except CheckoutImportMismatchError as exc:
-            sys.stderr.write(f"{exc}\n")
-            return 125
+    try:
+        assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
+    except CheckoutImportMismatchError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 125
 
     return _dispatch(command_argv)

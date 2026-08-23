@@ -20,7 +20,6 @@ from pathlib import Path
 from devtools import repo_root
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.command_catalog import control_plane_argv
-from devtools.lane_exec import reexec_into_lane
 from devtools.verify_runs import RECEIPT_EXCLUDED_PATHSPECS, worktree_fingerprint
 
 
@@ -223,19 +222,7 @@ def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # The pre-push hook invokes this module directly (`python -m
-    # devtools.pre_push_gate`), bypassing click_dispatch's lane routing. A
-    # git hook subprocess can inherit the coordinator's `python`/PATH/
-    # VIRTUAL_ENV rather than the lane's own venv, which would otherwise
-    # sample checkout provenance below under the wrong interpreter and make
-    # every compatible quick-verify receipt look foreign. Route through the
-    # invoking lane's own venv first, exactly like every `devtools <cmd>`
-    # invocation already does.
     command_argv = list(argv) if argv is not None else list(sys.argv[1:])
-    lane_exit_code = reexec_into_lane("devtools.pre_push_gate", command_argv)
-    if lane_exit_code is not None:
-        return lane_exit_code
-
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("updates", type=Path, help="file containing Git pre-push update lines")
     args = parser.parse_args(command_argv)

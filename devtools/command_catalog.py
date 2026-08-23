@@ -384,54 +384,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace lane-finish",
-        "workspace",
-        "Package a clean lane's exact commits and changed paths for coordinator assimilation.",
-        "devtools.lane_finish",
-        use_when=(
-            "Finish an implementation lane without opening a PR: dirty or detached lanes remain blocked, while a clean "
-            "generated lane is recorded as ready-for-assimilation and released for post-assimilation cleanup."
-        ),
-        examples=(
-            "devtools workspace lane-finish --base feature/current-batch",
-            "devtools workspace lane-finish --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace integrate",
-        "workspace",
-        "Apply an ordered list of lane commits to a clean linked integration worktree.",
-        "devtools.workspace_integrate",
-        use_when=(
-            "Integrate ready lane commits without coordinator cherry-pick ceremony. The target must be an explicit, "
-            "clean linked worktree on a non-master branch. Source refs are range-derived only when target ancestry is "
-            "unambiguous; use repeated --commit for divergent histories. Conflicts stop ordinary cherry-pick in place "
-            "and are never auto-resolved or aborted."
-        ),
-        examples=(
-            "devtools workspace integrate --target /realm/worktrees/batch feature/lane-a feature/lane-b",
-            "devtools workspace integrate --target /realm/worktrees/batch --commit abc123 --commit def456 --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace worktree-gc",
-        "workspace",
-        "Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees.",
-        "devtools.worktree_gc",
-        use_when=(
-            "Clean up agent and feature worktrees that have been merged or whose branches "
-            "have been deleted. Also recognizes fully patch-equivalent squash-merged branches via git cherry. "
-            "Dry-run by default; pass --apply to remove safe candidates. "
-            "Never removes dirty worktrees or the main worktree."
-        ),
-        examples=(
-            "devtools workspace worktree-gc",
-            "devtools workspace worktree-gc --json",
-            "devtools workspace worktree-gc --apply",
-            "devtools workspace worktree-gc --apply --force",
-        ),
-    ),
-    CommandSpec(
         "workspace bead-cluster",
         "workspace",
         "Footprint/overlap/contention clustering of ready Beads (execution frontier).",
@@ -449,43 +401,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace bead-cluster --all-open",
             "devtools workspace bead-cluster --max-priority 1",
             "devtools workspace bead-cluster --input ready.json --validate-roster",
-        ),
-    ),
-    CommandSpec(
-        "workspace lane-init",
-        "workspace",
-        "Provision a lane worktree with an isolated, guard-verified interpreter.",
-        "devtools.lane_init",
-        use_when=(
-            "Before a lane runs repository tooling: creates the worktree/branch if missing, provisions "
-            "its own venv via uv sync, proves import polylogue resolves inside the lane, and runs "
-            "verify-worktree. Existing lanes derive their checked-out branch automatically. Selected "
-            "verification owns shared testmon graph reuse; devtools routes later lane commands through "
-            "the local interpreter without shell exports."
-        ),
-        examples=(
-            'python -m devtools workspace lane-init "$PWD"',
-            "devtools workspace lane-init /realm/worktrees/lane-cursors --branch feature/sources/cursor-catchup",
-        ),
-    ),
-    CommandSpec(
-        "workspace verify-worktree",
-        "workspace",
-        "Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch.",
-        "devtools.verify_worktree",
-        use_when=(
-            "Immediately after spawning a worktree-isolated agent lane (and before trusting its "
-            "reported diff), confirm the claimed working directory is a real LINKED git worktree "
-            "-- not the main checkout (the 2026-08-01 isolation-escape incident left ~1700 "
-            "uncommitted lines in the coordinator's live tree because no such check existed) -- "
-            "and optionally that the expected branch is checked out. Also reports advisory "
-            "hazards: uncommitted changes (worktree auto-cleanup destroys them) and a stale "
-            ".beads/issues.jsonl whose reimport can time-machine live bead state (polylogue-2ara)."
-        ),
-        examples=(
-            "devtools workspace verify-worktree /realm/project/polylogue/.claude/worktrees/agent-abc",
-            "devtools workspace verify-worktree /realm/worktrees/lane-x --expect-branch feature/x/y",
-            "devtools workspace verify-worktree /realm/worktrees/lane-x --json --strict",
         ),
     ),
     CommandSpec(
