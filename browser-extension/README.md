@@ -106,8 +106,9 @@ The proof starts a temporary receiver, proves unauthenticated rejection, loads
 the unpacked extension into headless Chromium/Chrome, captures deterministic
 ChatGPT and Claude fixture pages, and verifies archive/API convergence without
 cookies or raw turn text in its bounded result. AgentCTL owns the process,
-ports, timeout, cancellation, and cleanup. Live copied-profile investigation is
-operator-local and does not create another Polylogue service lifecycle.
+ports, timeout, cancellation, and cleanup. The copied-profile proof runs only
+through the declared `live_provider_proof` AgentCTL operation. It has no npm or
+devtools launcher and does not create another Polylogue daemon lifecycle.
 
 ## Mission control, pairing, and ambient status
 
@@ -267,10 +268,6 @@ npm test              # vitest
 npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
-npm run dev-loop-smoke # background worker -> local receiver smoke
-npm run dev-loop-browser-smoke # real Chromium/Chrome service worker -> local receiver smoke
-npm run dev-loop-provider-smoke # real Chromium/Chrome content scripts -> deterministic provider fixtures
-npm run dev-loop-live-provider-proof # visible copied-profile live provider proof
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```

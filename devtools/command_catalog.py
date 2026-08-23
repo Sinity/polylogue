@@ -403,20 +403,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace dev-loop-service",
-        "workspace",
-        "Run the fixed Polylogue browser-capture proof inside an AgentCTL service lease.",
-        "devtools.dev_loop_service",
-        use_when=(
-            "AgentCTL invokes this fixed command through the declared dev_loop_proof operation. "
-            "Start that operation with agentctl so exact checkout binding, ports, lifecycle, cancellation, and results stay canonical."
-        ),
-        examples=(
-            "agentctl job start polylogue dev_loop_proof --workspace <workspace-id>",
-            "agentctl job result <job-id>",
-        ),
-    ),
-    CommandSpec(
         "workspace deployment-smoke",
         "workspace",
         "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
@@ -429,7 +415,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools workspace deployment-smoke",
             "devtools workspace deployment-smoke --json",
-            "devtools workspace deployment-smoke --browser --browser-executable /etc/profiles/per-user/sinity/bin/google-chrome",
             "devtools workspace deployment-smoke --daemon-url http://127.0.0.1:8766 --receiver-url http://127.0.0.1:8765",
         ),
     ),

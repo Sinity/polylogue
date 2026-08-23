@@ -50,13 +50,13 @@ exec = ["devtools", "verify", "--all"]
 pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
-timeout_seconds = 7200
+timeout_seconds = 14400
 exclusive_keys = ["polylogue:testmon-graph"]
 scratch = "nvme"
 
 [operations.dev_loop_proof]
 description = "Run the bounded browser-capture dev-loop proof through AgentCTL"
-exec = ["devtools", "workspace", "dev-loop-service", "--json"]
+exec = ["python", "-m", "devtools.dev_loop_service", "--json"]
 pool = "interactive"
 result = "json"
 cache = "none"
@@ -75,6 +75,60 @@ range = [48800, 48863]
 [operations.dev_loop_proof.service.ports.browser_capture]
 environment = "POLYLOGUE_BROWSER_CAPTURE_PORT"
 range = [48864, 48927]
+
+[operations.dev_loop_proof.service.ports.browser_cdp]
+environment = "POLYLOGUE_BROWSER_CDP_PORT"
+range = [48928, 48991]
+
+[operations.deployment_browser_smoke]
+description = "Run the fixed deployed-web browser-render smoke through AgentCTL"
+exec = ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 180
+exclusive_keys = ["polylogue:deployment-browser-smoke"]
+scratch = "nvme"
+
+[operations.deployment_browser_smoke.service]
+readiness = "project-command"
+lifetime = "job"
+
+[operations.deployment_browser_smoke.service.ports.browser_cdp]
+environment = "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT"
+range = [48992, 49055]
+
+[operations.live_provider_proof]
+description = "Run the fixed copied-profile provider proof through AgentCTL"
+exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 180
+exclusive_keys = ["polylogue:live-provider-proof"]
+scratch = "nvme"
+
+[operations.live_provider_proof.service]
+readiness = "project-command"
+lifetime = "job"
+
+[operations.live_provider_proof.service.ports.browser_cdp]
+environment = "POLYLOGUE_LIVE_PROVIDER_CDP_PORT"
+range = [49056, 49119]
+
+[operations.live_provider_proof.service.ports.browser_capture]
+environment = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
+range = [49120, 49183]
+
+[operations.live_provider_profile_provision]
+description = "Provision the fixed copied Chrome profile for the live-provider proof"
+exec = ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 120
+exclusive_keys = ["polylogue:live-provider-proof"]
+scratch = "nvme"
 
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"

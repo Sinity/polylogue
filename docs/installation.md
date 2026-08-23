@@ -65,21 +65,16 @@ surface and verification helpers:
 ```bash
 nix develop -c polylogue --help
 nix develop -c polylogued run
-nix develop -c devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
+agentctl job result <job-id>
 ```
 
-On NixOS hosts where Chrome lives in the per-user profile rather than under a
-distribution path, pass that path explicitly for browser first-paint diagnostics:
-
-```bash
-nix develop -c devtools workspace deployment-smoke --browser \
-  --browser-executable /etc/profiles/per-user/$USER/bin/google-chrome
-```
-
-That smoke launches a fresh headless profile against Polylogue's web root. It
-does not claim MCP DevTools control, copied-profile cookies, or live provider
-pages; those are local operator proof modes covered by
-[`docs/dev-loop.md`](dev-loop.md).
+That fixed operation launches a fresh headless profile against Polylogue's web
+root with a descriptor-leased CDP port and a transient systemd cgroup. Its job
+receipt, not the checkout, proves lifecycle and lease behavior. It does not
+claim MCP DevTools control, copied-profile cookies, or live provider pages.
+The declared copied-profile proof operation and its service boundary are
+documented in [`docs/dev-loop.md`](dev-loop.md).
 
 On NixOS, import the flake module shown in the Nix section below. It creates a
 managed `polylogued.service`; check that deployed surface with:
@@ -225,9 +220,9 @@ not archive config.
 
 After deploying, use `polylogue config --format json` to inspect effective
 values and source layers, and `devtools workspace deployment-smoke --json` to capture the
-package versions, archive root, daemon URL, browser-capture receiver URL,
-optional browser executable path, and cgroup resource signals visible on the
-host.
+package versions, archive root, daemon URL, browser-capture receiver URL, and
+cgroup resource signals visible on the host. Use the declared
+`deployment_browser_smoke` operation for browser first-paint evidence.
 
 ### Home Manager module
 

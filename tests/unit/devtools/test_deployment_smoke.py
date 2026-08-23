@@ -514,6 +514,7 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
         path="/bin",
         timeout_s=1,
         executable=None,
+        debugging_port=48992,
     )
 
     assert probe.ok is True
@@ -521,6 +522,31 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
     assert probe.error is None
+
+
+def test_browser_launch_boundary_rejects_forged_environment_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import sinnixd_service_context
+
+    monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
+    monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
+    monkeypatch.setenv("SINNIXD_OPERATION", "deployment_browser_smoke")
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice/shell.scope\n", encoding="utf-8")
+    monkeypatch.setattr(sinnixd_service_context, "_CGROUP_PATH", cgroup)
+    spawned = False
+
+    def fail_if_spawned(*_args: object, **_kwargs: object) -> object:
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("Chrome must not spawn outside the declared cgroup")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_if_spawned)
+
+    with pytest.raises(ValueError, match="matching transient unit"):
+        deployment_smoke._run_browser_command(["google-chrome"], path="/bin", timeout_s=1)
+    assert spawned is False
 
 
 def test_deployment_smoke_resolves_browser_from_candidate_path(tmp_path: Path) -> None:
@@ -553,6 +579,7 @@ def test_deployment_smoke_browser_render_probe_reports_missing_chrome(monkeypatc
         path="/bin",
         timeout_s=1,
         executable=None,
+        debugging_port=48992,
     )
 
     assert probe.ok is False
@@ -582,6 +609,7 @@ def test_deployment_smoke_browser_render_probe_reports_timeout(monkeypatch: pyte
         path="/bin",
         timeout_s=1,
         executable=None,
+        debugging_port=48992,
     )
 
     assert probe.ok is False
@@ -590,7 +618,7 @@ def test_deployment_smoke_browser_render_probe_reports_timeout(monkeypatch: pyte
     assert "still loading" in probe.stderr_tail
 
 
-def test_deployment_smoke_browser_render_accepts_completed_artifacts_after_timeout(
+def test_deployment_smoke_browser_render_rejects_completed_artifacts_after_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -622,77 +650,19 @@ def test_deployment_smoke_browser_render_accepts_completed_artifacts_after_timeo
         path="/bin",
         timeout_s=1,
         executable=None,
+        debugging_port=48992,
     )
 
-    assert probe.ok is True
+    assert probe.ok is False
     assert probe.dom_bytes == len("<html>Polylogue</html>")
     assert probe.screenshot_bytes == 3
-    assert probe.error is None
+    assert probe.error == "browser_timeout"
     assert probe.caveats == ()
 
 
-def test_deployment_smoke_report_includes_browser_render_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(deployment_smoke, "_resolve_command", lambda name, *, path: f"/bin/{name}")
-    monkeypatch.setattr(deployment_smoke, "_repo_head", lambda: "abc123def456")
-    monkeypatch.setattr(
-        deployment_smoke,
-        "_run_command",
-        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "version ok", ""),
-    )
-    monkeypatch.setattr(
-        deployment_smoke,
-        "_run_completion_command",
-        lambda **kwargs: subprocess.CompletedProcess(
-            ["polylogue"],
-            0,
-            {
-                "polylogue find id:abc t": "plain,then\n",
-                "polylogue find id:abc then s": "plain,select\n",
-                "polylogue find id:abc then read --view ": (
-                    "plain,summary\nplain,messages\nplain,raw\nplain,context-image\n"
-                ),
-                "polylogue find id:abc then read --view messages --format ": "plain,json\nplain,ndjson\nplain,text\n",
-            }[str(kwargs["comp_words"])],
-            "",
-        ),
-    )
-    monkeypatch.setattr(
-        deployment_smoke,
-        "_open_url",
-        lambda url, *, timeout_s: _FakeResponse(200, {"ok": True, "url": url}),
-    )
-    monkeypatch.setattr(
-        deployment_smoke,
-        "_probe_browser_render",
-        lambda *args, **kwargs: deployment_smoke.BrowserRenderProbe(
-            url="http://daemon/",
-            executable="/bin/google-chrome",
-            exit_code=None,
-            ok=False,
-            error="browser_timeout",
-        ),
-    )
-
-    report = deployment_smoke.build_report(
-        path="/bin",
-        daemon_base_url="http://daemon",
-        receiver_base_url="http://receiver",
-        archive_root=tmp_path,
-        timeout_s=1,
-        browser=True,
-    )
-
-    assert report.ok is False
-    assert "browser-render:browser_timeout" in report.failures
-    assert report.browser_render is not None
-    assert report.browser_render.error == "browser_timeout"
-    assert any(
-        "web-shell browser render does not reach DOM/screenshot" in cause
-        for cause in report.diagnostics["likely_causes"]
-    )
+def test_deployment_smoke_public_parser_rejects_browser_host_control() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        deployment_smoke.main(["--browser"])
 
 
 def test_deployment_smoke_reports_spooled_browser_capture_without_raw_rows(tmp_path: Path) -> None:
@@ -1114,8 +1084,6 @@ def test_deployment_smoke_diagnoses_receiver_archive_state_without_query_visibil
         ],
         routes=[],
         repo_head="abc123def456",
-        browser_render=None,
-        browser_executable_resolution={},
         browser_capture_archive=deployment_smoke.BrowserCaptureArchiveProbe(
             spool_path="/tmp/browser-capture",
             source_db_path="/tmp/source.db",

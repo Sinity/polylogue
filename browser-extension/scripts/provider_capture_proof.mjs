@@ -5,6 +5,7 @@
 // cookies or cloud browser state.
 
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -12,8 +13,46 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const receiverBaseUrl = (process.env.POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL || "http://127.0.0.1:8765").replace(/\/+$/, "");
-const receiverAuthToken = process.env.POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN || "";
+function requiredEnvironment(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be supplied by the AgentCTL dev-loop proof`);
+  return value;
+}
+
+function declaredCdpPort() {
+  const port = Number(requiredEnvironment("POLYLOGUE_PROVIDER_SMOKE_CDP_PORT"));
+  if (!Number.isInteger(port) || port < 48928 || port > 48991) {
+    throw new Error("POLYLOGUE_PROVIDER_SMOKE_CDP_PORT is outside the declared AgentCTL lease range");
+  }
+  return port;
+}
+
+function requireExpectedServiceContext() {
+  const jobId = process.env.SINNIXD_JOB_ID || "";
+  const unit = `sinnixd-job-${jobId}.service`;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    throw new Error("provider capture requires a Sinnixd job UUID");
+  }
+  if (process.env.SINNIXD_PROJECT_ID !== "polylogue" || process.env.SINNIXD_OPERATION !== "dev_loop_proof") {
+    throw new Error("provider capture rejects execution outside the fixed dev-loop service context");
+  }
+  const cgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((line) => line.includes("::"))?.split("::", 2)[1] || "";
+  if (!cgroup.includes(`/agent.slice/${unit}`)) {
+    throw new Error("provider capture is not inside its matching Sinnixd transient unit");
+  }
+  const unitExecStart = spawnSync(
+    "systemctl",
+    ["--user", "show", unit, "--property=ExecStart", "--value"],
+    { encoding: "utf8", timeout: 2000 },
+  );
+  const childCommand = unitExecStart.stdout.slice(unitExecStart.stdout.indexOf("/env -i") + "/env -i".length);
+  if (unitExecStart.status !== 0 || !unitExecStart.stdout.includes("/env -i") || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => childCommand.includes(`${name}=${process.env[name]}`))) {
+    throw new Error("provider capture transient unit does not match the declared operation");
+  }
+}
+
+const receiverBaseUrl = requiredEnvironment("POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL").replace(/\/+$/, "");
+const receiverAuthToken = requiredEnvironment("POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN");
 const extensionRoot = path.resolve(process.env.POLYLOGUE_PROVIDER_SMOKE_EXTENSION_ROOT || ".");
 const outputPath = process.env.POLYLOGUE_PROVIDER_SMOKE_OUT || "";
 const profileDir =
@@ -22,7 +61,7 @@ const keepProfile = process.env.POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE === "1";
 const timeoutMs = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS || "10000");
 const spoolDir = process.env.POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR || "";
 const headless = process.env.POLYLOGUE_PROVIDER_SMOKE_HEADLESS !== "0";
-const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-dev-loop-provider-smoke";
+const fixtureSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_SESSION_ID || "polylogue-provider-capture-proof";
 const readerBaseUrl = (process.env.POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL || "").replace(/\/+$/, "");
 const readerSessionId = process.env.POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID || "";
 const stressTurnCount = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TURNS || "2");
@@ -32,16 +71,43 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close(() => resolve(port));
+async function terminateProcessGroup(child) {
+  if (!child || child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return;
+  }
+  await Promise.race([child.exitCode === null ? once(child, "close") : sleep(200), sleep(2000)]);
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (child.exitCode === null) await once(child, "close");
+}
+
+let activeChrome = null;
+let shutdownRequested = false;
+
+function installShutdownCleanup() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      if (shutdownRequested) return;
+      shutdownRequested = true;
+      terminateProcessGroup(activeChrome)
+        .catch((error) => process.stderr.write(`${error.stack || error.message || error}\n`))
+        .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
     });
-  });
+  }
+}
+
+function launchFixedChrome(chromeBinary, chromeArgs) {
+  // Keep the launch boundary guarded even when this helper is imported by the
+  // private Python service rather than executed through its wrapper.
+  requireExpectedServiceContext();
+  return spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 async function waitJson(url, timeout = timeoutMs) {
@@ -282,45 +348,6 @@ async function startProviderProxyServer(fixturePort) {
 
 function closeServer(server) {
   return new Promise((resolve) => server.close(resolve));
-}
-
-function signalChromeTree(child, signal) {
-  try {
-    process.kill(-child.pid, signal);
-  } catch (_error) {
-    try {
-      child.kill(signal);
-    } catch (_childError) {
-      // Chrome may already be gone; shutdown should stay best-effort.
-    }
-  }
-}
-
-function terminateProcess(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(termTimer);
-      clearTimeout(killTimer);
-      child.off("exit", finish);
-      child.off("error", finish);
-      resolve();
-    };
-    const termTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) signalChromeTree(child, "SIGTERM");
-    }, 0);
-    const killTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) signalChromeTree(child, "SIGKILL");
-      setTimeout(finish, 500);
-    }, 3000);
-    child.once("exit", finish);
-    child.once("error", finish);
-  });
 }
 
 async function waitForExtensionWorker(debuggingPort, expectedWorkerSuffix, expectedManifestName) {
@@ -598,14 +625,6 @@ async function configureExtension(extensionClient) {
     extensionClient,
     `(async () => {
       if (!globalThis.chrome?.storage?.local) {
-        if (${JSON.stringify(receiverBaseUrl)} === "http://127.0.0.1:8765" && !${JSON.stringify(receiverAuthToken)}) {
-          return {
-            receiverBaseUrl: "http://127.0.0.1:8765",
-            receiverAuthToken: "",
-            storageConfigured: false,
-            caveat: "chrome.storage.local unavailable in service-worker CDP context; using extension defaults"
-          };
-        }
         throw new Error("extension controller CDP target does not expose chrome.storage.local");
       }
       await chrome.storage.local.set({
@@ -869,12 +888,14 @@ function safeProviderSummary(providerConfig, capturePayload) {
   };
 }
 
-async function main() {
+export async function runProviderCapture() {
+  requireExpectedServiceContext();
+  installShutdownCleanup();
   const localManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
   const expectedWorkerSuffix = serviceWorkerSuffix(localManifest);
   mkdirSync(profileDir, { recursive: true });
   const chromeBinary = resolveChromeBinary();
-  const debuggingPort = await freePort();
+  const debuggingPort = declaredCdpPort();
   const fixtureServer = await startProviderFixtureServer(profileDir);
   const proxyServer = await startProviderProxyServer(fixtureServer.port);
   const chromeArgs = [
@@ -893,7 +914,8 @@ async function main() {
     "about:blank",
   ];
   if (headless) chromeArgs.splice(2, 0, "--headless=new");
-  const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const chrome = launchFixedChrome(chromeBinary, chromeArgs);
+  activeChrome = chrome;
   let stdout = "";
   let stderr = "";
   chrome.stdout.on("data", (chunk) => {
@@ -1064,8 +1086,14 @@ async function main() {
     for (const client of pageClients) client.close();
     if (extensionControllerClient) extensionControllerClient.close();
     if (workerClient) workerClient.close();
-    if (browserClient) browserClient.close();
-    await terminateProcess(chrome);
+    if (browserClient) {
+      await browserClient.call("Browser.close").catch(() => undefined);
+      browserClient.close();
+    }
+    chrome.stdout.destroy();
+    chrome.stderr.destroy();
+    await terminateProcessGroup(chrome);
+    activeChrome = null;
     await closeServer(proxyServer.server);
     await closeServer(fixtureServer.server);
     if (!keepProfile && !process.env.POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR) {
@@ -1075,8 +1103,3 @@ async function main() {
     if (stdout && process.env.POLYLOGUE_PROVIDER_SMOKE_DEBUG_STDOUT === "1") process.stderr.write(stdout);
   }
 }
-
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message || error}\n`);
-  process.exit(1);
-});
