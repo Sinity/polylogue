@@ -316,7 +316,11 @@ def _prepare_fresh_connection_for_target(
     # object which was already present at this target.  In particular, v30
     # replaces this index with a partial uniqueness domain; v28 must retain
     # the earlier unconditional uniqueness definition.
-    for schema_object in sorted(replaced_refs):
+    reapply_order = {"table": 0, "view": 1, "index": 2, "trigger": 3}
+    for schema_object in sorted(
+        replaced_refs,
+        key=lambda item: (reapply_order.get(item.partition(":")[0], 4), item),
+    ):
         statement = historical_create_sql.get(schema_object)
         if statement is not None:
             connection.execute(statement)
