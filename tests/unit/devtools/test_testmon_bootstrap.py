@@ -1273,8 +1273,44 @@ def test_optional_main_invalid_parent_falls_back_to_lane_local_bootstrap(
 
     preparation = prepare_native_testmon_environment(
         lane,
-        source_lock_factory=lambda: contextlib.nullcontext(True),
+        source_lock_factory=lambda _main_checkout: contextlib.nullcontext(True),
     )
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.copied_from is None
+    assert preparation.local_state.status == "absent"
+    assert preparation.fallback_allowed is True
+
+
+def test_optional_main_binding_open_error_falls_back_to_lane_local_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An optional source-open race is typed so bootstrap can fall back."""
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    lane.mkdir()
+    (main / "tests").mkdir(parents=True)
+    _seed_partial_native_graph(
+        main,
+        environment_name="lane-environment",
+        fingerprinted="tests/test_recorded.py",
+    )
+
+    monkeypatch.setattr(testmon_bootstrap, "testmon_environment_digest", lambda *_args, **_kwargs: "lane-environment")
+    monkeypatch.setattr(
+        testmon_bootstrap,
+        "linked_worktree_info",
+        lambda checkout, **_kwargs: (True, main) if checkout.resolve() == lane.resolve() else None,
+    )
+
+    def binding_open_race(_parent: Path, *, create: bool) -> int:
+        assert create is False
+        raise OSError("source directory replaced during bind")
+
+    monkeypatch.setattr(testmon_bootstrap, "_open_owned_testmon_directory", binding_open_race)
+
+    preparation = prepare_native_testmon_environment(lane)
 
     assert preparation.selection_mode == "bootstrap"
     assert preparation.copied_from is None

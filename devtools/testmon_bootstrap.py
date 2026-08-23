@@ -1272,14 +1272,18 @@ def _reclaim_stale_native_testmon_bindings(directory_fd: int, name: str) -> None
 @contextlib.contextmanager
 def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSourceBinding | None]:
     """Retain a private SQLite filename family for validation and copying."""
-    if not data_path.is_file():
-        yield None
-        return
     directory_fd: int | None = None
     child_fd: int | None = None
     private_names: list[str] = []
     sidecar_descriptors: list[tuple[str, int]] = []
     try:
+        try:
+            present = data_path.is_file()
+        except OSError as exc:
+            raise NativeTestmonRepairError(f"cannot inspect native testmon source {data_path}: {exc}") from exc
+        if not present:
+            yield None
+            return
         directory_fd = _open_owned_testmon_directory(data_path.parent.parent.parent, create=False)
         _reclaim_stale_native_testmon_bindings(directory_fd, data_path.name)
         child_fd, _bound_path, private_name = _open_owned_testmon_child(directory_fd, data_path.name)
@@ -1305,6 +1309,10 @@ def native_testmon_source_binding(data_path: Path) -> Iterator[NativeTestmonSour
             data_path=private_base,
             private_names=tuple(private_names),
         )
+    except NativeTestmonRepairError:
+        raise
+    except OSError as exc:
+        raise NativeTestmonRepairError(f"cannot bind native testmon source {data_path}: {exc}") from exc
     finally:
         try:
             if directory_fd is not None:
@@ -1546,7 +1554,7 @@ def prepare_native_testmon_environment(
     pytest_profile: str = "default",
     pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
-    source_lock_factory: Callable[[], contextlib.AbstractContextManager[bool]] | None = None,
+    source_lock_factory: Callable[[Path], contextlib.AbstractContextManager[bool]] | None = None,
 ) -> NativeTestmonPreparation:
     """Repair derived local state and optionally reuse a matching main graph."""
     root = repo_root.resolve()
@@ -1625,7 +1633,9 @@ def prepare_native_testmon_environment(
     _ensure_deadline(deadline_monotonic)
     copied_from: Path | None = None
     if main_checkout is not None and main_checkout != root and not missing_checkout_paths:
-        source_lock = source_lock_factory() if source_lock_factory is not None else contextlib.nullcontext(True)
+        source_lock = (
+            source_lock_factory(main_checkout) if source_lock_factory is not None else contextlib.nullcontext(True)
+        )
         main = NativeTestmonState("absent", "optional main native testmon state unavailable")
         with _optional_native_testmon_source_lock(source_lock) as source_available:
             if source_available:
