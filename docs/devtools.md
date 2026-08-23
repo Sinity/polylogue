@@ -28,11 +28,11 @@ Routine command placement:
 ## Beads graph checks
 
 Use `bd ready` to inspect executable work and `workspace bead-cluster` before
-parallel dispatch. Validate branch-local dependency records without importing
-an aging worktree into the shared Beads database:
+parallel dispatch. Validate live task relationships without coupling task
+state to a Git branch:
 
 ```bash
-devtools verify bead-graph --export .beads/issues.jsonl --json
+devtools verify bead-graph --json
 ```
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
@@ -156,7 +156,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
 | `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
-| `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |

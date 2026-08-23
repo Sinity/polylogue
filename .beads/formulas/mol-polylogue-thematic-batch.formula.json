@@ -107,7 +107,7 @@
         "type": "human",
         "await_id": "operator-merge-authorization"
       },
-      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nPublish a truthful pr-scope carrier for all mutated Beads, clear automated review, and merge through `devtools workspace merge`. One merge-ready train maximum."
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nPublish the exact verified workspace through AgentCTL, clear hosted checks, and land through GitHub authority. One merge-ready train maximum."
     },
     {
       "id": "dispositions",
@@ -126,7 +126,7 @@
         "campaign_timing": "execution",
         "stage": "dispositions"
       },
-      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nRun carrier-dispositions, close only satisfied Beads, verify successors for partials, export guarded state, graph-check, and update the root/workstream epic with the receipt digest."
+      "description": "NATIVE_BATCH_BINDING_V1 batch={{batch}}\nNATIVE_BATCH_BINDING_V1 workstream={{workstream}}\nNATIVE_BATCH_BINDING_V1 authoritative_beads={{beads}}\nUpdate only satisfied Beads in the Dolt backend, verify successors for partials, graph-check live relationships, push task state, and update the root/workstream epic with the verification evidence."
     }
   ]
 }

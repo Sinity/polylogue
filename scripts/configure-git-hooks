@@ -17,14 +17,11 @@ esac
 _polylogue_common_dir=$(CDPATH= cd -- "$_polylogue_common_dir" && pwd -P)
 _polylogue_common_root=$(CDPATH= cd -- "$_polylogue_common_dir/.." && pwd -P)
 
-# `.beads-hooks/` is committed, so it exists in every checkout: the former
-# `.githooks` fallback branch was unreachable by construction.
-_polylogue_hooks_path="$_polylogue_common_root/.beads-hooks"
+# Product checks are independent of Beads and live in the common checkout.
+_polylogue_hooks_path="$_polylogue_common_root/.githooks"
 # This is the shared installation anchor. The per-worktree values below are
 # higher-precedence guards against a branch-point shell hook restoring a
-# relative path in the common config. Wrapper authority is resolved through
-# the common checkout by .envrc and the common hooks; never replace a tracked
-# path in a linked worktree to achieve that routing.
+# relative path in the common config.
 git -C "$_polylogue_common_root" config --local extensions.worktreeConfig true
 git -C "$_polylogue_common_root" config --local core.hooksPath "$_polylogue_hooks_path"
 

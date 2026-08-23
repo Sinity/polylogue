@@ -404,26 +404,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace bead-reimport-guard",
-        "workspace",
-        "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
-        "devtools.bd_reimport_guard",
-        use_when=(
-            "Beads hook auto-import is disabled in .beads/config.yaml because linked worktrees "
-            "share live Dolt state but retain stale branch-point JSONL snapshots. "
-            "`reconcile <candidate.jsonl>` is the explicit, hand-invokable path for intentional "
-            "JSONL imports, including recovery after `git reset --hard`. `export <target.jsonl>` "
-            "does an atomic, validated snapshot export. Reconciliation writes a machine-readable SyncReceipt (per-row "
-            "new/updated/equal/skipped_downgrade/conflicted outcome) under "
-            ".cache/bd-sync-receipts/; ordinary sync never applies a downgrade -- recovering one "
-            "on purpose requires reconcile --allow-downgrade plus --actor/--reason."
-        ),
-        examples=(
-            "devtools workspace bead-reimport-guard reconcile .beads/issues.jsonl",
-            "devtools workspace bead-reimport-guard export /tmp/issues-snapshot.jsonl",
-        ),
-    ),
-    CommandSpec(
         "demo real-slice-screen",
         "workspace",
         "Read-only extraction + privacy screening of a candidate real-archive session slice.",
@@ -1077,16 +1057,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references.",
         "devtools.verify_bead_graph",
         use_when=(
-            "Run before shipping a bead-state delta. With no source option it checks live `bd` state; "
-            "`--export .beads/issues.jsonl` validates the branch snapshot without importing it into the "
-            "shared database. `--forcing-root` reports a digest-bound transitive blocks closure; "
+            "Run against live `bd` state when changing task relationships. `--revision` validates an "
+            "immutable historical Git snapshot without importing it. `--forcing-root` reports a digest-bound "
+            "transitive blocks closure; "
             "`--require-resolved` is for an operation boundary that requires no open blockers. The gate "
             "checks existing registry Bead references and never makes prose or campaign mirrors authority."
         ),
         examples=(
             "devtools verify bead-graph",
-            "devtools verify bead-graph --export .beads/issues.jsonl --json",
-            "devtools verify bead-graph --export .beads/issues.jsonl --forcing-root polylogue-818fy --require-resolved --json",
+            "devtools verify bead-graph --forcing-root polylogue-818fy --require-resolved --json",
+            "devtools verify bead-graph --revision 317b59f41f938884d289d48737cfe87ec00bd769 --json",
         ),
     ),
     CommandSpec(

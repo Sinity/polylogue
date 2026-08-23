@@ -224,7 +224,7 @@ def _main_module_roots(source_root: Path) -> tuple[str, ...]:
 
     ``if __name__ == "__main__":`` is a real, externally-reachable entry that no
     import edge records. Two live cases were reported DEAD without this:
-    ``security/precommit_scan`` (invoked from ``.beads-hooks/pre-commit``) and
+    ``security/precommit_scan`` (invoked from ``.githooks/pre-commit``) and
     ``schemas/promotion_audit`` (invoked from ``devtools/verify.py`` -- three
     lines below where this very gate inserts itself). Both are exactly the
     census-incident class where a tool is live but has no importer.

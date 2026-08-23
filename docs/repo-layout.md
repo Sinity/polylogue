@@ -11,7 +11,7 @@ repository tools. For the Python package itself, see
 |-------|---------|------------|
 | `.agent/` | Agent conventions, checked-in helper state, and repository-owned agent metadata; transient runs remain ignored | repo / agents |
 | `.beads/` | Versioned Beads issue, dependency, and memory export used as the Git-side task authority | Beads / repo |
-| `.beads-hooks/` | Canonical Beads-aware composite Git hooks; chains repository checks with `bd hooks run` | repo |
+| `.githooks/` | Canonical product Git hooks for commit and push checks | repo |
 | `.circleci/` | CircleCI jobs, images, and pull-request verification entrypoints | CI |
 | `.claude/` | Claude Code project settings, hooks, and generated agent definitions | repo / Claude Code |
 | `.coderabbit.yaml` | CodeRabbit review policy | repo |

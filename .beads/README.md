@@ -1,6 +1,8 @@
 # Beads - AI-Native Issue Tracking
 
-Welcome to Beads! This repository uses **Beads** for issue tracking - a modern, AI-native tool designed to live directly in your codebase alongside your code.
+This repository uses **Beads** for durable task tracking. Live state is stored
+in the shared Dolt database and published with `bd dolt push`; it is not
+imported from or exported into feature branches.
 
 ## What is Beads?
 
@@ -33,10 +35,10 @@ bd dolt push
 ### Working with Issues
 
 Issues in Beads are:
-- **Git-native**: Stored in Dolt database with version control and branching
+- **Dolt-native**: Stored in a versioned database independently of code branches
 - **AI-friendly**: CLI-first design works perfectly with AI coding agents
-- **Branch-aware**: Issues can follow your branch workflow
-- **Always in sync**: Auto-syncs with your commits
+- **Branch-independent**: Checkout changes cannot downgrade task state
+- **Explicitly replicated**: `bd dolt push` publishes durable task changes
 
 ## Why Beads?
 
@@ -46,14 +48,14 @@ Issues in Beads are:
 - No context switching to web UIs
 
 🚀 **Developer Focused**
-- Issues live in your repo, right next to your code
+- Issues are discoverable from the project through `bd`
 - Works offline, syncs when you push
 - Fast, lightweight, and stays out of your way
 
-🔧 **Git Integration**
-- Automatic sync with git commits
-- Branch-aware issue tracking
-- Dolt-native three-way merge resolution
+🔧 **Dolt Replication**
+- Task history is independent of code commits and pull requests
+- Shared task state across linked Git worktrees
+- Explicit remote push/pull
 
 ## Get Started with Beads
 
