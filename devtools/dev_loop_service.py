@@ -207,6 +207,8 @@ def _start_daemon(
         str(capture_port),
         "--root",
         str(spool),
+        "--browser-capture-auth-token",
+        _RECEIVER_TOKEN,
         "--no-source-catchup",
     ]
     with log_path.open("w", encoding="utf-8") as log_file:

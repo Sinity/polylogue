@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,31 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     assert isinstance(environment, dict)
     assert environment["POLYLOGUE_API_PORT"] == "48801"
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
+
+
+def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    launched: dict[str, object] = {}
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        launched.update(command=command, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    dev_loop_service._start_daemon(
+        repo_root=tmp_path,
+        environment={},
+        artifact_root=artifact_root,
+        api_port=48801,
+        capture_port=48865,
+    )
+
+    command = launched["command"]
+    assert isinstance(command, list)
+    token_index = command.index("--browser-capture-auth-token")
+    assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
 
 
 @pytest.mark.parametrize(
