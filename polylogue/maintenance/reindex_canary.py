@@ -1717,7 +1717,7 @@ def _validate_rebuild_receipt(
     generation = receipt.get("generation")
     source_evidence_after = receipt.get("source_evidence_after")
     if (
-        receipt.get("receipt_schema_version") != 4
+        receipt.get("receipt_schema_version") != 5
         or not isinstance(archive_root, str)
         or not archive_root
         or not requested_raw_ids
