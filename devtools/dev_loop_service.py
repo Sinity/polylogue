@@ -33,6 +33,7 @@ _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
 _SHARED_CHROME_TIMEOUT_S = 30
+_CHILD_ERROR_TAIL_CHARS = 384
 
 
 def _leased_port(name: str, bounds: tuple[int, int]) -> int:
@@ -256,7 +257,8 @@ def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CH
         terminate_process_group(process)
     completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     if completed.returncode != 0:
-        raise RuntimeError("shared-Chrome control proof did not produce a successful result")
+        detail = " ".join(stderr.split())[-_CHILD_ERROR_TAIL_CHARS:] or f"exit {completed.returncode}"
+        raise RuntimeError(f"shared-Chrome control proof failed: {detail}")
     payload = json.loads(stdout)
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         raise RuntimeError("shared-Chrome control proof reported failure")

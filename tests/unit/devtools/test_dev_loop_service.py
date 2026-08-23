@@ -189,6 +189,25 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
     assert not {name for name in environment if name.startswith("POLYLOGUE_") and ("CDP" in name or "PROFILE" in name)}
 
 
+def test_shared_chrome_control_preserves_bounded_child_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    process = type(
+        "Process",
+        (),
+        {
+            "args": ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
+            "returncode": 1,
+            "communicate": lambda self, **_kwargs: ("", "first line\ncontrol boundary rejected the window\n"),
+        },
+    )()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
+
+    with pytest.raises(RuntimeError, match="control boundary rejected the window") as failure:
+        dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+
+    assert "\n" not in str(failure.value)
+
+
 def test_deterministic_captures_still_exercise_receiver_provider_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: list[dict[str, object]] = []
 
