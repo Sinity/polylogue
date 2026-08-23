@@ -285,7 +285,7 @@ def test_python_m_invoked_module_is_a_root(tmp_path: Path) -> None:
     """``if __name__ == "__main__":`` is an entrypoint no import edge records.
 
     Live cases this dissolved: ``security/precommit_scan`` (run from
-    ``.beads-hooks/pre-commit``) and ``schemas/promotion_audit`` (run from
+    ``.githooks/pre-commit``) and ``schemas/promotion_audit`` (run from
     ``devtools/verify.py``, three lines from where this gate inserts itself).
     """
     root = _fake_repo(tmp_path, include_dead=True)

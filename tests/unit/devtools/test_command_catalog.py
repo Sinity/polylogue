@@ -50,13 +50,6 @@ def test_catalog_uses_command_ownership_categories() -> None:
     assert {"verify schema-roundtrip", "bench pipeline", "workspace schema commit"} <= set(COMMANDS)
 
 
-def test_deleted_public_surfaces_are_not_catalog_commands() -> None:
-    assert "workspace degraded-archive-proof" not in COMMANDS
-    assert "workspace merge-gate record" not in COMMANDS
-    assert "workspace merge-gate" not in COMMANDS
-    assert "why" in COMMANDS
-
-
 def test_bead_graph_catalog_exposes_json_report() -> None:
     graph = COMMANDS["verify bead-graph"]
 

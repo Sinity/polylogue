@@ -2032,8 +2032,8 @@ def pytest_run_id_belongs_to_verify_run(pytest_run_id: str | None, verify_run_id
 
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
-    # The merge-gate invocation receipt belongs to the top-level devtools
-    # process. Pytest and any nested harness commands must not inherit the
+    # The invocation receipt belongs to the top-level devtools process.
+    # Pytest and any nested harness commands must not inherit the
     # token and overwrite that receipt with a child run.
     updated.pop(VERIFICATION_INVOCATION_ID_ENV, None)
     updated.pop(VERIFICATION_RECEIPT_PATH_ENV, None)

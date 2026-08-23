@@ -127,10 +127,6 @@ HOME_TEMPLATE = """{% extends "base.html" %}
     <div class="surface-row" aria-label="Interfaces">
         <span class="surface-pill">CLI</span><span class="surface-pill">Python API</span><span class="surface-pill">MCP</span><span class="surface-pill">Local daemon</span><span class="surface-pill">Web reader</span><span class="surface-pill">Markdown and JSON exports</span>
     </div>
-    <div class="home-callout">
-        <div><h2>See the project as it evolves</h2><p>The committed Beads graph is rendered as a searchable roadmap with designs, acceptance criteria, dependencies, and closure records.</p></div>
-        <a class="button" href="{{ board_href }}">Open roadmap <span aria-hidden="true">→</span></a>
-    </div>
 </section>
 {% endblock %}
 """

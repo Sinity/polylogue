@@ -76,9 +76,6 @@ path = "/architecture/security/"
 [[nav]]
 title = "Project"
 [[nav.items]]
-label = "Roadmap"
-path = "/beads/"
-[[nav.items]]
 label = "Verification"
 path = "/verifiability/coverage/"
 [[nav.items]]
@@ -92,11 +89,6 @@ path = "/architecture/contributing/"
 path = "/index.html"
 title = "Polylogue — Evidence for AI Work"
 template = "home.html"
-
-[[pages]]
-path = "/beads/"
-title = "Roadmap and Work Graph"
-template = "beads.html"
 
 [[pages]]
 path = "/demos/"

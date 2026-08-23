@@ -182,24 +182,6 @@ def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path
     assert fingerprint.python_environment_root == root
 
 
-def test_checkout_guard_accepts_a_ledger_only_verify_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    root = _fake_linked_checkout(tmp_path)
-    ledger = root / ".cache" / "verify" / "merge-gate" / "merge-train-ledger.json"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text('{"merges": []}\n')
-    package_path = root / "polylogue" / "__init__.py"
-    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
-
-    fingerprint = assert_polylogue_matches_checkout(
-        root,
-        context="carrier recovery",
-        python_executable=root / ".venv" / "bin" / "python",
-    )
-
-    assert fingerprint.clean
-    assert fingerprint.verify_state_origin is None
-
-
 def test_checkout_guard_leaves_derived_native_testmon_state_for_verify_to_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

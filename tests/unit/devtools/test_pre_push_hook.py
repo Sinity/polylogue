@@ -13,13 +13,10 @@ from pathlib import Path
 import pytest
 
 from devtools import pre_push_gate
-from devtools.command_catalog import command_name_from_tokens
 from devtools.verify_runs import worktree_fingerprint
 
 ROOT = Path(__file__).resolve().parents[3]
-# `.beads-hooks` is the only hook set: it is committed, so the former
-# `.githooks` fallback could never be selected and has been removed.
-HOOK_PATHS = (ROOT / ".beads-hooks" / "pre-push",)
+HOOK_PATHS = (ROOT / ".githooks" / "pre-push",)
 ZERO_SHA = "0" * 40
 
 
@@ -81,52 +78,6 @@ def test_hook_emits_devshell_hint_when_devtools_missing(tmp_path: Path) -> None:
     assert "devtools is not importable" in combined
     assert "nix develop" in combined
     assert "Traceback" not in combined
-
-
-def test_beads_only_update_is_classified_without_code_gate(git_repo: Path) -> None:
-    base = _git(git_repo, "rev-parse", "HEAD")
-    tip = _commit(git_repo, ".beads/issues.jsonl", "{}\n", "beads")
-    update = pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
-
-    paths = pre_push_gate.changed_paths([update], cwd=git_repo)
-
-    assert paths == {".beads/issues.jsonl"}
-    assert pre_push_gate.is_beads_only(paths)
-
-
-def test_mixed_update_retains_quick_gate_classification(git_repo: Path) -> None:
-    base = _git(git_repo, "rev-parse", "HEAD")
-    _commit(git_repo, ".beads/issues.jsonl", "{}\n", "beads")
-    tip = _commit(git_repo, "polylogue/example.py", "VALUE = 1\n", "code")
-    update = pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
-
-    paths = pre_push_gate.changed_paths([update], cwd=git_repo)
-
-    assert paths == {".beads/issues.jsonl", "polylogue/example.py"}
-    assert not pre_push_gate.is_beads_only(paths)
-
-
-def test_new_branch_uses_default_branch_merge_base(git_repo: Path) -> None:
-    _git(git_repo, "switch", "-c", "topic")
-    tip = _commit(git_repo, ".beads/issues.jsonl", "{}\n", "beads")
-    update = pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", ZERO_SHA)
-
-    assert pre_push_gate.changed_paths([update], cwd=git_repo) == {".beads/issues.jsonl"}
-
-
-def test_beads_only_gate_uses_structural_bead_graph_command(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    base = _git(git_repo, "rev-parse", "HEAD")
-    tip = _commit(git_repo, ".beads/issues.jsonl", "{}\n", "beads")
-    update = pre_push_gate.PushUpdate("refs/heads/topic", tip, "refs/heads/topic", base)
-    commands: list[list[str]] = []
-
-    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
-
-    assert pre_push_gate.run_gate([update], cwd=git_repo) == "beads"
-    assert len(commands) == 1
-    assert commands[0][:3] == [sys.executable, "-m", "devtools"]
-    assert command_name_from_tokens(commands[0][3:]) == "verify bead-graph"
-    assert commands[0][-2:] == ["--export", ".beads/issues.jsonl"]
 
 
 def test_parse_updates_rejects_malformed_input() -> None:

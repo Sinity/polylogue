@@ -92,11 +92,6 @@ jobs:
           name: policy insight-honesty
           command: ~/.local/bin/uv run devtools verify insight-honesty
           when: always
-      - run:
-          name: policy bead-graph
-          command: ~/.local/bin/uv run devtools verify bead-graph --export .beads/issues.jsonl
-          when: always
-
   full-suite:
     docker:
       - image: cimg/python:3.14

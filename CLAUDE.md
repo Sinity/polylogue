@@ -326,13 +326,13 @@ These override default agent behavior.
 
 The canonical campaign root is Bead `polylogue-reindex-2026`. Reload with:
 
-1. `scripts/bd show polylogue-reindex-2026 --json`
-2. `scripts/bd graph --open polylogue-reindex-2026`
-3. `scripts/bd list --label campaign:reindex-2026 --status open,in_progress --sort priority --limit 0`
-4. `scripts/bd ready --label campaign:reindex-2026 --explain --json`
-5. `scripts/bd list --label campaign:reindex-2026 --label-pattern 'batch:*' --status open,in_progress --limit 0` and inspect each batch's `authoritative_beads` metadata.
+1. `bd show polylogue-reindex-2026 --json`
+2. `bd graph --open polylogue-reindex-2026`
+3. `bd list --label campaign:reindex-2026 --status open,in_progress --sort priority --limit 0`
+4. `bd ready --label campaign:reindex-2026 --explain --json`
+5. `bd list --label campaign:reindex-2026 --label-pattern 'batch:*' --status open,in_progress --limit 0` and inspect each batch's `authoritative_beads` metadata.
 
-Workstream epics A-H are closure gates, not executable tasks. Existing member Beads remain durable scope; ship coherent 3-5-Bead thematic PRs and close/split member Beads through carrier dispositions. Campaign-wide rules live here; machine receipts stay in their evidence stores and are referenced by digest. `.agent/campaigns/2026-08-overhaul/` is historical migration evidence only and must not be consulted for current status, sequencing, ownership, or next action.
+Workstream epics A-H are closure gates, not executable tasks. Existing member Beads remain durable scope; ship coherent thematic PRs and update satisfied or split member Beads directly in the Dolt task backend. Campaign-wide rules live here; machine receipts stay in their evidence stores and are referenced by digest. `.agent/campaigns/2026-08-overhaul/` is historical migration evidence only and must not be consulted for current status, sequencing, ownership, or next action.
 
 ### Beads issue tracking
 
@@ -343,21 +343,16 @@ scripts under any name. (Its evidence may still sit in a gitignored,
 untracked `.agent/archive/devloop-2026-07/` in some working checkouts —
 polylogue-ocby — it is not part of the repo and a fresh clone will not have
 it.) Repo agent conventions: `.agent/CONVENTIONS.md`; run
-`devtools lab policy bead-graph --export .beads/issues.jsonl` before shipping bead-state deltas. Run `bd prime` when task
+`devtools verify bead-graph` after changing task relationships. Run `bd prime` when task
 context, ready work, blockers, or project memory matter. Use `bd ready --json`,
 `bd show <id> --json`, `bd update <id> --claim --json`,
 `bd close <id> --reason "…" --json`. Create linked Beads issues for discovered
 follow-up work rather than leaving markdown TODOs as the source of truth.
-`bd dolt push` follows the same policy as `git push` (feature branches / PR
-updates after verification; no direct push to protected default).
+`bd dolt push` publishes task state independently of Git branches and PRs.
 
-**bd hazards are documented in the global agent instructions** (branch-switch
-reimport, `bd export`'s cwd-independent output path, conflict-marker recovery).
-They apply here unchanged; that text is not duplicated in this file. The one
-project-specific consequence worth repeating: fold a `bd claim`/`close` into the
-same branch as the code change it accompanies rather than opening a sibling
-`chore(beads):` branch, because this repo's PR cadence makes divergent
-bookkeeping branches the common failure.
+Task mutations are Dolt state, not Git content: claims, notes, relations, and
+closures must never create a code commit or PR. Git revisions of historical
+JSONL snapshots remain evidence inputs only and are never imported on checkout.
 
 ### Issue-first for non-trivial work
 

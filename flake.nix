@@ -443,9 +443,7 @@
             if [ -x "$git_common_root/scripts/configure-git-hooks" ]; then
               "$git_common_root/scripts/configure-git-hooks"
             else
-              # Transitional fallback for a common checkout that predates
-              # the helper. Keep the same worktree-config invariant.
-              desired_hooks_path="$git_common_root/.beads-hooks"
+              desired_hooks_path="$git_common_root/.githooks"
               git -C "$git_common_root" config --local extensions.worktreeConfig true
               git -C "$git_common_root" config --local core.hooksPath "$desired_hooks_path"
               while IFS= read -r worktree_path; do
@@ -457,13 +455,6 @@
           else
             git_common_root="$PWD"
           fi
-          if [ -x "$git_common_root/scripts/bd" ]; then
-            case ":$PATH:" in
-              *":$git_common_root/scripts:"*) ;;
-              *) export PATH="$git_common_root/scripts:$PATH" ;;
-            esac
-          fi
-
           # Clean stale __pycache__ dirs under source trees — skip if stamp
           # is fresh (sources haven't changed since last cleanup).
           pyc_stamp=".cache/.last-pyc-cleanup"

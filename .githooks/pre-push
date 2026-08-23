@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Pre-push gate: exact-head quick verification. Full testmon verification is
+# expected before product pushes (see CONTRIBUTING.md).
+#
+# When `devtools verify --quick` completed successfully for the exact current
+# checkout state, its receipt is reused and this hook is a no-op.
+
+set -euo pipefail
+
+UPDATES_FILE=$(mktemp)
+trap 'rm -f "$UPDATES_FILE"' EXIT
+cat >"$UPDATES_FILE"
+
+# Pre-flight: ensure checkout-local devtools is importable before attempting verification.
+if ! python -m devtools --help >/dev/null 2>&1; then
+    echo "pre-push: checkout-local devtools is not importable; enter the project devshell (nix develop) first." >&2
+    exit 2
+fi
+
+python -m devtools.pre_push_gate "$UPDATES_FILE"

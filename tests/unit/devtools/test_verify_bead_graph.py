@@ -450,11 +450,10 @@ def test_campaign_projection_rejects_missing_binding_extra_row_and_bad_edge() ->
 
 
 def test_campaign_anchor_and_census_reject_identity_substitution() -> None:
-    mutated = [
-        json.loads(line)
-        for line in (Path(__file__).parents[3] / ".beads" / "issues.jsonl").read_text().splitlines()
-        if line
-    ]
+    revision, path = verify_bead_graph.CAMPAIGN_SOURCE_REF.split(":", 1)
+    mutated = verify_bead_graph._parse_jsonl_bytes(
+        verify_bead_graph._git_blob(revision, path), source=verify_bead_graph.CAMPAIGN_SOURCE_REF
+    )
     member = next(
         issue
         for issue in mutated

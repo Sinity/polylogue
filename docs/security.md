@@ -180,7 +180,7 @@ been pasted into the original conversation, unexamined. Two chokepoints now
 call `scan_text_for_secret_candidates`/`scan_path_for_secret_candidates`
 directly, reusing the same never-log-the-literal invariant:
 
-- **Staged-content pre-commit gate** (`.beads-hooks/pre-commit`, via
+- **Staged-content pre-commit gate** (`.githooks/pre-commit`, via
   `polylogue/security/precommit_scan.py`):
   scans the *staged (index) blob* of every added/modified path — any file
   type, not just `*.py` — and prints a per-file, no-literal warning summary.

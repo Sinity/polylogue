@@ -308,7 +308,6 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
     env = _build_env()
     highlighter = PygmentsHighlighter()
     source_to_page = _source_to_page_map(config.pages)
-    page_paths = {page.path for page in config.pages}
 
     try:
         if output_dir.exists():
@@ -355,14 +354,9 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
             "current_path": page.path,
             "content": content_html,
             "site_root": _href_between_pages(page.path, "/index.html"),
-            "body_class": "page-home"
-            if page.template == "home.html"
-            else "page-board"
-            if page.template == "beads.html"
-            else "page-doc",
+            "body_class": "page-home" if page.template == "home.html" else "page-doc",
             "get_started_href": _href_between_pages(page.path, "/docs/getting-started/"),
             "docs_href": _href_between_pages(page.path, "/docs/"),
-            "board_href": _href_between_pages(page.path, "/beads/"),
             "demos_href": _href_between_pages(page.path, "/demos/"),
             "updated_at": "",
             **data,
@@ -377,12 +371,6 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
         template = env.get_template(page.template)
         html: str = template.render(**template_data)
         _write_page_file(out_path, html, page_path=page.path)
-
-    issues_source = ROOT / ".beads" / "issues.jsonl"
-    board_dir = output_dir / "beads"
-    if issues_source.is_file() and "/beads/" in page_paths:
-        board_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(issues_source, board_dir / "issues.jsonl")
 
     return output_dir
 

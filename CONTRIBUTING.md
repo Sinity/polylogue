@@ -248,11 +248,10 @@ The repository should stay aligned with the workflow above:
 
 ## Git Hooks
 
-The devshell installs git hooks automatically. It anchors `core.hooksPath` at
-`.beads-hooks` in the absolute checkout selected through Git's shared common
-directory, so linked worktrees cannot retain a branch-point relative hook path.
-The Beads composite hooks chain the ordinary Polylogue gates below and then run
-the matching `bd hooks run ...` integration.
+The devshell installs product Git hooks automatically. It anchors
+`core.hooksPath` at `.githooks` in the absolute checkout selected through Git's
+shared common directory, so linked worktrees cannot retain a branch-point
+relative hook path. Beads task state is independent of Git hooks and branches.
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
   Also runs a worktree-escape detector (#1211): when committing from a
@@ -262,11 +261,8 @@ the matching `bd hooks run ...` integration.
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
-- **prepare-commit-msg / post-checkout / post-merge**: Beads integration hooks
-  when `.beads-hooks` is active.
 - **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
-  surfaces, and fast manifest checks), followed by the Beads pre-push hook when
-  `.beads-hooks` is active.
+  surfaces, and fast manifest checks).
 
 The pre-push hook is an early failure gate. The PR baseline is the
 `devtools verify` workflow below.
