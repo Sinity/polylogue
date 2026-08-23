@@ -3767,6 +3767,10 @@ def test_run_receipt_uses_capped_pytest_command_concurrency() -> None:
         # bootstrap lane is full-suite-shaped by label alone.
         ("pytest native parallel (full)", False),
         ("pytest native serial (full)", False),
+        # ``--all`` executes the complete corpus even when the testmon graph
+        # is valid; unlike affected ``(full)`` mode, it cannot be narrow.
+        ("pytest native parallel (all)", True),
+        ("pytest native serial (all)", True),
         ("pytest native parallel (bootstrap)", True),
         ("pytest native serial (bootstrap)", True),
     ],
