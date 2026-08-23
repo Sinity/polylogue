@@ -279,6 +279,12 @@ wait, and result commands.
 Live copied-profile proof runs only through the declared `live_provider_proof`
 AgentCTL operation. It must not create an alternative Polylogue daemon
 lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher.
+Provision its fixed profile first with the declared
+`live_provider_profile_provision` operation. That operation has no arguments:
+it copies `$HOME/.config/google-chrome`'s `Local State` and `Default` into the
+private `/realm/state/polylogue/live-provider-proof-profile` destination,
+excluding Chrome singleton locks and rejecting symlinks or copies over 20,000
+files or 1 GB. It never launches Chrome.
 
 ## Current residual map for #1824 / #1847
 

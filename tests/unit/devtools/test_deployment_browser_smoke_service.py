@@ -38,6 +38,7 @@ def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
 
     assert operation["exec"] == ["python", "-m", "devtools.live_provider_proof_service", "--json"]
     assert operation["cache"] == "none"
+    assert operation["timeout_seconds"] == 180
     assert operation["service"] == {
         "readiness": "project-command",
         "lifetime": "job",
@@ -48,6 +49,24 @@ def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
     }
     assert "parameters" not in operation
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
+
+
+def test_declared_profile_provisioning_has_no_browser_or_caller_arguments() -> None:
+    descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
+    operation = descriptor["operations"]["live_provider_profile_provision"]
+
+    assert operation == {
+        "description": "Provision the fixed copied Chrome profile for the live-provider proof",
+        "exec": ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"],
+        "pool": "interactive",
+        "result": "json",
+        "cache": "none",
+        "timeout_seconds": 120,
+        "exclusive_keys": ["polylogue:live-provider-proof"],
+        "scratch": "nvme",
+        "service": {"readiness": "project-command", "lifetime": "job"},
+    }
+    assert all(spec.module != "devtools.live_provider_profile_provision_service" for spec in COMMAND_SPECS)
 
 
 def test_private_live_provider_module_imports_without_launching_chrome() -> None:

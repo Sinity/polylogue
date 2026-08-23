@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from devtools.sinnixd_service_context import terminate_process_group
+from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -782,6 +782,9 @@ def _browser_executable_resolution(path: str, executable: str | None) -> dict[st
 
 
 def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
+    # This is the Chrome spawn boundary. Do not rely on a higher-level wrapper:
+    # direct imports must not turn forged environment values into a launcher.
+    require_declared_service_context("deployment_browser_smoke")
     process = subprocess.Popen(
         command,
         env=_command_env(path),

@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from threading import Thread
 from typing import Any
@@ -24,6 +25,8 @@ _CDP_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_CDP_PORT"
 _RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
 _CDP_PORT_RANGE = (49056, 49119)
 _RECEIVER_PORT_RANGE = (49120, 49183)
+_NODE_PROOF_TIMEOUT_S = 120
+_MAX_ERROR_MESSAGE = 512
 
 
 def _leased_port(name: str, bounds: tuple[int, int]) -> int:
@@ -68,7 +71,15 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
             start_new_session=True,
         )
         assert process is not None
-        stdout, stderr = process.communicate(timeout=180)
+        try:
+            stdout, stderr = process.communicate(timeout=_NODE_PROOF_TIMEOUT_S)
+        except subprocess.TimeoutExpired as error:
+            terminate_process_group(process)
+            with suppress(subprocess.TimeoutExpired):
+                process.communicate(timeout=2)
+            raise subprocess.TimeoutExpired(
+                ["node", "scripts/live_provider_proof.mjs"], _NODE_PROOF_TIMEOUT_S
+            ) from error
         if process.returncode != 0:
             raise RuntimeError((stderr or stdout or "live provider proof failed")[:512])
         result = json.loads(stdout)
@@ -93,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         payload: dict[str, Any] = run_proof()
-    except (OSError, ValueError, RuntimeError, KeyError, json.JSONDecodeError) as error:
-        payload = {"ok": False, "error": str(error)[:512]}
+    except (OSError, ValueError, RuntimeError, KeyError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        payload = {"ok": False, "error": {"type": type(error).__name__, "message": str(error)[:_MAX_ERROR_MESSAGE]}}
     print(json.dumps(payload, sort_keys=True))
     return 0 if payload.get("ok") is True else 1
 

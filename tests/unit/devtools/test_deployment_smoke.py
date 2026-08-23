@@ -524,6 +524,31 @@ def test_deployment_smoke_browser_render_probe_success(monkeypatch: pytest.Monke
     assert probe.error is None
 
 
+def test_browser_launch_boundary_rejects_forged_environment_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import sinnixd_service_context
+
+    monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
+    monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
+    monkeypatch.setenv("SINNIXD_OPERATION", "deployment_browser_smoke")
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/user.slice/user-1000.slice/user@1000.service/app.slice/shell.scope\n", encoding="utf-8")
+    monkeypatch.setattr(sinnixd_service_context, "_CGROUP_PATH", cgroup)
+    spawned = False
+
+    def fail_if_spawned(*_args: object, **_kwargs: object) -> object:
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("Chrome must not spawn outside the declared cgroup")
+
+    monkeypatch.setattr(subprocess, "Popen", fail_if_spawned)
+
+    with pytest.raises(ValueError, match="matching transient unit"):
+        deployment_smoke._run_browser_command(["google-chrome"], path="/bin", timeout_s=1)
+    assert spawned is False
+
+
 def test_deployment_smoke_resolves_browser_from_candidate_path(tmp_path: Path) -> None:
     chrome = tmp_path / "chromium"
     chrome.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")

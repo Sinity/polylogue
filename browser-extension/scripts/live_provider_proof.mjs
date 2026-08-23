@@ -16,6 +16,9 @@ const PROVIDERS = {
 const _CDP_PORT_RANGE = [49056, 49119];
 const _RECEIVER_PORT_RANGE = [49120, 49183];
 const _PROFILE_DIR = "/realm/state/polylogue/live-provider-proof-profile";
+const _WORKFLOW_TIMEOUT_MS = 90_000;
+const _STARTUP_TIMEOUT_MS = 30_000;
+const _INTERACTIVE_WAIT_MS = 15_000;
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -44,12 +47,13 @@ function requireExpectedServiceContext() {
   if (!cgroup.includes(`/agent.slice/${unit}`)) {
     throw new Error("live provider proof is not inside its matching Sinnixd transient unit");
   }
-  const unitEnvironment = spawnSync(
+  const unitExecStart = spawnSync(
     "systemctl",
-    ["--user", "show", unit, "--property=Environment", "--value"],
+    ["--user", "show", unit, "--property=ExecStart", "--value"],
     { encoding: "utf8", timeout: 2000 },
   );
-  if (unitEnvironment.status !== 0 || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => unitEnvironment.stdout.split(/\s+/).includes(`${name}=${process.env[name]}`))) {
+  const childCommand = unitExecStart.stdout.slice(unitExecStart.stdout.indexOf("/env -i") + "/env -i".length);
+  if (unitExecStart.status !== 0 || !unitExecStart.stdout.includes("/env -i") || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => childCommand.includes(`${name}=${process.env[name]}`))) {
     throw new Error("live provider proof transient unit does not match the declared operation");
   }
 }
@@ -75,8 +79,9 @@ function fixedInputs() {
     receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,
     receiverToken: requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"),
     providers: ["chatgpt", "claude"],
-    timeoutMs: 120000,
-    interactiveWaitMs: 45000,
+    timeoutMs: _WORKFLOW_TIMEOUT_MS,
+    startupTimeoutMs: _STARTUP_TIMEOUT_MS,
+    interactiveWaitMs: _INTERACTIVE_WAIT_MS,
   };
 }
 
@@ -149,6 +154,13 @@ function assertCopiedProfile(profileDir) {
     throw new Error("copied profile must exclude Chrome singleton lock files");
   }
   return resolved;
+}
+
+function launchFixedChrome(chromeBinary, chromeArgs) {
+  // The spawn boundary carries its own guard so no internal caller can turn
+  // forged environment variables into a Chrome launch.
+  requireExpectedServiceContext();
+  return spawn(chromeBinary, chromeArgs, { detached: true, stdio: "ignore" });
 }
 
 function connectCdp(webSocketDebuggerUrl) {
@@ -256,7 +268,13 @@ function providerSummary(provider, payload) {
 async function runLiveProviderProof() {
   requireExpectedServiceContext();
   installShutdownCleanup();
-  const { chromeBinary, cdpPort, extensionRoot, outputPath, profileDir, receiverBaseUrl, receiverToken, providers, timeoutMs, interactiveWaitMs } = fixedInputs();
+  const { chromeBinary, cdpPort, extensionRoot, outputPath, profileDir, receiverBaseUrl, receiverToken, providers, timeoutMs, startupTimeoutMs, interactiveWaitMs } = fixedInputs();
+  const deadline = Date.now() + timeoutMs;
+  const remaining = (phase) => {
+    const budget = deadline - Date.now();
+    if (budget <= 0) throw new Error(`live provider proof timed out during ${phase}`);
+    return budget;
+  };
   const profile = assertCopiedProfile(profileDir);
   const selected = providers.map((name) => {
     const provider = PROVIDERS[name];
@@ -264,7 +282,7 @@ async function runLiveProviderProof() {
     return provider;
   });
   const manifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
-  const chrome = spawn(chromeBinary, [
+  const chrome = launchFixedChrome(chromeBinary, [
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${cdpPort}`,
     "--no-first-run", "--disable-default-apps", "--no-default-browser-check", "--enable-unsafe-extension-debugging",
@@ -275,14 +293,15 @@ async function runLiveProviderProof() {
   let browserClient;
   let workerClient;
   try {
-    const version = await waitJson(`http://127.0.0.1:${cdpPort}/json/version`, timeoutMs);
+    const version = await waitJson(`http://127.0.0.1:${cdpPort}/json/version`, Math.min(startupTimeoutMs, remaining("Chrome startup")));
     browserClient = await connectCdp(version.webSocketDebuggerUrl);
-    const worker = await waitForExtensionWorker(cdpPort, manifest.name, timeoutMs);
+    const worker = await waitForExtensionWorker(cdpPort, manifest.name, Math.min(startupTimeoutMs, remaining("extension startup")));
     workerClient = worker.client;
     await configureReceiver(workerClient, receiverBaseUrl.replace(/\/+$/, ""), receiverToken);
     for (const provider of selected) await browserClient.call("Target.createTarget", { url: provider.url });
-    if (interactiveWaitMs > 0) await sleep(interactiveWaitMs);
-    const summary = Object.fromEntries(await Promise.all(selected.map(async (provider) => [provider.host, providerSummary(provider, await captureProvider(workerClient, provider, timeoutMs))])));
+    if (interactiveWaitMs > 0) await sleep(Math.min(interactiveWaitMs, remaining("interactive wait")));
+    const captureTimeoutMs = remaining("provider capture");
+    const summary = Object.fromEntries(await Promise.all(selected.map(async (provider) => [provider.host, providerSummary(provider, await captureProvider(workerClient, provider, captureTimeoutMs))])));
     const result = { ok: Object.values(summary).every((item) => item.ok === true), providers: summary, privacy_posture: "copied-profile output redacts URLs and session ids and omits transcript text" };
     writeFileSync(outputPath, `${JSON.stringify(result)}\n`, "utf8");
     return result;

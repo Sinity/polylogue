@@ -40,12 +40,13 @@ function requireExpectedServiceContext() {
   if (!cgroup.includes(`/agent.slice/${unit}`)) {
     throw new Error("provider capture is not inside its matching Sinnixd transient unit");
   }
-  const unitEnvironment = spawnSync(
+  const unitExecStart = spawnSync(
     "systemctl",
-    ["--user", "show", unit, "--property=Environment", "--value"],
+    ["--user", "show", unit, "--property=ExecStart", "--value"],
     { encoding: "utf8", timeout: 2000 },
   );
-  if (unitEnvironment.status !== 0 || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => unitEnvironment.stdout.split(/\s+/).includes(`${name}=${process.env[name]}`))) {
+  const childCommand = unitExecStart.stdout.slice(unitExecStart.stdout.indexOf("/env -i") + "/env -i".length);
+  if (unitExecStart.status !== 0 || !unitExecStart.stdout.includes("/env -i") || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => childCommand.includes(`${name}=${process.env[name]}`))) {
     throw new Error("provider capture transient unit does not match the declared operation");
   }
 }
@@ -100,6 +101,13 @@ function installShutdownCleanup() {
         .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
     });
   }
+}
+
+function launchFixedChrome(chromeBinary, chromeArgs) {
+  // Keep the launch boundary guarded even when this helper is imported by the
+  // private Python service rather than executed through its wrapper.
+  requireExpectedServiceContext();
+  return spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 async function waitJson(url, timeout = timeoutMs) {
@@ -906,7 +914,7 @@ export async function runProviderCapture() {
     "about:blank",
   ];
   if (headless) chromeArgs.splice(2, 0, "--headless=new");
-  const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const chrome = launchFixedChrome(chromeBinary, chromeArgs);
   activeChrome = chrome;
   let stdout = "";
   let stderr = "";

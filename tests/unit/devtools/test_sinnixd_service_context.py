@@ -30,7 +30,16 @@ def test_service_context_requires_matching_unit_and_declared_operation() -> None
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: f"0::/user.slice/user-1000.slice/user@1000.service/agent.slice/{unit}\n",
-            unit_environment_reader=lambda observed: {**environment, "observed_unit": observed},
+            unit_exec_start_reader=lambda observed: (
+                "{ path=/nix/store/capture/bin/sinnix-capture ; "
+                "argv[]=/nix/store/capture/bin/sinnix-capture --log-path /private/job.log -- "
+                "/run/current-system/sw/bin/env -i HOME=/home/sinity "
+                f"SINNIXD_JOB_ID={_JOB_ID} SINNIXD_OPERATION=dev_loop_proof "
+                "SINNIXD_PROJECT_ID=polylogue nix develop --accept-flake-config --command "
+                "python -m devtools.dev_loop_service --json ; status=0/0 ; }"
+                if observed == unit
+                else ""
+            ),
         )
         == unit
     )
@@ -44,7 +53,7 @@ def test_forged_environment_without_matching_cgroup_fails_before_launch() -> Non
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: "0::/user.slice/user-1000.slice/user@1000.service/app.slice/shell.scope\n",
-            unit_environment_reader=lambda _unit: environment,
+            unit_exec_start_reader=lambda _unit: "",
         )
 
 
@@ -57,7 +66,10 @@ def test_matching_cgroup_with_wrong_unit_operation_fails() -> None:
             "dev_loop_proof",
             environment=environment,
             cgroup_reader=lambda: f"0::/agent.slice/{unit}\n",
-            unit_environment_reader=lambda _unit: {**environment, "SINNIXD_OPERATION": "other"},
+            unit_exec_start_reader=lambda _unit: (
+                "/run/current-system/sw/bin/env -i "
+                f"SINNIXD_JOB_ID={_JOB_ID} SINNIXD_PROJECT_ID=polylogue SINNIXD_OPERATION=other"
+            ),
         )
 
 

@@ -104,7 +104,7 @@ exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
 pool = "interactive"
 result = "json"
 cache = "none"
-timeout_seconds = 240
+timeout_seconds = 180
 exclusive_keys = ["polylogue:live-provider-proof"]
 scratch = "nvme"
 
@@ -119,6 +119,20 @@ range = [49056, 49119]
 [operations.live_provider_proof.service.ports.browser_capture]
 environment = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
 range = [49120, 49183]
+
+[operations.live_provider_profile_provision]
+description = "Provision the fixed copied Chrome profile for the live-provider proof"
+exec = ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 120
+exclusive_keys = ["polylogue:live-provider-proof"]
+scratch = "nvme"
+
+[operations.live_provider_profile_provision.service]
+readiness = "project-command"
+lifetime = "job"
 
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
