@@ -103,6 +103,28 @@ def test_status_pins_payload_and_binding_to_one_archive_generation(disposable_ar
     }
 
 
+def test_production_entrypoint_rejects_a_stale_archive_generation(
+    adapter_command: tuple[str, ...], disposable_archive: Path
+) -> None:
+    request = _request()
+    request["expected_source_binding"] = {
+        "source_ref": adapter.SOURCE_REF,
+        "generation": "stale-generation",
+        "root_digest": "sha256:" + "0" * 64,
+    }
+
+    response = _invoke_adapter(adapter_command, disposable_archive, request)
+
+    assert response["ok"] is False
+    assert response["source_bindings"] == []
+    assert response["error"] == {
+        "schema": adapter.SCHEMA,
+        "code": "AUTHORITY_MISMATCH",
+        "message": "expected_source_binding does not match the active archive generation",
+        "details": {"kind": "inline", "value": {}},
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [
