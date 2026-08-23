@@ -433,22 +433,22 @@ def test_drain_convergence_debt_retries_global_messages_fts_surface(
             "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
         )
         conn.commit()
-    repairs: list[tuple[Path, str]] = []
+    repairs: list[tuple[Path, tuple[str, ...]]] = []
 
-    def fake_repair_fts_surface(path: Path, surface: str) -> bool:
-        repairs.append((path, surface))
-        return True
+    def fake_owner_run(self: Any, *, reason: object, surfaces: tuple[str, ...]) -> object:
+        repairs.append((self._db_path, surfaces))
+        return SimpleNamespace(ready=True, deferred=False)
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
-        fake_repair_fts_surface,
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+        fake_owner_run,
     )
 
     retried = daemon_cli._drain_convergence_debt_once(db)
     debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
-    assert repairs == [(db, "messages_fts")]
+    assert repairs == [(db, ("messages_fts",))]
     assert debt_after == []
 
 
@@ -469,22 +469,22 @@ def test_drain_convergence_debt_retries_optional_fts_surface(
         subject_id="session_work_events_fts",
         error="optional FTS startup repair failed",
     )
-    repairs: list[tuple[Path, str]] = []
+    repairs: list[tuple[Path, tuple[str, ...]]] = []
 
-    def fake_repair_fts_surface(path: Path, surface: str) -> bool:
-        repairs.append((path, surface))
-        return True
+    def fake_owner_run(self: Any, *, reason: object, surfaces: tuple[str, ...]) -> object:
+        repairs.append((self._db_path, surfaces))
+        return SimpleNamespace(ready=True, deferred=False)
 
     monkeypatch.setattr(
-        "polylogue.daemon.convergence_stages.repair_fts_surface_result",
-        fake_repair_fts_surface,
+        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+        fake_owner_run,
     )
 
     retried = daemon_cli._drain_convergence_debt_once(db)
     debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
-    assert repairs == [(db, "session_work_events_fts")]
+    assert repairs == [(db, ("session_work_events_fts",))]
     assert debt_after == []
 
 
@@ -1415,7 +1415,7 @@ def test_periodic_raw_materialization_convergence_starts_without_catch_up(
     calls: list[str] = []
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("drain")
+        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
@@ -1430,7 +1430,7 @@ def test_periodic_raw_materialization_convergence_starts_without_catch_up(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain"]
+    assert calls == ["drain", "fts"]
 
 
 def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
@@ -1442,7 +1442,7 @@ def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
     calls: list[str] = []
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("drain")
+        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
         raise asyncio.CancelledError
 
     async def exercise() -> None:
@@ -1463,7 +1463,7 @@ def test_periodic_raw_materialization_convergence_waits_for_watcher_catch_up(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain"]
+    assert calls == ["drain", "fts"]
 
 
 def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
@@ -2023,7 +2023,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
     drained = asyncio.Event()
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("drain")
+        calls.append("fts" if _actor == "maintenance.fts_convergence" else "drain")
         drained.set()
         return 0
 
@@ -2047,7 +2047,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
 
     asyncio.run(exercise())
 
-    assert calls == ["drain"]
+    assert calls == ["drain", "fts"]
 
 
 def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -> None:
@@ -4386,8 +4386,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         def stop(self) -> None:
             events.append("stop")
 
-    def fake_fts_startup() -> None:
+    def fake_fts_owner_run(self: object, *, reason: object, surfaces: tuple[str, ...] = ()) -> object:
         events.append("fts")
+        return SimpleNamespace(ready=True, exact=True, repaired_surfaces=0)
 
     def fake_embedding_lifecycle_startup(_archive_root_path: Path) -> Path:
         events.append("embedding-lifecycle")
@@ -4446,7 +4447,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(
             patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", fake_embedding_lifecycle_startup)
         )
-        stack.enter_context(patch.object(daemon_cli, "_ensure_fts_startup_readiness_sync", fake_fts_startup))
+        stack.enter_context(
+            patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync", fake_fts_owner_run)
+        )
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
@@ -4541,7 +4544,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert lifecycle_phases[-1] == "shutdown_started"
     assert "shutdown_complete" not in lifecycle_phases
     lifecycle_components = {payload.get("component") for payload in lifecycle_payloads}
-    assert {"embedding_lifecycle_startup", "fts_startup", "lineage_startup", "converger", "watcher"}.issubset(
+    assert {"embedding_lifecycle_startup", "fts", "lineage_startup", "converger", "watcher"}.issubset(
         lifecycle_components
     )
     assert len(watcher_coordinators) == 1
