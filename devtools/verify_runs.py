@@ -29,7 +29,11 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
-from devtools.agentctl_verification_receipt import agentctl_verification_receipt
+from devtools.agentctl_verification_receipt import (
+    SUPPORTED_OPERATIONS,
+    agentctl_verification_operation,
+    agentctl_verification_receipt,
+)
 from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from devtools.pytest_supervisor import force_rmtree
 from devtools.testmon_bootstrap import canonical_test_nodeid
@@ -96,6 +100,87 @@ PYTEST_CGROUP_OVERHEAD_FLOOR_KB = max(
 
 class PytestResourceError(RuntimeError):
     """Raised when the host cannot safely start a managed pytest run."""
+
+
+@dataclass(frozen=True)
+class AgentctlDeclaredJobBinding:
+    """Validated outer lifecycle and exact-checkout authority for verification."""
+
+    operation: str
+    job_id: str
+    checkout_id: str
+    checkout_head: str
+
+
+def agentctl_declared_job_binding(
+    root: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    cgroup_text: str | None = None,
+    current_head: str | None = None,
+    git_common_dir: Path | None = None,
+) -> AgentctlDeclaredJobBinding | None:
+    """Prove that this process is the exact checkout-bound declared job."""
+    values = os.environ if env is None else env
+    operation = agentctl_verification_operation(values)
+    if operation not in SUPPORTED_OPERATIONS or values.get("SINNIXD_PROJECT_ID") != "polylogue":
+        return None
+
+    job_id = values.get("SINNIXD_JOB_ID", "")
+    correlation_id = values.get("SINNIXD_CORRELATION_ID", "")
+    try:
+        if str(uuid.UUID(job_id)) != job_id or str(uuid.UUID(correlation_id)) != correlation_id:
+            return None
+    except (ValueError, AttributeError):
+        return None
+
+    declared_head = values.get("SINNIXD_CHECKOUT_HEAD", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", declared_head):
+        return None
+    observed_head = current_head if current_head is not None else git_head(root)
+    if observed_head != declared_head:
+        return None
+
+    resolved_root = root.resolve()
+    common_dir = git_common_dir
+    if common_dir is None:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                cwd=resolved_root,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            common_dir = Path(result.stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            return None
+    common_dir = common_dir.resolve()
+    project_root = common_dir.parent if common_dir.name == ".git" else None
+    expected_checkout_id = (
+        "default"
+        if project_root == resolved_root
+        else "worktree-" + hashlib.sha256(str(resolved_root).encode()).hexdigest()[:16]
+    )
+    checkout_id = values.get("SINNIXD_CHECKOUT_ID", "")
+    if checkout_id != expected_checkout_id:
+        return None
+
+    if cgroup_text is None:
+        try:
+            cgroup_text = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            return None
+    unit = f"sinnixd-job-{job_id}.service"
+    if not any(unit == component for line in cgroup_text.splitlines() for component in line.split("/")):
+        return None
+    return AgentctlDeclaredJobBinding(
+        operation=operation,
+        job_id=job_id,
+        checkout_id=checkout_id,
+        checkout_head=declared_head,
+    )
 
 
 def _trailing_history_record(descriptor: int, *, end: int) -> tuple[int, bytes]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import itertools
 import json
 import os
@@ -60,6 +61,7 @@ from devtools.verify import (
     main,
 )
 from devtools.verify_runs import (
+    AgentctlDeclaredJobBinding,
     CheckoutMutationMonitor,
     CheckoutMutationObservation,
     PytestResourceError,
@@ -68,6 +70,7 @@ from devtools.verify_runs import (
     VerifyRun,
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
+    agentctl_declared_job_binding,
     aggregate_native_testmon_run,
     aggregate_pytest_statistics,
     append_verify_history,
@@ -4687,6 +4690,186 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
     assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
+
+
+def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp_path: Path) -> None:
+    root = (tmp_path / "worktree").resolve()
+    common_dir = (tmp_path / "project" / ".git").resolve()
+    head = "a" * 40
+    job_id = "11111111-1111-1111-1111-111111111111"
+    checkout_id = "worktree-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
+    environment = {
+        "SINNIXD_OPERATION": "verify_affected",
+        "SINNIXD_JOB_ID": job_id,
+        "SINNIXD_CORRELATION_ID": "22222222-2222-2222-2222-222222222222",
+        "SINNIXD_PROJECT_ID": "polylogue",
+        "SINNIXD_CHECKOUT_ID": checkout_id,
+        "SINNIXD_CHECKOUT_HEAD": head,
+    }
+    cgroup = f"0::/user.slice/agent.slice/sinnixd-job-{job_id}.service\n"
+
+    binding = agentctl_declared_job_binding(
+        root,
+        env=environment,
+        cgroup_text=cgroup,
+        current_head=head,
+        git_common_dir=common_dir,
+    )
+
+    assert binding == AgentctlDeclaredJobBinding(
+        operation="verify_affected",
+        job_id=job_id,
+        checkout_id=checkout_id,
+        checkout_head=head,
+    )
+    assert (
+        agentctl_declared_job_binding(
+            root,
+            env={"SINNIXD_OPERATION": "verify_affected"},
+            cgroup_text=cgroup,
+            current_head=head,
+            git_common_dir=common_dir,
+        )
+        is None
+    )
+    assert (
+        agentctl_declared_job_binding(
+            root,
+            env=environment,
+            cgroup_text="0::/user.slice/agent.slice/not-the-declared-job.service\n",
+            current_head=head,
+            git_common_dir=common_dir,
+        )
+        is None
+    )
+    assert (
+        agentctl_declared_job_binding(
+            root,
+            env={**environment, "SINNIXD_CHECKOUT_HEAD": "b" * 40},
+            cgroup_text=cgroup,
+            current_head=head,
+            git_common_dir=common_dir,
+        )
+        is None
+    )
+    assert (
+        agentctl_declared_job_binding(
+            root,
+            env={**environment, "SINNIXD_CHECKOUT_ID": "default"},
+            cgroup_text=cgroup,
+            current_head=head,
+            git_common_dir=common_dir,
+        )
+        is None
+    )
+
+
+def test_agentctl_descriptor_argv_is_part_of_lifecycle_free_proof() -> None:
+    binding = AgentctlDeclaredJobBinding(
+        operation="verify_quick",
+        job_id="11111111-1111-1111-1111-111111111111",
+        checkout_id="default",
+        checkout_head="a" * 40,
+    )
+    with patch("devtools.verify.agentctl_declared_job_binding", return_value=binding):
+        assert verify._agentctl_lifecycle_free_binding(["--quick"]) == binding
+        assert verify._agentctl_lifecycle_free_binding([]) is None
+        assert verify._agentctl_lifecycle_free_binding(["--quick", "--json"]) is None
+
+
+def test_declared_agentctl_pytest_bypasses_inner_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = AgentctlDeclaredJobBinding(
+        operation="verify_affected",
+        job_id="11111111-1111-1111-1111-111111111111",
+        checkout_id="default",
+        checkout_head="a" * 40,
+    )
+    previous = verify._ACTIVE_VERIFY_RUN
+    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_binding=binding))
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed\n", stderr="")
+    policy = SimpleNamespace(to_dict=lambda: {"workers": 1})
+    try:
+        with (
+            patch("devtools.verify._subprocess_env", return_value={}),
+            patch("devtools.verify._pytest_command_concurrency", return_value=1),
+            patch("devtools.verify.sweep_stale_managed_basetemps", return_value=[]),
+            patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, policy)),
+            patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=tmp_path / "cleaned"),
+            patch("devtools.verify._run_pytest_with_heartbeat", side_effect=AssertionError("inner lifecycle used")),
+            patch("devtools.verify.subprocess.run", return_value=completed) as direct_run,
+            patch("devtools.verify._read_pytest_report", return_value=None),
+            patch("devtools.verify._read_json_artifact", return_value=None),
+            patch("devtools.verify._persist_pytest_output"),
+            patch("devtools.verify._pytest_workload_receipt", return_value={}),
+        ):
+            rc, _elapsed, metadata = verify._run_step("pytest native parallel (affected)", ["pytest"])
+    finally:
+        verify._ACTIVE_VERIFY_RUN = previous
+
+    assert rc == 0
+    direct_run.assert_called_once()
+    assert "timeout" not in direct_run.call_args.kwargs
+    assert metadata["lifecycle_authority"] == "agentctl"
+    assert metadata["heartbeat_s"] is None
+    assert metadata["stall_timeout_s"] is None
+    assert metadata["resource_interval_s"] is None
+    assert metadata["containment_path"] is None
+
+
+def test_incomplete_agentctl_environment_retains_inner_lifecycle(tmp_path: Path) -> None:
+    previous = verify._ACTIVE_VERIFY_RUN
+    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_binding=None))
+    completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed\n", stderr="")
+    policy = SimpleNamespace(to_dict=lambda: {"workers": 1})
+    try:
+        with (
+            patch("devtools.verify._subprocess_env", return_value={}),
+            patch("devtools.verify._pytest_command_concurrency", return_value=1),
+            patch("devtools.verify.sweep_stale_managed_basetemps", return_value=[]),
+            patch("devtools.verify.apply_managed_pytest_runtime_policy", return_value=({}, policy)),
+            patch("devtools.verify.cleanup_managed_pytest_basetemp", return_value=tmp_path / "cleaned"),
+            patch("devtools.verify._run_pytest_with_heartbeat", return_value=completed) as supervised_run,
+            patch("devtools.verify._read_pytest_report", return_value=None),
+            patch("devtools.verify._read_json_artifact", return_value=None),
+            patch("devtools.verify._persist_pytest_output"),
+            patch("devtools.verify._pytest_workload_receipt", return_value={}),
+        ):
+            rc, _elapsed, metadata = verify._run_step("pytest native parallel (affected)", ["pytest"])
+    finally:
+        verify._ACTIVE_VERIFY_RUN = previous
+
+    assert rc == 0
+    supervised_run.assert_called_once()
+    assert "lifecycle_authority" not in metadata
+    assert metadata["heartbeat_s"] == verify._pytest_heartbeat_interval()
+    assert metadata["containment_path"] == str(PYTEST_CONTAINMENT_PATH)
+
+
+def test_declared_agentctl_quick_route_skips_snapshot_and_mutation_monitor() -> None:
+    binding = AgentctlDeclaredJobBinding(
+        operation="verify_quick",
+        job_id="11111111-1111-1111-1111-111111111111",
+        checkout_id="default",
+        checkout_head="a" * 40,
+    )
+    fingerprint = SimpleNamespace(polylogue_import_path=ROOT / "polylogue", as_dict=lambda: {})
+    with (
+        patch("devtools.verify._agentctl_lifecycle_free_binding", return_value=binding),
+        patch("devtools.verify._should_isolate", side_effect=AssertionError("snapshot decision used")),
+        patch("devtools.verify.CheckoutMutationMonitor", side_effect=AssertionError("mutation monitor used")),
+        patch("devtools.verify.assert_polylogue_matches_checkout", return_value=fingerprint),
+        patch("devtools.verify._run", return_value=(0, 0.01, {})),
+        patch("devtools.verify._git_head", return_value="a" * 40),
+        patch("devtools.verify.worktree_fingerprint", return_value="stable"),
+        patch("devtools.verify._save_history"),
+        patch("devtools.verify._stamp_head"),
+    ):
+        rc = main(["--quick"])
+
+    assert rc == 0
 
 
 def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_contract() -> None:
