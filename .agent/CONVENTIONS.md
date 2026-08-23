@@ -68,6 +68,14 @@ substep is a checkpoint, not a publishing trigger; split only at a genuine
 boundary (risk, reviewability, dependency, ownership, deployment, or failure
 isolation).
 
+## Deferred Scope at Closure
+
+When closing a Bead while any acceptance criterion, root cause, or repair scope
+remains deferred, create the successor Bead first and link it with a structured
+`related` or dependency edge in the same batch. The close reason must name that
+successor. Review this as a judgment call at close time; do not add a lint or
+gate that pattern-matches close-reason prose.
+
 ## Scratch, Demos, Git Boundary
 
 `.agent/scratch/` is gitignored thinking space (README + research notes);
