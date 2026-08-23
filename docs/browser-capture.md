@@ -52,14 +52,15 @@ or extension debugging, keep these paths distinct:
   local control plane provides one;
 - the operator's live browser/cookies are used only after explicit approval and
   should be copied into an ignored local profile, never into CI or cloud agents;
-- `devtools workspace deployment-smoke --browser` launches a fresh headless
-  Chrome/Chromium profile and reports the executable it resolved.
+- the fixed `deployment_browser_smoke` AgentCTL operation launches a fresh
+  headless Chrome/Chromium profile inside its transient service cgroup.
 
 The deployment fallback is useful for proving that the deployed daemon can
 serve the web root to a real browser engine:
 
 ```bash
-devtools workspace deployment-smoke --browser --browser-executable "$(command -v google-chrome)"
+agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
+agentctl job result <job-id>
 ```
 
 That smoke does not certify private MCP browser launch, extension ids,
@@ -275,8 +276,9 @@ deterministic provider capture, then reports archive and API convergence through
 the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
 wait, and result commands.
 
-Live copied-profile investigation remains an operator-local workflow. It must
-not create an alternative Polylogue daemon lifecycle or ad hoc receiver lease.
+Live copied-profile investigation remains private product semantics pending a
+typed AgentCTL operation. It must not create an alternative Polylogue daemon
+lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher.
 
 ## Current residual map for #1824 / #1847
 

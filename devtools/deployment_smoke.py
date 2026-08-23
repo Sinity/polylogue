@@ -47,6 +47,13 @@ REQUIRED_RECEIVER_ROUTES = ("/v1/status",)
 ROUTE_MIN_TIMEOUT_S = {
     "/api/facets": 15.0,
 }
+BROWSER_EXECUTABLE_CANDIDATES = (
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+)
 COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("query-then-connector", "polylogue find id:abc t", ("then",)),
     ("query-action", "polylogue find id:abc then s", ("select",)),
@@ -60,13 +67,6 @@ COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "polylogue find id:abc then read --view messages --format ",
         ("json", "ndjson", "text"),
     ),
-)
-BROWSER_EXECUTABLE_CANDIDATES = (
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-    "chrome",
 )
 BROWSER_CAPTURE_PROVIDER_ORIGINS = {
     "chatgpt": "chatgpt-export",
@@ -805,6 +805,7 @@ def _probe_browser_render(
     path: str,
     timeout_s: float,
     executable: str | None,
+    debugging_port: int,
 ) -> BrowserRenderProbe:
     resolved = _resolve_browser_executable(path, executable)
     if resolved is None:
@@ -828,7 +829,7 @@ def _probe_browser_render(
             "--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication",
             "--no-first-run",
             "--no-default-browser-check",
-            "--remote-debugging-port=0",
+            f"--remote-debugging-port={debugging_port}",
             f"--user-data-dir={profile_dir}",
             f"--screenshot={screenshot_path}",
             "--window-size=1440,1000",
@@ -846,21 +847,6 @@ def _probe_browser_render(
             stdout = _timeout_output_text(exc.stdout)
             dom_bytes = len(stdout.encode())
             screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
-            if dom_bytes > 0 and screenshot_bytes:
-                # Chrome can leave background services alive after the
-                # one-shot --dump-dom/--screenshot artifacts are complete
-                # (observed with Chrome 149 and GCM registration retries).
-                # The smoke contract is first-paint evidence, not browser
-                # process lifetime, so artifact completion is a clean pass.
-                return BrowserRenderProbe(
-                    url=url,
-                    executable=resolved,
-                    exit_code=None,
-                    ok=True,
-                    dom_bytes=dom_bytes,
-                    screenshot_bytes=screenshot_bytes,
-                    stderr_tail=stderr[-2000:],
-                )
             return BrowserRenderProbe(
                 url=url,
                 executable=resolved,
@@ -890,8 +876,6 @@ def _diagnose(
     commands: list[CommandProbe],
     routes: list[RouteProbe],
     repo_head: str | None,
-    browser_render: BrowserRenderProbe | None,
-    browser_executable_resolution: dict[str, Any],
     browser_capture_archive: BrowserCaptureArchiveProbe,
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe,
 ) -> dict[str, Any]:
@@ -927,14 +911,6 @@ def _diagnose(
     if root_route is not None and not root_route.ok:
         likely_causes.append("web-shell root document is unavailable or exceeds the deployed smoke timeout")
         next_actions.append("verify the daemon can serve the workbench root before debugging browser-side rendering")
-    if browser_render is not None and not browser_render.ok:
-        likely_causes.append("web-shell browser render does not reach DOM/screenshot within the deployed smoke budget")
-        if browser_executable_resolution.get("resolved") is None:
-            next_actions.append(
-                "pass --browser-executable with an explicit Chrome/Chromium path for the opt-in browser smoke"
-            )
-        else:
-            next_actions.append("profile first-paint bootstrap and defer slow status/facet/attachment loaders")
     if browser_capture_archive.error == "spooled_newer_than_raw_rows":
         likely_causes.append("browser-capture raw archive rows lag behind newer spooled artifacts")
         next_actions.append(
@@ -984,8 +960,6 @@ def _diagnose(
         "polylogue_commit": deployed_commit,
         "polylogued_version_ok": polylogued.ok if polylogued is not None else None,
         "browser_capture_state": browser_capture_state,
-        "browser_executable_resolution": browser_executable_resolution,
-        "browser_render": asdict(browser_render) if browser_render is not None else None,
         "browser_capture_archive": asdict(browser_capture_archive),
         "browser_capture_receiver_archive_state": asdict(browser_capture_receiver_archive_state),
         "likely_causes": likely_causes,
@@ -1062,9 +1036,6 @@ def build_report(
     receiver_base_url: str,
     archive_root: Path,
     timeout_s: float,
-    browser: bool = False,
-    browser_executable: str | None = None,
-    browser_timeout_s: float | None = None,
 ) -> DeploymentSmokeReport:
     commands = [
         _probe_command(["polylogue", "--version"], path=path, timeout_s=timeout_s),
@@ -1092,17 +1063,6 @@ def build_report(
         for probe in completions
         if not probe.ok
     )
-    browser_render = None
-    browser_executable_resolution = _browser_executable_resolution(path, browser_executable)
-    if browser:
-        browser_render = _probe_browser_render(
-            f"{daemon_base_url.rstrip('/')}/",
-            path=path,
-            timeout_s=browser_timeout_s or timeout_s,
-            executable=browser_executable,
-        )
-        if not browser_render.ok:
-            failures.append(f"browser-render:{browser_render.error or browser_render.exit_code}")
     browser_capture_archive = _probe_browser_capture_archive(archive_root=archive_root)
     if not browser_capture_archive.ok:
         failures.append(f"browser-capture-archive:{browser_capture_archive.error or 'spooled_without_raw_rows'}")
@@ -1136,7 +1096,7 @@ def build_report(
         commands=commands,
         routes=routes,
         completions=completions,
-        browser_render=browser_render,
+        browser_render=None,
         browser_capture_archive=browser_capture_archive,
         browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
         runtime_evidence=runtime_evidence,
@@ -1144,8 +1104,6 @@ def build_report(
             commands,
             routes,
             repo_head,
-            browser_render,
-            browser_executable_resolution,
             browser_capture_archive,
             browser_capture_receiver_archive_state,
         ),
@@ -1197,27 +1155,6 @@ def _print_human(report: DeploymentSmokeReport) -> None:
         if completion_probe.missing:
             detail = f"missing={','.join(completion_probe.missing)} candidates={detail}"
         print(f"  {marker} {completion_probe.name}: {detail}")
-    browser_resolution = report.diagnostics.get("browser_executable_resolution")
-    if isinstance(browser_resolution, dict):
-        print("")
-        print("Browser executable:")
-        searched = ", ".join(str(item) for item in browser_resolution.get("candidates", []) if item)
-        marker = "ok" if browser_resolution.get("ok") else "not found"
-        print(
-            f"  {marker} requested={browser_resolution.get('requested') or ''} "
-            f"resolved={browser_resolution.get('resolved') or ''} searched={searched} "
-            f"error={browser_resolution.get('error') or ''}"
-        )
-    if report.browser_render is not None:
-        browser_probe = report.browser_render
-        marker = "ok" if browser_probe.ok else "FAIL"
-        print("")
-        print("Browser render:")
-        print(
-            f"  {marker} executable={browser_probe.executable or ''} exit={browser_probe.exit_code} "
-            f"dom_bytes={browser_probe.dom_bytes} screenshot_bytes={browser_probe.screenshot_bytes} "
-            f"error={browser_probe.error or ''} caveats={','.join(browser_probe.caveats)}"
-        )
     capture_probe = report.browser_capture_archive
     print("")
     print("Browser capture archive:")
@@ -1261,22 +1198,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Archive root used for local browser-capture/archive consistency probes.",
     )
     parser.add_argument("--timeout-s", type=float, default=5.0, help="Per-probe timeout in seconds.")
-    parser.add_argument(
-        "--browser",
-        action="store_true",
-        help="Also run an opt-in headless Chrome first-paint smoke against the web root.",
-    )
-    parser.add_argument(
-        "--browser-executable",
-        default=None,
-        help="Chrome executable for --browser; defaults to google-chrome/chrome on PATH.",
-    )
-    parser.add_argument(
-        "--browser-timeout-s",
-        type=float,
-        default=None,
-        help="Timeout for --browser; defaults to --timeout-s.",
-    )
     args = parser.parse_args(argv)
 
     report = build_report(
@@ -1285,9 +1206,6 @@ def main(argv: list[str] | None = None) -> int:
         receiver_base_url=str(args.receiver_url),
         archive_root=Path(args.archive_root),
         timeout_s=float(args.timeout_s),
-        browser=bool(args.browser),
-        browser_executable=str(args.browser_executable) if args.browser_executable else None,
-        browser_timeout_s=float(args.browser_timeout_s) if args.browser_timeout_s is not None else None,
     )
     if args.json:
         print(json.dumps(asdict(report), indent=2, sort_keys=True))

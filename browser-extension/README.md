@@ -106,8 +106,10 @@ The proof starts a temporary receiver, proves unauthenticated rejection, loads
 the unpacked extension into headless Chromium/Chrome, captures deterministic
 ChatGPT and Claude fixture pages, and verifies archive/API convergence without
 cookies or raw turn text in its bounded result. AgentCTL owns the process,
-ports, timeout, cancellation, and cleanup. Live copied-profile investigation is
-operator-local and does not create another Polylogue service lifecycle.
+ports, timeout, cancellation, and cleanup. The copied-profile product helper is
+private until a typed AgentCTL operation can receive a copied profile and
+credentials safely. It has no npm or devtools launcher and does not create
+another Polylogue service lifecycle.
 
 ## Mission control, pairing, and ambient status
 

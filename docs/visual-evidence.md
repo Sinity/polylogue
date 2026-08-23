@@ -24,8 +24,8 @@ Representative media has to be evidence, not decoration. Public evidence must
 point to commands that run against synthetic fixtures or an explicitly local
 operator profile and produce a named artifact: the DOM smoke lane below,
 `devtools verify scenario run reader-visual-smoke`,
-the declared `dev_loop_proof` AgentCTL operation, or
-`devtools workspace deployment-smoke --browser`. Screenshots, screencasts, and
+the declared `dev_loop_proof` or `deployment_browser_smoke` AgentCTL operation.
+Screenshots, screencasts, and
 store-listing images are useful only when they point back to one of those run
 artifacts; standalone mockups belong in design notes, not release evidence.
 

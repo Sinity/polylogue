@@ -80,6 +80,24 @@ range = [48864, 48927]
 environment = "POLYLOGUE_BROWSER_CDP_PORT"
 range = [48928, 48991]
 
+[operations.deployment_browser_smoke]
+description = "Run the fixed deployed-web browser-render smoke through AgentCTL"
+exec = ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 180
+exclusive_keys = ["polylogue:deployment-browser-smoke"]
+scratch = "nvme"
+
+[operations.deployment_browser_smoke.service]
+readiness = "project-command"
+lifetime = "job"
+
+[operations.deployment_browser_smoke.service.ports.browser_cdp]
+environment = "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT"
+range = [48992, 49055]
+
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
 owner = "polylogue-archive"

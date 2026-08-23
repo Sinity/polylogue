@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -30,18 +29,12 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
     }
     assert descriptor["operations"]["verify_all"]["timeout_seconds"] == 14400
     assert all(spec.module != "devtools.dev_loop_service" for spec in COMMAND_SPECS)
+    assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
-def _admitted_agentctl_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    checkout = Path(__file__).resolve().parents[3]
-    head = subprocess.run(
-        ["git", "-C", str(checkout), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
     monkeypatch.setenv("SINNIXD_OPERATION", "dev_loop_proof")
-    monkeypatch.setenv("SINNIXD_JOB_ID", "2f8a6075-6d19-4814-896e-caeca1e4ea56")
-    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "worktree-0123456789abcdef")
-    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", head)
     monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CDP_PORT", "48929")
@@ -51,7 +44,7 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _admitted_agentctl_environment(monkeypatch)
+    _fixed_service_context(monkeypatch)
     monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
     monkeypatch.setattr(dev_loop_service, "initialize_archive_tier_files", lambda **_kwargs: object())
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
@@ -92,26 +85,26 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
 @pytest.mark.parametrize(
     ("environment", "value", "message"),
     [
-        ("POLYLOGUE_API_PORT", None, "POLYLOGUE_API_PORT must be injected"),
-        ("POLYLOGUE_BROWSER_CAPTURE_PORT", "48801", "outside its descriptor-declared lease range"),
-        ("POLYLOGUE_BROWSER_CDP_PORT", "49000", "outside its descriptor-declared lease range"),
-        ("SINNIXD_OPERATION", "other", "requires the declared AgentCTL operation"),
+        ("POLYLOGUE_API_PORT", None, "POLYLOGUE_API_PORT must be present"),
+        ("POLYLOGUE_BROWSER_CAPTURE_PORT", "48801", "outside the fixed dev-loop service port range"),
+        ("POLYLOGUE_BROWSER_CDP_PORT", "49000", "outside the fixed dev-loop service port range"),
+        ("SINNIXD_OPERATION", "other", "rejects execution outside its fixed service context"),
     ],
 )
-def test_service_admission_rejects_wrong_or_missing_agentctl_contract(
+def test_service_context_guard_rejects_missing_or_wrong_shell_context(
     monkeypatch: pytest.MonkeyPatch,
     environment: str,
     value: str | None,
     message: str,
 ) -> None:
-    _admitted_agentctl_environment(monkeypatch)
+    _fixed_service_context(monkeypatch)
     if value is None:
         monkeypatch.delenv(environment, raising=False)
     else:
         monkeypatch.setenv(environment, value)
 
     with pytest.raises(ValueError, match=message):
-        dev_loop_service._require_agentctl_service_admission(Path(__file__).resolve().parents[3])
+        dev_loop_service._require_agentctl_service_context()
 
 
 def test_receiver_smoke_proves_auth_rejection_and_accepted_capture(tmp_path: Path) -> None:

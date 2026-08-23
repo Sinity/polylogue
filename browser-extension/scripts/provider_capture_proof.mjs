@@ -26,13 +26,12 @@ function declaredCdpPort() {
   return port;
 }
 
-function requireAgentctlServiceRoute() {
+function requireExpectedServiceContext() {
+  // This rejects ordinary shell invocation. Sinnixd, not these environment
+  // values, authorizes the operation and owns its lease and service cgroup.
   if (process.env.SINNIXD_PROJECT_ID !== "polylogue" || process.env.SINNIXD_OPERATION !== "dev_loop_proof") {
-    throw new Error("provider capture requires the declared AgentCTL dev-loop route");
+    throw new Error("provider capture rejects execution outside the fixed dev-loop service context");
   }
-  requiredEnvironment("SINNIXD_JOB_ID");
-  requiredEnvironment("SINNIXD_CHECKOUT_ID");
-  requiredEnvironment("SINNIXD_CHECKOUT_HEAD");
 }
 
 const receiverBaseUrl = requiredEnvironment("POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL").replace(/\/+$/, "");
@@ -834,7 +833,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
 }
 
 export async function runProviderCapture() {
-  requireAgentctlServiceRoute();
+  requireExpectedServiceContext();
   const localManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
   const expectedWorkerSuffix = serviceWorkerSuffix(localManifest);
   mkdirSync(profileDir, { recursive: true });
