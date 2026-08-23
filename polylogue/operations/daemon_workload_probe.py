@@ -23,6 +23,7 @@ from typing import Any
 
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.config import Config
+from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
@@ -34,7 +35,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 20
+REPORT_VERSION = 21
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -916,29 +917,40 @@ def _percentile_from_sorted(sorted_values: list[float], q: float) -> float:
     return float(sorted_values[lo]) * (1.0 - frac) + float(sorted_values[hi]) * frac
 
 
-def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
-    ops_rows = _ops_convergence_debt_rows(ops_db)
-    if ops_rows:
+def _convergence_debt(
+    conn: sqlite3.Connection,
+    *,
+    db: Path,
+    ops_db: Path | None = None,
+) -> dict[str, Any]:
+    """Project authoritative ops debt, preserving only the legacy index fallback."""
+    if ops_db is not None:
+        summary = convergence_debt_summary_info(db, ops_db=ops_db)
         return {
-            "failed_count": sum(failed_count for _stage, failed_count, _deferred_count, _unresolved_count in ops_rows),
-            "deferred_count": sum(
-                deferred_count for _stage, _failed_count, deferred_count, _unresolved_count in ops_rows
-            ),
-            "unresolved_count": sum(
-                unresolved_count for _stage, _failed_count, _deferred_count, unresolved_count in ops_rows
-            ),
+            "available": summary.available,
+            "error": summary.error,
+            "failed_count": summary.failed_count,
+            "deferred_count": summary.deferred_count,
+            "unresolved_count": summary.failed_count + summary.deferred_count,
             "by_stage": [
                 {
-                    "stage": stage,
-                    "failed_count": failed_count,
-                    "deferred_count": deferred_count,
-                    "unresolved_count": unresolved_count,
+                    "stage": item.stage,
+                    "failed_count": item.failed_count,
+                    "deferred_count": item.deferred_count,
+                    "unresolved_count": item.failed_count + item.deferred_count,
                 }
-                for stage, failed_count, deferred_count, unresolved_count in ops_rows
+                for item in summary.stage_summaries
             ],
         }
     if not _table_exists(conn, "live_convergence_debt"):
-        return {"failed_count": 0, "deferred_count": 0, "unresolved_count": 0, "by_stage": []}
+        return {
+            "available": True,
+            "error": None,
+            "failed_count": 0,
+            "deferred_count": 0,
+            "unresolved_count": 0,
+            "by_stage": [],
+        }
     rows = conn.execute(
         """
         SELECT stage, COUNT(*) AS unresolved_count
@@ -950,6 +962,8 @@ def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -
     ).fetchall()
     unresolved_count = sum(int(row[1] or 0) for row in rows)
     return {
+        "available": True,
+        "error": None,
         "failed_count": unresolved_count,
         "deferred_count": 0,
         "unresolved_count": unresolved_count,
@@ -963,33 +977,6 @@ def _convergence_debt(conn: sqlite3.Connection, *, ops_db: Path | None = None) -
             for row in rows
         ],
     }
-
-
-def _ops_convergence_debt_rows(ops_db: Path | None) -> list[tuple[str, int, int, int]]:
-    if ops_db is None or not ops_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            if not _table_exists(conn, "convergence_debt"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT
-                    stage,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                    SUM(CASE WHEN status = 'deferred' THEN 1 ELSE 0 END) AS deferred_count,
-                    COUNT(*) AS unresolved_count
-                FROM convergence_debt
-                GROUP BY stage
-                ORDER BY failed_count DESC, deferred_count DESC, stage
-                """
-            ).fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return []
-    return [(str(row[0] or "unknown"), int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)) for row in rows]
 
 
 def _boundary_table_counts(
@@ -2411,7 +2398,7 @@ def probe(
             exact_derived_counts=exact_derived_counts,
             exact_table_counts=exact_table_counts,
         )
-        convergence_debt = _convergence_debt(conn, ops_db=ops_db)
+        convergence_debt = _convergence_debt(conn, db=db, ops_db=ops_db)
         return {
             "ok": True,
             "report_version": REPORT_VERSION,
