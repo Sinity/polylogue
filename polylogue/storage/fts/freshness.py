@@ -517,6 +517,7 @@ def _recorded_counter(record: dict[str, object], name: str) -> int:
 def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, object]) -> bool:
     source_rows = _recorded_counter(record, "source_rows")
     indexed_rows = _recorded_counter(record, "indexed_rows")
+    exact_checked_at = record.get("exact_checked_at")
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
@@ -526,7 +527,7 @@ def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, objec
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
         identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
         verification_kind=str(record.get("verification_kind")),
-        exact_checked_at=record.get("exact_checked_at") if isinstance(record.get("exact_checked_at"), str) else None,
+        exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
         exact_generation=_recorded_counter(record, "exact_generation"),
         current_generation=_index_generation_sync(conn),
         source_has_rows=_message_fts_source_has_rows_sync(conn) if source_rows == 0 and indexed_rows == 0 else False,
@@ -536,6 +537,7 @@ def _recorded_ready_state_sync(conn: sqlite3.Connection, record: dict[str, objec
 async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[str, object]) -> bool:
     source_rows = _recorded_counter(record, "source_rows")
     indexed_rows = _recorded_counter(record, "indexed_rows")
+    exact_checked_at = record.get("exact_checked_at")
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
@@ -545,7 +547,7 @@ async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[s
         duplicate_rows=_recorded_counter(record, "duplicate_rows"),
         identity_mismatch_rows=_recorded_counter(record, "identity_mismatch_rows"),
         verification_kind=str(record.get("verification_kind")),
-        exact_checked_at=record.get("exact_checked_at") if isinstance(record.get("exact_checked_at"), str) else None,
+        exact_checked_at=exact_checked_at if isinstance(exact_checked_at, str) else None,
         exact_generation=_recorded_counter(record, "exact_generation"),
         current_generation=await _index_generation_async(conn),
         source_has_rows=await _message_fts_source_has_rows_async(conn)
