@@ -932,22 +932,33 @@ def _cohort_seconds(stage_timings_s: object) -> float:
 
 def _receipt_timings(
     *,
+    rebuild_s: float,
     selection_s: float,
     prefetch_warm_s: float,
     replay: dict[str, object],
     terminal_timings_s: dict[str, float],
 ) -> dict[str, float]:
-    """Build one stable phase vocabulary plus existing granular timings."""
+    """Build one stable phase vocabulary plus existing granular timings.
+
+    ``rebuild_s`` starts before source preflight and ownership acquisition, then
+    ends immediately before the immutable receipt is persisted. ``orchestration_s``
+    names the remainder spent on those admission, candidate-lifecycle, and
+    receipt-preparation steps, so the end-to-end number remains attributable.
+    """
     stage_timings_s = replay.get("stage_timings_s", {})
     replay_s = stage_timings_s.get("total", 0.0) if isinstance(stage_timings_s, dict) else 0.0
     parse_s = replay.get("parse_s", 0.0)
     apply_s = replay.get("apply_s", 0.0)
-    resolved_replay_s = float(replay_s) if isinstance(replay_s, int | float) else 0.0
-    resolved_parse_s = float(parse_s) if isinstance(parse_s, int | float) else 0.0
-    resolved_apply_s = float(apply_s) if isinstance(apply_s, int | float) else 0.0
+    resolved_replay_s = float(replay_s) if isinstance(replay_s, int | float) and not isinstance(replay_s, bool) else 0.0
+    resolved_parse_s = float(parse_s) if isinstance(parse_s, int | float) and not isinstance(parse_s, bool) else 0.0
+    resolved_apply_s = float(apply_s) if isinstance(apply_s, int | float) and not isinstance(apply_s, bool) else 0.0
     insight_s = float(terminal_timings_s.get("terminal.session_insights", 0.0))
     terminal_s = sum(float(value) for key, value in terminal_timings_s.items() if key != "selection_s")
+    resolved_rebuild_s = max(0.0, float(rebuild_s))
+    orchestration_s = max(0.0, resolved_rebuild_s - selection_s - prefetch_warm_s - resolved_replay_s - terminal_s)
     rollups = {
+        "rebuild_s": resolved_rebuild_s,
+        "orchestration_s": orchestration_s,
         "selection_s": float(selection_s),
         "prefetch_warm_s": float(prefetch_warm_s),
         "cohort_s": _cohort_seconds(stage_timings_s),
@@ -1468,6 +1479,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     the *location* it resolved, catching e.g. a concurrent devtools campaign
     or a foreign/rotated root before this rebuild can act on stale identity).
     """
+    rebuild_started_at_s = time.perf_counter()
     from polylogue.storage.index_generation import RebuildLease
     from polylogue.storage.sqlite.connection_profile import (
         check_mapped_bytes_budget_against_cgroup_limit,
@@ -1595,6 +1607,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
                 owned=owned,
                 consumed_evidence=consumed_evidence,
                 raw_count=raw_count,
+                rebuild_started_at_s=rebuild_started_at_s,
             )
     finally:
         owned.release()
@@ -1607,6 +1620,7 @@ async def _rebuild_index_from_source_owned(
     owned: OwnedArchiveLocation,
     consumed_evidence: dict[str, object],
     raw_count: int,
+    rebuild_started_at_s: float,
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
@@ -2451,6 +2465,7 @@ async def _rebuild_index_from_source_owned(
             source_evidence_after=source_evidence_after,
             canary_acceptance=canary_acceptance,
             timings_s=_receipt_timings(
+                rebuild_s=time.perf_counter() - rebuild_started_at_s,
                 selection_s=selection_elapsed_s,
                 prefetch_warm_s=prefetch_warm_s,
                 replay=replay,
