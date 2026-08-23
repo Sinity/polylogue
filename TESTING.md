@@ -12,8 +12,7 @@ devtools verify
 # Focused inner-loop runs: prefer `devtools test` over raw pytest. It provides
 # the project environment, a single-process default, live output, progress
 # artifacts, import-root validation, and a typed outcome receipt. AgentCTL
-# owns workspace identity, lifecycle, logs, scratch, and result capture for
-# declared verification jobs.
+# owns execution concerns for declared verification jobs.
 # Any pytest arguments go after the command name.
 devtools test tests/unit/storage/test_hybrid_laws.py
 devtools test -k "test_name"
@@ -49,13 +48,9 @@ CI runs this journey in the `web-first-party-auth` job. Local NixOS development
 uses the system Chrome path discovered by `webui/playwright.config.ts`, so the
 browser install step is normally unnecessary after `npm ci`.
 
-`devtools verify` owns the complete pytest-testmon lifecycle. A missing or
-invalid `.cache/testmon/testmondata` is repaired automatically. A linked
-worktree may copy a valid matching database from the main checkout through a
-SQLite online backup; otherwise the same plain command runs the complete
-correctness corpus and builds native state. Interrupted runs need no separate
-receipt or resume command: pytest-testmon keeps failed, unfinished, and new
-tests selected on the next plain invocation.
+`devtools verify` uses only the checkout-local pytest-testmon graph. Plain
+verification reuses a compatible graph or refuses before pytest starts; an
+explicit `devtools verify --all` is the route that builds a missing graph.
 
 The native environment key includes Python, active distributions, lock and
 project metadata, pytest configuration, the repository-root and `tests/**`
@@ -71,112 +66,6 @@ The 2026-08-13 audit reduced this key from all 83 `tests/infra` Python files to
 0.95s. A real isolated mutation of a runtime-imported helper retained the same
 environment and selected both owning tests through native dependency edges.
 
-Plain focused `pytest` runs are single-process by default so small inner-loop
-checks do not spawn a worker pool. `devtools verify` keeps pytest-testmon as
-the affected-test selector and runs the selected default lane with an adaptive
-worker pool (up to 12, override with `POLYLOGUE_PYTEST_WORKERS`) so
-a stale or genuinely broad affected set cannot spend the full timeout in one
-multi-GiB Python process. It passes `--testmon-forceselect` so pytest-testmon
-selects affected tests within the two semantic lanes. Bootstrap and full runs
-cover unit, property, fuzz, and integration correctness tests while excluding
-the separately operated `tests/benchmarks` performance surface. They budget
-roughly 768 MiB per worker, reserve host and tmpfs headroom, and reduce
-concurrency when memory pressure is elevated.
-
-Every native run has exactly two semantic lanes over one environment and one
-database: a parallel lane for tests not marked `load_sensitive`, followed by a
-bounded lane for the load-sensitive set. Ordinary test failures in the parallel
-lane do not suppress the bounded lane. Typed collection, containment, resource,
-or timeout failures do.
-
-The bounded lane is not strictly serial. `load_sensitive` marks a test whose
-wall-clock deadlines the *parallel* lane's full worker count starves, which
-bounds how much concurrency the lane may use — it does not establish that the
-members contend with each other. Measured on the 7-test daemon-resilience
-corpus (2026-08-19): 71.95s at one process, 35.08s at four workers, and a hard
-cliff above that (5 workers 107.76s with one starved SIGTERM deadline, 7 workers
-95.20s with two). The lane therefore runs at
-`devtools.verify.SERIAL_LANE_MAX_WORKERS` (4) under `--dist=loadgroup`, with
-members assigned to `xdist_group` bins packed longest-first so the makespan is
-bounded by the largest bin rather than by the order xdist happens to dispatch
-in. Raising the cap requires repeating that measurement.
-
-The lane boundary is evidence-based. On 2026-08-13 the complete correctness
-corpus collected 20,447 nodes in 35.06s; only 17 were `load_sensitive`, while
-16 were tagged `tui` with no overlap. A managed serial run retained 93.09s of
-call time for the load-sensitive set (real PTYs, loopback servers, timing SLAs,
-and process/cgroup teardown), versus 7.10s for TUI (0.74s maximum). The same 16
-TUI nodes passed under two xdist workers in 45.22s including duplicate worker
-collection, so `tui` remains a useful category but is not a serial-execution
-boundary. The captured serial run passed 32 nodes; one process-owner SIGKILL
-probe missed its five-second readiness poll twice, then passed a diagnostic
-live-output rerun in 6.28s. That host-timing sensitivity supports retaining the
-probe in the serial lane. Performance benchmarks remain outside this
-correctness corpus.
-
-Every collected test has a 120-second `pytest-timeout` budget. A test that
-genuinely needs longer must declare the exception at the test site with
-`@pytest.mark.timeout(<seconds>)`; a missing marker can never silently turn into
-an unbounded wait. The signal method is the repository default so timeout
-failures retain the responsible node and Python stacks in ordinary pytest
-output.
-
-Managed pytest temp databases pick their basetemp root through **one**
-resolution order, shared by `tests/conftest.py` (direct `pytest` runs) and the
-`devtools test`/`devtools verify` preflight
-(`devtools.verify_runs.resolve_pytest_basetemp_root`) — there is no second,
-independent placement policy that can silently disagree with this one:
-
-1. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` — an explicit operator override,
-   still headroom-checked (see below), never silently downgraded.
-2. `/dev/shm` (tmpfs) — the focused-run default, because measured SQLite fsync
-   traffic makes it substantially faster when it clears the free-space
-   requirement. Full/bootstrap native runs use it only when
-   `POLYLOGUE_PYTEST_TMPFS=1` is explicit.
-3. `/realm/tmp/polylogue-pytest` (NVMe scratch) — the broad-run default, and
-   the fallback when `/dev/shm` lacks headroom. Broad fixture trees have
-   exceeded the supervised 2 GiB tmpfs ceiling while still making progress,
-   so their normal route does not guess a future aggregate peak.
-4. `/tmp/polylogue-pytest` — reachable **only** when `/realm/tmp` is not
-   mounted at all (a genuine cloud sandbox, where `.claude/settings.json`
-   sets this as `POLYLOGUE_PYTEST_BASETEMP_ROOT`). On a workstation with
-   `/realm` mounted, that same cloud-sandbox env value is stripped before
-   candidate selection runs, so it can never leak in as an accidental
-   low-space `/tmp` placement — `/tmp` on a workstation is typically a small
-   tmpfs shared by every concurrent agent lane, not scratch space.
-
-Before committing to a root, each candidate is checked against a free-space
-requirement (`POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB`, default 1024 MiB). If
-every reachable candidate is starved, the run refuses immediately — before
-pytest starts collecting — naming every candidate checked, its free space,
-and the requirement, instead of silently placing a basetemp somewhere that
-fills up mid-run and surfaces as a bare `OSError: [Errno 28]` in an unrelated
-command later.
-
-One shared adaptive tmpfs budget is enforced across all xdist workers (512
-MiB to 2 GiB) once a tmpfs root is chosen. Per-run `pytest-polylogue-*`
-basetemps are removed at normal pytest shutdown, and pytest startup sweeps
-stale per-run dirs from every known root (`/dev/shm`, `/realm/tmp/polylogue-pytest`,
-`/tmp/polylogue-pytest`, plus any explicit configured root) — never based on
-age alone: each managed basetemp carries a PID plus process-start identity,
-and a directory whose exact owner process is still alive is never removed
-regardless of age. A tree without a valid managed claim or whose owner cannot
-be confirmed dead is never removed. The thirty-minute age threshold applies
-only after a positive managed claim identifies a dead owner. The sweeper
-restores owner-write permission only after a tree is adjudicated stale, so
-published read-only fixture copies cannot leak tmpfs indefinitely. Shared
-`pytest-polylogue-*-seeded-*` caches are never touched by the sweep — they
-are shared, reused, and built once behind their own `.build.done` guard.
-
-Managed verification refuses to start below 1 GiB available memory instead of
-falling back to the pathological disk lane. Every per-test `tmp_path` tree is
-reclaimed in fixture teardown, including failures and interruptions; node
-failure evidence remains in the managed event, longrepr, summary, and resource
-receipts. The controller removes only the exact basetemp it created. An
-explicit `--basetemp` is retained for targeted filesystem diagnosis. The
-external supervisor and parent runner independently remove the whole run root
-on completion or termination, with startup stale-root cleanup as recovery
-after an uncatchable process kill or reboot.
 
 The default path does not replay cached verify results. Every invocation runs
 the static gates and then invokes pytest-testmon over the selected scope.
@@ -198,22 +87,9 @@ mirrored to
 - `.cache/verify/current-pytest-statistics.json` for decoded pytest outcomes
 - `.cache/verify/current-pytest-output.log`
 
-Direct focused runs are ordinary foreground subprocesses. AgentCTL verification
-jobs receive deadlines, process-tree cancellation, logs, scratch, and typed
-result artifacts from AgentCTL. Devtools does not create a second lifecycle on
-that route.
-
-The direct `devtools verify` compatibility path still owns its legacy
-supervisor, scratch, and resource evidence. It remains the isolated deletion
-blocker until its gate and CI/hook consumers use the AgentCTL route.
-
-Tests marked `storage_scale` move their private `tmp_path` tree to NVMe scratch
-and emit a periodic typed activity heartbeat while the marked node runs. The
-heartbeat uses the same per-worker JSONL event ledger as ordinary pytest
-progress, so quiet storage work remains observable. It does not reset the
-hard no-test-progress stall clock: only real node and phase events do that.
-Its cadence defaults to 30 seconds and can be shortened for a controlled
-reproduction with `POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S`.
+Focused and verification runs are foreground semantic commands. Devtools records
+project selection, gate results, decoded pytest outcomes, and the scope it
+actually ran.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
@@ -229,12 +105,9 @@ recording command. The override exists so an operator can keep this history in
 a canonical data location -- it is the only verification artifact that outlives
 a checkout, and cross-worktree comparison depends on every lane appending to
 one file. `devtools why --history` reads the recent cross-worktree runs. A
-native verify record also carries one run-level pytest aggregate: environment
-and corpus digest/count, selection mode, outcomes
-across both lanes, wall and collection time, peak RSS/PSS/swap/storage,
-read/write totals, and cleanup and containment.
-Setup, call, and teardown timings come only from pytest reports in the event
-stream.
+native verify record carries its selected scope, gate-step results, and decoded
+pytest outcomes. Setup, call, and teardown timings come only from pytest
+reports in the event stream.
 
 `devtools test` uses the pytest progress plugin for focused selections. During
 or after a run, inspect
@@ -255,12 +128,11 @@ authority.
 A product import executed at test-module or `conftest.py` collection time can
 therefore be absent from every test's native dependency graph.
 
-The automatic lifecycle validates this condition without an always-run
-registry. Changed Python modules are classified from their AST. Executable
-modules must occur in the native `file_fp` graph; if one is missing, plain
-verify invalidates the derived database, rebuilds it, and still fails if the
-edge remains absent. Move such an import into an executing fixture or test so
-testmon can observe the dependency.
+Changed Python modules are classified from their AST. Executable modules must
+occur in the native `file_fp` graph; if one is missing, plain verify refuses
+affected selection. Run the explicit complete-corpus route, then move a
+collection-time import into an executing fixture or test so testmon can observe
+the dependency.
 
 Declaration-only modules need no cohort or allowlist. Their structural
 contracts remain protected by `mypy --strict`, which runs in every verify.

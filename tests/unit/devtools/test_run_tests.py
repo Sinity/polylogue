@@ -108,7 +108,6 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["history"]["git_head"] == "abc123"
     assert isinstance(captured["history"]["git_dirty"], bool)
     assert captured["history"]["verification_scope"] == "affected"
-    assert captured["history"]["release_baseline_allowed"] is False
     assert captured["history"]["status"] == "success"
 
 

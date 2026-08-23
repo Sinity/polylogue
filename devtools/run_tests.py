@@ -370,7 +370,6 @@ def main(argv: list[str] | None = None) -> int:
         duration_s=elapsed,
         diagnosis=metadata.get("diagnosis"),
         verification_scope="affected",
-        release_baseline_allowed=False,
         final_git_head=git_head(ROOT),
     )
     append_verify_history(payload)

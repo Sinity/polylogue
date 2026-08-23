@@ -25,7 +25,6 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
         "scope": {
             "verification_scope": verification_scope,
             "selection_mode": _string(selection.get("selection_mode")),
-            "release_baseline_allowed": _boolean(payload.get("release_baseline_allowed")),
         },
         "testmon_environment": {
             "environment_digest": _string(selection.get("environment_digest")),
@@ -132,7 +131,6 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
     exit_code = _integer(payload.get("exit_code"))
     if exit_code == 0:
         return {
-            "release-baseline": "release-baseline-passed",
             "affected": "affected-passed",
             "non-test": "non-test-passed",
         }.get(verification_scope or "", "passed")

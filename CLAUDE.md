@@ -413,42 +413,14 @@ Full detail in `TESTING.md`. Layout: `tests/unit` (~95%), `tests/property`
 strategies). `workspace_env` fixture gives
 isolated XDG paths + archive root.
 
-- **Prefer `devtools test`** over raw pytest — it runs through the managed
-  harness (repo env, single-process by default, live output, stall/runtime
-  timeouts, serialized overlapping runs). `POLYLOGUE_PYTEST_WORKERS=N` overrides.
+- **Prefer `devtools test`** over raw pytest — it runs through the project
+  harness (repo environment, single-process default, live output, checkout
+  guard, and typed receipt). `POLYLOGUE_PYTEST_WORKERS=N` overrides.
 - **Clock hygiene:** timestamp-sensitive tests use the `frozen_clock` fixture
   (`tests/infra/frozen_clock.py`), not the host wall clock. An autouse guard
   (`tests/infra/clock_guard.py`) makes direct `datetime.now`/`time.time` reads
   from test code raise immediately — there is no allowlist; genuine
   exceptions opt out inline via `@pytest.mark.uses_real_clock("reason")`.
-- Pytest temp DBs pick ONE basetemp root via
-  `devtools.verify_runs.resolve_pytest_basetemp_root` (shared by
-  `tests/conftest.py` and the `devtools test`/`verify` preflight). Bare pytest
-  without a managed run identity or an explicit basetemp root is forced to
-  `/realm/tmp/polylogue-pytest` (NVMe). Managed `devtools test` and
-  `devtools verify` runs may use bounded `/dev/shm` tmpfs only after the
-  runtime policy admits the requested demand; full/bootstrap native
-  runs default to NVMe because their aggregate fixture tree can exceed the
-  supervised tmpfs ceiling.
-  `POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB` overrides required headroom; an
-  explicit `POLYLOGUE_PYTEST_TMPFS=1` requests bounded tmpfs, but the request
-  is honored only when the effective budget satisfies the declared basetemp
-  requirement.
-  `/tmp/polylogue-pytest` is used
-  only when `/realm/tmp` genuinely isn't mounted (cloud sandbox). If nothing
-  clears the headroom requirement the run refuses immediately with every
-  candidate's free space named, instead of an unrelated command crashing on
-  `OSError: [Errno 28]` later (2026-07-30 incident: `.claude/settings.json`'s
-  cloud `POLYLOGUE_PYTEST_BASETEMP_ROOT=/tmp/polylogue-pytest` leaked onto the
-  workstation, where `/tmp` is a small tmpfs shared by every concurrent agent
-  lane — that env value is now stripped before candidate selection whenever
-  `/realm/tmp` is mounted). Seeded-archive fixtures (`seeded_archive` and its
-  `named_seeded_archive`/`named_seeded_archive_ro` derivatives) build a shared
-  DB once under a `.build.done` guard — a SIGKILL mid-build leaves a partial DB +
-  set guard → `no such table: sessions`; fix with
-  `rm -rf /dev/shm/pytest-polylogue-seeded-*` (and legacy
-  `/realm/tmp/polylogue-pytest/pytest-polylogue-seeded-*`). Never `pkill` polylogue pytest without
-  clearing this.
 - Verify-run artifacts land under `.cache/verify/`
   (`current-pytest-{progress,selection,summary}.json`, `-output.log`).
 

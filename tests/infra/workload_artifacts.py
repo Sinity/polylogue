@@ -68,10 +68,9 @@ _CLOUD_CACHE_ROOT = Path("/tmp/polylogue-seeded-artifacts")
 def default_cache_root() -> Path:
     """Where published artifacts live when a caller names no cache root.
 
-    Mirrors :func:`devtools.verify_runs.resolve_pytest_basetemp_root`'s
-    placement family: NVMe scratch when ``/realm/tmp`` is mounted, and the
-    ``/tmp`` fallback only when ``/realm`` is absent entirely (a genuine cloud
-    sandbox). The previous hard-coded ``/realm/tmp`` path made every consumer
+    Uses NVMe storage when ``/realm/tmp`` is mounted, and the ``/tmp`` fallback
+    only when ``/realm`` is absent entirely (a genuine cloud sandbox). The
+    previous hard-coded ``/realm/tmp`` path made every consumer
     of this module raise ``OSError`` on a host without ``/realm``, since the
     ``mkdir(parents=True)`` below cannot create a directory under a
     nonexistent mount point.

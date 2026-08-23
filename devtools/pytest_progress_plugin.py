@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import os
-import threading
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +25,6 @@ _EVENTS_DIR_ENV = "POLYLOGUE_PYTEST_EVENTS_DIR"
 _SELECTION_ENV = "POLYLOGUE_PYTEST_SELECTION_PATH"
 _SUMMARY_ENV = "POLYLOGUE_PYTEST_SUMMARY_PATH"
 _SELECTION_NODEID_LIMIT_ENV = "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT"
-_STORAGE_SCALE_HEARTBEAT_ATTR = "_polylogue_storage_scale_heartbeat"
 _DESELECTED_NODEIDS_SAMPLE: list[str] = []
 _DESELECTED_COUNT = 0
 _SELECTED_COUNT = 0
@@ -40,16 +36,6 @@ _CONTROLLER_COLLECTION_PAYLOAD: dict[str, Any] | None = None
 _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
-_COUNTS_SUFFIX = ".counts.json"
-_DDL_SUFFIX = ".archive-ddl.json"
-#: Completed/failed tallies flushed every N completions so the supervisor
-#: heartbeat can print live progress and an ETA without replaying event logs.
-_COUNTS_FLUSH_EVERY = 20
-_COMPLETED_COUNT = 0
-_FAILED_COUNT = 0
-_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV = "POLYLOGUE_PYTEST_PROGRESS_HEARTBEAT_S"
-_STALL_TIMEOUT_ENV = "POLYLOGUE_VERIFY_PYTEST_STALL_TIMEOUT_S"
-_DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S = 30.0
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 
 
@@ -166,126 +152,6 @@ def _write_event(payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-def _storage_scale_progress_heartbeat_s() -> float:
-    """Return a cadence that can refresh progress before the stall deadline."""
-    value = _DEFAULT_STORAGE_SCALE_PROGRESS_HEARTBEAT_S
-    raw = os.environ.get(_STORAGE_SCALE_PROGRESS_HEARTBEAT_ENV)
-    if raw is not None:
-        with contextlib.suppress(ValueError):
-            configured = float(raw)
-            if math.isfinite(configured) and configured > 0:
-                value = configured
-    raw_stall = os.environ.get(_STALL_TIMEOUT_ENV)
-    if raw_stall is not None:
-        with contextlib.suppress(ValueError):
-            stall_timeout = float(raw_stall)
-            if math.isfinite(stall_timeout) and stall_timeout > 0:
-                value = min(value, stall_timeout / 2)
-    return value
-
-
-def _storage_scale_tree_snapshot(root: Path) -> tuple[int, int, int] | None:
-    """Return file count, total bytes, and newest mtime below a test's tree."""
-    if not root.is_dir():
-        return None
-    total_bytes = 0
-    file_count = 0
-    newest_mtime_ns = 0
-    pending = [root]
-    while pending:
-        current = pending.pop()
-        try:
-            entries = os.scandir(current)
-        except FileNotFoundError:
-            continue
-        except OSError:
-            return None
-        with entries:
-            for entry in entries:
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        pending.append(Path(entry.path))
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    stat_result = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                file_count += 1
-                total_bytes += stat_result.st_size
-                newest_mtime_ns = max(newest_mtime_ns, stat_result.st_mtime_ns)
-    return file_count, total_bytes, newest_mtime_ns
-
-
-def _storage_scale_root_for_item(item: Any) -> Path | None:
-    """Return the exact redirected tree after fixture setup has bound it."""
-    fixture_root = getattr(item, "funcargs", {}).get("tmp_path")
-    if isinstance(fixture_root, Path):
-        return fixture_root
-    return None
-
-
-class _StorageScaleProgressHeartbeat:
-    """Report observed storage-tree changes for one marked scale node."""
-
-    def __init__(self, *, nodeid: str, root_supplier: Callable[[], Path | None]) -> None:
-        self._nodeid = nodeid
-        self._root_supplier = root_supplier
-        self._interval_s = _storage_scale_progress_heartbeat_s()
-        self._stop = threading.Event()
-        self._started_at = time.monotonic()
-        self._root: Path | None = None
-        self._last_snapshot: tuple[int, int, int] | None = None
-        self._thread = threading.Thread(
-            target=self._run,
-            name="pytest-storage-scale-heartbeat",
-            daemon=True,
-        )
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._thread.join(timeout=min(max(self._interval_s * 2, 0.1), 1.0))
-
-    def prime(self) -> None:
-        """Capture the fixture tree immediately before the test body starts."""
-        root = self._root_supplier()
-        if root is None:
-            return
-        self._root = root
-        self._last_snapshot = _storage_scale_tree_snapshot(root)
-
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval_s):
-            root = self._root_supplier()
-            if root is None:
-                continue
-            if self._root is None:
-                self._root = root
-                self._last_snapshot = _storage_scale_tree_snapshot(root)
-                continue
-            snapshot = _storage_scale_tree_snapshot(root)
-            if snapshot is None or snapshot == self._last_snapshot:
-                continue
-            self._last_snapshot = snapshot
-            self._write_heartbeat()
-
-    def _write_heartbeat(self) -> None:
-        """Record one observed storage-tree change."""
-        if self._stop.is_set():
-            return
-        _write_event(
-            {
-                "event": "test_progress",
-                "nodeid": self._nodeid,
-                "progress_kind": "storage_scale_heartbeat",
-                "elapsed_s": round(time.monotonic() - self._started_at, 3),
-            }
-        )
 
 
 def _write_selection(payload: dict[str, Any]) -> None:
@@ -414,9 +280,8 @@ def pytest_sessionstart(session: Any) -> None:
     _reset_session_state()
     if len(_SESSION_STATE_STACK) > 1:
         _isolate_nested_artifact_destinations()
-    # The worker environment is assigned after process exec, so it is not
-    # reliably visible through /proc/<pid>/environ.  Emit the identity from
-    # inside the worker for the supervisor's process-state sampler.
+    # Emit the worker identity from inside pytest so each event is attributable
+    # even when xdist forwards the report to the controller.
     _write_event({"event": "session_started"})
 
 
@@ -484,41 +349,6 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) 
     )
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_protocol(item: Any, nextitem: Any) -> Any:
-    """Observe storage progress for a marked node across setup and call."""
-    del nextitem
-    heartbeat: _StorageScaleProgressHeartbeat | None = None
-    numprocesses = getattr(getattr(item.config, "option", None), "numprocesses", 0)
-    xdist_controller = not os.environ.get("PYTEST_XDIST_WORKER") and bool(numprocesses)
-    if (
-        item.get_closest_marker("storage_scale") is not None
-        and (os.environ.get(_EVENTS_DIR_ENV) or os.environ.get(_EVENTS_ENV))
-        and not xdist_controller
-    ):
-        heartbeat = _StorageScaleProgressHeartbeat(
-            nodeid=str(item.nodeid),
-            root_supplier=lambda: _storage_scale_root_for_item(item),
-        )
-        setattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, heartbeat)
-        heartbeat.start()
-    try:
-        yield
-    finally:
-        if heartbeat is not None:
-            heartbeat.stop()
-            delattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR)
-
-
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
-def pytest_runtest_call(item: Any) -> Any:
-    """Establish the storage baseline after fixture setup and before test code."""
-    heartbeat = getattr(item, _STORAGE_SCALE_HEARTBEAT_ATTR, None)
-    if isinstance(heartbeat, _StorageScaleProgressHeartbeat):
-        heartbeat.prime()
-    yield
-
-
 @pytest.hookimpl
 def pytest_runtest_logfinish(nodeid: str, location: tuple[str, int | None, str]) -> None:
     """Append one event when pytest finishes running a test node."""
@@ -555,89 +385,7 @@ def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
     _remember_report(payload)
     if write_event:
-        # Count only the authoritative record: the xdist controller also sees
-        # every worker's forwarded report (write_event=False there), and
-        # counting both sides doubled the tallies (observed: 40,904 "completed"
-        # for a 20,452-test lane).
-        global _COMPLETED_COUNT, _FAILED_COUNT
-        if outcome == "failed":
-            _FAILED_COUNT += 1
-            _flush_counts(force=True)
-        if when == "teardown":
-            _COMPLETED_COUNT += 1
-            _flush_counts()
         _write_event(payload)
-
-
-def _flush_counts(*, force: bool = False) -> None:
-    """Publish this worker's completed/failed tallies as one tiny atomic file."""
-    if not force and _COMPLETED_COUNT % _COUNTS_FLUSH_EVERY != 0:
-        return
-    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
-    if not raw_dir:
-        return
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "controller").replace("/", "-")
-    path = Path(raw_dir) / f"{worker}-{os.getpid()}{_COUNTS_SUFFIX}"
-    payload = json.dumps({"completed": _COMPLETED_COUNT, "failed": _FAILED_COUNT})
-    with contextlib.suppress(OSError):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(payload, encoding="utf-8")
-        os.replace(temporary, path)
-
-
-def _flush_archive_ddl_counts() -> None:
-    """Publish this worker's archive tier-initialization tally.
-
-    Written once per worker at session end, mirroring ``_flush_counts``: the
-    counters live in the pytest process, so the supervisor cannot sample them
-    from the outside the way it samples RSS or I/O. Without this the split
-    between page-copy restores and real DDL executions -- the difference
-    between microseconds and an fsync-bound executescript -- is invisible in
-    the receipt, and sizing any fix for it requires re-instrumenting by hand.
-    """
-    raw_dir = os.environ.get(_EVENTS_DIR_ENV)
-    if not raw_dir:
-        return
-    try:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_init_counts
-
-        counts = archive_tier_init_counts()
-    except Exception:  # pragma: no cover - telemetry must never fail a run
-        return
-    if not counts:
-        return
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "controller").replace("/", "-")
-    path = Path(raw_dir) / f"{worker}-{os.getpid()}{_DDL_SUFFIX}"
-    with contextlib.suppress(OSError):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, path)
-
-
-def read_archive_ddl_counts(events_dir: Path) -> dict[str, int]:
-    """Sum every worker's archive tier-initialization tallies."""
-    totals: dict[str, int] = {}
-    for path in events_dir.glob(f"*{_DDL_SUFFIX}"):
-        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                continue
-            for key, value in data.items():
-                totals[str(key)] = totals.get(str(key), 0) + int(value)
-    return dict(sorted(totals.items()))
-
-
-def read_progress_counts(events_dir: Path) -> tuple[int, int]:
-    """Sum every worker's published (completed, failed) tallies."""
-    completed = failed = 0
-    for path in events_dir.glob(f"*{_COUNTS_SUFFIX}"):
-        with contextlib.suppress(OSError, json.JSONDecodeError, TypeError, ValueError):
-            data = json.loads(path.read_text(encoding="utf-8"))
-            completed += int(data.get("completed", 0))
-            failed += int(data.get("failed", 0))
-    return completed, failed
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -664,8 +412,6 @@ def pytest_runtest_logreport(report: Any) -> None:
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
-    _flush_counts(force=True)
-    _flush_archive_ddl_counts()
     try:
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared
@@ -684,11 +430,6 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
         }
         if "collection_duration_s" in collection_payload:
             payload["collection_duration_s"] = collection_payload["collection_duration_s"]
-        events_dir = os.environ.get(_EVENTS_DIR_ENV)
-        if events_dir:
-            ddl_counts = read_archive_ddl_counts(Path(events_dir))
-            if ddl_counts:
-                payload["archive_tier_init_counts"] = ddl_counts
         _write_summary(payload)
     finally:
         if _SESSION_STATE_STACK:

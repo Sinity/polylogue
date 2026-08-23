@@ -12,11 +12,7 @@ behavior read) while looking exactly like a genuine result. It cost real time
 four separate times in one day before anyone happened to check
 ``polylogue.__file__``.
 
-This module is the **single shared resolver** for the check, mirroring the
-shape of ``devtools.verify_runs.resolve_pytest_basetemp_root`` (PR #3449 fixed
-a structurally identical bug — two independent basetemp-placement
-implementations silently disagreeing — with one shared resolver, headroom
-checked, failing loudly with every candidate named). Every entry point that
+This module is the **single shared resolver** for the check. Every entry point that
 can plausibly run against the wrong tree calls
 :func:`assert_polylogue_matches_checkout` instead of hand-rolling its own
 comparison, so there is exactly one definition of "matches" and one message

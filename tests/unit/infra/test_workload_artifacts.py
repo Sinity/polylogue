@@ -1304,8 +1304,7 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 
     ``mkdir(parents=True)`` cannot create a directory under a nonexistent
     mount point, so the previously hard-coded ``/realm/tmp`` root made the
-    seeded-archive cache raise ``OSError`` on any cloud sandbox. Mirrors
-    ``devtools.verify_runs.resolve_pytest_basetemp_root``'s placement family.
+    seeded-archive cache raise ``OSError`` on any cloud sandbox.
     """
     import tests.infra.workload_artifacts as artifacts
 

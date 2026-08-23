@@ -2,10 +2,9 @@
 # Deny test invocations that bypass the managed harness.
 #
 # `devtools test` and `devtools verify` are the only supported way to run this
-# repository's tests. Going around them silently opts out of the checkout guard
-# (which catches a worktree running another checkout's code), containment
-# (systemd scope, stall and runtime caps), and the receipts that `devtools why`
-# and the merge gate read.
+# repository's tests. Going around them silently opts out of the checkout guard,
+# project selection semantics, structured pytest outcomes, and the receipts the
+# execution host captures.
 #
 # This exists because knowing the rule was demonstrably not enough: bare pytest
 # was reached for dozens of times in one session, every time for a real local
@@ -95,9 +94,8 @@ Bare pytest is not how this repository runs tests.
         devtools verify                     (full baseline)
         devtools why                        (explain the last run)
 
-Running pytest directly opts out of the checkout guard, containment, and the
-receipts the merge gate and `devtools why` read -- and it is SLOWER: measured on
-the same 1342 tests, 124s through devtools versus 393s bare.
+Running pytest directly opts out of the checkout guard, project selection
+semantics, and structured outcomes.
 
 If devtools is what is blocking you, fix devtools. That is the supported move.
 
