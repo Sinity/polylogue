@@ -74,9 +74,11 @@ def _seed_cohort_and_append_plan(
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        publisher = archive._blob_publisher
+        assert publisher is not None
         for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = archive._blob_publisher.write_from_bytes(payload)
-            archive._blob_publisher.flush()
+            blob_hash, _blob_size = publisher.write_from_bytes(payload)
+            publisher.flush()
             write_source_raw_session(
                 archive._ensure_source_conn(),
                 origin=origin_from_provider(Provider.CODEX),
@@ -85,7 +87,7 @@ def _seed_cohort_and_append_plan(
                 source_path=str(source_path),
                 source_index=0,
                 acquired_at_ms=index + 1,
-                blob_publication_receipt_id=archive._blob_publisher.receipt_id(blob_hash),
+                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
                 revision=RawRevisionEnvelope(
                     f"codex:{session_id}",
                     RawRevisionKind.FULL,
@@ -123,9 +125,11 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        publisher = archive._blob_publisher
+        assert publisher is not None
         for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = archive._blob_publisher.write_from_bytes(payload)
-            archive._blob_publisher.flush()
+            blob_hash, _blob_size = publisher.write_from_bytes(payload)
+            publisher.flush()
             write_source_raw_session(
                 archive._ensure_source_conn(),
                 origin=origin_from_provider(Provider.CODEX),
@@ -134,7 +138,7 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
                 source_path=str(source_path),
                 source_index=0,
                 acquired_at_ms=index + 1,
-                blob_publication_receipt_id=archive._blob_publisher.receipt_id(blob_hash),
+                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
                 revision=RawRevisionEnvelope(
                     f"codex:{session_id}",
                     RawRevisionKind.FULL,
