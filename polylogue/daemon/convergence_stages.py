@@ -2101,7 +2101,12 @@ def _embed_archive_sessions_sync(
     for session_id in tuple(dict.fromkeys(session_ids)):
         if time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
             break
-        outcome = embed_archive_session_sync(db_path, vec_provider, session_id)
+        outcome = embed_archive_session_sync(
+            db_path,
+            vec_provider,
+            session_id,
+            embeddings_db_path=embeddings_db,
+        )
         if outcome.status == "embedded":
             embedded += 1
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:

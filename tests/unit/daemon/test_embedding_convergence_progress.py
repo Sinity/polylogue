@@ -116,7 +116,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
             """
         )
 
-    embedded_calls: list[tuple[Path, str]] = []
+    embedded_calls: list[tuple[Path, str, Path | None]] = []
 
     def fake_embed(db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         embedded_calls.append((db_path, session_id))
@@ -261,9 +261,12 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
         observed_vector_db_paths.append(Path(str(kwargs["db_path"])))
         return fake_provider
 
-    def fake_embed(db_path: Path, provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
+    def fake_embed(db_path: Path, provider: object, session_id: str, **kwargs: object) -> EmbedSessionOutcome:
         assert provider is fake_provider
-        embedded_calls.append((db_path, session_id))
+        embeddings_db_path = kwargs.get("embeddings_db_path")
+        embedded_calls.append(
+            (db_path, session_id, embeddings_db_path if isinstance(embeddings_db_path, Path) else None)
+        )
         return EmbedSessionOutcome(
             status="embedded",
             session_id=session_id,
@@ -278,7 +281,7 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
 
     assert ok is True
     assert observed_vector_db_paths == [embeddings_db]
-    assert embedded_calls == [(index_db, "codex-session:v1-a")]
+    assert embedded_calls == [(index_db, "codex-session:v1-a", embeddings_db)]
 
 
 def test_archive_convergence_pending_check_rejects_status_only_freshness(tmp_path: Path) -> None:
