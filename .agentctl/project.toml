@@ -11,6 +11,18 @@ command = ["nix", "develop", "--accept-flake-config", "--command"]
 inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "POLYLOGUE_ARCHIVE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 
+[workspace]
+provider = "git-worktree"
+root = "/realm/worktrees"
+default_base = "origin/master"
+identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
+checkpoint_untracked = true
+
+[conflicts]
+exact_files = ["pyproject.toml", "uv.lock"]
+generated_surfaces = ["docs/reference/schema-support-matrix.md"]
+semantic_slots = ["archive-schema", "command-catalog", "verification-graph"]
+
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
 exec = ["devtools", "verify"]
