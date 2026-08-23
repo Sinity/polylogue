@@ -68,6 +68,9 @@ from polylogue.daemon.write_coordinator import (
     daemon_write_coordinator,
 )
 from polylogue.logging import configure_logging, get_logger
+from polylogue.operations.embedding_lifecycle import (
+    ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
+)
 from polylogue.product.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
@@ -328,6 +331,15 @@ async def _await_parse_stage_writer_admission() -> bool:
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
     """Run the real startup FTS writer on an exit-safe coordinator thread."""
     await coordinator.run_sync("startup.fts_readiness", _ensure_fts_startup_readiness_sync)
+
+
+async def _run_startup_embedding_lifecycle(coordinator: DaemonWriteCoordinator, archive_root_path: Path) -> Path:
+    """Run embedding lifecycle recovery before any embedding maintenance starts."""
+    return await coordinator.run_sync(
+        "startup.embedding_lifecycle",
+        _ensure_embedding_lifecycle_startup_sync,
+        archive_root_path,
+    )
 
 
 async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) -> int:
@@ -3065,6 +3077,19 @@ async def _run_daemon_services_under_active_writer_lease(
                         else None,
                         "auth_enabled": resolved_browser_capture_auth_token is not None,
                     },
+                )
+
+        # Embedding reads are exposed by the API, so recover the active
+        # generation before publishing either HTTP socket.  Otherwise an
+        # immediate similarity request can recreate legacy WAL sidecars after
+        # the lifecycle checkpoint and turn a clean restart into a failure.
+        if not watcher_blocked:
+            await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
+            if lifecycle_events_enabled:
+                await _emit_daemon_lifecycle_event(
+                    "component_ready",
+                    archive_root_path=archive_root_path,
+                    component="embedding_lifecycle_startup",
                 )
 
         if enable_api:
