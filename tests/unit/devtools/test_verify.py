@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -87,3 +89,39 @@ def test_agentctl_verify_run_omits_mutable_current_receipt(tmp_path: Path) -> No
     VerifyRun(tier="all", argv=["--all"], git_head="head", root=tmp_path, mirror_current=False)
 
     assert not (tmp_path / CURRENT_RUN_PATH).exists()
+
+
+def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+
+    def interrupt(
+        label: str,
+        command: list[str],
+        *,
+        run: VerifyRun,
+    ) -> tuple[int, float, dict[str, object]]:
+        run.start_step(label=label, cmd=command)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest native parallel (all)", ["pytest"])])
+    monkeypatch.setattr(verify, "_run", interrupt)
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify._main(["--quick"]) == 143
+
+    run_payload = json.loads((tmp_path / str(history["artifact_dir"]) / "run.json").read_text())
+    current_payload = json.loads((tmp_path / CURRENT_RUN_PATH).read_text())
+    for payload in (history, run_payload, current_payload):
+        assert payload["status"] == "failed"
+        assert payload["diagnosis"] == "verification_interrupted"
+        assert payload["exit_code"] == 143
+        assert payload["pytest_aggregate"]["termination_reason"] == "sigterm"
+        assert payload["steps"][0]["status"] == "failed"
+        assert payload["steps"][0]["termination_reason"] == "sigterm"
