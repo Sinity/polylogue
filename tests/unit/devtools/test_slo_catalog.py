@@ -172,6 +172,11 @@ def test_verify_slos_json_reports_violation(
     assert rc != 0
     assert payload["blocking"] is True
     assert payload["violations"], "expected violations array to be non-empty"
+    receipt = payload["workload_receipt"]
+    assert receipt["spec"]["family_id"] == "verification-slo"
+    assert receipt["spec"]["measurement_scope"] == "process-tree"
+    assert receipt["phases"][0]["name"] == "benchmark"
+    assert "peak_rss_bytes" in receipt["phases"][0]["unavailable"]
     surfaces_with_violations = {entry["surface"] for entry in payload["violations"]}
     # All catalog surfaces must trip when fed 10s measurements.
     assert set(REQUIRED_SURFACES).issubset(surfaces_with_violations)
