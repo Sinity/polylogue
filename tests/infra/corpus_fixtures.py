@@ -15,7 +15,8 @@ from tests.infra.pathology_zoo import (
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
-    _validate_artifact_with_retry,
+    SeededArchiveQueryLease,
+    acquire_query_only_seeded_archive,
     build_seeded_archive,
     clone_seeded_archive,
     default_cache_root,
@@ -83,7 +84,10 @@ def named_seeded_archive(
 
 
 @pytest.fixture
-def named_seeded_archive_ro(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Path]:
+def named_seeded_archive_ro(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> Callable[[str], SeededArchiveQueryLease]:
     """Point this test's archive root straight at an immutable shared artifact.
 
     Published artifacts are already chmod-read-only with their WAL collapsed
@@ -105,16 +109,22 @@ def named_seeded_archive_ro(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], 
     silently mutating the cache every other test shares.
     """
 
-    def seed(name: str) -> Path:
+    leases: list[SeededArchiveQueryLease] = []
+
+    def close_leases() -> None:
+        for lease in reversed(leases):
+            lease.close()
+
+    request.addfinalizer(close_leases)
+
+    def seed(name: str) -> SeededArchiveQueryLease:
         specs = named_corpus_specs(name)
         artifact = build_seeded_archive(specs)
-        validated = _validate_artifact_with_retry(artifact.root, seeded_archive_key(specs))
-        if validated is None or validated.manifest.manifest_id != artifact.manifest.manifest_id:
-            raise RuntimeError("shared seeded archive failed query-only lease validation")
-        if artifact.root.parent.name != "artifacts":
-            raise RuntimeError("shared seeded archive is outside the authenticated artifact placement")
+        lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(specs))
+        leases.append(lease)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
-        return artifact.root / "index.db"
+        monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
+        return lease
 
     return seed
 

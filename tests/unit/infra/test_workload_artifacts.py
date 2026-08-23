@@ -19,18 +19,20 @@ import pytest
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnlyArchiveError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainError
 from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
     BenchmarkWorkloadTier,
+    SeededArchiveQueryLease,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _open_no_follow,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
     _recover_stale_staging,
+    acquire_query_only_seeded_archive,
     benchmark_corpus_specs,
     benchmark_workload_profile,
     benchmark_workload_tier,
@@ -180,6 +182,11 @@ def test_clone_cleans_partial_output_after_short_write(tmp_path: Path, monkeypat
         raise OSError("injected short write")
 
     monkeypatch.setattr(artifacts, "_write_all", fail_write)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
     with pytest.raises(OSError, match="short write"):
         clone_seeded_archive(artifact, destination)
     assert not destination.exists()
@@ -194,13 +201,18 @@ def test_clone_rejects_tampered_copy_and_cleans_output(tmp_path: Path, monkeypat
 
     def tamper(source: Path, target: Path) -> None:
         original_copy(source, target)
-        tampered = target.joinpath("source.db")
+        tampered = target.joinpath("manifest.json")
         tampered.chmod(tampered.stat().st_mode | stat.S_IWUSR)
         original_bytes = tampered.read_bytes()
         tampered.write_bytes(bytes((original_bytes[0] ^ 1,)) + original_bytes[1:])
 
     monkeypatch.setattr(artifacts, "_copy_tree", tamper)
-    with pytest.raises(ValueError, match="content mismatch"):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="manifest bytes mismatch"):
         clone_seeded_archive(artifact, destination)
     assert not destination.exists()
 
@@ -256,6 +268,77 @@ def test_seeded_archive_copy_fallback_rebinds_durable_bootstrap(
     assert clone.clone_method == "copy"
     with ArchiveStore.open_existing(clone.root, read_only=False) as archive:
         assert archive.count_sessions() == 64
+    clone.close()
+
+
+def test_seeded_archive_clone_leaves_unrelated_siblings_live(tmp_path: Path) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    parent = tmp_path / "consumer-work"
+    sibling = parent / "unrelated-sibling"
+    sibling.mkdir(parents=True)
+
+    with clone_seeded_archive(artifact, parent / "seeded-archive-clone"):
+        sibling.joinpath("still-live.txt").write_text("independent", encoding="utf-8")
+        assert sibling.joinpath("still-live.txt").read_text(encoding="utf-8") == "independent"
+
+
+def test_seeded_archive_clone_preserves_caller_directory_modes(tmp_path: Path) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    parent = tmp_path / "consumer-work"
+    parent.mkdir(mode=0o750)
+    ancestor_mode = stat.S_IMODE(tmp_path.stat().st_mode)
+    parent_mode = stat.S_IMODE(parent.stat().st_mode)
+
+    with clone_seeded_archive(artifact, parent / "seeded-archive-clone"):
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == ancestor_mode
+        assert stat.S_IMODE(parent.stat().st_mode) == parent_mode
+
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == ancestor_mode
+    assert stat.S_IMODE(parent.stat().st_mode) == parent_mode
+
+
+def test_seeded_archive_reflink_and_copy_clones_are_equivalent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    attempted: list[list[str]] = []
+    real_run = subprocess.run
+
+    def record_reflink_attempt(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        attempted.append(args)
+        return cast(subprocess.CompletedProcess[bytes], real_run(args, **kwargs))
+
+    monkeypatch.setattr(subprocess, "run", record_reflink_attempt)
+    fast = clone_seeded_archive(artifact, tmp_path / "fast")
+
+    def reject_reflink(*_args: object, **_kwargs: object) -> None:
+        late = tmp_path / "fallback"
+        late.mkdir(exist_ok=True)
+        late.joinpath("late-copy-residue").write_text("remove me", encoding="utf-8")
+        raise subprocess.CalledProcessError(1, ["cp"])
+
+    monkeypatch.setattr(subprocess, "run", reject_reflink)
+    fallback = clone_seeded_archive(artifact, tmp_path / "fallback")
+    ignored = ".maintenance-state/durable-change-trains/.bootstrap"
+
+    def files(root: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and str(path.relative_to(root)) != ignored
+        }
+
+    try:
+        assert attempted == [["cp", "-a", "--reflink=always", str(artifact.root), str(fast.root)]]
+        assert fast.clone_method in {"reflink", "copy"}
+        assert fallback.clone_method == "copy"
+        assert not fallback.root.joinpath("late-copy-residue").exists()
+        assert files(fast.root) == files(fallback.root)
+    finally:
+        fast.close()
+        fallback.close()
 
 
 def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: Path) -> None:
@@ -444,6 +527,11 @@ def test_clone_rejects_hardlinked_leaf_and_cleans_output(tmp_path: Path, monkeyp
         os.link(source / "source.db", leaf)
 
     monkeypatch.setattr(artifacts, "_copy_tree", hardlink)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
     with pytest.raises(ValueError, match="inode"):
         clone_seeded_archive(artifact, destination)
     assert not destination.exists()
@@ -1235,7 +1323,9 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 
 
 def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The read-only fixture hands back the shared artifact, not a copy of it.
 
@@ -1244,7 +1334,12 @@ def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
     read-only mode assertion fail -- the two properties that let every worker
     and every test share one copy.
     """
-    db_path = named_seeded_archive_ro("cli-chatgpt")
+    monkeypatch.setattr(
+        "tests.infra.corpus_fixtures.build_seeded_archive",
+        lambda specs: build_seeded_archive(specs, cache_root=tmp_path / "cache"),
+    )
+    lease = named_seeded_archive_ro("cli-chatgpt")
+    db_path = lease.path
 
     assert db_path.is_file()
     assert db_path.name == "index.db"
@@ -1252,8 +1347,51 @@ def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
     assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(db_path.parent)
     assert not (db_path.parent.stat().st_mode & stat.S_IWUSR)
 
-    with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
+    with lease.open() as archive:
         assert archive.count_sessions() > 0
+
+
+@pytest.mark.parametrize("mutation", ("content", "sidecar", "replacement", "symlink"))
+def test_query_only_lease_refuses_mutated_or_replaced_source(tmp_path: Path, mutation: str) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
+    root = artifact.root
+    try:
+        if mutation == "content":
+            index = root / "index.db"
+            root.chmod(root.stat().st_mode | stat.S_IWUSR)
+            index.chmod(index.stat().st_mode | stat.S_IWUSR)
+            payload = index.read_bytes()
+            index.write_bytes(bytes((payload[0] ^ 1,)) + payload[1:])
+        elif mutation == "sidecar":
+            root.chmod(root.stat().st_mode | stat.S_IWUSR)
+            root.joinpath("index.db-wal").write_bytes(b"injected")
+        else:
+            parked = root.with_name(f"{root.name}-{mutation}")
+            root.rename(parked)
+            if mutation == "symlink":
+                root.symlink_to(parked, target_is_directory=True)
+
+        with pytest.raises(RuntimeError, match="query-only capability source"):
+            lease.open()
+    finally:
+        lease.close()
+
+
+def test_query_only_lease_allows_only_authenticated_read_use_and_finalization(tmp_path: Path) -> None:
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
+
+    with lease.open() as archive:
+        assert archive.count_sessions() == 64
+        with pytest.raises(ReadOnlyArchiveError, match="read-only"):
+            archive.delete_sessions(("codex-session:c03-target",))
+    with pytest.raises(RuntimeError, match="write-capable"):
+        lease.open(read_only=False)
+
+    lease.close()
+    with pytest.raises(RuntimeError, match="finalized"):
+        lease.open()
 
 
 # ---------------------------------------------------------------------------
