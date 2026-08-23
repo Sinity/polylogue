@@ -144,3 +144,32 @@ def test_clone_requests_reflink_before_copy_fallback(monkeypatch: pytest.MonkeyP
     assert calls == [["cp", "-a", "--reflink=always", f"{template}/.", str(destination)]]
     assert (destination / "index.db").read_bytes() == b"snapshot"
     assert (destination / "index.db").stat().st_mode & stat.S_IWUSR
+
+
+def test_clone_fallback_replaces_a_read_only_partial_reflink_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed reflink may leave immutable directories that the fallback replaces."""
+    template = tmp_path / "template"
+    destination = tmp_path / "clone"
+    template.mkdir()
+    source = template / "source.db"
+    with contextlib.closing(sqlite3.connect(source)) as connection, connection:
+        connection.execute("CREATE TABLE entries (value TEXT)")
+        connection.execute("INSERT INTO entries VALUES ('complete-template')")
+    finalize_archive_template(template)
+
+    def partial_reflink(argv: list[str], **_kwargs: object) -> None:
+        partial = destination / "nested" / "partial.db"
+        partial.parent.mkdir(parents=True)
+        partial.write_bytes(b"incomplete")
+        for path in (partial, partial.parent, destination):
+            path.chmod(path.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(subprocess, "run", partial_reflink)
+    clone_archive_template(template, destination)
+
+    with contextlib.closing(sqlite3.connect(destination / "source.db")) as connection:
+        assert connection.execute("SELECT value FROM entries").fetchall() == [("complete-template",)]
+    assert not destination.joinpath("nested", "partial.db").exists()

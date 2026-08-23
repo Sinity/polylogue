@@ -302,6 +302,9 @@ def _write_real_unreviewed_canary_report(
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
         connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
+        # Model the v43 -> v44 targeted title backfill: the old index shape
+        # lacks authored title values and the rebuilt candidate restores them.
+        connection.execute("PRAGMA user_version = 43")
 
     receipt_path = _schema_receipt_path(canary_root)
     observed_result = run_reindex_canary(
@@ -322,10 +325,10 @@ def _write_real_unreviewed_canary_report(
                         "operation": difference.operation.value,
                         "identity": dict(difference.identity),
                         "changed_columns": list(difference.changed_columns),
-                        "classification": "unexpected",
-                        "reference": "successor:polylogue-ox2iz",
-                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
-                        "rationale": "reviewed real canary difference",
+                        "classification": "expected",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "reviewed v44 title-reprocess difference",
                     }
                     for difference in observed_result.comparison.differences
                 ]
@@ -371,10 +374,10 @@ def _write_review_manifest(path: Path, differences: list[dict[str, object]]) -> 
                 "reviews": [
                     {
                         **difference,
-                        "classification": "unexpected",
-                        "reference": "successor:polylogue-ox2iz",
-                        "authority": {"kind": "successor", "id": "polylogue-ox2iz"},
-                        "rationale": "reviewed real canary difference",
+                        "classification": "expected",
+                        "reference": "delta:44",
+                        "authority": {"kind": "delta", "id": "44"},
+                        "rationale": "reviewed v44 title-reprocess difference",
                     }
                     for difference in differences
                 ]
@@ -880,10 +883,10 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
     _write_review_manifest(review_path, [difference.to_dict() for difference in observed_result.comparison.differences])
     review_payload = json.loads(review_path.read_text(encoding="utf-8"))
     for review in review_payload["reviews"]:
-        review["classification"] = "expected"
-        review["reference"] = "delta:44"
-        review["authority"] = {"kind": "delta", "id": "44"}
-        review["rationale"] = "reviewed v44 title-reprocess difference"
+        review["classification"] = "unexpected"
+        review["reference"] = "successor:polylogue-ox2iz"
+        review["authority"] = {"kind": "successor", "id": "polylogue-ox2iz"}
+        review["rationale"] = "reviewed real canary difference"
     review_path.write_text(json.dumps(review_payload), encoding="utf-8")
     generated = CliRunner().invoke(
         cli,
@@ -1171,7 +1174,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         selection=selection,
         comparison=comparison,
         rebuild_receipt={
-            "receipt_schema_version": 4,
+            "receipt_schema_version": 5,
             "archive_root": str(index_path.parent),
             "selected_raw_count": len(selection.selected_raw_ids),
             "status": "replayed",
@@ -1227,7 +1230,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
         selection=result.selection,
         comparison=result.comparison,
         rebuild_receipt={
-            "receipt_schema_version": 4,
+            "receipt_schema_version": 5,
             "archive_root": str(index_path.parent),
             "selected_raw_count": 1,
             "status": "replayed",

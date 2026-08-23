@@ -274,7 +274,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
         "source_snapshot": "snapshot",
     }
     return {
-        "receipt_schema_version": 4,
+        "receipt_schema_version": 5,
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
         "status": "replayed",
@@ -1400,7 +1400,7 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert isinstance(owner_id, str) and owner_id
     assert isinstance(source_snapshot, str) and source_snapshot
     assert source_snapshot == evidence_before == rebuild_source_evidence_snapshot(root)
-    assert receipt["receipt_schema_version"] == 4
+    assert receipt["receipt_schema_version"] == 5
     assert receipt["source_evidence_after"] == rebuild_source_evidence_snapshot(root)
     canary_acceptance = receipt["canary_acceptance"]
     assert isinstance(canary_acceptance, dict)

@@ -65,6 +65,15 @@ def finalize_archive_template(root: Path) -> None:
     _freeze_archive_template(root)
 
 
+def _remove_partial_clone(destination: Path) -> None:
+    """Thaw a failed reflink attempt before replacing it with a full copy."""
+    for path in sorted(destination.rglob("*"), reverse=True):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+    shutil.rmtree(destination)
+
+
 def clone_archive_template(template: Path, destination: Path) -> None:
     """Clone an immutable archive into a private writable destination."""
     destination.mkdir(parents=True, exist_ok=True)
@@ -82,10 +91,9 @@ def clone_archive_template(template: Path, destination: Path) -> None:
             timeout=10,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        # ``destination`` already exists from the fast-path setup.  Reusing it
-        # makes copytree try to overwrite read-only template files before the
-        # thaw loop runs, which fails on a legitimate no-CoW filesystem.
-        shutil.rmtree(destination)
+        # A failed ``cp`` can have already copied immutable directories. Thaw
+        # that partial tree before replacing it on a filesystem without CoW.
+        _remove_partial_clone(destination)
         shutil.copytree(template, destination, symlinks=True)
     for path in destination.rglob("*"):
         if path.is_symlink():
