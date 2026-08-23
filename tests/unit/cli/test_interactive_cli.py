@@ -193,9 +193,12 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
 
     assert result.exit_code == 0
     assert json.loads(grid_to_text(result.grid).strip()) == {
+        "cwd_display": None,
         "date": "2026-07-11",
         "id": "chatgpt-export:ext-older",
+        "message_count": 1,
         "origin": "chatgpt-export",
+        "repo": None,
         "title": "Interactive picker candidate older",
     }
 
