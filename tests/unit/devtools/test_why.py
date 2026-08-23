@@ -70,15 +70,10 @@ def test_failing_steps_and_non_green_tests_are_surfaced() -> None:
     assert "01-ok" not in output, "passing steps are noise in a failure explanation"
 
 
-def test_import_mismatch_remedy_warns_that_the_obvious_probe_lies() -> None:
-    """Regression guard for a real trap: `python -c 'import polylogue'` run from
-    inside a worktree reports that worktree because cwd leads sys.path, so it
-    "confirms" a correct checkout while the active environment belongs to
-    another one."""
+def test_import_mismatch_remedy_names_the_retained_contract() -> None:
     remedy = _EXPLANATIONS["checkout_import_mismatch"].remedy
 
-    assert "cwd" in remedy
-    assert "VIRTUAL_ENV" in remedy
+    assert "imports polylogue" in remedy
 
 
 def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +97,6 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
                     "tier": "testmon",
                     "duration_s": 2700.0,
                     "diagnosis": "pytest_failed",
-                    "checkout_root": "/realm/project/polylogue",
                     "pytest_aggregate": {"selected_union_count": 0, "terminal_union_count": 20000},
                 },
                 {
@@ -110,7 +104,6 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
                     "tier": "focused-test",
                     "duration_s": 10.0,
                     "diagnosis": "pytest_passed",
-                    "checkout_root": "/realm/worktrees/lane-a",
                 },
                 {"started_at": stale, "tier": "quick", "duration_s": 9999.0, "diagnosis": "pytest_passed"},
             )
@@ -126,6 +119,5 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
     output = stream.getvalue()
     assert "2 run(s)" in output, "the 100-hour-old run is outside the window"
     assert "9999" not in output
-    assert "lane-a" in output, "lanes must be visible; their receipts die with the worktree"
     assert "selected nothing and ran the full corpus" in output
     assert "under-counted" in output, "the record omits killed runs and must say so"

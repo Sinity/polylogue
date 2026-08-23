@@ -35,6 +35,7 @@ pool = "normal"
 result = "pytest"
 cache = "tree+environment"
 exclusive_keys = ["polylogue:testmon-graph"]
+scratch = "nvme"
 
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"
@@ -50,6 +51,7 @@ pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
 exclusive_keys = ["polylogue:testmon-graph"]
+scratch = "nvme"
 
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"

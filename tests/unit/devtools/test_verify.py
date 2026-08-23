@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from devtools import verify
-from devtools.verify_runs import VerifyRun, aggregate_pytest_statistics, env_for_pytest_step
+from devtools.verify_runs import (
+    CURRENT_RUN_PATH,
+    VerifyRun,
+    aggregate_pytest_statistics,
+    env_for_pytest_step,
+)
 
 
 def test_quick_steps_are_static_gates() -> None:
@@ -75,3 +80,10 @@ def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(run.run_id)
     assert Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) == artifacts.events_dir
+
+
+def test_agentctl_verify_run_omits_mutable_current_receipt(tmp_path: Path) -> None:
+    """AgentCTL-owned verification does not create the local UI mirror."""
+    VerifyRun(tier="all", argv=["--all"], git_head="head", root=tmp_path, mirror_current=False)
+
+    assert not (tmp_path / CURRENT_RUN_PATH).exists()

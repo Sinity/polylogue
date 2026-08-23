@@ -51,10 +51,8 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "Re-run. If it was interrupted mid-bootstrap, the graph is retained and the next run resumes from it.",
     ),
     "checkout_import_mismatch": Explanation(
-        "The interpreter that ran belongs to a different checkout than the code under test.",
-        "Activate this checkout's own environment. NOTE: a `python -c 'import polylogue'` probe cannot confirm "
-        "this -- cwd comes first on sys.path, so it reports the local tree even when the environment is wrong. "
-        "Check VIRTUAL_ENV and the .pth in the active venv's site-packages instead.",
+        "The resolved polylogue package was outside the checkout being verified.",
+        "Run with an environment that imports polylogue from the invoked checkout.",
     ),
 }
 
@@ -189,12 +187,11 @@ def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _render_history(hours: float, stream: Any) -> int:
-    """Answer "where did the time go" from the durable cross-checkout history.
+    """Answer "where did the time go" from the durable verification history.
 
     This exists because the question kept being asked and kept requiring an ad
     hoc DuckDB query against the lynchpin substrate, which materialises on its
-    own cadence and was 17 hours stale when it mattered. The history file is the
-    same data at its source, includes every checkout and linked worktree, and is
+    own cadence and was 17 hours stale when it mattered. The history file is
     current by construction.
     """
     if not VERIFY_HISTORY_PATH.exists():
@@ -245,15 +242,6 @@ def _render_history(hours: float, stream: Any) -> int:
 
     _summarise("tier", "tier")
     _summarise("diagnosis", "diagnosis")
-    checkouts: dict[str, tuple[int, float]] = {}
-    for entry in rows:
-        name = Path(str(entry.get("checkout_root") or "-")).name or "-"
-        runs, seconds = checkouts.get(name, (0, 0.0))
-        checkouts[name] = (runs + 1, seconds + float(entry.get("duration_s") or 0.0))
-    print("by checkout:", file=stream)
-    for name, (runs, seconds) in sorted(checkouts.items(), key=lambda item: -item[1][1]):
-        print(f"  {name:38} {runs:5} run(s)  {seconds / 3600:7.2f}h", file=stream)
-    print(file=stream)
 
     # The expensive shape, called out by name: runs that selected nothing and
     # therefore executed everything.

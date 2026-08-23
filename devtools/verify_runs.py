@@ -95,8 +95,6 @@ class VerifyRun:
         argv: list[str],
         git_head: str | None,
         root: Path | None = None,
-        polylogue_import_path: str | None = None,
-        environment_fingerprint: Mapping[str, Any] | None = None,
         mirror_current: bool = True,
     ) -> None:
         self.root = root or Path.cwd()
@@ -109,9 +107,6 @@ class VerifyRun:
             "argv": list(argv),
             "git_head": git_head,
             "git_dirty": git_dirty(self.root),
-            "polylogue_import_path": polylogue_import_path,
-            "environment_fingerprint": dict(environment_fingerprint) if environment_fingerprint else None,
-            "checkout_root": str(self.root.resolve()),
             "started_at": utc_now(),
             "status": "running",
             "steps": [],
@@ -128,15 +123,6 @@ class VerifyRun:
         _write_json(self.run_dir / "run.json", self._payload)
         if self.mirror_current:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
-
-    def update_checkout_provenance(
-        self, *, polylogue_import_path: str | None = None, environment_fingerprint: Mapping[str, Any] | None = None
-    ) -> None:
-        if polylogue_import_path is not None:
-            self._payload["polylogue_import_path"] = polylogue_import_path
-        if environment_fingerprint is not None:
-            self._payload["environment_fingerprint"] = dict(environment_fingerprint)
-        self.write()
 
     def record_selection(
         self,
