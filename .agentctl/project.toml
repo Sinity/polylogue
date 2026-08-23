@@ -54,6 +54,28 @@ timeout_seconds = 7200
 exclusive_keys = ["polylogue:testmon-graph"]
 scratch = "nvme"
 
+[operations.dev_loop_proof]
+description = "Run the bounded browser-capture dev-loop proof through AgentCTL"
+exec = ["devtools", "workspace", "dev-loop-service", "--json"]
+pool = "interactive"
+result = "json"
+cache = "none"
+timeout_seconds = 900
+exclusive_keys = ["polylogue:dev-loop-proof"]
+scratch = "nvme"
+
+[operations.dev_loop_proof.service]
+readiness = "project-command"
+lifetime = "job"
+
+[operations.dev_loop_proof.service.ports.api]
+environment = "POLYLOGUE_API_PORT"
+range = [48800, 48863]
+
+[operations.dev_loop_proof.service.ports.browser_capture]
+environment = "POLYLOGUE_BROWSER_CAPTURE_PORT"
+range = [48864, 48927]
+
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
 owner = "polylogue-archive"

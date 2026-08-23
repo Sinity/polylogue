@@ -4251,7 +4251,7 @@ def test_daemon_archive_root_relocation_prepared_receipt_blocks_components(
     assert continuity_admission.call_count == 2
 
 
-def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
+def test_emit_daemon_lifecycle_event_has_no_dev_loop_launcher_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4267,9 +4267,6 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
         async def run_sync(self, actor: str, function: Any, /, *args: object, **kwargs: object) -> None:
             actors.append(actor)
             function(*args, **kwargs)
-
-    monkeypatch.setenv("POLYLOGUE_DEV_LOOP_RUN_ID", "dev-loop-run")
-    monkeypatch.setenv("POLYLOGUE_DEV_LOOP_LOG_DIR", str(tmp_path / "logs"))
 
     with (
         patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit),
@@ -4288,14 +4285,12 @@ def test_emit_daemon_lifecycle_event_carries_dev_loop_context(
     assert actors == ["daemon.lifecycle.component_started"]
     kind, kwargs = calls[0]
     assert kind == "daemon.lifecycle"
-    assert kwargs["operation_id"] == "dev-loop-run"
+    assert kwargs["operation_id"] is None
     payload = cast(dict[str, object], kwargs["payload"])
     assert payload["phase"] == "component_started"
     assert payload["component"] == "api"
     assert payload["port"] == 8766
     assert payload["archive_root"] == str(tmp_path / "archive")
-    assert payload["dev_loop_run_id"] == "dev-loop-run"
-    assert payload["dev_loop_log_dir"] == str(tmp_path / "logs")
 
 
 def test_pidfile_remains_locked_until_admitted_writers_are_drained(

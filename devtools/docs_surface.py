@@ -201,9 +201,9 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
-        "Branch-Local Development Loop",
+        "AgentCTL Development-Loop Proof",
         "dev-loop.md",
-        "Daemon, web-shell, browser-capture, and extension debugging workflow.",
+        "Declared browser-capture proof with AgentCTL-owned host lifecycle.",
         "operations",
     ),
     _entry(

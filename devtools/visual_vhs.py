@@ -132,58 +132,6 @@ DEFAULT_TAPE_SPECS: tuple[VHSTapeSpec, ...] = (
         output_width=132,
         output_height=34,
     ),
-    VHSTapeSpec(
-        name="browser-capture-tour",
-        description="Browser-backed deterministic ChatGPT/Claude live-follow proof",
-        display_command=("devtools", "workspace", "dev-loop", "--browser-provider-live-follow"),
-        capture_steps=(
-            # Wait for a completion marker instead of a fixed "Sleep 24s" --
-            # real headless-Chrome browser-capture automation is highly
-            # load-dependent and a fixed 24s budget let the later heredoc
-            # get typed as pending input while the command was still
-            # running, committing a frame with no printed results
-            # (polylogue-93cp). The marker is split ('CAP''TURED') so the
-            # literal substring never appears in the typed command line
-            # itself -- otherwise Wait+Screen matches the terminal's own
-            # echo of the not-yet-executed command instantly.
-            "Type \"devtools workspace dev-loop --isolated-ports --browser-provider-live-follow --json > browser-capture-tour.json && printf 'CAP''TURED\\n'\"",
-            "Enter",
-            "Wait+Screen@180s /CAPTURED/",
-            "Type \"python - <<'PY'\"",
-            "Enter",
-            'Type "import json"',
-            "Enter",
-            "Type \"p=json.load(open('browser-capture-tour.json'))['browser_provider_live_follow']\"",
-            "Enter",
-            "Type \"print('ok', p['ok'])\"",
-            "Enter",
-            "Type \"print('providers', p['provider_statuses'])\"",
-            "Enter",
-            "Type \"print('archive_ok', p['archive_ok'])\"",
-            "Enter",
-            "Type \"print('api_ok', p['api_ok'])\"",
-            "Enter",
-            "Type \"print('reader_ok', p['reader_ok'])\"",
-            "Enter",
-            "Type \"print('session_id', p['session_id'])\"",
-            "Enter",
-            "Type \"print('api_messages', {k: v['message_count'] for k, v in p['api_messages'].items()})\"",
-            "Enter",
-            "Type \"print('reader_rows', p['reader']['message_row_count'])\"",
-            "Enter",
-            'Type "PY"',
-            "Enter",
-            "Sleep 2s",
-        ),
-        # NOTE: not tightened to match its measured ~228px content height
-        # (like evidence-receipt and reader-evidence-tour were) -- this
-        # capture is real headless-Chrome browser automation and this
-        # session could not get a clean re-render to visually verify a
-        # smaller frame doesn't clip content (see polylogue-93cp follow-up).
-        # Left at the original size; only the Wait mechanism above changed.
-        output_width=132,
-        output_height=34,
-    ),
 )
 
 

@@ -403,29 +403,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace dev-loop",
+        "workspace dev-loop-service",
         "workspace",
-        "Preflight branch-local daemon, web-shell, and browser-capture development loops.",
-        "devtools.dev_loop",
+        "Run the fixed Polylogue browser-capture proof inside an AgentCTL service lease.",
+        "devtools.dev_loop_service",
         use_when=(
-            "Before running a branch-local polylogued/web-shell/browser-capture loop, "
-            "check whether the deployed user service is active, which ports are occupied, "
-            "and which isolated archive/log paths this checkout should use."
+            "AgentCTL invokes this fixed command through the declared dev_loop_proof operation. "
+            "Start that operation with agentctl so exact checkout binding, ports, lifecycle, cancellation, and results stay canonical."
         ),
         examples=(
-            "devtools workspace dev-loop",
-            "devtools workspace dev-loop --json",
-            "devtools workspace dev-loop --prepare --api-port 8876 --browser-capture-port 8875",
-            "devtools workspace dev-loop --api-port 8876 --browser-capture-port 8875 --launch-daemon",
-            "devtools workspace dev-loop --capture-cli -- polylogue ops status",
-            "devtools workspace dev-loop --receiver-smoke --json",
-            "devtools workspace dev-loop --extension-smoke --json",
-            "devtools workspace dev-loop --browser-smoke --json",
-            "devtools workspace dev-loop --browser-provider-smoke --json",
-            "devtools workspace dev-loop --browser-plan --json",
-            "devtools workspace dev-loop --browser-live-proof --browser-live-profile-dir .local/browser-profiles/<copy> --json",
-            "devtools workspace dev-loop --tui-plan --json",
-            "devtools workspace dev-loop --inspect-run .cache/dev-loop/<run-id> --json",
+            "agentctl job start polylogue dev_loop_proof --workspace <workspace-id>",
+            "agentctl job result <job-id>",
         ),
     ),
     CommandSpec(

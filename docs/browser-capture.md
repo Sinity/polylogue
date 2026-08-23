@@ -268,54 +268,15 @@ of dropping content silently.
 
 ## Branch-local extension proof modes
 
-Use `devtools workspace dev-loop` when changing the receiver, extension, or
-provider adapters from a branch. The branch-local loop owns distinct proof
-levels, from cloud-safe synthetic checks to local workstation evidence:
+Use the declared `dev_loop_proof` AgentCTL operation when changing receiver,
+extension, or provider adapters from a branch. It binds the proof to a managed
+checkout, leases its API and receiver ports, proves receiver authentication and
+deterministic provider capture, then reports archive and API convergence through
+the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
+wait, and result commands.
 
-- `--extension-smoke` imports the real background worker with a Chrome API mock
-  and proves receiver auth rejection, receiver status, and accepted capture
-  writes without a GUI browser.
-- `--browser-provider-smoke` loads the unpacked extension into headless
-  Chrome/Chromium, maps deterministic ChatGPT and Claude fixture pages onto
-  their real supported origins, and proves content-script capture plus
-  receiver request-id/artifact evidence without cookies.
-- `--browser-live-proof` is explicit operator-local evidence for authenticated
-  copied-profile work. It opens a visible Chrome/Chromium with an
-  operator-approved copied user-data-dir, live ChatGPT/Claude conversation
-  URLs, and the unpacked extension; it writes a redacted proof summary and keeps
-  any raw captured content inside ignored local receiver spool artifacts.
-
-For a non-authenticated Chrome-family binary check, `--browser-smoke` sits
-between those two layers: it loads the unpacked extension into a fresh headless
-profile and proves that the MV3 service worker can talk to the branch-local
-receiver. It still does not exercise provider cookies or live pages.
-
-Use [`docs/visual-evidence.md`](visual-evidence.md) for the repo-owned reader
-DOM evidence lane and [`docs/dev-loop.md`](dev-loop.md) for the full
-branch-local browser proof ladder. Design screenshots or store media are not
-accepted as browser-capture verification unless they are tied to one of those
-commands and a run-local artifact.
-
-Generate the copied-profile checklist first:
-
-```bash
-devtools workspace dev-loop --browser-plan
-```
-
-Then run the live proof only from a local workstation with a copied profile:
-
-```bash
-devtools workspace dev-loop --browser-live-proof \
-  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
-  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
-  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
-```
-
-The live proof refuses CI by default and rejects common live profile roots or
-Chrome singleton lock files unless a local operator explicitly overrides the
-guardrail. Summaries redact source URLs and provider session ids, omit raw turn
-text, and record provider/adapter identity, role coverage, receiver request ids,
-and spool artifact refs.
+Live copied-profile investigation remains an operator-local workflow. It must
+not create an alternative Polylogue daemon lifecycle or ad hoc receiver lease.
 
 ## Current residual map for #1824 / #1847
 

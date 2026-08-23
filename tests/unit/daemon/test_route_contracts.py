@@ -204,7 +204,6 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
         ("GET", "/api/sessions", "/api/sessions", "read_query", "credential_if_configured"),
         ("GET", "/api/query-units", "/api/query-units", "read_query", "credential_if_configured"),
         ("GET", "/api/archive-debt", "/api/archive-debt", "operational", "credential_if_configured"),
-        ("GET", "/api/dev-loop", "/api/dev-loop", "operational", "credential_if_configured"),
         ("GET", "/api/agents/coordination", "/api/agents/coordination", "operational", "credential_if_configured"),
         ("GET", "/api/import/explain", "/api/import/explain", "operational", "credential_if_configured"),
         ("GET", "/api/assertions", "/api/assertions", "user_overlay", "credential_if_configured"),

@@ -86,77 +86,28 @@ The popup refreshes receiver status automatically when opened and then on a
 short cadence while it remains open; **Check status** is a manual refresh, not
 the only way to update state.
 
-For branch-local development, point **Local receiver URL** in the popup at the
-URL printed by `devtools workspace dev-loop`, usually
-`http://127.0.0.1:8875` when the production receiver is still running on the
-default port. Each status/archive/capture request sends `X-Request-ID`; the
+For branch-local development, use the declared `dev_loop_proof` AgentCTL
+operation. Its job result is the authority for the leased receiver URL and
+lifecycle. Each status/archive/capture request sends `X-Request-ID`; the
 popup shows the receiver's echoed request id and records the request/response
 stage in **Debug log**. Use **Export JSON** to save the redacted debug packet
 and correlate popup action, service-worker request, receiver decision,
 artifact ref, and archive state. The debug packet intentionally records stage
 metadata rather than transcript text.
 
-Before loading a GUI browser, run the branch-local background/receiver smoke:
+Run the managed deterministic proof before loading a GUI browser:
 
 ```bash
-devtools workspace dev-loop --extension-smoke
-devtools workspace dev-loop --browser-provider-smoke
+agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
+agentctl job result <job-id>
 ```
 
-The smoke starts a temporary local receiver, imports the actual background
-worker with a Chrome API mock, proves unauthenticated rejection, configures the
-receiver token, checks receiver status, and posts a deterministic capture
-envelope. Artifacts are written under `.cache/dev-loop/<run-id>/browser/`.
-This proves the extension service-worker HTTP path without using real
-ChatGPT/Claude.ai profile data. The provider page smoke then loads the unpacked
-extension into real headless Chromium/Chrome, serves deterministic ChatGPT and
-Claude fixture pages behind a local CONNECT proxy on their normal origins, opens
-those pages through extension-owned tab APIs, triggers the content-script
-capture path through extension-visible tabs, and verifies provider/adapter
-identity, receiver request ids, and spool artifacts without copying browser
-profiles or writing raw turn text into the summary. Automated unpacked-extension
-proof prefers Chromium or Chrome for Testing, including the local Nix-store
-Chromium when it is not on `PATH`, because branded Google Chrome 137+ can expose
-a partial service-worker target while withholding content-script and extension
-page behavior from `--load-extension` automation. Set
-`POLYLOGUE_PROVIDER_SMOKE_CHROME=/path/to/browser` to override the binary. If
-manifest content-script delivery is unavailable in the fixture browser, the
-smoke uses the same `chrome.scripting.executeScript` retry path as the popup and
-records the `injection_mode`. If Chrome creates the page target but the
-extension cannot see the corresponding tab, the summary records both the CDP
-page target and the extension-visible tab inventory.
-
-For live authenticated ChatGPT/Claude.ai work, generate the operator-local plan
-and run the copied-profile proof from the repo instead of inventing a private
-checklist:
-
-```bash
-devtools workspace dev-loop --browser-plan
-devtools workspace dev-loop --browser-live-proof \
-  --browser-live-profile-dir .local/browser-profiles/<run-id>-chrome-user-data \
-  --browser-live-chatgpt-url https://chatgpt.com/c/<conversation-id> \
-  --browser-live-claude-url https://claude.ai/chat/<conversation-id>
-```
-
-`--browser-plan` writes `browser-live-proof-checklist.md` and
-`browser-live-proof.env.example` under the run-local browser artifact directory.
-`--browser-live-proof` opens a visible local Chrome/Chromium with the unpacked
-extension and the operator-approved copied profile, configures a temporary
-branch-local receiver, asks content scripts to capture live provider pages, and
-writes a redacted summary plus request-id/artifact evidence. It refuses CI by
-default and rejects common live profile roots or Chrome `Singleton*` lock files
-unless the operator explicitly overrides that guardrail in the local shell.
-Raw captured content remains only in ignored local receiver spool artifacts.
-
-If headless Chromium cannot expose MV3 extension service workers, the browser
-smokes fail cleanly with `Polylogue extension service worker not found` in the
-stderr artifact. Set `POLYLOGUE_BROWSER_SMOKE_CHROME` or
-`POLYLOGUE_PROVIDER_SMOKE_CHROME` to a Chrome/Chromium binary with extension
-service-worker support. When Chrome exposes the service worker but does not
-deliver provider content scripts, the provider smoke records page diagnostics,
-tab inventory, and injection mode. Set `POLYLOGUE_PROVIDER_SMOKE_HEADLESS=0` to
-repeat the same isolated-profile proof visibly, or use `--browser-live-proof`
-with a visible copied profile for operator-local live-page evidence.
+The proof starts a temporary receiver, proves unauthenticated rejection, loads
+the unpacked extension into headless Chromium/Chrome, captures deterministic
+ChatGPT and Claude fixture pages, and verifies archive/API convergence without
+cookies or raw turn text in its bounded result. AgentCTL owns the process,
+ports, timeout, cancellation, and cleanup. Live copied-profile investigation is
+operator-local and does not create another Polylogue service lifecycle.
 
 ## Mission control, pairing, and ambient status
 

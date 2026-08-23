@@ -231,15 +231,6 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "bounded cockpit overview",
         "Privacy-safe landing aggregates, readiness, and a fixed recent-session page.",
     ),
-    RouteContract(
-        "GET",
-        "/api/dev-loop",
-        "operational",
-        "shell_supported",
-        "credential_if_configured",
-        "DevLoopDebugPayload",
-        "Branch-local launcher metadata for the web shell; allowlisted fields only, no raw environment dump.",
-    ),
     RouteContract("GET", "/api/events", "operational", "stable", "credential_if_configured", "SSE or JSON event poll"),
     RouteContract(
         "GET",

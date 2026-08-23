@@ -27,7 +27,7 @@ See also: `2026-05-27_Build_Plan.md` §D (Cloud agent enablement).
 | `uv run devtools render all --check`          | yes       | Generated-file drift check (also runs in CI).               |
 | `polylogued run --no-api --no-watch --no-browser-capture` | yes\*     | \*Only against synthetic fixtures in `/tmp/polylogue-archive`. `--no-api` alone is insufficient; you must also disable live watch and browser capture for a truly inert sandbox. |
 | Real archive imports (`~/.claude/projects/…`) | NO        | Never upload personal corpus into a managed sandbox.        |
-| Browser-capture live/copied-profile proof     | NO        | `dev-loop --browser-live-proof` is explicit local workstation evidence only; deterministic smokes are the cloud-safe substitute. |
+| Browser-capture live/copied-profile proof     | NO        | It is explicit local workstation evidence only; the declared deterministic AgentCTL proof is the repository route. |
 | Any `/realm/data/...` path                    | NO        | Not mounted in cloud sandboxes; would resolve to nothing.   |
 
 ## Privacy and plan tier
