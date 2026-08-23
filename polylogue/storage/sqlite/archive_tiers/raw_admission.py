@@ -98,12 +98,15 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from math import isfinite
+from typing import Literal, TypeAlias
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
@@ -161,6 +164,165 @@ class RawAdmissionResult:
     refusal_reason: str | None = None
     reacquire_attempted: bool = False
     reacquire_changed_outcome: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PendingPreParseRawAdmissionRequest:
+    """Request to preserve one published blob before parser identity exists.
+
+    ``blob_hash`` stays content-addressed. ``raw_id`` is an observation
+    identity: callers may supply a provider-scoped coordinate (Hermes does),
+    otherwise the planner derives the canonical coordinate-sensitive id.
+    """
+
+    origin: Origin | str
+    capture_mode: Provider | str | None
+    source_path: str
+    source_index: int
+    blob_hash: bytes
+    blob_size: int
+    acquired_at_ms: int
+    file_mtime_ms: int | None = None
+    native_id: str | None = None
+    raw_id: str | None = None
+    blob_publication_receipt_id: str | None = None
+
+
+RawAdmissionRequest: TypeAlias = PendingPreParseRawAdmissionRequest
+
+
+@dataclass(frozen=True, slots=True)
+class RawAdmissionPlan:
+    """Pure, executor-neutral durable admission decision."""
+
+    request: RawAdmissionRequest
+    arm: RawAdmissionArm
+    raw_id: str
+    revision: RawRevisionEnvelope
+
+
+@dataclass(frozen=True, slots=True)
+class RawAdmissionExecution:
+    """Result returned by an executor after applying one admission plan."""
+
+    result: RawAdmissionResult
+    inserted: bool
+
+
+def acquisition_timestamp_ms(value: object) -> int:
+    """Parse the required acquisition observation time into epoch milliseconds.
+
+    This is deliberately stricter than generic timestamp normalization: raw
+    admission cannot invent ``0`` for absent or malformed evidence. Integer
+    values (including explicit ``0``) are already epoch milliseconds; ISO and
+    other supported timestamp forms are converted once at the boundary.
+    """
+    if value is None or isinstance(value, bool):
+        raise ValueError("acquisition time is required and must be valid")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, float):
+        if not isfinite(value) or not value.is_integer():
+            raise ValueError("acquisition time must resolve to integer milliseconds")
+        result = int(value)
+    elif isinstance(value, str) and value.strip().lstrip("+").isdigit():
+        result = int(value)
+    elif isinstance(value, datetime):
+        parsed = value
+        result = int(parsed.timestamp() * 1000)
+    elif isinstance(value, str):
+        parsed = parse_timestamp(value)
+        if parsed is None:
+            raise ValueError("acquisition time is missing or malformed")
+        result = int(parsed.timestamp() * 1000)
+    else:
+        raise ValueError("acquisition time is missing or malformed")
+    if result < 0:
+        raise ValueError("acquisition time must be nonnegative")
+    return result
+
+
+def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
+    """Validate and plan a normal pre-parse raw admission without SQL.
+
+    Acquisition time is durable observation evidence, not a convenience
+    default. Zero is a valid epoch value; missing, malformed, boolean, and
+    negative values are refused before an executor can mutate source.db.
+    """
+    if len(request.blob_hash) != 32:
+        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    if isinstance(request.acquired_at_ms, bool) or not isinstance(request.acquired_at_ms, int):
+        raise ValueError("acquired_at_ms must be an integer epoch millisecond value")
+    if request.acquired_at_ms < 0:
+        raise ValueError("acquired_at_ms must be nonnegative")
+    if request.file_mtime_ms is not None and (
+        isinstance(request.file_mtime_ms, bool)
+        or not isinstance(request.file_mtime_ms, int)
+        or request.file_mtime_ms < 0
+    ):
+        raise ValueError("file_mtime_ms must be a nonnegative integer when supplied")
+
+    raw_id = request.raw_id or deterministic_raw_session_id(
+        request.origin,
+        request.source_path,
+        request.source_index,
+        request.blob_hash,
+        request.native_id,
+    )
+    if not raw_id:
+        raise ValueError("raw_id must not be empty")
+    pending_key = pending_raw_logical_source_key(
+        origin=request.origin,
+        source_path=request.source_path,
+        source_index=request.source_index,
+        raw_id=raw_id,
+    )
+    return RawAdmissionPlan(
+        request=request,
+        arm=RawAdmissionArm.POST_PARSE_PENDING,
+        raw_id=raw_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=pending_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=request.blob_hash.hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
+    )
+
+
+def execute_raw_admission_plan_sync(conn: sqlite3.Connection, plan: RawAdmissionPlan) -> RawAdmissionResult:
+    """Apply a precomputed plan through the canonical synchronous writer."""
+    request = plan.request
+    if _assert_existing_raw_observation_identity(
+        conn,
+        raw_id=plan.raw_id,
+        origin=request.origin,
+        native_id=request.native_id,
+        source_path=request.source_path,
+        source_index=request.source_index,
+        blob_hash=request.blob_hash,
+        blob_size=request.blob_size,
+    ):
+        _backfill_raw_file_mtime(conn, raw_id=plan.raw_id, file_mtime_ms=request.file_mtime_ms)
+        return RawAdmissionResult(arm=plan.arm, raw_id=plan.raw_id)
+    admitted_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=request.origin,
+        capture_mode=request.capture_mode,
+        source_path=request.source_path,
+        source_index=request.source_index,
+        blob_hash=request.blob_hash,
+        blob_size=request.blob_size,
+        acquired_at_ms=request.acquired_at_ms,
+        file_mtime_ms=request.file_mtime_ms,
+        native_id=request.native_id,
+        raw_id=plan.raw_id,
+        blob_publication_receipt_id=request.blob_publication_receipt_id,
+        revision=plan.revision,
+        manage_transaction=True,
+    )
+    return RawAdmissionResult(arm=plan.arm, raw_id=admitted_raw_id)
 
 
 def _classify_bytes(payload: bytes, prior_head_payload: bytes) -> _ByteRelation:
@@ -568,56 +730,24 @@ def admit_raw_blob_observation(
     blob_publication_receipt_id: str | None = None,
 ) -> RawAdmissionResult:
     """Admit a prepublished, memory-bounded raw blob pending post-parse identity."""
-    if len(blob_hash) != 32:
-        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
-    resolved_raw_id = raw_id or deterministic_raw_session_id(
-        origin,
-        source_path,
-        source_index,
-        blob_hash,
-        native_id,
-    )
-    if _assert_existing_raw_observation_identity(
+    return execute_raw_admission_plan_sync(
         conn,
-        raw_id=resolved_raw_id,
-        origin=origin,
-        native_id=native_id,
-        source_path=source_path,
-        source_index=source_index,
-        blob_hash=blob_hash,
-        blob_size=blob_size,
-    ):
-        _backfill_raw_file_mtime(conn, raw_id=resolved_raw_id, file_mtime_ms=file_mtime_ms)
-        return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
-    pending_key = pending_raw_logical_source_key(
-        origin=origin,
-        source_path=source_path,
-        source_index=source_index,
-        raw_id=resolved_raw_id,
-    )
-    admitted_raw_id = write_source_raw_session_blob_ref(
-        conn,
-        origin=origin,
-        capture_mode=capture_mode,
-        source_path=source_path,
-        source_index=source_index,
-        blob_hash=blob_hash,
-        blob_size=blob_size,
-        acquired_at_ms=acquired_at_ms,
-        file_mtime_ms=file_mtime_ms,
-        native_id=native_id,
-        raw_id=resolved_raw_id,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        revision=RawRevisionEnvelope(
-            logical_source_key=pending_key,
-            kind=RawRevisionKind.FULL,
-            source_revision=blob_hash.hex(),
-            acquisition_generation=0,
-            authority=RawRevisionAuthority.QUARANTINED,
+        plan_raw_admission(
+            PendingPreParseRawAdmissionRequest(
+                origin=origin,
+                capture_mode=capture_mode,
+                source_path=source_path,
+                source_index=source_index,
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                acquired_at_ms=acquired_at_ms,
+                file_mtime_ms=file_mtime_ms,
+                native_id=native_id,
+                raw_id=raw_id,
+                blob_publication_receipt_id=blob_publication_receipt_id,
+            )
         ),
-        manage_transaction=True,
     )
-    return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=admitted_raw_id)
 
 
 def admit_raw_artifact_blob_observation(
@@ -733,10 +863,17 @@ def _admit_artifact(
 
 
 __all__ = [
+    "PendingPreParseRawAdmissionRequest",
+    "RawAdmissionExecution",
     "PriorRawHead",
     "RawAdmissionArm",
+    "RawAdmissionPlan",
+    "RawAdmissionRequest",
     "RawAdmissionResult",
+    "acquisition_timestamp_ms",
     "admit_raw_artifact_blob_observation",
     "admit_raw_blob_observation",
     "admit_raw_observation",
+    "execute_raw_admission_plan_sync",
+    "plan_raw_admission",
 ]

@@ -96,7 +96,7 @@ def _write_minimal_hermes_state(path: Path) -> None:
         )
 
 
-def test_non_hermes_acquisition_keeps_content_addressed_raw_identity(tmp_path: Path) -> None:
+def test_non_hermes_acquisition_uses_coordinate_raw_identity_and_content_blob(tmp_path: Path) -> None:
     payload = b'{"conversation_id":"unchanged"}'
     record = make_raw_record(
         RawSessionData(raw_bytes=payload, source_path="/imports/chatgpt.json"),
@@ -104,8 +104,8 @@ def test_non_hermes_acquisition_keeps_content_addressed_raw_identity(tmp_path: P
         blob_root=tmp_path / "blob",
     )
 
-    assert record.raw_id == sha256(payload).hexdigest()
-    assert record.blob_hash is None
+    assert record.raw_id != sha256(payload).hexdigest()
+    assert record.blob_hash == sha256(payload).hexdigest()
     assert record.capture_mode is Provider.CHATGPT
 
 

@@ -44,6 +44,10 @@ if TYPE_CHECKING:
         RawSessionRecord,
         SessionRecord,
     )
+    from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+        RawAdmissionExecution,
+        RawAdmissionRequest,
+    )
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
 
 
@@ -436,7 +440,7 @@ class TagStore(Protocol):
 class RawPersistenceStore(Protocol):
     """Minimal raw-persistence surface used during acquisition."""
 
-    async def save_raw_session(self, record: RawSessionRecord) -> bool: ...
+    async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution: ...
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool: ...
 

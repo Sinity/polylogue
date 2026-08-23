@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from polylogue.core.protocols import RawPersistenceStore
 from polylogue.logging import get_logger
+from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.runtime import RawSessionRecord
@@ -19,12 +20,13 @@ async def persist_raw_record(
 ) -> None:
     """Persist one raw record and update acquisition counters."""
     try:
-        inserted = await repository.save_raw_session(record)
-        observation = inspect_raw_artifact(record)
+        admission = await repository.admit_raw(pending_pre_parse_raw_admission_request(record))
+        admitted_record = record.model_copy(update={"raw_id": admission.result.raw_id})
+        observation = inspect_raw_artifact(admitted_record)
         await repository.save_artifact_observation(observation)
-        if inserted:
+        if admission.inserted:
             result.acquired += 1
-            result.raw_ids.append(record.raw_id)
+            result.raw_ids.append(admission.result.raw_id)
         else:
             result.skipped += 1
     except Exception as exc:

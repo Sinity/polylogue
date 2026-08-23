@@ -765,6 +765,7 @@ def write_raw_blob_ref(
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
         acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
