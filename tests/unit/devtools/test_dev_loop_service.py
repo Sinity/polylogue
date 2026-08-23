@@ -68,7 +68,11 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
             "claude-ai": {"provider": "claude-ai", "provider_session_id": "agentctl-proof-claude-ai"},
         },
     )
-    monkeypatch.setattr(dev_loop_service, "_poll_archive_state", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_poll_archive_state",
+        lambda **kwargs: {"indexed_session_id": f"indexed:{kwargs['provider_session_id']}"},
+    )
     monkeypatch.setattr(dev_loop_service, "_fetch_api_messages", lambda **_kwargs: True)
 
     payload = dev_loop_service.run_proof()

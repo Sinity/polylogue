@@ -280,7 +280,9 @@ def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dic
     return captures
 
 
-def _poll_archive_state(*, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float) -> bool:
+def _poll_archive_state(
+    *, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float
+) -> dict[str, object] | None:
     query = urlencode({"provider": provider, "provider_session_id": provider_session_id})
     deadline = time.monotonic() + timeout_s
     while time.monotonic() <= deadline:
@@ -289,17 +291,9 @@ def _poll_archive_state(*, receiver_url: str, provider: str, provider_session_id
         except OSError:
             status, payload = 0, {}
         if status == 200 and payload.get("raw_row_exists") is True and payload.get("indexed_session_exists") is True:
-            return True
+            return payload
         time.sleep(0.25)
-    return False
-
-
-def _session_id_for_provider(provider: str, provider_session_id: str) -> str:
-    return (
-        {"chatgpt": "chatgpt-export", "claude-ai": "claude-ai-export"}.get(provider, provider)
-        + ":"
-        + provider_session_id
-    )
+    return None
 
 
 def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
@@ -342,8 +336,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         archive_ok = False
         api_ok = False
         if isinstance(providers, dict):
-            archive_rows: list[bool] = []
-            api_rows: list[bool] = []
+            convergence: dict[str, dict[str, object]] = {}
             for item in providers.values():
                 if not isinstance(item, dict):
                     continue
@@ -351,24 +344,29 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
                 provider_session_id = item.get("provider_session_id")
                 if not isinstance(provider, str) or not isinstance(provider_session_id, str):
                     continue
-                archive_rows.append(
-                    _poll_archive_state(
-                        receiver_url=receiver_url,
-                        provider=provider,
-                        provider_session_id=provider_session_id,
-                        timeout_s=readiness_timeout_s,
-                    )
+                archive_state = _poll_archive_state(
+                    receiver_url=receiver_url,
+                    provider=provider,
+                    provider_session_id=provider_session_id,
+                    timeout_s=readiness_timeout_s,
                 )
-                api_rows.append(
-                    _fetch_api_messages(
-                        api_url=api_url,
-                        session_id=_session_id_for_provider(provider, provider_session_id),
-                    )
+                indexed_session_id = archive_state.get("indexed_session_id") if archive_state is not None else None
+                provider_api_ok = isinstance(indexed_session_id, str) and _fetch_api_messages(
+                    api_url=api_url,
+                    session_id=indexed_session_id,
                 )
-            archive_ok = bool(archive_rows) and all(archive_rows)
-            api_ok = bool(api_rows) and all(api_rows)
+                convergence[provider] = {
+                    "archive": archive_state is not None,
+                    "api": provider_api_ok,
+                    "indexed_session_id": indexed_session_id,
+                }
+            archive_ok = bool(convergence) and all(row["archive"] is True for row in convergence.values())
+            api_ok = bool(convergence) and all(row["api"] is True for row in convergence.values())
         if not archive_ok or not api_ok:
-            raise RuntimeError("archive/API convergence proof failed")
+            raise RuntimeError(
+                "archive/API convergence proof failed: "
+                + json.dumps(convergence if isinstance(providers, dict) else {}, sort_keys=True)
+            )
         return {
             "ok": True,
             "ports": {"api": api_port, "browser_capture": capture_port},
