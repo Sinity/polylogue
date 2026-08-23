@@ -268,6 +268,17 @@ def _record_message_fts_surface_debt(db_path: Path | None, error: str) -> None:
     _record_fts_surface_debt(db_path, "messages_fts", error)
 
 
+def clear_messages_fts_surface_debt(db_path: Path) -> None:
+    """Clear settled message-FTS startup debt through its owning daemon adapter."""
+    from polylogue.sources.live.cursor import CursorStore
+
+    CursorStore(db_path).clear_convergence_debt(
+        stage="fts",
+        subject_type="fts_surface",
+        subject_id="messages_fts",
+    )
+
+
 def _record_fts_surface_debt(db_path: Path | None, surface: str, error: str) -> None:
     if db_path is None:
         return
@@ -472,6 +483,7 @@ def ensure_fts_startup_readiness_sync() -> None:
 
 __all__ = [
     "active_fts_triggers_sync",
+    "clear_messages_fts_surface_debt",
     "ensure_fts_startup_readiness",
     "ensure_fts_startup_readiness_sync",
     "missing_fts_triggers_sync",

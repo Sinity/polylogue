@@ -1403,7 +1403,7 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
     )
 
 
-def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> None:
+def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> bool:
     """Publish exact FTS readiness after insight rows have changed.
 
     The insights materializer writes ``session_work_events`` after the message
@@ -1416,7 +1416,9 @@ def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> None:
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
     from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
+    snapshot = fts_invariant_snapshot_sync(conn)
+    record_fts_invariant_snapshot_sync(conn, snapshot)
+    return bool(snapshot.messages.ready)
 
 
 def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
@@ -2385,8 +2387,10 @@ def _archive_insights_execute_ids(
     )
     # The rebuild commits its own rows. Publish and commit the final exact FTS
     # state in the same production stage before reporting success.
-    _record_fts_freshness_after_insights(conn)
+    message_fts_ready = _record_fts_freshness_after_insights(conn)
     conn.commit()
+    if message_fts_ready and archive_root is not None:
+        _clear_messages_fts_surface_debt(archive_root)
     remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
     logger.info(
         "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
@@ -2398,6 +2402,16 @@ def _archive_insights_execute_ids(
         len(remaining),
     )
     return StageExecutionResult(success=not hot_ids and not remaining, stage_timings_s=stage_timings_s)
+
+
+def _clear_messages_fts_surface_debt(archive_root: Path) -> None:
+    """Clear startup FTS debt only after an exact settled snapshot is ready."""
+    try:
+        from polylogue.daemon.fts_startup import clear_messages_fts_surface_debt
+
+        clear_messages_fts_surface_debt(archive_root / "index.db")
+    except Exception:
+        logger.warning("fts: failed to clear ready messages_fts surface debt", exc_info=True)
 
 
 __all__ = [
