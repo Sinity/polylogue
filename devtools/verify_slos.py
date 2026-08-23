@@ -13,21 +13,83 @@ without blocking.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.benchmark_results import parse_pytest_benchmark_stats
+from polylogue.core.json import JSONDocument
+from polylogue.scenarios import (
+    MeasurementScope,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
 
 ROOT = _get_root()
 SLO_CATALOG = ROOT / "docs" / "plans" / "slo-catalog.yaml"
 SLO_GATES = frozenset({"required", "informational"})
 SLO_TIERS = frozenset({"cheap-local", "lab"})
 DEFAULT_TIER = "cheap-local"
+_UNMEASURED_WORKLOAD_DIMENSIONS = (
+    "cpu_ms",
+    "current_rss_bytes",
+    "peak_rss_bytes",
+    "current_pss_bytes",
+    "peak_pss_bytes",
+    "anon_bytes",
+    "file_cache_bytes",
+    "swap_bytes",
+    "temp_storage_bytes",
+    "storage_bytes",
+    "read_io_bytes",
+    "write_io_bytes",
+    "response_bytes",
+    "cancellation_latency_ms",
+    "progress_completed",
+    "progress_total",
+    "queue_depth",
+    "backpressure_ms",
+    "cleanup_reclaimed_bytes",
+    "sqlite_vm_steps",
+)
+
+
+def _slo_workload_receipt(
+    *, catalog_text: str, active_tiers: frozenset[str] | None, wall_ms: float, blocking: bool
+) -> JSONDocument:
+    """Adapt the SLO benchmark run into the shared workload receipt contract."""
+    catalog_digest = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
+    tiers = ",".join(sorted(active_tiers)) if active_tiers is not None else "all"
+    receipt = WorkloadReceipt.from_observations(
+        spec=WorkloadEnvelopeSpec(
+            workload_id=f"devtools:verify-slos:{tiers}",
+            family_id="verification-slo",
+            version=1,
+            inputs=(WorkloadInputRef(input_id=f"slo-catalog:sha256:{catalog_digest}"),),
+            phases=("benchmark",),
+            measurement_scope=MeasurementScope.PROCESS_TREE,
+        ),
+        status=WorkloadRunStatus.FAILED if blocking else WorkloadRunStatus.SUCCEEDED,
+        build_id=None,
+        runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(name="benchmark", wall_ms=wall_ms, unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS),
+        ),
+        notes=("SLO adapter records benchmark wall time only; resource dimensions are explicitly unavailable.",),
+    )
+    return receipt.to_payload()
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +292,9 @@ def main(argv: list[str] | None = None) -> int:
     test_ids = _collect_benchmark_tests(surfaces, active_tiers=active_tiers)
 
     # 3. Run benchmarks
+    benchmark_started = time.monotonic()
     benchmark_stats = _run_benchmarks(test_ids) if not args.skip_benchmarks else {}
+    benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000
 
     # 4. Check each surface against its SLO
     catalog_errors: list[str] = []
@@ -323,6 +387,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # 5. Report
     blocking = bool(catalog_errors or violations or missing_required)
+    workload_receipt = _slo_workload_receipt(
+        catalog_text=catalog_text,
+        active_tiers=active_tiers,
+        wall_ms=benchmark_wall_ms,
+        blocking=blocking,
+    )
     if args.json:
         json.dump(
             {
@@ -334,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                 "passed": passed,
                 "uncovered_informational": uncovered_informational,
                 "skipped_tier": skipped_tier,
+                "workload_receipt": workload_receipt,
             },
             sys.stdout,
             indent=2,
