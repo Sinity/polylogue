@@ -10,7 +10,6 @@ import re
 import shutil
 import sqlite3
 import subprocess
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -48,13 +46,6 @@ REQUIRED_RECEIVER_ROUTES = ("/v1/status",)
 ROUTE_MIN_TIMEOUT_S = {
     "/api/facets": 15.0,
 }
-BROWSER_EXECUTABLE_CANDIDATES = (
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium",
-    "chromium-browser",
-    "chrome",
-)
 COMPLETION_PROBES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("query-then-connector", "polylogue find id:abc t", ("then",)),
     ("query-action", "polylogue find id:abc then s", ("select",)),
@@ -147,19 +138,6 @@ class BrowserCaptureReceiverArchiveStateProbe:
 
 
 @dataclass(frozen=True, slots=True)
-class BrowserRenderProbe:
-    url: str
-    executable: str | None
-    exit_code: int | None
-    ok: bool
-    dom_bytes: int | None = None
-    screenshot_bytes: int | None = None
-    stderr_tail: str = ""
-    error: str | None = None
-    caveats: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class DeploymentSmokeReport:
     ok: bool
     path: str
@@ -169,7 +147,6 @@ class DeploymentSmokeReport:
     commands: list[CommandProbe]
     routes: list[RouteProbe]
     completions: list[CompletionProbe]
-    browser_render: BrowserRenderProbe | None
     browser_capture_archive: BrowserCaptureArchiveProbe
     browser_capture_receiver_archive_state: BrowserCaptureReceiverArchiveStateProbe
     runtime_evidence: dict[str, Any]
@@ -754,139 +731,6 @@ def _route_timeout(route: str, default_timeout_s: float) -> float:
     return max(default_timeout_s, ROUTE_MIN_TIMEOUT_S.get(route, default_timeout_s))
 
 
-def _resolve_browser_executable(path: str, executable: str | None) -> str | None:
-    if executable:
-        if os.path.isabs(executable) or os.sep in executable or (os.altsep is not None and os.altsep in executable):
-            candidate = Path(executable).expanduser()
-            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
-        return shutil.which(executable, path=path)
-    for candidate_name in BROWSER_EXECUTABLE_CANDIDATES:
-        resolved = shutil.which(candidate_name, path=path)
-        if resolved is not None:
-            return resolved
-    return None
-
-
-def _browser_executable_resolution(path: str, executable: str | None) -> dict[str, Any]:
-    resolved = _resolve_browser_executable(path, executable)
-    candidates = [executable] if executable else list(BROWSER_EXECUTABLE_CANDIDATES)
-    return {
-        "requested": executable,
-        "resolved": resolved,
-        "candidates": candidates,
-        "ok": resolved is not None,
-        "error": None
-        if resolved is not None
-        else ("explicit_browser_executable_not_found_or_not_executable" if executable else "chrome_not_found_on_path"),
-    }
-
-
-def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
-    # This is the Chrome spawn boundary. Do not rely on a higher-level wrapper:
-    # direct imports must not turn forged environment values into a launcher.
-    require_declared_service_context("deployment_browser_smoke")
-    process = subprocess.Popen(
-        command,
-        env=_command_env(path),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout_s + 5)
-    except subprocess.TimeoutExpired as error:
-        terminate_process_group(process)
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            command, timeout_s, output=stdout or error.output, stderr=stderr or error.stderr
-        ) from error
-    finally:
-        terminate_process_group(process)
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-
-
-def _timeout_output_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bytes):
-        return value.decode("utf-8", "replace")
-    return ""
-
-
-def _probe_browser_render(
-    url: str,
-    *,
-    path: str,
-    timeout_s: float,
-    executable: str | None,
-    debugging_port: int,
-) -> BrowserRenderProbe:
-    resolved = _resolve_browser_executable(path, executable)
-    if resolved is None:
-        return BrowserRenderProbe(
-            url=url,
-            executable=None,
-            exit_code=None,
-            ok=False,
-            error="chrome_not_found",
-        )
-    with tempfile.TemporaryDirectory(prefix="polylogue-deployment-browser-", ignore_cleanup_errors=True) as tmp:
-        profile_dir = Path(tmp) / "profile"
-        screenshot_path = Path(tmp) / "root.png"
-        command = [
-            resolved,
-            "--headless=new",
-            "--disable-gpu",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--disable-component-update",
-            "--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication",
-            "--no-first-run",
-            "--no-default-browser-check",
-            f"--remote-debugging-port={debugging_port}",
-            f"--user-data-dir={profile_dir}",
-            f"--screenshot={screenshot_path}",
-            "--window-size=1440,1000",
-            "--dump-dom",
-            url,
-        ]
-        try:
-            proc = _run_browser_command(
-                command,
-                path=path,
-                timeout_s=timeout_s,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr = _timeout_output_text(exc.stderr)
-            stdout = _timeout_output_text(exc.stdout)
-            dom_bytes = len(stdout.encode())
-            screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
-            return BrowserRenderProbe(
-                url=url,
-                executable=resolved,
-                exit_code=None,
-                ok=False,
-                dom_bytes=dom_bytes,
-                screenshot_bytes=screenshot_bytes,
-                stderr_tail=stderr[-2000:],
-                error="browser_timeout",
-            )
-        dom_bytes = len(proc.stdout.encode())
-        screenshot_bytes = screenshot_path.stat().st_size if screenshot_path.exists() else None
-        ok = proc.returncode == 0 and dom_bytes > 0 and bool(screenshot_bytes)
-        return BrowserRenderProbe(
-            url=url,
-            executable=resolved,
-            exit_code=proc.returncode,
-            ok=ok,
-            dom_bytes=dom_bytes,
-            screenshot_bytes=screenshot_bytes,
-            stderr_tail=proc.stderr[-2000:],
-            error=None if ok else "browser_render_failed",
-        )
-
-
 def _diagnose(
     commands: list[CommandProbe],
     routes: list[RouteProbe],
@@ -1111,7 +955,6 @@ def build_report(
         commands=commands,
         routes=routes,
         completions=completions,
-        browser_render=None,
         browser_capture_archive=browser_capture_archive,
         browser_capture_receiver_archive_state=browser_capture_receiver_archive_state,
         runtime_evidence=runtime_evidence,

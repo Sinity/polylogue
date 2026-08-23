@@ -2,14 +2,12 @@
 // Shared-Chrome control proof for the deterministic dev-loop operation. It
 // never launches a browser, allocates a debugging port, or creates a profile.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const _CONTROL_COMMAND = "/home/sinity/.local/bin/sinnix-chrome-control";
-const _AGENT_WORKSPACE = "agentbrowser";
-const _CONTROL_TIMEOUT_MS = 10_000;
+import { assertAgentWindow, firstControlJson, runChromeControlBytes } from "./shared_chrome_control.mjs";
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -41,53 +39,10 @@ function requireExpectedServiceContext() {
   }
 }
 
-function parseControlResult(stdout) {
-  for (const line of stdout.split("\n")) {
-    try {
-      const value = JSON.parse(line);
-      if (value && typeof value === "object") return value;
-    } catch {
-      // The control command may emit non-JSON status diagnostics before JSON.
-    }
-  }
-  return {};
-}
+export { assertAgentWindow } from "./shared_chrome_control.mjs";
 
-export function assertAgentWindow(candidate, expectedUrl) {
-  if (!candidate || typeof candidate.id !== "string" || !candidate.id) {
-    throw new Error("shared-Chrome control did not return a target ID");
-  }
-  if (candidate.url !== expectedUrl || candidate.parked !== true || candidate.workspace !== _AGENT_WORKSPACE) {
-    throw new Error("shared-Chrome dev-loop target was not verified hidden on agentbrowser");
-  }
-  return candidate.id;
-}
-
-export function runChromeControl(args, timeoutMs = _CONTROL_TIMEOUT_MS, spawnCommand = spawn) {
-  return new Promise((resolve, reject) => {
-    const child = spawnCommand(_CONTROL_COMMAND, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(`sinnix-chrome-control ${args[0]} failed: ${(stderr || stdout || `exit ${code}`).trim()}`));
-        return;
-      }
-      resolve(parseControlResult(stdout));
-    });
-  });
+export async function runChromeControl(args, timeoutMs, spawnCommand) {
+  return firstControlJson(await runChromeControlBytes(args, timeoutMs, spawnCommand)) || {};
 }
 
 export async function runSharedChromeControlWorkflow({ extensionRoot, control = runChromeControl }) {
@@ -99,7 +54,7 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, control = 
   let createdTargetId = null;
   try {
     const target = await control(["agent-window", "--url", "about:blank"]);
-    if (typeof target?.id === "string" && target.id) createdTargetId = target.id;
+    if (typeof target?.id === "string" && /^[A-F0-9]{32}$/i.test(target.id)) createdTargetId = target.id;
     assertAgentWindow(target, "about:blank");
     return { ok: true, shared_chrome: { extension_loaded: true, target_closed: true } };
   } finally {

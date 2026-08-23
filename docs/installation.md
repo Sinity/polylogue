@@ -69,11 +69,8 @@ agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
 agentctl job result <job-id>
 ```
 
-That fixed operation launches a fresh headless profile against Polylogue's web
-root with a descriptor-leased CDP port and a transient systemd cgroup. Its job
-receipt, not the checkout, proves lifecycle and lease behavior. It does not
-claim MCP DevTools control, shared-browser cookies, or live provider pages.
-The declared shared-Chrome proof operation and its service boundary are
+That fixed operation renders Polylogue's web root in one proof-owned target in the already-running operator Chrome through Sinnix's control boundary. Its job receipt, not the checkout, proves lifecycle and target-cleanup behavior. It does not claim MCP DevTools control, shared-browser cookies, or live provider pages.
+The declared shared-Chrome proof operation and its AgentCTL job boundary are
 documented in [`docs/dev-loop.md`](dev-loop.md).
 
 On NixOS, import the flake module shown in the Nix section below. It creates a
@@ -222,7 +219,8 @@ After deploying, use `polylogue config --format json` to inspect effective
 values and source layers, and `devtools workspace deployment-smoke --json` to capture the
 package versions, archive root, daemon URL, browser-capture receiver URL, and
 cgroup resource signals visible on the host. Use the declared
-`deployment_browser_smoke` operation for browser first-paint evidence.
+`deployment_browser_smoke` operation for browser first-paint evidence. It
+parks the proof target on `agentbrowser` and closes only that returned target.
 
 ### Home Manager module
 

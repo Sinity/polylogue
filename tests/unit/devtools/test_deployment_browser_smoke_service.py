@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 import tomllib
 
-from devtools import deployment_browser_smoke_service, deployment_smoke
+from devtools import deployment_browser_smoke_service
 from devtools.command_catalog import COMMAND_SPECS
 
 
-def test_declared_browser_smoke_is_private_and_has_one_leased_cdp_port() -> None:
+def test_declared_browser_smoke_has_no_private_browser_service_lease() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["deployment_browser_smoke"]
 
@@ -21,16 +21,7 @@ def test_declared_browser_smoke_is_private_and_has_one_leased_cdp_port() -> None
     assert operation["result"] == "json"
     assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 180
-    assert operation["service"] == {
-        "readiness": "project-command",
-        "lifetime": "job",
-        "ports": {
-            "browser_cdp": {
-                "environment": "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT",
-                "range": [48992, 49055],
-            }
-        },
-    }
+    assert "service" not in operation
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
@@ -52,7 +43,7 @@ def test_declared_live_provider_proof_has_only_a_receiver_service_lease() -> Non
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_sinnixd_parser_accepts_the_shared_chrome_operation() -> None:
+def test_sinnixd_parser_accepts_the_unleased_shared_chrome_operation() -> None:
     """Cross-contract proof against the production Sinnixd descriptor parser."""
     repository_root = Path(__file__).resolve().parents[3]
     sinnix_root = Path("/realm/project/sinnix")
@@ -69,7 +60,7 @@ from pathlib import Path
 from sinnixd.projects import load_project_adapter
 
 adapter = load_project_adapter(Path(sys.argv[1]))
-proof = adapter.operation("live_provider_proof")
+proof = adapter.operation("deployment_browser_smoke")
 print(json.dumps({
     "project_id": adapter.project_id,
     "operation_count": len(adapter.operations),
@@ -95,32 +86,17 @@ print(json.dumps({
     assert parsed["project_id"] == "polylogue"
     assert parsed["operation_count"] >= 6
     assert parsed["proof"] == {
-        "command": ["python", "-m", "devtools.live_provider_proof_service", "--json"],
+        "command": ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"],
         "parameters": [],
-        "service": {
-            "lifetime": "job",
-            "readiness": "project-command",
-            "ports": [
-                {
-                    "name": "browser_capture",
-                    "environment": "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT",
-                    "range": [49120, 49183],
-                }
-            ],
-        },
+        "service": None,
     }
-    assert parsed["service_operations"] == ["deployment_browser_smoke", "dev_loop_proof", "live_provider_proof"]
-    assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
+    assert parsed["service_operations"] == ["dev_loop_proof", "live_provider_proof"]
+    assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
 def test_private_live_provider_module_imports_without_launching_chrome() -> None:
     completed = subprocess.run(
-        [
-            "node",
-            "--input-type=module",
-            "--eval",
-            "import('./scripts/live_provider_proof.mjs')",
-        ],
+        ["node", "--input-type=module", "--eval", "import('./scripts/live_provider_proof.mjs')"],
         cwd="browser-extension",
         text=True,
         capture_output=True,
@@ -189,57 +165,182 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
     assert "matching Sinnixd transient unit" in completed.stderr
 
 
-def test_private_browser_service_uses_only_fixed_target_and_leased_port(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shared_browser_service_launches_only_the_fixed_control_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(
-        deployment_browser_smoke_service, "require_declared_service_context", lambda operation: f"unit-{operation}"
+        deployment_browser_smoke_service, "require_declared_operation_context", lambda operation: f"unit-{operation}"
     )
-    monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
-    monkeypatch.setenv("SINNIXD_OPERATION", "deployment_browser_smoke")
-    monkeypatch.setenv("POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT", "48992")
-    called: dict[str, object] = {}
+    launched: dict[str, object] = {}
+    process = type(
+        "Process",
+        (),
+        {
+            "returncode": 0,
+            "communicate": lambda self, **_kwargs: (
+                '{"ok":true,"render":{"url":"http://127.0.0.1:8766/","dom_bytes":12,"screenshot_bytes":3,"target_closed":true}}',
+                "",
+            ),
+        },
+    )()
+    monkeypatch.setenv("POLYLOGUE_TEST_CDP_OPTION", "48992")
+    monkeypatch.setenv("POLYLOGUE_TEST_PROFILE_OPTION", "forged")
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, **kwargs: (launched.update(command=command, kwargs=kwargs), process)[1],
+    )
+    monkeypatch.setattr(deployment_browser_smoke_service, "terminate_process_group", lambda _process: None)
 
-    def fake_probe(url: str, **kwargs: object) -> deployment_smoke.BrowserRenderProbe:
-        called["url"] = url
-        called.update(kwargs)
-        return deployment_smoke.BrowserRenderProbe(url=url, executable="/nix/store/chromium", exit_code=0, ok=True)
+    result = deployment_browser_smoke_service.run_smoke(repo_root=tmp_path, timeout_s=7)
 
-    monkeypatch.setattr(deployment_smoke, "_probe_browser_render", fake_probe)
+    assert result == {
+        "ok": True,
+        "render": {
+            "url": "http://127.0.0.1:8766/",
+            "dom_bytes": 12,
+            "screenshot_bytes": 3,
+            "target_closed": True,
+        },
+    }
+    assert launched["command"] == ["node", "scripts/deployment_shared_chrome_smoke.mjs"]
+    kwargs = launched["kwargs"]
+    assert isinstance(kwargs, dict)
+    environment = kwargs["env"]
+    assert isinstance(environment, dict)
+    assert not {name for name in environment if "CDP" in name or "PROFILE" in name or "BROWSER_EXECUTABLE" in name}
 
-    result = deployment_browser_smoke_service.run_smoke(timeout_s=7)
 
-    assert result.ok is True
-    assert called == {
-        "url": "http://127.0.0.1:8766/",
-        "path": deployment_smoke.SYSTEMWIDE_PATH,
-        "timeout_s": 7,
-        "executable": None,
-        "debugging_port": 48992,
+def test_shared_browser_service_context_guard_rejects_invalid_shell_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        deployment_browser_smoke_service,
+        "require_declared_operation_context",
+        lambda _operation: (_ for _ in ()).throw(ValueError("fixed operation context")),
+    )
+
+    with pytest.raises(ValueError, match="fixed operation context"):
+        deployment_browser_smoke_service.run_smoke()
+
+
+def test_shared_chrome_deployment_workflow_records_render_evidence_and_closes_only_its_target() -> None:
+    program = """
+import { runDeploymentSharedChromeSmoke } from './scripts/deployment_shared_chrome_smoke.mjs';
+
+const calls = [];
+const targetId = 'A'.repeat(32);
+const control = async (args) => {
+  calls.push(args);
+  if (args[0] === 'agent-window') return Buffer.from(JSON.stringify({ id: targetId, url: 'http://127.0.0.1:8766/', parked: true, workspace: 'agentbrowser', show_with: 'F7' }));
+  if (args[0] === 'get-html') return Buffer.from('<html><head><title>Polylogue</title></head><body><div id="conv-header"></div></body></html>');
+  if (args[0] === 'screenshot') return Buffer.from('png');
+  if (args[0] === 'close' && args[1] !== targetId) throw new Error('attempted to close an unowned target');
+  return Buffer.alloc(0);
+};
+const result = await runDeploymentSharedChromeSmoke({ control });
+console.log(JSON.stringify({ calls, result }));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["calls"] == [
+        ["status"],
+        ["agent-window", "--url", "http://127.0.0.1:8766/"],
+        [
+            "await",
+            "A" * 32,
+            "--js",
+            "document.readyState === 'complete'",
+            "--timeout-sec",
+            "30",
+        ],
+        ["get-html", "A" * 32],
+        ["screenshot", "A" * 32, "--format", "png"],
+        ["close", "A" * 32],
+    ]
+    assert payload["result"] == {
+        "ok": True,
+        "render": {
+            "url": "http://127.0.0.1:8766/",
+            "dom_bytes": len(
+                '<html><head><title>Polylogue</title></head><body><div id="conv-header"></div></body></html>'
+            ),
+            "screenshot_bytes": 3,
+            "target_closed": True,
+        },
     }
 
 
-@pytest.mark.parametrize(
-    ("project", "operation", "port"),
-    [
-        ("other", "deployment_browser_smoke", "48992"),
-        ("polylogue", "other", "48992"),
-        ("polylogue", "deployment_browser_smoke", "49056"),
-    ],
-)
-def test_private_browser_service_context_guard_rejects_invalid_shell_context(
-    monkeypatch: pytest.MonkeyPatch, project: str, operation: str, port: str
-) -> None:
-    monkeypatch.setattr(
-        deployment_browser_smoke_service,
-        "require_declared_service_context",
-        lambda operation: (
-            (_ for _ in ()).throw(ValueError("fixed service context"))
-            if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue" or os.environ.get("SINNIXD_OPERATION") != operation
-            else f"unit-{operation}"
-        ),
-    )
-    monkeypatch.setenv("SINNIXD_PROJECT_ID", project)
-    monkeypatch.setenv("SINNIXD_OPERATION", operation)
-    monkeypatch.setenv("POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT", port)
+def test_shared_chrome_deployment_workflow_reclaims_only_created_target_after_readiness_failure() -> None:
+    program = """
+import { runDeploymentSharedChromeSmoke } from './scripts/deployment_shared_chrome_smoke.mjs';
 
-    with pytest.raises(ValueError, match="fixed service context|fixed deployment-browser port range"):
-        deployment_browser_smoke_service._service_context_port()
+const calls = [];
+const targetId = 'B'.repeat(32);
+const control = async (args) => {
+  calls.push(args);
+  if (args[0] === 'agent-window') return Buffer.from(JSON.stringify({ id: targetId, url: 'http://127.0.0.1:8766/', parked: true, workspace: 'agentbrowser', show_with: 'F7' }));
+  if (args[0] === 'await') throw new Error('page never became ready');
+  if (args[0] === 'close' && args[1] !== targetId) throw new Error('attempted to close an unowned target');
+  return Buffer.alloc(0);
+};
+try {
+  await runDeploymentSharedChromeSmoke({ control });
+  process.exitCode = 2;
+} catch (error) {
+  console.log(JSON.stringify({ message: error.message, calls }));
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["message"] == "page never became ready"
+    assert payload["calls"][-1] == ["close", "B" * 32]
+
+
+def test_shared_chrome_deployment_workflow_rejects_an_error_document_and_closes_its_target() -> None:
+    program = """
+import { runDeploymentSharedChromeSmoke } from './scripts/deployment_shared_chrome_smoke.mjs';
+
+const calls = [];
+const targetId = 'C'.repeat(32);
+const control = async (args) => {
+  calls.push(args);
+  if (args[0] === 'agent-window') return Buffer.from(JSON.stringify({ id: targetId, url: 'http://127.0.0.1:8766/', parked: true, workspace: 'agentbrowser', show_with: 'F7' }));
+  if (args[0] === 'get-html') return Buffer.from('<html><head><title>127.0.0.1</title></head><body>ERR_CONNECTION_REFUSED</body></html>');
+  if (args[0] === 'screenshot') return Buffer.from('png');
+  if (args[0] === 'close' && args[1] !== targetId) throw new Error('attempted to close an unowned target');
+  return Buffer.alloc(0);
+};
+try {
+  await runDeploymentSharedChromeSmoke({ control });
+  process.exitCode = 2;
+} catch (error) {
+  console.log(JSON.stringify({ message: error.message, calls }));
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["message"] == "shared Chrome deployment render did not contain the Polylogue root marker"
+    assert payload["calls"][-1] == ["close", "C" * 32]

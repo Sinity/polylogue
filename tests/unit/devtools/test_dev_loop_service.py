@@ -253,8 +253,8 @@ import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome
 const calls = [];
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'proof-target', url: 'about:blank', parked: true, workspace: 'agentbrowser' };
-  if (args[0] === 'close' && args[1] !== 'proof-target') throw new Error('attempted to close an unowned target');
+  if (args[0] === 'agent-window') return { id: 'A'.repeat(32), url: 'about:blank', parked: true, workspace: 'agentbrowser', show_with: 'F7' };
+  if (args[0] === 'close' && args[1] !== 'A'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
 const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
@@ -274,7 +274,7 @@ console.log(JSON.stringify({ calls, result }));
             ["status"],
             ["load-extension", "--path", "."],
             ["agent-window", "--url", "about:blank"],
-            ["close", "proof-target"],
+            ["close", "A" * 32],
         ],
         "result": {"ok": True, "shared_chrome": {"extension_loaded": True, "target_closed": True}},
     }
@@ -287,8 +287,8 @@ import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome
 const calls = [];
 const control = async (args) => {
   calls.push(args);
-  if (args[0] === 'agent-window') return { id: 'proof-target', url: 'about:blank', parked: true, workspace: ['special', 'agentbrowser'].join(':') };
-  if (args[0] === 'close' && args[1] !== 'proof-target') throw new Error('attempted to close an unowned target');
+  if (args[0] === 'agent-window') return { id: 'B'.repeat(32), url: 'about:blank', parked: true, workspace: ['special', 'agentbrowser'].join(':'), show_with: 'F7' };
+  if (args[0] === 'close' && args[1] !== 'B'.repeat(32)) throw new Error('attempted to close an unowned target');
   return {};
 };
 try {
@@ -309,7 +309,7 @@ try {
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert "agentbrowser" in payload["message"]
-    assert payload["calls"][-1] == ["close", "proof-target"]
+    assert payload["calls"][-1] == ["close", "B" * 32]
 
 
 def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: pytest.MonkeyPatch) -> None:

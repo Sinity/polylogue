@@ -49,9 +49,7 @@ require Polylogue to borrow the operator's authenticated browser. For web-shell
 or extension debugging, keep these paths distinct:
 
 - agent work uses the existing Chrome only through Sinnix's `agent-window` control boundary, which parks proof windows on the named `agentbrowser` workspace;
-- neither `dev_loop_proof` nor `live_provider_proof` creates or copies a browser profile, launches Chrome or Chromium, or allocates a private CDP port;
-- the fixed `deployment_browser_smoke` AgentCTL operation launches a fresh
-  headless Chrome/Chromium profile inside its transient service cgroup.
+- no declared Polylogue browser proof creates or copies a browser profile, launches Chrome or Chromium, or allocates a private CDP port.
 
 The deployment fallback is useful for proving that the deployed daemon can
 serve the web root to a real browser engine:
@@ -61,7 +59,7 @@ agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
 agentctl job result <job-id>
 ```
 
-That smoke does not certify private MCP browser launch, extension ids,
+That smoke does not certify MCP browser launch, extension ids,
 authenticated ChatGPT/Claude.ai pages, or shared-browser cookies.
 
 Accepted captures are typed browser-capture envelopes and are written

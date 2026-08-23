@@ -86,14 +86,6 @@ timeout_seconds = 180
 exclusive_keys = ["polylogue:deployment-browser-smoke"]
 scratch = "nvme"
 
-[operations.deployment_browser_smoke.service]
-readiness = "project-command"
-lifetime = "job"
-
-[operations.deployment_browser_smoke.service.ports.browser_cdp]
-environment = "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT"
-range = [48992, 49055]
-
 [operations.live_provider_proof]
 description = "Run the shared-Chrome provider proof through AgentCTL"
 exec = ["python", "-m", "devtools.live_provider_proof_service", "--json"]
