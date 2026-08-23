@@ -63,13 +63,13 @@ def _owner(archive_root: Path) -> object:
 def _seed_cohort_and_append_plan(
     archive_root: Path,
     *,
+    session_id: str = "append-memory-proof",
     full_authority: RawRevisionAuthority = RawRevisionAuthority.BYTE_PROVEN,
 ) -> _AppendPlan:
     initialize_active_archive_root(archive_root)
-    session_id = "append-memory-proof"
     snapshots = _full_snapshots(session_id)
-    source_path = archive_root / "captures" / "append-memory-proof.jsonl"
-    source_path.parent.mkdir()
+    source_path = archive_root / "captures" / f"{session_id}.jsonl"
+    source_path.parent.mkdir(exist_ok=True)
     append_payload = f'{{"type":"session_meta","payload":{{"id":"{session_id}"}}}}\n'.encode() + _codex_record(
         session_id, "append", "a" * 16_384
     )
@@ -251,6 +251,21 @@ def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path
         result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
 
     assert result.succeeded == [plan]
+
+
+def test_watcher_append_counter_preserves_multi_plan_batch(tmp_path: Path) -> None:
+    """Observation wraps one production batch instead of serializing its plans."""
+    first = _seed_cohort_and_append_plan(tmp_path)
+    second = _seed_cohort_and_append_plan(tmp_path, session_id="append-memory-proof-second")
+
+    with append_cohort_memory_counter() as counter:
+        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [first, second])
+
+    assert result.succeeded == [first, second]
+    assert counter.batch_count == 1
+    assert counter.plan_count == 2
+    assert counter.calls_by_site["watcher_append_payload"] == 1
+    assert counter.calls_by_site["raw_revision_replay_plan"] == 2
 
 
 def test_watcher_append_defers_incomplete_cohort_after_historical_classification(tmp_path: Path) -> None:
