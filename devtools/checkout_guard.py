@@ -1,271 +1,30 @@
-"""Refuse to run against a `polylogue` import that resolves outside the invoking checkout.
+"""Assert that ``import polylogue`` resolves inside the invoking checkout.
 
-The hazard (2026-07-30/31, four corrupted lanes in one day): the shared
-``.venv`` at the main checkout has an editable install (``*.pth``) pointing at
-that checkout's ``polylogue/`` tree. When a tool runs from a *linked git
-worktree* using that same venv, a plain ``import polylogue`` with nothing else
-on ``sys.path`` silently resolves to the **main checkout's** package instead
-of the worktree's own source — not the worktree the invoking process actually
-lives in. The failure is silent: no ImportError, no warning, just wrong code
-answering every question (schema version compared, benchmark measured, CLI
-behavior read) while looking exactly like a genuine result. It cost real time
-four separate times in one day before anyone happened to check
-``polylogue.__file__``.
-
-This module is the **single shared resolver** for the check. Every entry point that
-can plausibly run against the wrong tree calls
-:func:`assert_polylogue_matches_checkout` instead of hand-rolling its own
-comparison, so there is exactly one definition of "matches" and one message
-shape.
-
-Wired into:
-
-- ``devtools/__main__.py`` — the CLI entry point, right after the ``sys.path``
-  fixup and before any command dispatches.
-- ``devtools/click_dispatch.py:main()`` — the programmatic entry point (tests
-  and any caller that imports the dispatcher directly instead of going
-  through ``__main__.py``).
-- ``devtools/verify.py:main()`` / ``devtools/run_tests.py:main()`` — the
-  ``devtools verify`` / ``devtools test`` preflight, so a wrong-tree run
-  refuses before any step (ruff, mypy, pytest) executes, and prints the
-  resolved path as part of the run's receipt.
-- ``tests/conftest.py:pytest_configure`` — so even a bare ``pytest`` /
-  ``python -m pytest`` invocation that bypasses ``devtools`` entirely still
-  refuses, because ``tests/conftest.py`` is always collected for any pytest
-  run rooted at this repo.
-- ``polylogue/cli/click_app.py:main()`` — the installed ``polylogue``/``plg``
-  console scripts. This one differs from the others: those callers compute
-  "the invoking checkout" from their *own* ``__file__`` (trustworthy, because
-  ``devtools/__main__.py`` and ``tests/conftest.py`` are only ever reached via
-  a real filesystem path on ``sys.path``, never via the shared venv's
-  editable ``.pth``). ``polylogue/cli/click_app.py`` cannot do that: if the
-  hazard has already occurred, *this file itself* resolved from the wrong
-  checkout, so its own ``__file__`` is exactly as compromised as
-  ``polylogue.__file__`` and proves nothing. The trustworthy anchor there is
-  the process's current working directory instead — see
-  :func:`find_git_worktree_root`.
-
-What this does **not** close: an ad hoc one-off script
-(``python3 /realm/tmp/scratch.py``) that never imports ``devtools`` or
-``pytest`` has no hook to run this check from. That residual gap is
-unavoidable without a machine-wide interpreter customization (see the
-CLAUDE.md note next to this hazard for the environmental-layer cost/benefit
-call); a script that wants the guarantee can import and call
-:func:`assert_polylogue_matches_checkout` itself in one line.
+Every guarded entry point shares this one path-aware check. The installed CLI
+uses :func:`find_git_worktree_root` to identify a Polylogue checkout from cwd;
+outside one, the guard intentionally does nothing.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import shutil
-import sys
-import sysconfig
-from collections.abc import Mapping
-from dataclasses import dataclass
-from importlib import metadata
 from pathlib import Path
 
 import tomllib
-
-from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_CACHE, VERIFY_CACHE_OWNER_MARKER_PATH
 
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
 
 
-class CheckoutEnvironmentMismatchError(CheckoutImportMismatchError):
-    """The checkout contains environment state that makes results untrustworthy."""
-
-
-@dataclass(frozen=True, slots=True)
-class EnvironmentArtifact:
-    """One checkout-local artifact that can poison a linked-worktree run."""
-
-    kind: str
-    path: Path
-    detail: str
-    remediation: str
-
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "kind": self.kind,
-            "path": str(self.path),
-            "detail": self.detail,
-            "remediation": self.remediation,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class CheckoutEnvironmentFingerprint:
-    """Provenance and contamination evidence attached to verification receipts."""
-
-    checkout_root: Path
-    polylogue_import_path: Path
-    python_executable: Path
-    python_environment_root: Path | None
-    linked_worktree: bool
-    verify_state_origin: Path | None
-    artifacts: tuple[EnvironmentArtifact, ...]
-
-    @property
-    def clean(self) -> bool:
-        return not self.artifacts
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "checkout_root": str(self.checkout_root),
-            "polylogue_import_path": str(self.polylogue_import_path),
-            "python_executable": str(self.python_executable),
-            "python_environment_root": (
-                str(self.python_environment_root) if self.python_environment_root is not None else None
-            ),
-            "linked_worktree": self.linked_worktree,
-            "verify_state_origin": str(self.verify_state_origin) if self.verify_state_origin else None,
-            "quick_gate_toolchain": quick_gate_toolchain_fingerprint(self.checkout_root),
-            "artifacts": [artifact.as_dict() for artifact in self.artifacts],
-        }
-
-
-_VERIFY_STATE_DIR = VERIFY_CACHE
-_VERIFY_STATE_OWNER_MARKER = VERIFY_CACHE_OWNER_MARKER_PATH
-_VERIFY_STATE_LEGACY_MARKER = CURRENT_RUN_PATH
-_QUICK_GATE_EXECUTABLES = ("ruff", "mypy", "dmypy")
-_QUICK_GATE_PACKAGE_FILES = ("pyproject.toml", "uv.lock")
-
-
-def _sha256_file(path: Path) -> str | None:
-    try:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
-        return None
-
-
-def _sha256_executable_content(path: Path) -> str | None:
-    """Content-hash a resolved quick-gate tool, ignoring an install-root shebang.
-
-    ``verify --quick`` itself invokes ``ruff``/``mypy``/``dmypy`` by bare name
-    through inherited ``PATH`` (``devtools.verify._subprocess_env`` does not
-    touch ``PATH``), so this fingerprint has to answer "what does PATH
-    resolve to right now", not "what does this checkout's own venv contain"
-    -- ``shutil.which`` is the correct, PATH-matching resolution rule and
-    stays unchanged.
-
-    What must change is what gets hashed. A pip/uv-generated console-script
-    wrapper (``mypy``, ``dmypy`` -- a Python entry-point shim, not a compiled
-    binary) hardcodes the *absolute path to its own venv's interpreter* in a
-    leading ``#!`` shebang line. Two byte-identical installs of the exact
-    same package version therefore hash differently purely because of which
-    venv root happened to answer the PATH lookup -- a worktree's own
-    dedicated ``.venv`` versus a shared checkout's ``.venv``, both synced
-    from the same lockfile, is a harmless install-location difference, not
-    toolchain drift. Stripping a
-    leading ``#!`` line before hashing removes exactly that install-location
-    noise. It is a no-op for a compiled/native executable such as ruff's
-    binary (never starts with ``#!``), so genuine content drift -- a
-    different ruff build, a corrupted or tampered binary, or a real edit to
-    a wrapper's body -- is still fully detected, for every tool, by this
-    same hash.
-    """
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if data.startswith(b"#!"):
-        newline = data.find(b"\n")
-        if newline != -1:
-            data = data[newline + 1 :]
-    digest = hashlib.sha256()
-    digest.update(data)
-    return digest.hexdigest()
-
-
-def _venv_relative_executable_identity(path: Path) -> str:
-    """Return a venv-install-root-invariant identity for a resolved executable.
-
-    Companion to :func:`_sha256_executable_content`: once the content hash no
-    longer carries install-root noise, the raw absolute ``path`` alongside it
-    would still defeat receipt reuse on install location alone (a worktree's
-    own ``.venv`` vs. a shared checkout's ``.venv``). Strip the ``.venv``
-    root prefix so two equivalent venvs report the same relative identity,
-    e.g. ``.venv/bin/mypy``. A resolution that is *not* inside any ``.venv``
-    at all (a stray system-wide tool shadowing the checkout's own) keeps its
-    absolute path -- that is itself meaningful drift worth flagging.
-    """
-    for parent in (path, *path.parents):
-        if parent.name == ".venv":
-            return str(Path(".venv") / path.relative_to(parent))
-    return str(path)
-
-
-def quick_gate_toolchain_fingerprint(repo_root: Path) -> dict[str, object]:
-    """Return the bounded runtime/toolchain state that affects ``verify --quick``."""
-    executables: dict[str, dict[str, str | None]] = {}
-    for name in _QUICK_GATE_EXECUTABLES:
-        resolved = shutil.which(name)
-        path = Path(resolved).resolve() if resolved else None
-        executables[name] = {
-            "path": _venv_relative_executable_identity(path) if path is not None else None,
-            "sha256": _sha256_executable_content(path) if path is not None else None,
-        }
-    packages: dict[str, str | None] = {}
-    for name in ("ruff", "mypy"):
-        try:
-            packages[name] = metadata.version(name)
-        except metadata.PackageNotFoundError:
-            packages[name] = None
-    files = {name: _sha256_file(repo_root / name) for name in _QUICK_GATE_PACKAGE_FILES}
-    return {
-        "executables": executables,
-        "packages": packages,
-        "python": {
-            "executable": str(Path(sys.executable).resolve()),
-            "version": sys.version,
-            "implementation": sys.implementation.name,
-            # Same install-root noise as the executables above, on the
-            # interpreter's own venv root: two functionally identical venvs
-            # (same lockfile) at different absolute paths must not disagree
-            # here. base_prefix/stdlib are the underlying (non-venv) Python
-            # installation -- genuinely checkout-independent already, since a
-            # different Python build there IS meaningful drift -- so they stay
-            # raw.
-            "prefix": _venv_relative_executable_identity(Path(sys.prefix)),
-            "base_prefix": sys.base_prefix,
-            "stdlib": sysconfig.get_paths().get("stdlib"),
-        },
-        "package_files": files,
-    }
-
-
 def resolved_polylogue_path() -> Path:
-    """Import ``polylogue`` (idempotent) and return its resolved package path.
-
-    A function-local import, not a module-level one: this call site *is* the
-    resolution being checked, so it must run at call time against whatever
-    ``sys.path`` looks like right now, not whatever it looked like when this
-    module was first imported.
-    """
+    """Import ``polylogue`` at call time and return its resolved package path."""
     import polylogue
 
     return Path(polylogue.__file__).resolve()
 
 
 def _is_polylogue_checkout_root(candidate: Path) -> bool:
-    """Return whether ``candidate`` is plausibly the root of a Polylogue checkout.
-
-    Cheap, filesystem-only markers (no subprocess): either a
-    ``pyproject.toml`` whose ``[project].name`` is literally ``"polylogue"``,
-    or (fallback, for the rare case a checkout's ``pyproject.toml`` is
-    missing/unparseable but the source tree is intact) the package's own
-    entry-point file, ``polylogue/cli/click_app.py``, existing under
-    ``candidate``. Either marker is present in every Polylogue checkout and
-    worktree, and absent from an unrelated repository.
-    """
+    """Return whether ``candidate`` is plausibly the root of a Polylogue checkout."""
     pyproject = candidate / "pyproject.toml"
     try:
         raw = pyproject.read_bytes()
@@ -276,8 +35,7 @@ def _is_polylogue_checkout_root(candidate: Path) -> bool:
             data = tomllib.loads(raw.decode("utf-8"))
         except (tomllib.TOMLDecodeError, UnicodeDecodeError):
             data = {}
-        project_name = data.get("project", {}).get("name")
-        if project_name == "polylogue":
+        if data.get("project", {}).get("name") == "polylogue":
             return True
     try:
         return (candidate / "polylogue" / "cli" / "click_app.py").is_file()
@@ -286,36 +44,11 @@ def _is_polylogue_checkout_root(candidate: Path) -> bool:
 
 
 def find_git_worktree_root(start: Path) -> Path | None:
-    """Walk upward from ``start`` looking for the enclosing Polylogue checkout.
+    """Find the enclosing Polylogue Git checkout, if any.
 
-    Pure filesystem ``stat``/``exists`` calls — no subprocess — so this is
-    cheap enough to run unconditionally on every CLI invocation (a handful of
-    directory levels at most, not a ``git rev-parse`` fork+exec). Matches both
-    a plain repo's ``.git`` directory and a linked worktree's ``.git`` *file*
-    (which points at the shared ``.git/worktrees/<name>`` gitdir elsewhere).
-
-    Returns the first ``.git``-containing ancestor directory, but **only**
-    when that directory also looks like a Polylogue checkout
-    (:func:`_is_polylogue_checkout_root`). Two ``None`` cases, deliberately
-    not distinguished by the caller:
-
-    - No ``.git`` entry anywhere in the ancestry — e.g. a real installed
-      ``polylogue`` invocation with no dev checkout in its cwd ancestry at
-      all.
-    - A ``.git`` entry *is* found, but it belongs to some other, unrelated
-      repository (``cd ~/some-other-project && polylogue --version`` — an
-      ordinary, common invocation). The walk stops at that repo's root
-      rather than climbing past it into parent directories: a git
-      repository boundary is exactly the boundary of "the checkout the
-      process is running from", so a non-Polylogue repo there means cwd is
-      not inside any Polylogue checkout, full stop — climbing further up
-      could otherwise find an unrelated Polylogue checkout that merely
-      happens to be an ancestor directory and misfire the guard against it.
-
-    Both cases must no-op identically (2026-08-01 regression, polylogue-373yt):
-    the guard exists to catch a linked *Polylogue* worktree resolving a
-    *different* Polylogue checkout's package, not to flag every invocation
-    whose cwd happens to have some ``.git`` ancestor.
+    The first Git boundary is authoritative. An unrelated repository and a
+    directory with no Git ancestor both return ``None`` so installed CLI use
+    outside a Polylogue checkout does not invoke the guard.
     """
     current = start.resolve()
     for candidate in (current, *current.parents):
@@ -328,245 +61,18 @@ def find_git_worktree_root(start: Path) -> Path | None:
     return None
 
 
-def _is_linked_worktree(repo_root: Path) -> bool:
-    """Return whether ``repo_root`` has Git's linked-worktree ``.git`` file."""
-    try:
-        return (repo_root / ".git").is_file()
-    except OSError:
-        return False
-
-
-def _python_environment_root(executable: Path) -> Path | None:
-    """Return the checkout owning a ``.venv`` executable, when identifiable."""
-    # Keep the lexical ``.venv`` component. Nix/direnv Python launchers are
-    # symlinks into the Nix store, so resolving first would erase the checkout
-    # boundary and falsely classify a valid lane-local interpreter as foreign.
-    candidate = executable if executable.is_absolute() else Path.cwd() / executable
-    for parent in (candidate, *candidate.parents):
-        if parent.name == ".venv":
-            return parent.parent.resolve()
-    return None
-
-
-def _marker_origin(marker: Path) -> Path | None:
-    """Read a marker's checkout origin, returning ``None`` for legacy state."""
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, Mapping):
-        return None
-    raw = payload.get("checkout_root")
-    if raw is None:
-        binding = payload.get("binding")
-        if isinstance(binding, Mapping):
-            raw = binding.get("checkout_root")
-    if raw is None:
-        fingerprint = payload.get("environment_fingerprint")
-        if isinstance(fingerprint, Mapping):
-            raw = fingerprint.get("checkout_root")
-    if not isinstance(raw, str) or not raw:
-        return None
-    return Path(raw).resolve()
-
-
-def _verify_cache_owner_origin(marker: Path) -> Path | None:
-    """Read the canonical VerifyRun cache-owner marker, if it is valid."""
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, Mapping):
-        return None
-    if payload.get("kind") != "verify-cache-owner" or payload.get("version") != 1:
-        return None
-    raw = payload.get("checkout_root")
-    return Path(raw).resolve() if isinstance(raw, str) and raw else None
-
-
-def _cache_artifact(
-    *,
-    repo_root: Path,
-    state_dir: Path,
-    owner_marker: Path,
-    legacy_marker: Path,
-    kind: str,
-    remediation: str,
-) -> tuple[Path | None, EnvironmentArtifact | None]:
-    """Classify verifier cache ownership, accepting a valid legacy receipt only when needed."""
-    state_path = repo_root / state_dir
-    if not state_path.exists():
-        return None, None
-    try:
-        entries = list(state_path.iterdir()) if state_path.is_dir() else []
-        if not entries:
-            return None, None
-    except OSError:
-        pass
-    owner_marker_path = repo_root / owner_marker
-    legacy_marker_path = repo_root / legacy_marker
-    if owner_marker_path.exists():
-        marker_path = owner_marker_path
-        origin = _verify_cache_owner_origin(marker_path)
-    else:
-        # Archives created before the ownership-marker contract used the
-        # current-run receipt as their only provenance. Keep accepting an
-        # attributable legacy receipt, but never treat unmarked cache content
-        # as trustworthy.
-        marker_path = legacy_marker_path
-        origin = _marker_origin(marker_path)
-    if origin == repo_root:
-        return origin, None
-    if origin is None:
-        detail = f"{state_path} has no verifiable checkout-root marker"
-    else:
-        detail = f"{state_path} was produced by checkout {origin}, not {repo_root}"
-    return (
-        origin,
-        EnvironmentArtifact(
-            kind=kind,
-            path=marker_path if marker_path.exists() else state_path,
-            detail=detail,
-            remediation=remediation,
-        ),
-    )
-
-
-def checkout_environment_fingerprint(
-    repo_root: Path,
-    *,
-    polylogue_import_path: Path | None = None,
-    python_executable: Path | None = None,
-) -> CheckoutEnvironmentFingerprint:
-    """Collect cheap, deterministic provenance and contamination evidence.
-
-    Artifact checks are intentionally scoped to linked worktrees. The main
-    checkout owns the shared development environment and its caches; a lane
-    worktree must either have a lane-local interpreter/cache marker or refuse
-    before verification starts.
-    """
-    resolved_root = repo_root.resolve()
-    resolved_pkg = (polylogue_import_path or resolved_polylogue_path()).resolve()
-    executable_input = python_executable or Path(sys.executable)
-    environment_root = _python_environment_root(executable_input)
-    executable = executable_input.resolve()
-    linked = _is_linked_worktree(resolved_root)
-    artifacts: list[EnvironmentArtifact] = []
-    verify_origin: Path | None = None
-
-    if linked:
-        if environment_root is not None and environment_root != resolved_root:
-            artifacts.append(
-                EnvironmentArtifact(
-                    kind="interpreter_from_other_checkout",
-                    path=executable,
-                    detail=(
-                        f"interpreter environment {environment_root} belongs to another checkout; "
-                        f"this run executes code from {resolved_root}"
-                    ),
-                    remediation=(f"run `cd {resolved_root} && direnv allow` to provision this worktree's venv"),
-                )
-            )
-        local_venv = resolved_root / ".venv"
-        if local_venv.exists() and environment_root != resolved_root:
-            artifacts.append(
-                EnvironmentArtifact(
-                    kind="stray_venv",
-                    path=local_venv,
-                    detail="checkout-local .venv is present but is not the active interpreter environment",
-                    remediation=(
-                        f"remove {local_venv} and run `cd {resolved_root} && direnv allow`, "
-                        "or activate its own venv before verifying"
-                    ),
-                )
-            )
-        node_modules = resolved_root / "node_modules"
-        if node_modules.exists():
-            artifacts.append(
-                EnvironmentArtifact(
-                    kind="stray_node_modules",
-                    path=node_modules,
-                    detail="root-level node_modules is untracked lane state and can be inherited from another checkout",
-                    remediation=f"remove {node_modules} before running the lane verification",
-                )
-            )
-        verify_origin, verify_artifact = _cache_artifact(
-            repo_root=resolved_root,
-            state_dir=_VERIFY_STATE_DIR,
-            owner_marker=_VERIFY_STATE_OWNER_MARKER,
-            legacy_marker=_VERIFY_STATE_LEGACY_MARKER,
-            kind="inherited_verify_cache",
-            remediation=f"remove {resolved_root / _VERIFY_STATE_DIR} and rerun the managed devtools command",
-        )
-        if verify_artifact is not None:
-            artifacts.append(verify_artifact)
-
-    return CheckoutEnvironmentFingerprint(
-        checkout_root=resolved_root,
-        polylogue_import_path=resolved_pkg,
-        python_executable=executable,
-        python_environment_root=environment_root,
-        linked_worktree=linked,
-        verify_state_origin=verify_origin,
-        artifacts=tuple(artifacts),
-    )
-
-
-def _raise_environment_mismatch(context: str, fingerprint: CheckoutEnvironmentFingerprint) -> None:
-    if fingerprint.clean:
-        return
-    lines = [
-        f"{context}: checkout environment is untrustworthy; refusing to run before it is repaired.",
-    ]
-    for artifact in fingerprint.artifacts:
-        lines.extend(
-            (
-                f"  offending path : {artifact.path}",
-                f"  reason         : {artifact.detail}",
-                f"  remediation    : {artifact.remediation}",
-            )
-        )
-    raise CheckoutEnvironmentMismatchError("\n".join(lines))
-
-
-def assert_polylogue_matches_checkout(
-    repo_root: Path,
-    *,
-    context: str,
-    python_executable: Path | None = None,
-) -> CheckoutEnvironmentFingerprint:
-    """Raise loudly when import or environment provenance does not match ``repo_root``.
-
-    Returns the validated environment fingerprint on success, so callers can
-    persist the exact provenance the guard checked without reading the
-    filesystem a second time.
-    """
+def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
+    """Raise unless the resolved package path is contained by ``repo_root``."""
     resolved_root = repo_root.resolve()
     resolved_pkg = resolved_polylogue_path()
     try:
         resolved_pkg.relative_to(resolved_root)
     except ValueError:
         raise CheckoutImportMismatchError(
-            f"{context}: `import polylogue` resolved OUTSIDE this checkout — every "
-            "result from this process is untrustworthy until this is fixed.\n"
+            f"{context}: `import polylogue` resolved OUTSIDE this checkout.\n"
             f"  invoking checkout : {resolved_root}\n"
             f"  resolved package  : {resolved_pkg}\n"
             "\n"
-            "Cause: the active virtualenv's editable install (a `.pth` file in "
-            "site-packages) points at a different checkout than the one this process "
-            "is running from — typically a linked git worktree reusing the main "
-            "checkout's shared `.venv` on PATH instead of a worktree-local one. Fix "
-            "one of:\n"
-            f"  - give this checkout its own venv, e.g. `cd {resolved_root} && "
-            "direnv allow` (the flake devShell creates + syncs a local `.venv` "
-            "automatically), or\n"
-            f"  - re-install editable from THIS checkout so its own `.pth` entry "
-            f"wins: `uv pip install -e {resolved_root}`.\n"
+            "Use an environment whose `polylogue` import resolves from this checkout.\n"
         ) from None
-    fingerprint = checkout_environment_fingerprint(
-        repo_root,
-        polylogue_import_path=resolved_pkg,
-        python_executable=python_executable,
-    )
-    _raise_environment_mismatch(context, fingerprint)
-    return fingerprint
+    return resolved_pkg

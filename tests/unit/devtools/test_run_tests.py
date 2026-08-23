@@ -6,7 +6,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -212,7 +211,7 @@ def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
     monkeypatch.setattr(
         run_tests,
         "assert_polylogue_matches_checkout",
-        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", interrupt)
@@ -345,7 +344,7 @@ def test_main_finalizes_runner_exception_after_open_step(
     monkeypatch.setattr(
         run_tests,
         "assert_polylogue_matches_checkout",
-        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
@@ -400,7 +399,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     monkeypatch.setattr(
         run_tests,
         "assert_polylogue_matches_checkout",
-        lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=root / "polylogue", as_dict=lambda: {}),
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
     monkeypatch.setattr(run_tests, "_run", fake_run)

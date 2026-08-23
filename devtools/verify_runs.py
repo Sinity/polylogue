@@ -25,7 +25,6 @@ from typing import Any
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
-VERIFY_CACHE_OWNER_MARKER_PATH = VERIFY_CACHE / "checkout-owner.json"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
@@ -96,8 +95,6 @@ class VerifyRun:
         argv: list[str],
         git_head: str | None,
         root: Path | None = None,
-        polylogue_import_path: str | None = None,
-        environment_fingerprint: Mapping[str, Any] | None = None,
         mirror_current: bool = True,
     ) -> None:
         self.root = root or Path.cwd()
@@ -110,25 +107,11 @@ class VerifyRun:
             "argv": list(argv),
             "git_head": git_head,
             "git_dirty": git_dirty(self.root),
-            "polylogue_import_path": polylogue_import_path,
-            "environment_fingerprint": dict(environment_fingerprint) if environment_fingerprint else None,
-            "checkout_root": str(self.root.resolve()),
             "started_at": utc_now(),
             "status": "running",
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
-        # The cache owner is deliberately independent of ``current-run``.
-        # AgentCTL runs suppress that mutable UI mirror, but nested gates still
-        # need an atomic, checkout-bound proof that this cache belongs here.
-        _write_json(
-            self.root / VERIFY_CACHE_OWNER_MARKER_PATH,
-            {
-                "kind": "verify-cache-owner",
-                "version": 1,
-                "checkout_root": str(self.root.resolve()),
-            },
-        )
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 
@@ -140,15 +123,6 @@ class VerifyRun:
         _write_json(self.run_dir / "run.json", self._payload)
         if self.mirror_current:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
-
-    def update_checkout_provenance(
-        self, *, polylogue_import_path: str | None = None, environment_fingerprint: Mapping[str, Any] | None = None
-    ) -> None:
-        if polylogue_import_path is not None:
-            self._payload["polylogue_import_path"] = polylogue_import_path
-        if environment_fingerprint is not None:
-            self._payload["environment_fingerprint"] = dict(environment_fingerprint)
-        self.write()
 
     def record_selection(
         self,

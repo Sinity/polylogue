@@ -96,22 +96,6 @@ def _verbose_output() -> bool:
     return "--verbose" in sys.argv[1:] or bool(os.environ.get("POLYLOGUE_DEVTOOLS_VERBOSE"))
 
 
-def _import_path_is_unsurprising(polylogue_import_path: Path | str) -> bool:
-    """Whether the resolved package is the one this checkout owns.
-
-    Fails toward announcing. An empty or unresolvable path is NOT evidence that
-    the environment is fine -- and it would otherwise read as unsurprising,
-    because ``Path("").resolve()`` is the current directory, which normally sits
-    inside the checkout.
-    """
-    if not str(polylogue_import_path).strip():
-        return False
-    try:
-        return Path(polylogue_import_path).resolve().is_relative_to(ROOT.resolve())
-    except (OSError, ValueError):
-        return False
-
-
 def _absolute_option_path(
     value: str,
     *,
@@ -317,21 +301,10 @@ def main(argv: list[str] | None = None) -> int:
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
     try:
-        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools test")
+        assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"{exc}\n")
         return 125
-    polylogue_import_path = fingerprint.polylogue_import_path
-    environment_fingerprint = fingerprint.as_dict()
-    # Announce the resolved package ONLY when it is surprising. This line exists
-    # for the 2026-07-31 wrong-checkout incident, where a worktree silently ran
-    # the main checkout's code; it earns its place when it contradicts the
-    # checkout, and is pure noise on the overwhelming majority of runs where it
-    # does not. The fact itself is never lost -- it is recorded as
-    # polylogue_import_path in the run receipt either way.
-    if _verbose_output() or not _import_path_is_unsurprising(polylogue_import_path):
-        sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
-
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
     # flag; it is meaningless for a streamed test run, so drop it before pytest.
@@ -353,8 +326,6 @@ def main(argv: list[str] | None = None) -> int:
         argv=selection,
         git_head=git_head(ROOT),
         root=ROOT,
-        polylogue_import_path=str(polylogue_import_path),
-        environment_fingerprint=environment_fingerprint,
     )
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
