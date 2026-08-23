@@ -34,6 +34,11 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
+from devtools.pytest_collection_contract import (
+    CLEAR_CONFIGURED_ADDOPTS,
+    IGNORED_COLLECTION_ARGS,
+    MANAGED_PLUGIN_ARGS,
+)
 from devtools.verify_runs import (
     VerifyRun,
     append_verify_history,
@@ -237,19 +242,28 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
     worker_args = _worker_args(selection)
+    collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
         sys.executable,
         "-m",
         "pytest",
         "-p",
         "devtools.pytest_progress_plugin",
+        *MANAGED_PLUGIN_ARGS,
+        CLEAR_CONFIGURED_ADDOPTS,
         "--json-report",
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
+        *collection_args,
         *selection,
         *worker_args,
         *_xdist_distribution_args(selection, worker_args),
     ]
+
+
+def _selection_targets_benchmarks(selection: list[str]) -> bool:
+    """Keep benchmark collection available only when the caller asks for it."""
+    return any("tests/benchmarks" in argument for argument in selection)
 
 
 def _clear_pytest_report(_cmd: list[str]) -> None:
@@ -288,6 +302,13 @@ def _run(
         time.monotonic() - started,
         {"diagnosis": "pytest_passed" if completed.returncode == 0 else "pytest_failed"},
     )
+
+
+def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+    """Make focused collection independent of ambient pytest plugins/options."""
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -340,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pytest_env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
+        _normalize_managed_pytest_environment(pytest_env)
         rc, elapsed, metadata = _run(
             "pytest focused",
             cmd,
