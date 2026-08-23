@@ -688,6 +688,24 @@ def test_interrupt_before_first_opcode_never_starts_statement(tmp_path: Path) ->
     assert ctx.receipt.state == "cancelled"
 
 
+def test_reader_accepts_an_already_attested_store_factory(tmp_path: Path) -> None:
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(query_text="attested-store")
+    opened: list[ArchiveStore] = []
+
+    def factory() -> ArchiveStore:
+        store = ArchiveStore.open_existing(root)
+        opened.append(store)
+        return store
+
+    result = InterruptibleSQLiteRead(ctx).run(root, lambda store: store.stats(), store_factory=factory)
+
+    assert result.total_sessions == 0
+    assert len(opened) == 1
+    assert ctx.receipt.state == "completed"
+    assert ctx.receipt.cleanup_complete is True
+
+
 async def test_api_query_units_routes_through_execution_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

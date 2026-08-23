@@ -8,6 +8,8 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
+from polylogue.archive.query.execution_control import InterruptibleSQLiteRead
+from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 from polylogue.mcp.payloads import MCPArchiveStatsPayload
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -117,17 +119,21 @@ def _read_pinned_status(location: ArchiveLocation, identity: ArchiveIdentity) ->
         opened = os.fstat(index_fd)
         if (opened.st_dev, opened.st_ino) != (index.device, index.inode):
             raise AdapterError("OWNER_UNAVAILABLE", "active archive generation changed while opening")
-        archive = ArchiveStore.open_existing(
+        transaction = QueryTransaction(
             location.configured_root,
-            index_path=index.resolved_path,
-            opened_main_fd=index_fd,
+            QueryTransactionRequest(
+                operation="status", arguments={"scope": "archive"}, page_size=1, projection="status"
+            ),
         )
-        try:
-            archive.begin_read_snapshot()
-            return _status_payload(archive)
-        finally:
-            archive.end_read_snapshot()
-            archive.close()
+        return InterruptibleSQLiteRead(transaction.context).run(
+            location.configured_root,
+            _status_payload,
+            store_factory=lambda: ArchiveStore.open_existing(
+                location.configured_root,
+                index_path=index.resolved_path,
+                opened_main_fd=index_fd,
+            ),
+        )
     except AdapterError:
         raise
     except Exception as error:
