@@ -124,6 +124,7 @@ class AppendCohortMemoryCounter:
                         write_io_bytes=phase.io_write_bytes,
                         progress_completed=phase.plan_count,
                         progress_total=self.plan_count,
+                        cleanup_complete=True if phase.name == "quiescent" else None,
                         quiescent=phase.name == "quiescent",
                     ),
                     WorkloadPhaseObservation(
@@ -133,6 +134,7 @@ class AppendCohortMemoryCounter:
                         file_cache_bytes=phase.cgroup_file_bytes,
                         progress_completed=phase.plan_count,
                         progress_total=self.plan_count,
+                        cleanup_complete=True if phase.name == "quiescent" else None,
                         quiescent=phase.name == "quiescent",
                     ),
                 )
