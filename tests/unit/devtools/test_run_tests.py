@@ -12,6 +12,11 @@ from typing import Any, cast
 import pytest
 
 from devtools import run_tests
+from devtools.pytest_collection_contract import (
+    CLEAR_CONFIGURED_ADDOPTS,
+    IGNORED_COLLECTION_ARGS,
+    MANAGED_PLUGIN_ARGS,
+)
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
@@ -31,6 +36,22 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
     ]
     assert "tests/unit/pipeline" in cmd
     assert cmd[-2:] == ["-n", "0"]
+
+
+def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+
+    managed_start = cmd.index("devtools.pytest_progress_plugin") + 1
+    assert [*MANAGED_PLUGIN_ARGS] == cmd[managed_start : managed_start + len(MANAGED_PLUGIN_ARGS)]
+    assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
+    assert [*IGNORED_COLLECTION_ARGS] == cmd[ignored_start : ignored_start + len(IGNORED_COLLECTION_ARGS)]
+
+
+def test_build_pytest_cmd_keeps_benchmark_collection_for_explicit_target() -> None:
+    cmd = run_tests.build_pytest_cmd(["tests/benchmarks/test_scale_tiers.py"])
+
+    assert IGNORED_COLLECTION_ARGS[0] not in cmd
 
 
 def test_build_pytest_cmd_respects_explicit_worker_flag() -> None:
@@ -105,6 +126,9 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
     assert captured["env"]["POLYLOGUE_PYTEST_EVENTS_DIR"].endswith("/events")
+    assert captured["env"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert "PYTEST_ADDOPTS" not in captured["env"]
+    assert "PYTEST_PLUGINS" not in captured["env"]
     assert captured["history"]["git_head"] == "abc123"
     assert isinstance(captured["history"]["git_dirty"], bool)
     assert captured["history"]["verification_scope"] == "affected"
