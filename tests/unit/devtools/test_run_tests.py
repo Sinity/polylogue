@@ -17,21 +17,9 @@ from devtools.verify_runs import (
     CURRENT_STATISTICS_PATH,
     VERIFICATION_INVOCATION_ID_ENV,
     VERIFICATION_RECEIPT_PATH_ENV,
-    CheckoutMutationObservation,
     git_head,
     pytest_command_worker_request,
 )
-
-
-class _NoMutationMonitor:
-    def __init__(self, _root: Path) -> None:
-        pass
-
-    def start(self) -> None:
-        pass
-
-    def finish(self) -> CheckoutMutationObservation:
-        return CheckoutMutationObservation(changed=False, unavailable=False)
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -154,8 +142,6 @@ def test_main_preserves_relative_selection_from_subdirectory(
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda _payload: None)
 
     assert run_tests.main(["core/test_identity_law.py::test_session_id_is_origin_native_id"]) == 0
@@ -180,8 +166,6 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", _fake_run)
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
 
     assert (
@@ -210,33 +194,11 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     assert command[command.index("--junit-xml") + 1] == str(invocation / "reports" / "results.xml")
 
 
-def test_main_keeps_interruption_diagnosis_when_checkout_verification_finds_a_change(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    history: dict[str, Any] = {}
-    fingerprints = iter(("before", "after"))
-
-    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
-        raise KeyboardInterrupt
-
-    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "_run", interrupt)
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
-
-    assert run_tests.main(["tests/unit/example.py"]) == 130
-    assert history["diagnosis"] == "pytest_interrupted"
-    assert history["checkout_diagnosis"] == "checkout_changed_during_focused_test"
-
-
-def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
+def test_main_persists_interrupted_direct_cli_receipt_to_all_run_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     history: dict[str, Any] = {}
-    fingerprints = iter(("before", "after"))
     receipt = tmp_path / "receipt.json"
 
     def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
@@ -255,8 +217,6 @@ def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "_run", interrupt)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
 
     assert run_tests.main(["tests/unit/example.py"]) == 130
@@ -266,8 +226,9 @@ def test_main_persists_interrupted_checkout_diagnosis_to_all_run_artifacts(
     receipt_payload = json.loads(receipt.read_text())
     for payload in (history, run_payload, current_payload, receipt_payload):
         assert payload["diagnosis"] == "pytest_interrupted"
-        assert payload["checkout_diagnosis"] == "checkout_changed_during_focused_test"
         assert payload["pytest_aggregate"]["selection_mode"] == "focused"
+        assert payload["git_head"] == "head"
+        assert payload["final_git_head"] == "head"
     assert history["pytest_aggregate"] == receipt_payload["pytest_aggregate"]
 
 
@@ -367,8 +328,6 @@ def test_main_preserves_keyword_and_marker_values_from_tests_directory(
         "_run",
         capture,
     )
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
 
     assert run_tests.main(["-k", "unit", "-m", "unit"]) == 0
@@ -394,8 +353,6 @@ def test_main_finalizes_runner_exception_after_open_step(
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
     monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "stable")
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
 
     def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
@@ -410,107 +367,6 @@ def test_main_finalizes_runner_exception_after_open_step(
     assert history["diagnosis"] == "focused_test_runner_exception"
     assert history["steps"][0]["status"] == "failed"
     assert history["steps"][0]["exit"] == 125
-
-
-def test_main_withholds_success_when_checkout_changes_during_pytest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    fingerprints = iter(("initial", "changed"))
-
-    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprints))
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
-
-    assert run_tests.main(["tests/unit/example.py"]) == 125
-    assert captured["status"] == "failed"
-    assert captured["diagnosis"] == "checkout_changed_during_focused_test"
-    assert captured["worktree_fingerprint"] == "initial"
-    assert captured["final_worktree_fingerprint"] == "changed"
-
-
-def test_main_starts_checkout_monitor_before_initial_fingerprint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-
-    class _OrderingMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            events.append("monitor-started")
-
-        def finish(self) -> CheckoutMutationObservation:
-            events.append("monitor-finished")
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    def fingerprint(_root: Path) -> str:
-        assert events[0] == "monitor-started"
-        events.append("fingerprinted")
-        return "stable"
-
-    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", fingerprint)
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _OrderingMonitor)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
-
-    assert run_tests.main(["tests/unit/example.py"]) == 0
-    assert events == ["monitor-started", "fingerprinted", "fingerprinted", "monitor-finished"]
-
-
-def test_main_finalizes_checkout_monitor_when_initial_fingerprint_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    events: list[str] = []
-
-    class _ExceptionalExitMonitor:
-        def __init__(self, _root: Path) -> None:
-            pass
-
-        def start(self) -> None:
-            events.append("monitor-started")
-
-        def finish(self) -> CheckoutMutationObservation:
-            events.append("monitor-finished")
-            return CheckoutMutationObservation(changed=False, unavailable=False)
-
-    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _ExceptionalExitMonitor)
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: (_ for _ in ()).throw(RuntimeError("boom")))
-
-    with pytest.raises(RuntimeError, match="boom"):
-        run_tests.main(["tests/unit/example.py"])
-
-    assert events == ["monitor-started", "monitor-finished"]
-
-
-@pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
-def test_main_withholds_success_when_checkout_fingerprint_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-    fingerprints: tuple[str, str],
-) -> None:
-    captured: dict[str, Any] = {}
-    fingerprint_values = iter(fingerprints)
-
-    monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "_run", lambda *_args, **_kwargs: (0, 0.01, {"diagnosis": "pytest_passed"}))
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: next(fingerprint_values))
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: captured.update(payload))
-
-    assert run_tests.main(["tests/unit/example.py"]) == 125
-    assert captured["status"] == "failed"
-    assert captured["diagnosis"] == "checkout_fingerprint_unavailable"
-    assert captured["worktree_fingerprint"] == fingerprints[0]
-    assert captured["final_worktree_fingerprint"] == fingerprints[1]
 
 
 def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -553,8 +409,6 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
         lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=root / "polylogue", as_dict=lambda: {}),
     )
     monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "worktree_fingerprint", lambda _root: "fingerprint")
-    monkeypatch.setattr(run_tests, "CheckoutMutationMonitor", _NoMutationMonitor)
     monkeypatch.setattr(run_tests, "_run", fake_run)
     monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
     monkeypatch.setenv("POLYLOGUE_TEST_NO_LOCK", "1")
