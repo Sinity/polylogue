@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -2781,6 +2782,16 @@ def _print_json(result: dict[str, Any]) -> None:
     sys.stdout.write("\n")
 
 
+def _emit_machine_result(result: dict[str, Any], *, use_json: bool) -> None:
+    """Emit the bounded declared-operation result, or the legacy JSON ledger."""
+    agentctl_receipt = agentctl_verification_receipt(result)
+    if agentctl_receipt is not None:
+        json.dump(agentctl_receipt, sys.stdout, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        sys.stdout.write("\n")
+    elif use_json:
+        _print_json(result)
+
+
 # ── stamp ───────────────────────────────────────────────────────────
 
 
@@ -3159,8 +3170,7 @@ def _finalize_preflight_failure(
     if (recorded_selection := run.testmon_selection) is not None:
         history_entry["testmon_selection"] = recorded_selection
     _save_history(history_entry)
-    if use_json:
-        _print_json(history_entry)
+    _emit_machine_result(history_entry, use_json=use_json)
     sys.stderr.write(f"verify: {message}\n")
     return exit_code
 
@@ -3395,6 +3405,7 @@ def _main(argv: list[str] | None = None) -> int:
             missing_executable_paths=preparation.local_state.missing_executable_paths,
             runtime_data_paths=runtime_data_paths,
             copied_from=str(preparation.copied_from) if preparation.copied_from is not None else None,
+            environment_digest=preparation.environment_name.removeprefix("polylogue-"),
         )
         if preparation.selection_mode == "bootstrap" and not args.all_tests:
             return _finalize_preflight_failure(
@@ -3798,9 +3809,8 @@ def _main(argv: list[str] | None = None) -> int:
         pytest_aggregate=pytest_aggregate,
     )
     history_entry["pytest_aggregate"] = finalized_payload["pytest_aggregate"]
-    if use_json:
-        _print_json(history_entry)
-    elif exit_code == 0:
+    _emit_machine_result(history_entry, use_json=bool(use_json))
+    if not use_json and exit_code == 0:
         flags = _compare_against_last(step_results)
         sys.stderr.write(f"\nverify: all checks passed ({total_duration:.1f}s total)")
         if flags:
@@ -3809,7 +3819,7 @@ def _main(argv: list[str] | None = None) -> int:
                 sys.stderr.write(flag + "\n")
         else:
             sys.stderr.write("\n")
-    else:
+    elif not use_json:
         sys.stderr.write(f"\nverify: FAILED ({total_duration:.1f}s); fix before pushing\n")
 
     _save_history(history_entry)
@@ -3881,8 +3891,7 @@ def _finalize_verify_runner_exception(
     payload["exception_type"] = type(exc).__name__
     payload["error"] = str(exc)
     _save_history(payload)
-    if use_json:
-        _print_json(payload)
+    _emit_machine_result(payload, use_json=use_json)
     sys.stderr.write(f"verify: unexpected runner exception: {exc}\n")
     return exit_code
 

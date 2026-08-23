@@ -29,6 +29,7 @@ from typing import Any, Final, ParamSpec, TextIO, TypeVar
 
 import watchfiles
 
+from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.cloud_sentinels import CLOUD_SENTINELS, running_in_cloud_sandbox
 from devtools.pytest_supervisor import force_rmtree
 from devtools.testmon_bootstrap import canonical_test_nodeid
@@ -1790,7 +1791,7 @@ class VerifyRun:
         _write_json(self.run_dir / "run.json", self._payload)
         invocation_receipt = os.environ.get(VERIFICATION_RECEIPT_PATH_ENV)
         if invocation_receipt:
-            _write_json(Path(invocation_receipt), self._payload)
+            _write_json(Path(invocation_receipt), agentctl_verification_receipt(self._payload) or self._payload)
         current_path = self.root / CURRENT_RUN_PATH
         if not _current_owner_is_other_live_run(current_path):
             _write_json(current_path, self._payload)
@@ -1820,6 +1821,7 @@ class VerifyRun:
         missing_executable_paths: Sequence[str] = (),
         runtime_data_paths: Sequence[str] = (),
         copied_from: str | None = None,
+        environment_digest: str | None = None,
     ) -> None:
         """Record WHY this run selected the tests it did.
 
@@ -1850,6 +1852,7 @@ class VerifyRun:
             "missing_executable_path_count": len(tuple(missing_executable_paths)),
             "runtime_data_paths": list(runtime_data_paths),
             "copied_from": copied_from,
+            "environment_digest": environment_digest,
         }
         self.write()
 

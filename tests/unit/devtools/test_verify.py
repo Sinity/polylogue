@@ -24,6 +24,7 @@ import watchfiles
 
 import devtools.pytest_supervisor as pytest_supervisor
 from devtools import run_tests, verify, verify_runs
+from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.checkout_guard import CheckoutImportMismatchError
 from devtools.pytest_supervisor import (
     CGROUP_MODE_ENV,
@@ -4682,6 +4683,172 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
     assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
+
+
+def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_contract() -> None:
+    receipt = agentctl_verification_receipt(
+        {
+            "run_id": "run-1",
+            "status": "success",
+            "exit_code": 0,
+            "git_head": "observed-head",
+            "final_git_head": "final-head",
+            "worktree_fingerprint": "before",
+            "final_worktree_fingerprint": "after",
+            "verification_scope": "affected",
+            "release_baseline_allowed": False,
+            "testmon_selection": {
+                "selection_mode": "all",
+                "state_status": "incomplete",
+                "state_reason": "changed dependencies require a complete run",
+                "environment_digest": "testmon-environment",
+                "missing_executable_paths": [f"polylogue/module_{index}.py" for index in range(20)],
+                "runtime_data_paths": [f"tests/data_{index}.json" for index in range(20)],
+            },
+            "steps": [
+                {"name": f"gate {index}", "exit": 0, "diagnosis": "passed", "cmd": ["private"]} for index in range(20)
+            ],
+            "pytest_aggregate": {
+                "selection_mode": "all",
+                "selected_union_count": 40,
+                "terminal_union_count": 40,
+                "non_green_count": 0,
+                "terminal_green": True,
+                "complete_corpus_covered": True,
+                "corpus": {"digest": "corpus-digest"},
+                "outcomes": {"passed": 40},
+            },
+        },
+        env={
+            "SINNIXD_OPERATION": "verify_affected",
+            "SINNIXD_JOB_ID": "job-1",
+            "SINNIXD_CHECKOUT_ID": "workspace-1",
+            "SINNIXD_CHECKOUT_HEAD": "declared-head",
+        },
+    )
+
+    assert receipt is not None
+    assert receipt["operation"] == "verify_affected"
+    assert receipt["workspace"] == {
+        "checkout_id": "workspace-1",
+        "declared_head": "declared-head",
+        "observed_head": "observed-head",
+        "final_head": "final-head",
+        "worktree_fingerprint": "before",
+        "final_worktree_fingerprint": "after",
+    }
+    assert receipt["scope"] == {
+        "verification_scope": "affected",
+        "selection_mode": "all",
+        "release_baseline_allowed": False,
+    }
+    assert receipt["testmon_environment"] == {
+        "environment_digest": "testmon-environment",
+        "graph_content_digest": None,
+        "graph_content_digest_available": False,
+        "state": "incomplete",
+        "reason": "changed dependencies require a complete run",
+    }
+    assert receipt["semantic_status"] == "affected-passed"
+    assert receipt["diagnostics"]["selection_widened"] is True
+    assert receipt["diagnostics"]["missing_edges"] == {
+        "count": 20,
+        "items": [f"polylogue/module_{index}.py" for index in range(16)],
+        "truncated": True,
+    }
+    assert receipt["diagnostics"]["runtime_data_paths"]["truncated"] is True
+    assert receipt["gate_outcomes"]["count"] == 20
+    assert len(receipt["gate_outcomes"]["items"]) == 16
+    assert receipt["pytest_outcomes"] == {
+        "present": True,
+        "selection_mode": "all",
+        "selected_count": 40,
+        "terminal_count": 40,
+        "non_green_count": 0,
+        "terminal_green": True,
+        "complete_corpus_covered": True,
+        "corpus_digest": "corpus-digest",
+        "outcomes": {"passed": 40},
+        "outcomes_truncated": False,
+    }
+    assert "cmd" not in json.dumps(receipt)
+
+
+def test_verify_run_writes_typed_agentctl_invocation_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "receipt.json"
+    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt_path))
+    monkeypatch.setenv("SINNIXD_OPERATION", "verify_affected")
+    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "workspace-1")
+    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", "declared-head")
+
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="observed-head", root=tmp_path)
+    run.record_selection(
+        selection_mode="full",
+        state_status="valid",
+        state_reason="the graph is current",
+        environment_digest="testmon-environment",
+    )
+    payload = run.finish(
+        exit_code=0,
+        duration_s=0.1,
+        verification_scope="affected",
+        release_baseline_allowed=False,
+        final_git_head="final-head",
+    )
+
+    persisted = json.loads(receipt_path.read_text())
+    assert persisted["operation"] == "verify_affected"
+    assert persisted["workspace"]["checkout_id"] == "workspace-1"
+    assert persisted["workspace"]["observed_head"] == "observed-head"
+    assert persisted["workspace"]["final_head"] == "final-head"
+    assert persisted["testmon_environment"] == {
+        "environment_digest": "testmon-environment",
+        "graph_content_digest": None,
+        "graph_content_digest_available": False,
+        "state": "valid",
+        "reason": "the graph is current",
+    }
+    assert persisted["semantic_status"] == "affected-passed"
+    assert persisted["exit_code"] == payload["exit_code"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "scope", "expected_status"),
+    [
+        ("verify_affected", "affected", "affected-passed"),
+        ("verify_quick", "non-test", "non-test-passed"),
+        ("verify_all", "release-baseline", "release-baseline-passed"),
+    ],
+)
+def test_verify_emits_typed_agentctl_result_for_every_declared_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+    scope: str,
+    expected_status: str,
+) -> None:
+    monkeypatch.setenv("SINNIXD_OPERATION", operation)
+    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "workspace-1")
+    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", "declared-head")
+
+    verify._emit_machine_result(
+        {
+            "run_id": "run-1",
+            "status": "success",
+            "exit_code": 0,
+            "verification_scope": scope,
+            "release_baseline_allowed": scope == "release-baseline",
+        },
+        use_json=False,
+    )
+
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["operation"] == operation
+    assert emitted["scope"]["verification_scope"] == scope
+    assert emitted["semantic_status"] == expected_status
 
 
 @pytest.mark.parametrize("fingerprints", [("unavailable", "stable"), ("stable", "unavailable")])
