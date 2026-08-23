@@ -21,4 +21,4 @@ source_scoped = true
 source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
-documentation = "Bounded Polylogue archive status."
+documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
