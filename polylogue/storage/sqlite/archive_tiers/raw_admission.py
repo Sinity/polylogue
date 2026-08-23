@@ -231,10 +231,10 @@ def acquisition_timestamp_ms(value: object) -> int:
         parsed = value
         result = int(parsed.timestamp() * 1000)
     elif isinstance(value, str):
-        parsed = parse_timestamp(value)
-        if parsed is None:
+        parsed_timestamp = parse_timestamp(value)
+        if parsed_timestamp is None:
             raise ValueError("acquisition time is missing or malformed")
-        result = int(parsed.timestamp() * 1000)
+        result = int(parsed_timestamp.timestamp() * 1000)
     else:
         raise ValueError("acquisition time is missing or malformed")
     if result < 0:
@@ -255,11 +255,7 @@ def plan_raw_admission(request: RawAdmissionRequest) -> RawAdmissionPlan:
         raise ValueError("acquired_at_ms must be an integer epoch millisecond value")
     if request.acquired_at_ms < 0:
         raise ValueError("acquired_at_ms must be nonnegative")
-    if request.file_mtime_ms is not None and (
-        isinstance(request.file_mtime_ms, bool)
-        or not isinstance(request.file_mtime_ms, int)
-        or request.file_mtime_ms < 0
-    ):
+    if request.file_mtime_ms is not None and request.file_mtime_ms < 0:
         raise ValueError("file_mtime_ms must be a nonnegative integer when supplied")
 
     raw_id = request.raw_id or deterministic_raw_session_id(
