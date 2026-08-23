@@ -83,7 +83,6 @@ from devtools.testmon_bootstrap import (
     _descriptor_bound_path,
     classify_native_testmon_changes,
     inspect_native_testmon_environment,
-    linked_worktree_info,
     native_testmon_lifecycle_lock,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
@@ -230,20 +229,16 @@ def _native_testmon_lifecycle_lock(
 
 @contextlib.contextmanager
 def _native_testmon_source_lifecycle_lock(
-    repo_root: Path,
     *,
+    main_checkout: Path,
     timeout_s: float = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S,
 ) -> Iterator[bool]:
-    """Protect linked-worktree source preparation without extending the lane lock."""
-    linked_info = linked_worktree_info(repo_root)
-    if linked_info is None or not linked_info[0]:
-        yield True
-        return
+    """Protect an already-resolved linked-worktree source preparation."""
     try:
         # The caller already holds the lane-local lock. The launcher acquires its
         # linked-worktree locks in this same lane-then-common order, so waiting
         # for the common source lock cannot form an inverse lock cycle.
-        with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
+        with native_testmon_lifecycle_lock(main_checkout, timeout_s=timeout_s, waiter_label="verify-source"):
             yield True
     except NativeTestmonLifecycleLockTimeoutError as exc:
         del exc
@@ -353,7 +348,7 @@ DEFAULT_PYTEST_TIMEOUT_S = 45 * 60.0
 DEFAULT_PYTEST_STALL_TIMEOUT_S = 10 * 60.0
 DEFAULT_PYTEST_TERM_GRACE_S = 5.0
 DEFAULT_PYTEST_RESOURCE_INTERVAL_S = 2.0
-DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
+DEFAULT_TESTMON_SOURCE_LOCK_TIMEOUT_S = 1.0
 
 
 def _is_productive_test_progress_event(event: Mapping[str, Any]) -> bool:
@@ -3321,9 +3316,9 @@ def _main(argv: list[str] | None = None) -> int:
             )
             runtime_data_paths = change_impact.runtime_data_paths
 
-            def source_lock_factory() -> contextlib.AbstractContextManager[bool]:
+            def source_lock_factory(main_checkout: Path) -> contextlib.AbstractContextManager[bool]:
                 return _native_testmon_source_lifecycle_lock(
-                    ROOT,
+                    main_checkout=main_checkout,
                     timeout_s=_native_testmon_source_lock_timeout_s(),
                 )
 

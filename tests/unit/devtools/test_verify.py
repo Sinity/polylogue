@@ -23,7 +23,7 @@ import pytest
 import watchfiles
 
 import devtools.pytest_supervisor as pytest_supervisor
-from devtools import run_tests, verify, verify_runs
+from devtools import run_tests, testmon_bootstrap, verify, verify_runs
 from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.checkout_guard import CheckoutImportMismatchError
 from devtools.pytest_supervisor import (
@@ -3425,28 +3425,20 @@ def test_native_testmon_lifecycle_lock_serializes_checkout_state(tmp_path: Path)
 @pytest.mark.uses_real_clock("coordinates linked-worktree source lifecycle locks")
 def test_linked_source_preparation_lifecycle_lock_includes_main_checkout(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     main = tmp_path / "main"
-    lane = tmp_path / "lane"
     main.mkdir()
-    lane.mkdir()
-
-    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
-        return (True, main) if root.resolve() == lane.resolve() else (False, main)
-
-    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
     holder_entered = threading.Event()
     release_holder = threading.Event()
     contender_entered = threading.Event()
 
     def hold_source_lock() -> None:
-        with verify._native_testmon_source_lifecycle_lock(lane):
+        with verify._native_testmon_source_lifecycle_lock(main_checkout=main):
             holder_entered.set()
             assert release_holder.wait(timeout=2)
 
     def contend_for_source_lock() -> None:
-        with verify._native_testmon_source_lifecycle_lock(lane):
+        with verify._native_testmon_source_lifecycle_lock(main_checkout=main):
             contender_entered.set()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -3461,21 +3453,38 @@ def test_linked_source_preparation_lifecycle_lock_includes_main_checkout(
     assert contender_entered.is_set()
 
 
-@pytest.mark.uses_real_clock("proves a busy optional main source degrades to local preparation")
-def test_busy_optional_main_source_lock_is_unavailable(
+def test_source_lock_uses_precomputed_main_checkout_without_a_second_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An indeterminate later worktree probe cannot turn uncertainty into access."""
     main = tmp_path / "main"
-    lane = tmp_path / "lane"
     main.mkdir()
-    lane.mkdir()
-
     monkeypatch.setattr(
         verify,
         "linked_worktree_info",
-        lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
+        lambda *_args, **_kwargs: pytest.fail("unexpected probe"),
+        raising=False,
     )
+
+    with verify._native_testmon_source_lifecycle_lock(main_checkout=main) as source_available:
+        assert source_available is True
+
+
+def test_optional_source_lock_default_is_a_short_cache_miss_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Optional warm reuse must not inherit the full lifecycle-lock wait."""
+    monkeypatch.delenv(verify.TESTMON_SOURCE_LOCK_TIMEOUT_ENV, raising=False)
+
+    assert verify._native_testmon_source_lock_timeout_s() == 1.0
+    assert verify._native_testmon_source_lock_timeout_s() < testmon_bootstrap.NATIVE_TESTMON_LIFECYCLE_LOCK_TIMEOUT_S
+
+
+@pytest.mark.uses_real_clock("proves a busy optional main source degrades to local preparation")
+def test_busy_optional_main_source_lock_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "main"
+    main.mkdir()
     holder_entered = threading.Event()
     release_holder = threading.Event()
 
@@ -3487,7 +3496,7 @@ def test_busy_optional_main_source_lock_is_unavailable(
     with ThreadPoolExecutor(max_workers=1) as pool:
         holder = pool.submit(hold_main_lock)
         assert holder_entered.wait(timeout=2)
-        with verify._native_testmon_source_lifecycle_lock(lane, timeout_s=0.01) as source_available:
+        with verify._native_testmon_source_lifecycle_lock(main_checkout=main, timeout_s=0.01) as source_available:
             assert source_available is False
         release_holder.set()
         holder.result(timeout=2)
@@ -3506,7 +3515,7 @@ def test_busy_main_source_wait_has_bounded_liveness(
     lane.mkdir()
 
     monkeypatch.setattr(
-        verify,
+        testmon_bootstrap,
         "linked_worktree_info",
         lambda root, **_kwargs: (True, main) if root.resolve() == lane.resolve() else None,
     )
@@ -3527,8 +3536,8 @@ def test_busy_main_source_wait_has_bounded_liveness(
         started = time.monotonic()
         preparation = prepare_native_testmon_environment(
             lane,
-            source_lock_factory=lambda: verify._native_testmon_source_lifecycle_lock(
-                lane,
+            source_lock_factory=lambda main_checkout: verify._native_testmon_source_lifecycle_lock(
+                main_checkout=main_checkout,
                 timeout_s=verify._native_testmon_source_lock_timeout_s(),
             ),
         )
@@ -3545,7 +3554,6 @@ def test_busy_main_source_wait_has_bounded_liveness(
 @pytest.mark.uses_real_clock("proves common source lock ends before linked verify lifecycle ends")
 def test_unrelated_linked_lane_proceeds_after_source_preparation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     main = tmp_path / "main"
     lane_a = tmp_path / "lane-a"
@@ -3554,10 +3562,6 @@ def test_unrelated_linked_lane_proceeds_after_source_preparation(
     lane_a.mkdir()
     lane_b.mkdir()
 
-    def linked_info(root: Path, **_kwargs: object) -> tuple[bool, Path] | None:
-        return (True, main) if root.resolve() in {lane_a.resolve(), lane_b.resolve()} else (False, main)
-
-    monkeypatch.setattr(verify, "linked_worktree_info", linked_info)
     source_started = threading.Event()
     release_source = threading.Event()
     post_source_started = threading.Event()
@@ -3566,7 +3570,7 @@ def test_unrelated_linked_lane_proceeds_after_source_preparation(
 
     def run_lane_a() -> None:
         with verify._native_testmon_lifecycle_lock(lane_a):
-            with verify._native_testmon_source_lifecycle_lock(lane_a):
+            with verify._native_testmon_source_lifecycle_lock(main_checkout=main):
                 source_started.set()
                 assert release_source.wait(timeout=2)
             post_source_started.set()
@@ -3574,7 +3578,7 @@ def test_unrelated_linked_lane_proceeds_after_source_preparation(
 
     def run_lane_b() -> None:
         with verify._native_testmon_lifecycle_lock(lane_b):
-            with verify._native_testmon_source_lifecycle_lock(lane_b):
+            with verify._native_testmon_source_lifecycle_lock(main_checkout=main):
                 lane_b_entered.set()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
