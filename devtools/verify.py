@@ -2893,7 +2893,7 @@ def _pytest_uses_full_suite_basetemp(label: str) -> bool:
     so it is NOT full-suite-shaped by label alone; selection_may_run_broadly
     covers the non-valid-graph cases at the placement decision.
     """
-    return label.startswith("pytest native") and "(bootstrap)" in label
+    return label.startswith("pytest native") and ("(bootstrap)" in label or "(all)" in label)
 
 
 def _changed_paths(base_commit: str, head_commit: str) -> set[str]:
