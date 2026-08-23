@@ -48,10 +48,8 @@ Browser capture has a local receiver and an unpacked extension, but it does not
 require Polylogue to borrow the operator's authenticated browser. For web-shell
 or extension debugging, keep these paths distinct:
 
-- an agent-private Chrome/MCP browser can inspect the local workbench when the
-  local control plane provides one;
-- the operator's live browser/cookies are used only after explicit approval and
-  should be copied into an ignored local profile, never into CI or cloud agents;
+- agent work uses the existing Chrome only through Sinnix's `agent-window` control boundary, which parks proof windows on the named `agentbrowser` workspace;
+- neither `dev_loop_proof` nor `live_provider_proof` creates or copies a browser profile, launches Chrome or Chromium, or allocates a private CDP port;
 - the fixed `deployment_browser_smoke` AgentCTL operation launches a fresh
   headless Chrome/Chromium profile inside its transient service cgroup.
 
@@ -269,18 +267,13 @@ of dropping content silently.
 
 ## Branch-local extension proof modes
 
-Use the declared `dev_loop_proof` AgentCTL operation when changing receiver,
-extension, or provider adapters from a branch. It binds the proof to a managed
-checkout, leases its API, receiver, and Chrome CDP ports, proves receiver authentication and
-deterministic provider capture, then reports archive and API convergence through
-the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
-wait, and result commands.
+Use the declared `dev_loop_proof` AgentCTL operation when changing receiver, extension, or provider adapters from a branch. It binds the proof to a managed checkout, leases its API and receiver ports, checks the shared-Chrome control boundary with one owned `agentbrowser` target, proves receiver authentication and deterministic provider capture, then reports archive and API convergence through the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start, wait, and result commands.
 
 Live shared-Chrome proof runs only through the declared `live_provider_proof`
 AgentCTL operation. It must not create an alternative Polylogue daemon
 lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher. It
 uses Sinnix's `agent-window` control boundary in the running authenticated
-browser, verifies each proof window hidden on `special:agentbrowser`, and closes
+browser, verifies each proof window hidden on `agentbrowser`, and closes
 only proof-created targets.
 
 ## Current residual map for #1824 / #1847

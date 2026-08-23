@@ -76,10 +76,6 @@ range = [48800, 48863]
 environment = "POLYLOGUE_BROWSER_CAPTURE_PORT"
 range = [48864, 48927]
 
-[operations.dev_loop_proof.service.ports.browser_cdp]
-environment = "POLYLOGUE_BROWSER_CDP_PORT"
-range = [48928, 48991]
-
 [operations.deployment_browser_smoke]
 description = "Run the fixed deployed-web browser-render smoke through AgentCTL"
 exec = ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"]

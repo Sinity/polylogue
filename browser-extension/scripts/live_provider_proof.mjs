@@ -14,7 +14,7 @@ const PROVIDERS = {
 };
 const _CONTROL_COMMAND = "/home/sinity/.local/bin/sinnix-chrome-control";
 const _CDP_PORT = 9222;
-const _AGENT_WORKSPACE = "special:agentbrowser";
+const _AGENT_WORKSPACE = "agentbrowser";
 const _WORKFLOW_TIMEOUT_MS = 90_000;
 const _STARTUP_TIMEOUT_MS = 30_000;
 const _INTERACTIVE_WAIT_MS = 15_000;
@@ -104,7 +104,7 @@ export function assertAgentWindow(candidate, expectedUrl) {
   if (!candidate || typeof candidate !== "object") throw new Error("shared Chrome control returned no agent-window result");
   if (!/^[A-F0-9]{32}$/i.test(candidate.id || "")) throw new Error("shared Chrome control returned an invalid proof target");
   if (candidate.url !== expectedUrl || candidate.parked !== true || candidate.workspace !== _AGENT_WORKSPACE || candidate.show_with !== "F7") {
-    throw new Error("shared Chrome proof window was not verified hidden on special:agentbrowser");
+    throw new Error("shared Chrome proof window was not verified hidden on agentbrowser");
   }
   return candidate.id;
 }

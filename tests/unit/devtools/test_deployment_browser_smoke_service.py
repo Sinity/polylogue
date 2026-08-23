@@ -137,7 +137,7 @@ def test_live_provider_rejects_an_agent_window_without_hidden_parking() -> None:
             "node",
             "--input-type=module",
             "--eval",
-            "import('./scripts/live_provider_proof.mjs').then(m => { try { m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: false, workspace: 'special:agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/'); process.exitCode = 2; } catch (error) { console.log(error.message); } })",
+            "import('./scripts/live_provider_proof.mjs').then(m => { try { m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: false, workspace: 'agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/'); process.exitCode = 2; } catch (error) { console.log(error.message); } })",
         ],
         cwd="browser-extension",
         text=True,
@@ -146,7 +146,7 @@ def test_live_provider_rejects_an_agent_window_without_hidden_parking() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "verified hidden on special:agentbrowser" in completed.stdout
+    assert "verified hidden on agentbrowser" in completed.stdout
 
 
 def test_live_provider_accepts_a_parked_control_plane_window() -> None:
@@ -155,7 +155,7 @@ def test_live_provider_accepts_a_parked_control_plane_window() -> None:
             "node",
             "--input-type=module",
             "--eval",
-            "import('./scripts/live_provider_proof.mjs').then(m => console.log(m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: true, workspace: 'special:agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/')))",
+            "import('./scripts/live_provider_proof.mjs').then(m => console.log(m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: true, workspace: 'agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/')))",
         ],
         cwd="browser-extension",
         text=True,

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import tomllib
@@ -26,7 +27,6 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
         "ports": {
             "api": {"environment": "POLYLOGUE_API_PORT", "range": [48800, 48863]},
             "browser_capture": {"environment": "POLYLOGUE_BROWSER_CAPTURE_PORT", "range": [48864, 48927]},
-            "browser_cdp": {"environment": "POLYLOGUE_BROWSER_CDP_PORT", "range": [48928, 48991]},
         },
     }
     assert descriptor["operations"]["verify_all"]["timeout_seconds"] == 14400
@@ -42,7 +42,6 @@ def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
     monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
-    monkeypatch.setenv("POLYLOGUE_BROWSER_CDP_PORT", "48929")
 
 
 def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
@@ -58,12 +57,13 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **kwargs: started.update(kwargs))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
     monkeypatch.setattr(
         dev_loop_service,
-        "_run_provider_capture",
+        "_submit_deterministic_captures",
         lambda **_kwargs: {
-            "chatgpt": {"provider": "chatgpt", "provider_session_id": "agentctl-proof"},
-            "claude": {"provider": "claude-ai", "provider_session_id": "agentctl-proof"},
+            "chatgpt": {"provider": "chatgpt", "provider_session_id": "agentctl-proof-chatgpt"},
+            "claude-ai": {"provider": "claude-ai", "provider_session_id": "agentctl-proof-claude-ai"},
         },
     )
     monkeypatch.setattr(dev_loop_service, "_poll_archive_state", lambda **_kwargs: True)
@@ -73,10 +73,11 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
 
     assert payload == {
         "ok": True,
-        "ports": {"api": 48801, "browser_capture": 48865, "browser_cdp": 48929},
+        "ports": {"api": 48801, "browser_capture": 48865},
         "receiver_auth": {"ok": True},
+        "shared_chrome": {"ok": True},
         "provider_capture": {
-            "providers": ["chatgpt", "claude"],
+            "providers": ["chatgpt", "claude-ai"],
             "archive_converged": True,
             "api_converged": True,
         },
@@ -120,7 +121,6 @@ def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatc
     [
         ("POLYLOGUE_API_PORT", None, "POLYLOGUE_API_PORT must be present"),
         ("POLYLOGUE_BROWSER_CAPTURE_PORT", "48801", "outside the fixed dev-loop service port range"),
-        ("POLYLOGUE_BROWSER_CDP_PORT", "49000", "outside the fixed dev-loop service port range"),
         ("SINNIXD_OPERATION", "other", "rejects execution outside its fixed service context"),
     ],
 )
@@ -156,6 +156,160 @@ def test_receiver_smoke_proves_auth_rejection_and_accepted_capture(tmp_path: Pat
     assert payload["rejected_status"] == 401
     assert payload["accepted_status"] == 202
     assert isinstance(payload["artifact_ref"], str)
+
+
+def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = type(
+        "Process",
+        (),
+        {
+            "args": ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
+            "returncode": 0,
+            "communicate": lambda self, **_kwargs: ('{"ok":true}\n', ""),
+        },
+    )()
+    launched: dict[str, object] = {}
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda command, **kwargs: (launched.update(command=command, kwargs=kwargs), process)[1],
+    )
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
+
+    dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+
+    assert launched["command"] == ["node", "scripts/dev_loop_shared_chrome_proof.mjs"]
+    kwargs = cast(dict[str, Any], launched["kwargs"])
+    environment = cast(dict[str, str], kwargs["env"])
+    assert environment["POLYLOGUE_DEV_LOOP_EXTENSION_ROOT"] == str(tmp_path / "browser-extension")
+    assert not {name for name in environment if name.startswith("POLYLOGUE_") and ("CDP" in name or "PROFILE" in name)}
+
+
+def test_deterministic_captures_still_exercise_receiver_provider_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[dict[str, object]] = []
+
+    def accepted(**kwargs: object) -> tuple[int, dict[str, object]]:
+        observed.append(kwargs)
+        return 202, {"ok": True}
+
+    monkeypatch.setattr(dev_loop_service, "_receiver_post", accepted)
+
+    captures = dev_loop_service._submit_deterministic_captures(capture_port=48865, session_id="proof")
+
+    assert captures == {
+        "chatgpt": {"provider": "chatgpt", "provider_session_id": "proof-chatgpt"},
+        "claude-ai": {"provider": "claude-ai", "provider_session_id": "proof-claude-ai"},
+    }
+    payloads = [cast(dict[str, dict[str, str]], entry["body"]) for entry in observed]
+    assert [payload["session"]["provider"] for payload in payloads] == ["chatgpt", "claude-ai"]
+    assert all(entry["token"] == dev_loop_service._RECEIVER_TOKEN for entry in observed)
+
+
+def test_shared_chrome_node_boundary_launches_only_sinnix_control() -> None:
+    program = """
+import { EventEmitter } from 'node:events';
+import { runChromeControl } from './scripts/dev_loop_shared_chrome_proof.mjs';
+
+const calls = [];
+const child = new EventEmitter();
+child.stdout = new EventEmitter();
+child.stderr = new EventEmitter();
+child.kill = () => undefined;
+const result = await runChromeControl(['status'], 1000, (command, args, options) => {
+  calls.push({ command, args, options });
+  queueMicrotask(() => child.emit('close', 0));
+  return child;
+});
+console.log(JSON.stringify({ calls, result }));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload == {
+        "calls": [
+            {
+                "command": "/home/sinity/.local/bin/sinnix-chrome-control",
+                "args": ["status"],
+                "options": {"stdio": ["ignore", "pipe", "pipe"]},
+            }
+        ],
+        "result": {},
+    }
+
+
+def test_shared_chrome_node_workflow_closes_only_its_returned_target() -> None:
+    program = """
+import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
+
+const calls = [];
+const control = async (args) => {
+  calls.push(args);
+  if (args[0] === 'agent-window') return { id: 'proof-target', url: 'about:blank', parked: true, workspace: 'agentbrowser' };
+  if (args[0] === 'close' && args[1] !== 'proof-target') throw new Error('attempted to close an unowned target');
+  return {};
+};
+const result = await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+console.log(JSON.stringify({ calls, result }));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "calls": [
+            ["status"],
+            ["load-extension", "--path", "."],
+            ["agent-window", "--url", "about:blank"],
+            ["close", "proof-target"],
+        ],
+        "result": {"ok": True, "shared_chrome": {"extension_loaded": True, "target_closed": True}},
+    }
+
+
+def test_shared_chrome_node_workflow_rejects_special_workspace_and_reclaims_target() -> None:
+    program = """
+import { runSharedChromeControlWorkflow } from './scripts/dev_loop_shared_chrome_proof.mjs';
+
+const calls = [];
+const control = async (args) => {
+  calls.push(args);
+  if (args[0] === 'agent-window') return { id: 'proof-target', url: 'about:blank', parked: true, workspace: ['special', 'agentbrowser'].join(':') };
+  if (args[0] === 'close' && args[1] !== 'proof-target') throw new Error('attempted to close an unowned target');
+  return {};
+};
+try {
+  await runSharedChromeControlWorkflow({ extensionRoot: '.', control });
+  process.exitCode = 2;
+} catch (error) {
+  console.log(JSON.stringify({ message: error.message, calls }));
+}
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert "agentbrowser" in payload["message"]
+    assert payload["calls"][-1] == ["close", "proof-target"]
 
 
 def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: pytest.MonkeyPatch) -> None:
