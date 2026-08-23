@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
 import itertools
 import json
 import os
@@ -4694,10 +4693,9 @@ def test_verify_continues_after_failed_cheap_step(
 
 def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp_path: Path) -> None:
     root = (tmp_path / "worktree").resolve()
-    common_dir = (tmp_path / "project" / ".git").resolve()
     head = "a" * 40
     job_id = "11111111-1111-1111-1111-111111111111"
-    checkout_id = "worktree-" + hashlib.sha256(str(root).encode()).hexdigest()[:16]
+    checkout_id = "managed-workspace-opaque-id"
     environment = {
         "SINNIXD_OPERATION": "verify_affected",
         "SINNIXD_JOB_ID": job_id,
@@ -4713,7 +4711,6 @@ def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp
         env=environment,
         cgroup_text=cgroup,
         current_head=head,
-        git_common_dir=common_dir,
     )
 
     assert binding == AgentctlDeclaredJobBinding(
@@ -4728,7 +4725,6 @@ def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp
             env={"SINNIXD_OPERATION": "verify_affected"},
             cgroup_text=cgroup,
             current_head=head,
-            git_common_dir=common_dir,
         )
         is None
     )
@@ -4738,7 +4734,6 @@ def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp
             env=environment,
             cgroup_text="0::/user.slice/agent.slice/not-the-declared-job.service\n",
             current_head=head,
-            git_common_dir=common_dir,
         )
         is None
     )
@@ -4748,17 +4743,15 @@ def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp
             env={**environment, "SINNIXD_CHECKOUT_HEAD": "b" * 40},
             cgroup_text=cgroup,
             current_head=head,
-            git_common_dir=common_dir,
         )
         is None
     )
     assert (
         agentctl_declared_job_binding(
             root,
-            env={**environment, "SINNIXD_CHECKOUT_ID": "default"},
+            env={**environment, "SINNIXD_CHECKOUT_ID": ""},
             cgroup_text=cgroup,
             current_head=head,
-            git_common_dir=common_dir,
         )
         is None
     )
@@ -4917,6 +4910,7 @@ def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_c
     assert receipt is not None
     assert receipt["operation"] == "verify_affected"
     assert receipt["workspace"] == {
+        "authority": "agentctl",
         "checkout_id": "workspace-1",
         "declared_head": "declared-head",
         "observed_head": "observed-head",
@@ -4988,6 +4982,7 @@ def test_verify_run_writes_typed_agentctl_invocation_receipt(
 
     persisted = json.loads(receipt_path.read_text())
     assert persisted["operation"] == "verify_affected"
+    assert persisted["workspace"]["authority"] == "agentctl"
     assert persisted["workspace"]["checkout_id"] == "workspace-1"
     assert persisted["workspace"]["observed_head"] == "observed-head"
     assert persisted["workspace"]["final_head"] == "final-head"
