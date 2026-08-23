@@ -50,6 +50,7 @@ exec = ["devtools", "verify", "--all"]
 pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
+timeout_seconds = 7200
 exclusive_keys = ["polylogue:testmon-graph"]
 scratch = "nvme"
 
