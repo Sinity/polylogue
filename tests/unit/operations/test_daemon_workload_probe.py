@@ -704,6 +704,18 @@ def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(t
     }
 
 
+def test_daemon_workload_probe_uses_shared_tier_probe_for_invalid_database(tmp_path: Path) -> None:
+    db = tmp_path / "index.db"
+    db.write_text("not a sqlite database")
+
+    tier = workload_probe._archive_single_tier_state(db, ArchiveTier.INDEX)
+
+    assert tier["exists"] is True
+    assert tier["user_version"] is None
+    assert tier["version_status"] == "invalid"
+    assert tier["integrity"] == "error"
+
+
 def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     source_path = "/tmp/live-session.jsonl"
