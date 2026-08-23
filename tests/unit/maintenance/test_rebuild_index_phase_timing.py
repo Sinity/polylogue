@@ -153,6 +153,8 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
 
     timings = receipt.timings_s
     assert {
+        "rebuild_s",
+        "orchestration_s",
         "selection_s",
         "prefetch_warm_s",
         "cohort_s",
@@ -193,6 +195,14 @@ def test_real_receipt_accounts_for_all_rebuild_phases(tmp_path: Path, monkeypatc
     assert timings["terminal_s"] == pytest.approx(
         sum(value for key, value in timings.items() if key.startswith("terminal.") and key != "terminal_s"),
         abs=0.005,
+    )
+    assert timings["rebuild_s"] == pytest.approx(
+        timings["orchestration_s"]
+        + timings["selection_s"]
+        + timings["prefetch_warm_s"]
+        + timings["replay_s"]
+        + timings["terminal_s"],
+        abs=0.01,
     )
 
 
