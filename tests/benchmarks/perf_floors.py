@@ -60,8 +60,8 @@ _GIT_TIMEOUT_S = 2.0
 
 # Quick mode shrinks corpora for a fast smoke check (local dev / CI dry runs);
 # it still exercises every measured surface, just at a smaller scale.
-_ACTION_PAIRS_TARGET_MESSAGES = 3000
-_ACTION_PAIRS_TARGET_MESSAGES_QUICK = 600
+_ACTION_PAIRS_TARGET_MESSAGES = 5000
+_ACTION_PAIRS_TARGET_MESSAGES_QUICK = 1000
 _ACTION_PAIRS_SAMPLE_SESSIONS = 20
 _REPLAY_RAW_COUNT = 200
 _REPLAY_RAW_COUNT_QUICK = 40
