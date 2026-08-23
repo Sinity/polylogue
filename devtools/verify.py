@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -57,6 +58,18 @@ PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
 SERIAL_LANE_MAX_WORKERS = 4
 STORAGE_SCALE_LANE_MAX_WORKERS = 1
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
+
+
+class VerificationInterrupted(KeyboardInterrupt):
+    """A terminal signal reached the verifier after its receipt was created."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__()
+        self.signum = signum
+
+
+def _raise_verification_interruption(signum: int, _frame: Any) -> None:
+    raise VerificationInterrupted(signum)
 
 
 def _declared_agentctl_operation(raw_argv: Sequence[str]) -> str | None:
@@ -369,6 +382,41 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+def _finish_interrupted_verification(
+    *,
+    run: VerifyRun,
+    started: float,
+    scope: VerificationScope,
+    args: argparse.Namespace,
+    agentctl_operation: str | None,
+    exit_code: int,
+    termination_reason: str,
+) -> int:
+    """Persist the terminal state when an outer runtime ends verification."""
+    run.finish_interrupted_steps(
+        exit_code=exit_code,
+        diagnosis="verification_interrupted",
+        termination_reason=termination_reason,
+    )
+    payload = run.finish(
+        exit_code=exit_code,
+        duration_s=time.monotonic() - started,
+        diagnosis="verification_interrupted",
+        verification_scope=scope.value,
+        final_git_head=git_head(ROOT),
+        pytest_aggregate={
+            "selection_mode": "all" if args.all_tests else "affected",
+            "outcomes": {},
+            "terminal_green": False,
+            "complete_corpus_covered": False,
+            "termination_reason": termination_reason,
+        },
+    )
+    append_verify_history(payload)
+    _emit(payload, use_json=args.json, operation=agentctl_operation)
+    return exit_code
+
+
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
     parser.add_argument("--quick", action="store_true")
@@ -454,12 +502,33 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     )
     results: list[dict[str, Any]] = []
     exit_code = 0
-    for label, command in steps:
-        rc, elapsed, metadata = _run(label, command, run=run)
-        results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
-        if rc:
-            exit_code = rc
-            break
+    try:
+        for label, command in steps:
+            rc, elapsed, metadata = _run(label, command, run=run)
+            results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
+            if rc:
+                exit_code = rc
+                break
+    except VerificationInterrupted as exc:
+        return _finish_interrupted_verification(
+            run=run,
+            started=started,
+            scope=scope,
+            args=args,
+            agentctl_operation=agentctl_operation,
+            exit_code=128 + exc.signum,
+            termination_reason=signal.Signals(exc.signum).name.lower(),
+        )
+    except KeyboardInterrupt:
+        return _finish_interrupted_verification(
+            run=run,
+            started=started,
+            scope=scope,
+            args=args,
+            agentctl_operation=agentctl_operation,
+            exit_code=130,
+            termination_reason="operator_interrupt",
+        )
     aggregate = {
         "selection_mode": mode,
         "outcomes": {
@@ -487,10 +556,18 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    handlers = {
+        signum: signal.signal(signum, _raise_verification_interruption) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
     try:
         return _main(raw_argv, agentctl_operation=_declared_agentctl_operation(raw_argv))
+    except VerificationInterrupted as exc:
+        return 128 + exc.signum
     except KeyboardInterrupt:
         return 130
+    finally:
+        for signum, previous in handlers.items():
+            signal.signal(signum, previous)
 
 
 if __name__ == "__main__":
