@@ -112,6 +112,7 @@ polylogue/_build_info.py
 _site/
 
 # Beads / Dolt files (added by bd init)
+/.beads/
 .dolt/
 *.db
 .beads-credential-key
