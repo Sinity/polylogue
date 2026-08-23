@@ -22,7 +22,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -423,51 +423,121 @@ def schema_coverage_corpus_specs() -> tuple[CorpusSpec, ...]:
 
 
 @dataclass(frozen=True)
-class NamedWorkloadProfile:
-    """A semantic, deterministic workload used by shared test fixtures."""
+class WorkloadSessionShape:
+    """One provider-native population within a semantic workload."""
+
+    provider: str
+    count: int
+    messages_min: int
+    messages_max: int
+    seed_offset: int = 0
+    style: str = "tool-heavy"
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise ValueError("workload session shape requires a positive session count")
+        if self.messages_min < 1 or self.messages_max < self.messages_min:
+            raise ValueError("workload session shape has invalid message bounds")
+        if self.seed_offset < 0:
+            raise ValueError("workload session shape seed offset must be non-negative")
+
+
+@dataclass(frozen=True)
+class WorkloadProfile:
+    """Shared semantic identity and provider-native spec constructor for workloads."""
 
     name: str
     purpose: str
-    provider_session_counts: tuple[tuple[str, int], ...]
-    seed: int = 42
-    messages_min: int = 4
-    messages_max: int = 11
+    seed: int
+    family_ids: tuple[str, ...]
+    profile_tokens: tuple[str, ...]
+    origin: str
+    tags: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.name or not self.purpose:
-            raise ValueError("named workload profile requires a name and purpose")
+            raise ValueError("workload profile requires a name and purpose")
+        if not self.family_ids or not self.profile_tokens:
+            raise ValueError("workload profile requires semantic corpus identity")
+
+    def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
+        if not shapes:
+            raise ValueError("workload profile requires provider-native session shapes")
+        corpus_profile = CorpusProfile(
+            family_ids=self.family_ids,
+            profile_tokens=self.profile_tokens,
+            artifact_kind="archive",
+        )
+        return tuple(
+            CorpusSpec.for_provider(
+                shape.provider,
+                count=shape.count,
+                messages_min=shape.messages_min,
+                messages_max=shape.messages_max,
+                seed=self.seed + shape.seed_offset,
+                style=shape.style,
+                profile=corpus_profile,
+                origin=self.origin,
+                tags=self.tags,
+            )
+            for shape in shapes
+        )
+
+
+@dataclass(frozen=True)
+class NamedWorkloadProfile:
+    """A semantic, deterministic workload used by shared test fixtures."""
+
+    workload: WorkloadProfile
+    provider_session_counts: tuple[tuple[str, int], ...]
+    messages_min: int = 4
+    messages_max: int = 11
+
+    @property
+    def name(self) -> str:
+        return self.workload.name
+
+    @property
+    def purpose(self) -> str:
+        return self.workload.purpose
+
+    @property
+    def seed(self) -> int:
+        return self.workload.seed
+
+    def __post_init__(self) -> None:
         if not self.provider_session_counts or any(count < 1 for _provider, count in self.provider_session_counts):
             raise ValueError("named workload profile requires positive provider session counts")
         if self.messages_min < 1 or self.messages_max < self.messages_min:
             raise ValueError("named workload profile has invalid message bounds")
 
     def corpus_specs(self) -> tuple[CorpusSpec, ...]:
-        profile = CorpusProfile(
-            family_ids=("test-workload",),
-            profile_tokens=(self.name, self.purpose, "provider-native"),
-            artifact_kind="archive",
-        )
-        return tuple(
-            CorpusSpec.for_provider(
-                provider,
-                count=count,
-                messages_min=self.messages_min,
-                messages_max=self.messages_max,
-                seed=self.seed,
-                profile=profile,
-                origin=f"generated.test-workload-{self.name}",
-                tags=("synthetic", "test", self.name, self.purpose),
+        return self.workload.corpus_specs(
+            tuple(
+                WorkloadSessionShape(provider, count, self.messages_min, self.messages_max)
+                for provider, count in self.provider_session_counts
             )
-            for provider, count in self.provider_session_counts
         )
+
+
+def _named_workload(name: str, purpose: str, *, seed: int = 42) -> WorkloadProfile:
+    return WorkloadProfile(
+        name=name,
+        purpose=purpose,
+        seed=seed,
+        family_ids=("test-workload",),
+        profile_tokens=(name, purpose, "provider-native"),
+        origin=f"generated.test-workload-{name}",
+        tags=("synthetic", "test", name, purpose),
+    )
 
 
 NAMED_WORKLOAD_PROFILES = (
-    NamedWorkloadProfile("schema-small", "schema-scaling", (("chatgpt", 10),)),
-    NamedWorkloadProfile("schema-medium", "schema-scaling", (("chatgpt", 50),)),
-    NamedWorkloadProfile("cli-chatgpt", "cli-read", (("chatgpt", 2),)),
-    NamedWorkloadProfile("cli-mixed", "cli-read", (("chatgpt", 2), ("claude-code", 2))),
-    NamedWorkloadProfile("completion", "completion", (("chatgpt", 3), ("claude-ai", 3)), seed=1271),
+    NamedWorkloadProfile(_named_workload("schema-small", "schema-scaling"), (("chatgpt", 10),)),
+    NamedWorkloadProfile(_named_workload("schema-medium", "schema-scaling"), (("chatgpt", 50),)),
+    NamedWorkloadProfile(_named_workload("cli-chatgpt", "cli-read"), (("chatgpt", 2),)),
+    NamedWorkloadProfile(_named_workload("cli-mixed", "cli-read"), (("chatgpt", 2), ("claude-code", 2))),
+    NamedWorkloadProfile(_named_workload("completion", "completion", seed=1271), (("chatgpt", 3), ("claude-ai", 3))),
 )
 
 
@@ -504,6 +574,7 @@ class BenchmarkWorkloadProfile:
     """
 
     tier: BenchmarkWorkloadTier
+    workload: WorkloadProfile
     target_messages: int
     provider_session_counts: tuple[tuple[str, int], ...]
     messages_per_session: int = 10
@@ -519,6 +590,10 @@ class BenchmarkWorkloadProfile:
         ):
             raise ValueError("benchmark workload session composition must exactly produce target_messages")
 
+    @property
+    def purpose(self) -> str:
+        return self.workload.purpose
+
 
 _BENCHMARK_PROVIDER_MIX = (
     ("claude-code", 80),
@@ -528,20 +603,41 @@ _BENCHMARK_PROVIDER_MIX = (
     ("gemini", 2),
 )
 
+
+def _benchmark_workload(tier: BenchmarkWorkloadTier, purpose: str) -> WorkloadProfile:
+    return WorkloadProfile(
+        name=tier.value,
+        purpose=purpose,
+        seed=42,
+        family_ids=("benchmark-archive",),
+        profile_tokens=(tier.value, "mixed-origin", "provider-native"),
+        origin=f"generated.benchmark-{tier.value}",
+        tags=("synthetic", "benchmark", tier.value),
+    )
+
+
 BENCHMARK_WORKLOAD_PROFILES = (
-    BenchmarkWorkloadProfile(BenchmarkWorkloadTier.SMOKE, 1_000, _BENCHMARK_PROVIDER_MIX),
+    BenchmarkWorkloadProfile(
+        BenchmarkWorkloadTier.SMOKE,
+        _benchmark_workload(BenchmarkWorkloadTier.SMOKE, "fast-benchmark"),
+        1_000,
+        _BENCHMARK_PROVIDER_MIX,
+    ),
     BenchmarkWorkloadProfile(
         BenchmarkWorkloadTier.REPRESENTATIVE,
+        _benchmark_workload(BenchmarkWorkloadTier.REPRESENTATIVE, "broad-benchmark"),
         5_000,
         tuple((provider, count * 5) for provider, count in _BENCHMARK_PROVIDER_MIX),
     ),
     BenchmarkWorkloadProfile(
         BenchmarkWorkloadTier.ARCHIVE_SCALE,
+        _benchmark_workload(BenchmarkWorkloadTier.ARCHIVE_SCALE, "archive-scale-benchmark"),
         10_000,
         tuple((provider, count * 10) for provider, count in _BENCHMARK_PROVIDER_MIX),
     ),
     BenchmarkWorkloadProfile(
         BenchmarkWorkloadTier.STRESS,
+        _benchmark_workload(BenchmarkWorkloadTier.STRESS, "stress-benchmark"),
         50_000,
         tuple((provider, count * 50) for provider, count in _BENCHMARK_PROVIDER_MIX),
     ),
@@ -570,40 +666,31 @@ def benchmark_corpus_specs(
 ) -> tuple[CorpusSpec, ...]:
     """Build provider-native corpus specs for a semantic benchmark tier."""
     profile = benchmark_workload_profile(tier)
-    corpus_profile = CorpusProfile(
-        family_ids=("benchmark-archive",),
-        profile_tokens=(profile.tier.value, "mixed-origin", "provider-native"),
-        artifact_kind="archive",
-    )
-    specs: list[CorpusSpec] = []
+    session_shapes: list[WorkloadSessionShape] = []
     for provider, count in profile.provider_session_counts:
         # Keep a bounded tail in every tier. The former direct generator sampled
         # a six-bucket session-depth distribution; these three deterministic
         # depths preserve the short, ordinary, and tail activation conditions
         # while retaining an exact message target for reproducible benchmarks.
-        shapes: tuple[tuple[int, int], ...]
+        provider_shapes: tuple[tuple[int, int], ...]
         if provider == "claude-code":
             multiplier, remainder = divmod(count, 80)
             if remainder:
                 raise ValueError("benchmark Claude Code composition must retain the 80-session provider mix")
-            shapes = ((50 * multiplier, 2), (25 * multiplier, 8), (5 * multiplier, 100))
+            provider_shapes = ((50 * multiplier, 2), (25 * multiplier, 8), (5 * multiplier, 100))
         else:
-            shapes = ((count, profile.messages_per_session),)
-        for shape_count, messages_per_session in shapes:
-            specs.append(
-                CorpusSpec.for_provider(
+            provider_shapes = ((count, profile.messages_per_session),)
+        for shape_count, messages_per_session in provider_shapes:
+            session_shapes.append(
+                WorkloadSessionShape(
                     provider,
-                    count=shape_count,
-                    messages_min=messages_per_session,
-                    messages_max=messages_per_session,
-                    seed=seed + len(specs),
-                    style="tool-heavy",
-                    profile=corpus_profile,
-                    origin=f"generated.benchmark-{profile.tier.value}",
-                    tags=("synthetic", "benchmark", profile.tier.value),
+                    shape_count,
+                    messages_per_session,
+                    messages_per_session,
+                    len(session_shapes),
                 )
             )
-    return tuple(specs)
+    return replace(profile.workload, seed=seed).corpus_specs(tuple(session_shapes))
 
 
 def build_benchmark_archive(
@@ -2484,6 +2571,8 @@ __all__ = [
     "NamedWorkloadProfile",
     "SeededArchiveArtifact",
     "SeededArchiveQueryLease",
+    "WorkloadProfile",
+    "WorkloadSessionShape",
     "acquire_query_only_seeded_archive",
     "build_immutable_tree",
     "clone_immutable_tree",
