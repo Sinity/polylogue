@@ -125,6 +125,48 @@ def test_phase_rejects_measurement_reported_as_both_present_and_unavailable() ->
         )
 
 
+def test_receipt_rejects_cancellation_claim_without_latency_evidence() -> None:
+    with pytest.raises(ValueError, match="cancellation request requires a latency"):
+        WorkloadReceipt.from_observations(
+            spec=WorkloadEnvelopeSpec(
+                workload_id="cancelled-query",
+                family_id="query",
+                version=1,
+                inputs=(WorkloadInputRef(input_id="archive:test"),),
+                phases=("query",),
+            ),
+            status=WorkloadRunStatus.CANCELLED,
+            build_id=None,
+            runtime_id=None,
+            archive_id=None,
+            generation_id=None,
+            frame_id=None,
+            phases=(WorkloadPhaseObservation(name="query"),),
+            cancellation_requested=True,
+        )
+
+
+def test_receipt_rejects_cleanup_claim_without_quiescent_observation() -> None:
+    with pytest.raises(ValueError, match="Completed cleanup requires"):
+        WorkloadReceipt.from_observations(
+            spec=WorkloadEnvelopeSpec(
+                workload_id="cleanup-query",
+                family_id="query",
+                version=1,
+                inputs=(WorkloadInputRef(input_id="archive:test"),),
+                phases=("query",),
+            ),
+            status=WorkloadRunStatus.SUCCEEDED,
+            build_id=None,
+            runtime_id=None,
+            archive_id=None,
+            generation_id=None,
+            frame_id=None,
+            phases=(WorkloadPhaseObservation(name="query"),),
+            cleanup_complete=True,
+        )
+
+
 def test_budget_aggregation_is_dimension_aware_and_may_target_one_phase() -> None:
     spec = WorkloadEnvelopeSpec(
         workload_id="query:actions",

@@ -317,6 +317,15 @@ class WorkloadReceipt:
         expected_budget_results = evaluate_budgets(self.spec, self.phases)
         if self.budget_results != expected_budget_results:
             raise ValueError("Workload receipt budget verdicts do not match its phase observations")
+        if self.cancellation_requested and not any(
+            phase.cancellation_latency_ms is not None or "cancellation_latency_ms" in phase.unavailable
+            for phase in self.phases
+        ):
+            raise ValueError("A cancellation request requires a latency observation or explicit unavailability")
+        if self.cleanup_complete and not any(
+            phase.quiescent and phase.cleanup_complete is True for phase in self.phases
+        ):
+            raise ValueError("Completed cleanup requires a quiescent cleanup observation")
 
     @classmethod
     def from_observations(
