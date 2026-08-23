@@ -21,7 +21,7 @@ from urllib.parse import quote, urlencode
 
 from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
-from polylogue.storage.sqlite.archive_tiers.archive_init import initialize_archive_tier_files
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 _API_PORT_ENV = "POLYLOGUE_API_PORT"
 _BROWSER_CAPTURE_PORT_ENV = "POLYLOGUE_BROWSER_CAPTURE_PORT"
@@ -324,7 +324,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     cdp_port = ports[_BROWSER_CDP_PORT_ENV]
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
-    initialize_archive_tier_files(archive_root=archive_root, replace_existing=True)
+    initialize_active_archive_root(archive_root)
     environment = _proof_environment(
         archive_root=archive_root,
         artifact_root=artifact_root,

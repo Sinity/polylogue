@@ -29,6 +29,7 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
         },
     }
     assert descriptor["operations"]["verify_all"]["timeout_seconds"] == 14400
+    assert {"WAYLAND_DISPLAY", "DISPLAY"} <= set(descriptor["environment"]["inherit"])
     assert all(spec.module != "devtools.dev_loop_service" for spec in COMMAND_SPECS)
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
@@ -49,7 +50,8 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
 ) -> None:
     _fixed_service_context(monkeypatch)
     monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
-    monkeypatch.setattr(dev_loop_service, "initialize_archive_tier_files", lambda **_kwargs: object())
+    initialized: list[Path] = []
+    monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", initialized.append)
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
     started: dict[str, object] = {}
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **kwargs: started.update(kwargs))
@@ -80,6 +82,7 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     }
     assert started["api_port"] == 48801
     assert started["capture_port"] == 48865
+    assert initialized == [tmp_path / "scratch" / "polylogue-dev-loop-proof" / "archive"]
     environment = started["environment"]
     assert isinstance(environment, dict)
     assert environment["POLYLOGUE_API_PORT"] == "48801"
