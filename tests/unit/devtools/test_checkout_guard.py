@@ -162,6 +162,27 @@ def test_verify_main_refuses_on_checkout_mismatch(
     assert "mismatch against" in capsys.readouterr().err
 
 
+def test_declared_verify_all_rejects_before_creating_verify_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An untrusted checkout must not bootstrap the verifier cache it rejects."""
+    root = _fake_linked_checkout(tmp_path)
+    cache = root / ".cache" / "verify"
+
+    def _reject_after_observing_clean_cache(repo_root: Path, *, context: str) -> None:
+        assert repo_root == root
+        assert context == "devtools verify"
+        assert not cache.exists()
+        raise CheckoutImportMismatchError("simulated checkout mismatch")
+
+    monkeypatch.setattr(verify, "ROOT", root)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _reject_after_observing_clean_cache)
+    monkeypatch.setenv("SINNIXD_OPERATION", "verify_all")
+
+    assert verify.main(["--all"]) == 125
+    assert not cache.exists()
+
+
 def _fake_linked_checkout(tmp_path: Path) -> Path:
     root = tmp_path / "lane"
     root.mkdir()

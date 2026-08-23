@@ -380,29 +380,28 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     _anchor_verification_paths()
     started = time.monotonic()
     scope = _scope(quick=args.quick, commit=args.commit, all_tests=args.all_tests)
+    try:
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+    except CheckoutImportMismatchError as exc:
+        payload = {
+            "exit_code": 125,
+            "duration_s": time.monotonic() - started,
+            "diagnosis": "checkout_import_mismatch",
+            "verification_scope": scope.value,
+            "final_git_head": git_head(ROOT),
+        }
+        _emit(payload, use_json=args.json, operation=agentctl_operation)
+        sys.stderr.write(f"verify: {exc}\n")
+        return 125
     head = git_head(ROOT)
     run = VerifyRun(
         tier="quick" if args.quick else "commit" if args.commit else "all" if args.all_tests else "affected",
         argv=list(argv or []),
         git_head=head,
         root=ROOT,
+        polylogue_import_path=str(fingerprint.polylogue_import_path),
+        environment_fingerprint=fingerprint.as_dict(),
         mirror_current=agentctl_operation is None,
-    )
-    try:
-        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
-    except CheckoutImportMismatchError as exc:
-        payload = run.finish(
-            exit_code=125,
-            duration_s=time.monotonic() - started,
-            diagnosis="checkout_import_mismatch",
-            verification_scope=scope.value,
-            final_git_head=git_head(ROOT),
-        )
-        _emit(payload, use_json=args.json, operation=agentctl_operation)
-        sys.stderr.write(f"verify: {exc}\n")
-        return 125
-    run.update_checkout_provenance(
-        polylogue_import_path=str(fingerprint.polylogue_import_path), environment_fingerprint=fingerprint.as_dict()
     )
     preparation = None
     mode = "all" if args.all_tests else "affected"
