@@ -45,11 +45,17 @@ CAMPAIGN_SOURCE_REF = "317b59f41f938884d289d48737cfe87ec00bd769:.beads/issues.js
 CAMPAIGN_SOURCE_VERSION = "reindex-native-v1"
 CAMPAIGN_NATIVE_CONTROL_ID = "polylogue-reindex-native-control-plane"
 CAMPAIGN_ADAPTER_ID = "polylogue-agentctl-adapter"
+CAMPAIGN_GENESIS_PATH = "devtools/campaign_genesis/reindex-2026.json"
+CAMPAIGN_GENESIS_SCHEMA = "polylogue.campaign-genesis/v1"
+CAMPAIGN_ACCEPTANCE_SCHEMA = "polylogue.campaign-acceptance/v1"
+CAMPAIGN_POUR_RECEIPT_SCHEMA = "polylogue.campaign-pour-receipt/v1"
+CAMPAIGN_POUR_RECEIPT_DIRECTORY = "devtools/campaign_pour_receipts/reindex-2026"
 MERGE_READY_STATUSES = frozenset({"open", "in_progress"})
 KNOWN_STATUSES = frozenset({"open", "in_progress", "blocked", "deferred", "closed"})
 WIP_LIMITS = {"implementation_lane_wip": 6, "merge_train_wip": 1, "workstream_active_batch_wip": 1}
 BEAD_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
 BATCH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _source_evidence() -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None]:
@@ -983,6 +989,258 @@ def _load_export(path: Path) -> list[dict[str, Any]]:
     return _validated_issues(records, source=str(path))
 
 
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _git_revision(revision: str) -> str:
+    if not revision or revision.startswith("-"):
+        raise RuntimeError("revision must be a non-option Git revision")
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{revision}^{{commit}}"], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"unable to resolve revision {revision!r}")
+    return result.stdout.strip()
+
+
+def _git_blob(revision: str, path: str) -> bytes:
+    result = subprocess.run(["git", "show", f"{revision}:{path}"], capture_output=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"unable to read {path!r} at revision {revision!r}")
+    return result.stdout
+
+
+def _parse_jsonl_bytes(payload: bytes, *, source: str) -> list[dict[str, Any]]:
+    try:
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{source} is not UTF-8") from exc
+    records: list[object] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{source}:{line_number}: invalid JSON: {exc.msg}") from exc
+    return _validated_issues(records, source=source)
+
+
+def _load_revision_export(revision: str) -> tuple[str, bytes, list[dict[str, Any]]]:
+    pinned_revision = _git_revision(revision)
+    payload = _git_blob(pinned_revision, ".beads/issues.jsonl")
+    return pinned_revision, payload, _parse_jsonl_bytes(payload, source=f"{pinned_revision}:.beads/issues.jsonl")
+
+
+def _load_campaign_genesis(revision: str) -> dict[str, Any]:
+    payload = _git_blob(revision, CAMPAIGN_GENESIS_PATH)
+    try:
+        genesis = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"campaign genesis is invalid JSON: {exc.msg}") from exc
+    if not isinstance(genesis, dict):
+        raise RuntimeError("campaign genesis must be an object")
+    expected = {"schema", "campaign_id", "input_snapshot", "migration_snapshot", "formula_snapshot"}
+    if set(genesis) != expected:
+        raise RuntimeError("campaign genesis has an unexpected schema")
+    if genesis.get("schema") != CAMPAIGN_GENESIS_SCHEMA or genesis.get("campaign_id") != CAMPAIGN_ID:
+        raise RuntimeError("campaign genesis identity is invalid")
+    for key in ("input_snapshot", "migration_snapshot", "formula_snapshot"):
+        snapshot = genesis.get(key)
+        if not isinstance(snapshot, dict) or set(snapshot) != {"revision", "path", "sha256"}:
+            raise RuntimeError(f"campaign genesis {key} must name revision, path, and sha256")
+        if not all(isinstance(snapshot.get(field), str) and snapshot[field] for field in snapshot):
+            raise RuntimeError(f"campaign genesis {key} contains an invalid value")
+        if not SHA256_RE.fullmatch(snapshot["sha256"]):
+            raise RuntimeError(f"campaign genesis {key} sha256 is invalid")
+    return genesis
+
+
+def _snapshot_from_genesis(genesis: dict[str, Any], key: str) -> tuple[str, str, bytes]:
+    snapshot = genesis[key]
+    assert isinstance(snapshot, dict)
+    revision = _git_revision(str(snapshot["revision"]))
+    path = str(snapshot["path"])
+    payload = _git_blob(revision, path)
+    digest = _sha256_bytes(payload)
+    if digest != snapshot["sha256"]:
+        raise RuntimeError(f"campaign genesis {key} digest does not match its pinned Git object")
+    return revision, path, payload
+
+
+def _record_digest(record: dict[str, Any]) -> str:
+    return _sha256_bytes(_canonical_json_bytes(record))
+
+
+def _derive_campaign_migration(genesis: dict[str, Any]) -> dict[str, Any]:
+    """Derive the reviewed native migration from its two immutable inputs."""
+    input_revision, input_path, input_payload = _snapshot_from_genesis(genesis, "input_snapshot")
+    migration_revision, migration_path, migration_payload = _snapshot_from_genesis(genesis, "migration_snapshot")
+    formula_revision, formula_path, formula_payload = _snapshot_from_genesis(genesis, "formula_snapshot")
+    input_rows = _parse_jsonl_bytes(input_payload, source=f"{input_revision}:{input_path}")
+    migration_rows = _parse_jsonl_bytes(migration_payload, source=f"{migration_revision}:{migration_path}")
+    input_by_id = {str(row["id"]): row for row in input_rows}
+    migration_by_id = {str(row["id"]): row for row in migration_rows}
+    changed = [
+        {
+            "id": bead_id,
+            "before_sha256": _record_digest(input_by_id[bead_id]) if bead_id in input_by_id else None,
+            "after_sha256": _record_digest(migration_by_id[bead_id]) if bead_id in migration_by_id else None,
+        }
+        for bead_id in sorted(set(input_by_id) | set(migration_by_id))
+        if input_by_id.get(bead_id) != migration_by_id.get(bead_id)
+    ]
+    return {
+        "schema": "polylogue.campaign-derivation/v1",
+        "campaign_id": CAMPAIGN_ID,
+        "input": {"revision": input_revision, "path": input_path, "sha256": _sha256_bytes(input_payload)},
+        "migration": {
+            "revision": migration_revision,
+            "path": migration_path,
+            "sha256": _sha256_bytes(migration_payload),
+        },
+        "formula": {"revision": formula_revision, "path": formula_path, "sha256": _sha256_bytes(formula_payload)},
+        "changed_record_count": len(changed),
+        "changed_records_sha256": _sha256_bytes(_canonical_json_bytes(changed)),
+    }
+
+
+def _molecule_records(issues: list[dict[str, Any]], molecule_id: str) -> list[dict[str, Any]]:
+    return [issue for issue in issues if str(issue["id"]) == molecule_id or molecule_id in _parent_targets(issue)]
+
+
+def _validate_pour_receipts(revision: str, issues: list[dict[str, Any]]) -> list[Finding]:
+    """Bind every formula molecule to one immutable native-pour receipt."""
+    findings: list[Finding] = []
+    molecules = [
+        issue for issue in issues if _issue_type(issue, findings) == "molecule" and issue.get("title") == BATCH_FORMULA
+    ]
+    for molecule in molecules:
+        molecule_id = str(molecule["id"])
+        receipt_path = f"{CAMPAIGN_POUR_RECEIPT_DIRECTORY}/{molecule_id}.json"
+        try:
+            receipt_payload = _git_blob(revision, receipt_path)
+            receipt = json.loads(receipt_payload)
+        except (RuntimeError, json.JSONDecodeError):
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "immutable native-pour receipt is absent"))
+            continue
+        if not isinstance(receipt, dict):
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "native-pour receipt must be an object"))
+            continue
+        expected = {
+            "schema",
+            "campaign_id",
+            "molecule_id",
+            "formula",
+            "native_pour_output_sha256",
+            "poured_records_sha256",
+        }
+        if set(receipt) != expected or receipt.get("schema") != CAMPAIGN_POUR_RECEIPT_SCHEMA:
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "native-pour receipt schema is invalid"))
+            continue
+        formula = receipt.get("formula")
+        if (
+            receipt.get("campaign_id") != CAMPAIGN_ID
+            or receipt.get("molecule_id") != molecule_id
+            or not isinstance(formula, dict)
+        ):
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "native-pour receipt identity is invalid"))
+            continue
+        if set(formula) != {"revision", "path", "sha256"} or not all(
+            isinstance(formula.get(field), str) for field in formula
+        ):
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "native-pour formula evidence is invalid"))
+            continue
+        if not all(
+            isinstance(receipt.get(field), str) and SHA256_RE.fullmatch(receipt[field])
+            for field in ("native_pour_output_sha256", "poured_records_sha256")
+        ):
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "native-pour receipt hashes are invalid"))
+            continue
+        try:
+            formula_payload = _git_blob(_git_revision(formula["revision"]), formula["path"])
+        except RuntimeError:
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "receipt formula object is unreadable"))
+            continue
+        if _sha256_bytes(formula_payload) != formula["sha256"]:
+            findings.append(Finding("campaign-pour-receipt", molecule_id, "receipt formula digest is mismatched"))
+            continue
+        records = sorted(_molecule_records(issues, molecule_id), key=lambda record: str(record["id"]))
+        if _sha256_bytes(_canonical_json_bytes(records)) != receipt["poured_records_sha256"]:
+            findings.append(
+                Finding("campaign-pour-receipt", molecule_id, "receipt does not bind the accepted molecule")
+            )
+    return findings
+
+
+def _acceptance_digest(payload: dict[str, Any]) -> str:
+    unsigned = dict(payload)
+    unsigned.pop("acceptance_sha256", None)
+    return _sha256_bytes(_canonical_json_bytes(unsigned))
+
+
+def _build_campaign_acceptance(
+    revision: str, snapshot_payload: bytes, issues: list[dict[str, Any]], report: dict[str, Any]
+) -> dict[str, Any]:
+    genesis = _load_campaign_genesis(revision)
+    derivation = _derive_campaign_migration(genesis)
+    receipt_findings = _validate_pour_receipts(revision, issues)
+    payload: dict[str, Any] = {
+        "schema": CAMPAIGN_ACCEPTANCE_SCHEMA,
+        "campaign_id": CAMPAIGN_ID,
+        "snapshot": {
+            "revision": revision,
+            "path": ".beads/issues.jsonl",
+            "sha256": _sha256_bytes(snapshot_payload),
+        },
+        "genesis_sha256": _sha256_bytes(_canonical_json_bytes(genesis)),
+        "derivation": derivation,
+        # The CLI attaches this witness to ``report`` after it is finalized.
+        # Serialize a detached graph snapshot so that attachment cannot make
+        # the witness self-referential.
+        "bead_graph": json.loads(json.dumps(report, sort_keys=True)),
+        "findings": [{"kind": item.kind, "id": item.bead_id, "detail": item.detail} for item in receipt_findings],
+    }
+    payload["acceptance_sha256"] = _acceptance_digest(payload)
+    return payload
+
+
+def _write_acceptance_output(path: Path, payload: dict[str, Any]) -> None:
+    digest = payload.get("acceptance_sha256")
+    expected_name = f"{CAMPAIGN_ID}-acceptance-{digest}.json"
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest) or path.name != expected_name:
+        raise RuntimeError(f"acceptance output must be named {expected_name!r}")
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"existing acceptance output is unreadable: {path}") from exc
+        if existing != payload:
+            raise RuntimeError(f"refusing to overwrite immutable acceptance output: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _verify_acceptance_output(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"acceptance output is unreadable: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != CAMPAIGN_ACCEPTANCE_SCHEMA:
+        raise RuntimeError("acceptance output schema is invalid")
+    digest = payload.get("acceptance_sha256")
+    if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest) or _acceptance_digest(payload) != digest:
+        raise RuntimeError("acceptance output digest is invalid")
+    if path.name != f"{CAMPAIGN_ID}-acceptance-{digest}.json":
+        raise RuntimeError("acceptance output filename does not bind its digest")
+
+
 def _dependency_records(issue: dict[str, Any]) -> list[dict[str, Any]]:
     dependencies = issue.get("dependencies")
     return (
@@ -1222,6 +1480,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--export", type=Path, help="validate a JSONL export without touching the shared live Beads database"
     )
+    parser.add_argument("--revision", help="validate the exact Git revision of .beads/issues.jsonl without invoking bd")
+    parser.add_argument(
+        "--acceptance-output",
+        type=Path,
+        help="write one immutable digest-named campaign acceptance witness for --revision",
+    )
+    parser.add_argument(
+        "--verify-acceptance-output", type=Path, help="verify an existing digest-named campaign acceptance witness"
+    )
     parser.add_argument(
         "--forcing-root", action="append", default=[], help="Bead ID whose transitive blocks closure to report"
     )
@@ -1231,15 +1498,58 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.export is not None:
+        if args.verify_acceptance_output is not None:
+            if args.export is not None or args.revision is not None or args.acceptance_output is not None:
+                raise RuntimeError("--verify-acceptance-output cannot be combined with snapshot inputs")
+            _verify_acceptance_output(args.verify_acceptance_output)
+            report = {
+                "report_version": 3,
+                "acceptance_output": str(args.verify_acceptance_output),
+                "verified": True,
+                "findings": [],
+                "forcing": [],
+            }
+        elif args.export is not None:
+            if args.revision is not None or args.acceptance_output is not None:
+                raise RuntimeError("--export cannot be combined with revision-pinned acceptance")
             issues = _load_export(args.export)
             cycles_ok, cycles_output = True, ""
+            report = build_report(
+                issues, cycles_ok=cycles_ok, cycles_output=cycles_output, forcing_roots=args.forcing_root
+            )
+        elif args.revision is not None:
+            revision, snapshot_payload, issues = _load_revision_export(args.revision)
+            cycles_ok, cycles_output = True, ""
+            report = build_report(
+                issues, cycles_ok=cycles_ok, cycles_output=cycles_output, forcing_roots=args.forcing_root
+            )
+            if args.acceptance_output is not None:
+                acceptance = _build_campaign_acceptance(revision, snapshot_payload, issues, report)
+                _write_acceptance_output(args.acceptance_output, acceptance)
+                report["campaign_acceptance"] = acceptance
+                graph_findings = report.get("findings")
+                acceptance_findings = acceptance.get("findings")
+                if not isinstance(graph_findings, list) or not isinstance(acceptance_findings, list):
+                    raise RuntimeError("campaign acceptance findings are malformed")
+                merged_findings = sorted(
+                    [*graph_findings, *acceptance_findings],
+                    key=lambda item: (item["kind"], item["id"], item["detail"]),
+                )
+                report["findings"] = merged_findings
+                counts: dict[str, int] = defaultdict(int)
+                for item in merged_findings:
+                    counts[item["kind"]] += 1
+                report["counts"] = dict(sorted(counts.items()))
         else:
+            if args.acceptance_output is not None:
+                raise RuntimeError("--acceptance-output requires --revision")
             cycles_ok, cycles_output = _run_bd_dep_cycles()
             if not cycles_ok:
                 raise RuntimeError(f"dependency cycle check failed: {cycles_output}")
             issues = _run_bd_list_all()
-        report = build_report(issues, cycles_ok=cycles_ok, cycles_output=cycles_output, forcing_roots=args.forcing_root)
+            report = build_report(
+                issues, cycles_ok=cycles_ok, cycles_output=cycles_output, forcing_roots=args.forcing_root
+            )
     except (OSError, subprocess.CalledProcessError, RuntimeError, json.JSONDecodeError) as exc:
         payload = {"report_version": 3, "error": str(exc)}
         if args.json:
@@ -1248,8 +1558,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bead-graph: {exc}", file=sys.stderr)
         return 1
 
-    print(json.dumps(report, indent=2, sort_keys=True) if args.json else _format_report(report))
-    unresolved = [item["root_bead_id"] for item in report["forcing"] if not item["resolved"]]
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    elif args.verify_acceptance_output is not None:
+        print(f"campaign acceptance output verified: {args.verify_acceptance_output}")
+    else:
+        print(_format_report(report))
+    forcing = report.get("forcing")
+    if not isinstance(forcing, list):
+        raise RuntimeError("bead-graph report forcing payload is malformed")
+    unresolved = [str(item["root_bead_id"]) for item in forcing if not item["resolved"]]
     if args.require_resolved and unresolved:
         print(f"bead-graph: unresolved forcing blockers for {', '.join(unresolved)}", file=sys.stderr)
         return 1
