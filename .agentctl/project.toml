@@ -22,7 +22,11 @@ verification_operations = ["verify_affected", "verify_quick", "verify_all"]
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]
 generated_surfaces = ["docs/reference/schema-support-matrix.md"]
-semantic_slots = ["archive-schema", "command-catalog", "verification-graph"]
+
+[conflicts.semantic_slots]
+archive-schema = ["polylogue/storage/schema.py", "polylogue/storage/sqlite/migrations/*.py"]
+command-catalog = ["devtools/command_catalog.py", "docs/devtools.md"]
+verification-graph = ["devtools/verify.py", "pyproject.toml"]
 
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
