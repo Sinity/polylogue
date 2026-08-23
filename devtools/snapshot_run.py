@@ -55,6 +55,9 @@ __all__ = [
 #: are either not code under test (`.venv`), or state that must outlive the
 #: run (`.cache` carries the testmon graph and the receipts the caller reads).
 _LIVE_BINDS: tuple[str, ...] = (".venv", ".cache", ".git")
+# `/realm/tmp` is deliberately an immutable directory index. Ephemeral files
+# belong in its managed, sticky work area instead.
+SNAPSHOT_ROOT = Path("/realm/tmp/work")
 
 
 class SnapshotUnavailableError(RuntimeError):
@@ -82,7 +85,11 @@ def materialize_snapshot(root: Path, destination: Path | None = None) -> Path:
     means a newly written test still runs; ignored means build output and caches
     stay out, which is what keeps the copy cheap.
     """
-    target = destination or Path(tempfile.mkdtemp(prefix="polylogue-snapshot-", dir="/realm/tmp"))
+    if destination is None:
+        SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
+        target = Path(tempfile.mkdtemp(prefix="polylogue-snapshot-", dir=SNAPSHOT_ROOT))
+    else:
+        target = destination
     target.mkdir(parents=True, exist_ok=True)
     listings = (
         ["git", "ls-files", "-z"],
