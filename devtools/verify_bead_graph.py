@@ -45,6 +45,12 @@ CAMPAIGN_SOURCE_REF = "317b59f41f938884d289d48737cfe87ec00bd769:.beads/issues.js
 CAMPAIGN_SOURCE_VERSION = "reindex-native-v1"
 CAMPAIGN_NATIVE_CONTROL_ID = "polylogue-reindex-native-control-plane"
 CAMPAIGN_ADAPTER_ID = "polylogue-agentctl-adapter"
+CAMPAIGN_ADAPTER_PROVENANCE = frozenset(
+    {
+        ("staged-adapter", "agentctl:staged-native-adapter"),
+        ("production-adapter", "agentctl:production-native-adapter"),
+    }
+)
 CAMPAIGN_GENESIS_PATH = "devtools/campaign_genesis/reindex-2026.json"
 CAMPAIGN_GENESIS_SCHEMA = "polylogue.campaign-genesis/v1"
 CAMPAIGN_ACCEPTANCE_SCHEMA = "polylogue.campaign-acceptance/v1"
@@ -631,18 +637,16 @@ def collect_campaign_findings(
             )
         else:
             adapter_labels = set(_labels(adapter, findings))
-            if _metadata_text(adapter, "campaign_membership_kind", findings) != "staged-adapter":
-                findings.append(
-                    Finding(
-                        "campaign-agentctl-provenance", CAMPAIGN_ADAPTER_ID, "trusted singleton adapter was demoted"
-                    )
-                )
-            if _metadata_text(adapter, "campaign_membership_source", findings) != "agentctl:staged-native-adapter":
+            adapter_provenance = (
+                _metadata_text(adapter, "campaign_membership_kind", findings),
+                _metadata_text(adapter, "campaign_membership_source", findings),
+            )
+            if adapter_provenance not in CAMPAIGN_ADAPTER_PROVENANCE:
                 findings.append(
                     Finding(
                         "campaign-agentctl-provenance",
                         CAMPAIGN_ADAPTER_ID,
-                        "trusted singleton adapter source is mismatched",
+                        "trusted singleton adapter provenance is mismatched",
                     )
                 )
             if CAMPAIGN_LABEL not in adapter_labels or "workstream:e" not in adapter_labels:
@@ -664,8 +668,11 @@ def collect_campaign_findings(
             issue
             for issue in issues
             if (
-                _metadata_text(issue, "campaign_membership_source", findings) == "agentctl:staged-native-adapter"
-                or _metadata_text(issue, "campaign_membership_kind", findings) == "staged-adapter"
+                (
+                    _metadata_text(issue, "campaign_membership_kind", findings),
+                    _metadata_text(issue, "campaign_membership_source", findings),
+                )
+                in CAMPAIGN_ADAPTER_PROVENANCE
                 or _metadata(issue).get("native_control_ids") is not None
             )
             and str(issue.get("id")) != CAMPAIGN_ADAPTER_ID
@@ -813,23 +820,28 @@ def collect_campaign_findings(
                 continue
             membership_kind = _metadata_text(issue, "campaign_membership_kind", findings)
             claims_agentctl = (
-                membership_source == "agentctl:staged-native-adapter" or metadata.get("native_control_ids") is not None
+                membership_source
+                in {
+                    "agentctl:staged-native-adapter",
+                    "agentctl:production-native-adapter",
+                }
+                or metadata.get("native_control_ids") is not None
             )
-            if membership_kind is not None and membership_kind not in {"historical-roster", "staged-adapter"}:
+            if membership_kind is not None and membership_kind not in {
+                "historical-roster",
+                "staged-adapter",
+                "production-adapter",
+            }:
                 findings.append(Finding("campaign-role-timing", bead_id, "campaign_membership_kind is invalid"))
-            if claims_agentctl and membership_kind != "staged-adapter":
+            if claims_agentctl and (membership_kind, membership_source) not in CAMPAIGN_ADAPTER_PROVENANCE:
                 findings.append(
                     Finding(
                         "campaign-agentctl-provenance",
                         bead_id,
-                        "AgentCTL provenance cannot be demoted by removing staged-adapter kind",
+                        "AgentCTL provenance kind and source must describe the same lifecycle stage",
                     )
                 )
-            if membership_kind == "staged-adapter":
-                if membership_source != "agentctl:staged-native-adapter":
-                    findings.append(
-                        Finding("campaign-agentctl-provenance", bead_id, "staged-adapter source is not AgentCTL")
-                    )
+            if (membership_kind, membership_source) in CAMPAIGN_ADAPTER_PROVENANCE:
                 workstream = next(iter(workstreams), "")
                 findings.extend(
                     _staged_adapter_findings(issue, by_id=by_id, root_id=root_id, epic_id=epics.get(workstream, ""))
