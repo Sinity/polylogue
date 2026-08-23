@@ -84,8 +84,32 @@ def _write_raw(
         source_path=source_path,
         acquired_at_ms=1_700_000_000_000,
         raw_id=raw_id,
-        revision=revision,
     )
+    if revision is None:
+        return
+    with archive._ensure_source_conn():
+        archive._ensure_source_conn().execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
+                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                append_start_offset = ?, append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
+            WHERE raw_id = ?
+            """,
+            (
+                revision.logical_source_key,
+                revision.kind.value,
+                revision.source_revision,
+                revision.predecessor_source_revision,
+                revision.predecessor_raw_id,
+                revision.baseline_raw_id,
+                revision.append_start_offset,
+                revision.append_end_offset,
+                revision.acquisition_generation,
+                revision.authority.value,
+                raw_id,
+            ),
+        )
 
 
 def test_full_quarantine_census_is_mutually_exclusive_and_deterministic(archive: Path) -> None:
