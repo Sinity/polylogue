@@ -281,7 +281,12 @@ raise SystemExit(verify.main(sys.argv[2:]))
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # A complete synthetic release route launches all three native
+            # lanes. On this host the slowest observed route took 42.5s, so
+            # the former 30s cap killed a progressing verifier before it
+            # could write its receipt. Keep this bounded while allowing twice
+            # that measured duration for scheduler contention.
+            timeout=90,
         )
     except subprocess.TimeoutExpired as exc:
         stdout_value: object = exc.stdout
@@ -666,8 +671,13 @@ def test_production_verify_all_neutralizes_external_pytest_addopts(
     assert aggregate["terminal_union_count"] == 2
     assert aggregate["outcomes"] == {"failed": 2}
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True, True]
-    assert [step["external_plugins_neutralized"] for step in lanes] == [True, True, True]
+    # A failed serial lane stops the release route before storage-scale. The
+    # two executed lanes must still prove that ambient options/plugins were
+    # neutralized; requiring an unexecuted third lane would reverse the
+    # verifier's fail-fast contract.
+    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
+    assert all(step["external_addopts_neutralized"] is True for step in lanes)
+    assert all(step["external_plugins_neutralized"] is True for step in lanes)
     assert all("--override-ini=addopts=" in step["statistics"]["command"] for step in lanes)
     assert "parallel body executed" in completed.stderr
     assert "serial body executed" in completed.stderr
@@ -843,8 +853,9 @@ def test_production_affected_verify_neutralizes_execution_suppressing_addopts(
     assert aggregate["terminal_union_count"] == 2
     assert aggregate["outcomes"] == {"failed": 2}
     lanes = [step for step in payload["steps"] if step.get("semantic_lane")]
-    assert [step["external_addopts_neutralized"] for step in lanes] == [True, True, True]
-    assert [step["closed_world_collection"] for step in lanes] == [True, True, True]
+    assert [step["semantic_lane"] for step in lanes] == ["parallel", "serial"]
+    assert all(step["external_addopts_neutralized"] is True for step in lanes)
+    assert all(step["closed_world_collection"] is True for step in lanes)
     assert "affected parallel body executed" in completed.stderr
     assert "affected serial body executed" in completed.stderr
 
@@ -1301,6 +1312,12 @@ def test_linked_lane_bootstraps_when_optional_main_state_is_unusable(tmp_path: P
     assert [result.completed.returncode for result in main_results] == [0, 0]
 
     main_data = main / TESTMON_DATA_RELPATH
+    # This test exercises the optional-source binding failure path. Current
+    # testmon can legitimately leave no public data file after the tiny
+    # two-lane fixture, so create the malformed source explicitly instead of
+    # assuming a graph-producing side effect from the setup route.
+    main_data.parent.mkdir(parents=True, exist_ok=True)
+    main_data.write_bytes(b"stale private binding")
     stale_private_entry = main_data.with_name(f".{main_data.name}.bound-stale.tmp")
     os.link(main_data, stale_private_entry)
     lane = tmp_path / "lane"
@@ -1313,7 +1330,10 @@ def test_linked_lane_bootstraps_when_optional_main_state_is_unusable(tmp_path: P
             environment_name=lane_preparation.environment_name,
         )
     finally:
-        stale_private_entry.unlink()
+        # The recovery path may reclaim this stale binding itself. Cleanup is
+        # intentionally idempotent so that successful reclamation is not
+        # reported as a fixture failure.
+        stale_private_entry.unlink(missing_ok=True)
 
     assert lane_preparation.selection_mode == "bootstrap"
     assert lane_preparation.copied_from is None
