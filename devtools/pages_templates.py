@@ -23,7 +23,6 @@ BASE_TEMPLATE = """<!DOCTYPE html>
             <nav class="primary-nav" aria-label="Primary navigation">
                 <a class="nav-essential" href="{{ get_started_href }}">Get started</a>
                 <a href="{{ docs_href }}">Documentation</a>
-                <a class="nav-essential" href="{{ board_href }}">Roadmap</a>
                 <a href="https://github.com/Sinity/polylogue">GitHub</a>
             </nav>
             <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
@@ -47,7 +46,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
     <footer class="site-footer">
         <div class="footer-inner">
             <span>Polylogue · local evidence for AI work</span>
-            <span><a href="{{ docs_href }}">Documentation</a> · <a href="{{ board_href }}">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+            <span><a href="{{ docs_href }}">Documentation</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
         </div>
     </footer>
     <script>
@@ -89,7 +88,6 @@ HOME_TEMPLATE = """{% extends "base.html" %}
     <div class="hero-actions">
         <a class="button button-primary" href="{{ get_started_href }}">Get started <span aria-hidden="true">→</span></a>
         <a class="button" href="{{ demos_href }}">Run a private-data-free proof</a>
-        <a class="button" href="{{ board_href }}">Browse the roadmap</a>
     </div>
     <div class="hero-command"><pre><code>nix run github:Sinity/polylogue -- demo receipts --compact</code></pre></div>
 </section>
@@ -141,109 +139,6 @@ DOC_TEMPLATE = """{% extends "base.html" %}
 {% endblock %}
 """
 
-BEADS_TEMPLATE = """{% extends "base.html" %}
-{% block content %}
-<header class="board-hero">
-    <div><p class="eyebrow">Committed project record</p><h1>Roadmap and work graph</h1><p>Search the project’s Beads issues, inspect designs and acceptance criteria, and follow dependencies through delivered and active work. This view is rebuilt from the repository on every documentation deployment.</p></div>
-    <div class="board-meta"><a href="https://github.com/Sinity/polylogue/blob/master/.beads/issues.jsonl">View source JSONL</a></div>
-</header>
-<div class="board-stats" id="board-stats" aria-label="Issue summary"></div>
-<form class="board-toolbar" id="board-toolbar">
-    <input type="search" id="board-search" placeholder="Search titles, descriptions, designs, criteria…" aria-label="Search issues">
-    <select id="board-status" aria-label="Filter by status"><option value="active">Active work</option><option value="ready">Ready</option><option value="blocked">Blocked</option><option value="all">All statuses</option><option value="closed">Closed</option></select>
-    <select id="board-priority" aria-label="Filter by priority"><option value="all">All priorities</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option><option value="4">P4</option></select>
-    <select id="board-type" aria-label="Filter by type"><option value="all">All types</option></select>
-</form>
-<div class="board-results-meta"><span id="board-result-count">Loading issues…</span><span>Open an item for its full record</span></div>
-<div class="issue-list" id="issue-list" aria-live="polite"></div>
-<button class="button load-more" id="load-more" type="button" hidden>Show more</button>
-{% endblock %}
-{% block scripts %}
-<script>
-(() => {
-    const pageSize = 100;
-    const state = { issues: [], visible: pageSize };
-    const els = Object.fromEntries(['board-stats','board-search','board-status','board-priority','board-type','board-result-count','issue-list','load-more'].map(id => [id, document.getElementById(id)]));
-    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const text = value => esc(value).replace(/(https?:[/][/][^ <]+)/g, '<a href="$1">$1</a>');
-    const isClosed = issue => issue.status === 'closed';
-    const blockingDeps = issue => (issue.dependencies || []).filter(dep => dep.type === 'blocks' && !isClosed(state.byId.get(dep.depends_on_id) || {}));
-    const bucket = issue => isClosed(issue) ? 'closed' : issue.status === 'in_progress' ? 'in_progress' : blockingDeps(issue).length ? 'blocked' : 'ready';
-    const statusBadge = issue => {
-        const value = bucket(issue);
-        const cls = value === 'closed' ? 'badge-green' : value === 'blocked' ? 'badge-red' : value === 'in_progress' ? 'badge-yellow' : '';
-        return `<span class="badge ${cls}">${esc(value.replace('_', ' '))}</span>`;
-    };
-    const field = (title, value) => value ? `<section class="issue-section"><h3>${title}</h3><div class="issue-prose">${text(value)}</div></section>` : '';
-    const dependencyLinks = issue => {
-        const deps = issue.dependencies || [];
-        if (!deps.length) return '';
-        return `<section class="issue-section"><h3>Relationships</h3><div class="issue-links">${deps.map(dep => `<button class="issue-link" type="button" data-issue="${esc(dep.depends_on_id)}">${esc(dep.type)} · ${esc(dep.depends_on_id)}</button>`).join('')}</div></section>`;
-    };
-    const card = issue => {
-        const labels = (issue.labels || []).map(label => `<span class="badge">${esc(label)}</span>`).join('');
-        const date = issue.updated_at ? new Date(issue.updated_at).toLocaleDateString(undefined, {year:'numeric',month:'short',day:'numeric'}) : '';
-        return `<details class="issue-card" id="${esc(issue.id)}"><summary class="issue-summary"><span class="priority priority-${esc(issue.priority)}">P${esc(issue.priority)}</span><span><span class="issue-title"><span class="issue-id">${esc(issue.id)}</span>${esc(issue.title)}</span><span class="issue-subline">${statusBadge(issue)}<span class="badge">${esc(issue.issue_type || 'task')}</span>${labels}</span></span><span class="issue-updated">${esc(date)}</span></summary><div class="issue-body">${field('Description', issue.description)}${field('Design', issue.design)}${field('Acceptance criteria', issue.acceptance_criteria)}${field('Notes', issue.notes)}${dependencyLinks(issue)}${field('Closure', issue.close_reason)}</div></details>`;
-    };
-    function matches(issue) {
-        const query = els['board-search'].value.trim().toLowerCase();
-        const haystack = [issue.id, issue.title, issue.description, issue.design, issue.acceptance_criteria, issue.notes, issue.close_reason, ...(issue.labels || [])].join(String.fromCharCode(10)).toLowerCase();
-        const status = els['board-status'].value;
-        const issueBucket = bucket(issue);
-        const statusOk = status === 'all' || (status === 'active' && issueBucket !== 'closed') || status === issueBucket;
-        return statusOk && (els['board-priority'].value === 'all' || String(issue.priority) === els['board-priority'].value) && (els['board-type'].value === 'all' || issue.issue_type === els['board-type'].value) && (!query || query.split(' ').filter(Boolean).every(term => haystack.includes(term)));
-    }
-    function updateUrl() {
-        const url = new URL(location.href);
-        [['q','board-search'],['status','board-status'],['priority','board-priority'],['type','board-type']].forEach(([key,id]) => {
-            const value = els[id].value;
-            if (value && !(['status','priority','type'].includes(key) && value === (key === 'status' ? 'active' : 'all'))) url.searchParams.set(key, value); else url.searchParams.delete(key);
-        });
-        history.replaceState(null, '', url);
-    }
-    function render() {
-        const filtered = state.issues.filter(matches).sort((a,b) => (a.priority - b.priority) || String(b.updated_at).localeCompare(String(a.updated_at)));
-        els['issue-list'].innerHTML = filtered.slice(0, state.visible).map(card).join('') || '<div class="empty-state">No issues match these filters.</div>';
-        els['board-result-count'].textContent = `${filtered.length.toLocaleString()} matching issue${filtered.length === 1 ? '' : 's'}`;
-        els['load-more'].hidden = filtered.length <= state.visible;
-        updateUrl();
-        if (location.hash) {
-            const target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
-            if (target) { target.open = true; requestAnimationFrame(() => target.scrollIntoView({block:'start'})); }
-        }
-    }
-    function openIssue(id) {
-        const issue = state.byId.get(id);
-        if (!issue) return;
-        els['board-search'].value = id;
-        els['board-status'].value = 'all';
-        state.visible = pageSize;
-        location.hash = encodeURIComponent(id);
-        render();
-    }
-    fetch('issues.jsonl').then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); }).then(raw => {
-        state.issues = raw.split(String.fromCharCode(10)).map(line => line.endsWith(String.fromCharCode(13)) ? line.slice(0, -1) : line).filter(Boolean).map(line => JSON.parse(line)).filter(row => row._type === 'issue');
-        state.byId = new Map(state.issues.map(issue => [issue.id, issue]));
-        const params = new URLSearchParams(location.search);
-        els['board-search'].value = params.get('q') || '';
-        els['board-status'].value = params.get('status') || 'active';
-        els['board-priority'].value = params.get('priority') || 'all';
-        const types = [...new Set(state.issues.map(issue => issue.issue_type).filter(Boolean))].sort();
-        els['board-type'].insertAdjacentHTML('beforeend', types.map(type => `<option value="${esc(type)}">${esc(type)}</option>`).join(''));
-        els['board-type'].value = params.get('type') || 'all';
-        const counts = { total: state.issues.length, active: 0, ready: 0, blocked: 0, closed: 0 };
-        state.issues.forEach(issue => { const b = bucket(issue); counts[b] = (counts[b] || 0) + 1; if (b !== 'closed') counts.active++; });
-        els['board-stats'].innerHTML = [['Active',counts.active],['Ready',counts.ready],['Blocked',counts.blocked],['In progress',counts.in_progress || 0],['Delivered',counts.closed]].map(([label,value]) => `<div class="board-stat"><strong>${value.toLocaleString()}</strong><span>${label}</span></div>`).join('');
-        render();
-    }).catch(error => { els['issue-list'].innerHTML = `<div class="empty-state">Could not load the committed Beads records: ${esc(error.message)}</div>`; els['board-result-count'].textContent = 'Board unavailable'; });
-    ['board-search','board-status','board-priority','board-type'].forEach(id => els[id].addEventListener(id === 'board-search' ? 'input' : 'change', () => { state.visible = pageSize; render(); }));
-    els['load-more'].addEventListener('click', () => { state.visible += pageSize; render(); });
-    els['issue-list'].addEventListener('click', event => { const button = event.target.closest('[data-issue]'); if (button) openIssue(button.dataset.issue); });
-})();
-</script>
-{% endblock %}
-"""
-
 VERIFIABILITY_CATALOG_TEMPLATE = """{% extends "base.html" %}{% block content %}<h1>Evidence Catalog</h1><p>Last updated: {{ updated_at }}</p><div class="card"><strong>{{ claims|length }} claims</strong> · <span class="badge badge-green">{{ fresh_count }} fresh</span> <span class="badge badge-yellow">{{ stale_count }} stale</span> <span class="badge badge-red">{{ overridden_count }} overridden</span></div><table><thead><tr><th>Claim</th><th>Oracle</th><th>Domain</th><th>Last evidence</th><th>Status</th></tr></thead><tbody>{% for claim in claims %}<tr><td>{{ claim.description }}</td><td><code>{{ claim.oracle }}</code></td><td>{{ claim.assurance_domain }}</td><td>{{ claim.last_evidence_at or "—" }}</td><td><span class="badge badge-{{ 'green' if claim.status == 'fresh' else 'yellow' if claim.status == 'stale' else 'red' if claim.status == 'overridden' else '' }}">{{ claim.status }}</span></td></tr>{% endfor %}</tbody></table>{% endblock %}"""
 
 COVERAGE_TEMPLATE = """{% extends "base.html" %}{% block content %}<h1>Coverage Map</h1><p>Line coverage: {{ coverage_pct }}% · {{ modules_tested }}/{{ modules_total }} modules tested</p><table><thead><tr><th>Module</th><th>Line %</th><th>Branch %</th><th>Status</th></tr></thead><tbody>{% for mod in modules %}<tr><td><code>{{ mod.name }}</code></td><td>{{ mod.line_pct }}%</td><td>{{ mod.branch_pct }}%</td><td><span class="badge badge-{{ 'green' if mod.line_pct >= 85 else 'yellow' if mod.line_pct >= 70 else 'red' }}">{{ 'good' if mod.line_pct >= 85 else 'ok' if mod.line_pct >= 70 else 'low' }}</span></td></tr>{% endfor %}</tbody></table>{% endblock %}"""
@@ -258,7 +153,6 @@ PAGES_TEMPLATES = {
     "base.html": BASE_TEMPLATE,
     "home.html": HOME_TEMPLATE,
     "doc.html": DOC_TEMPLATE,
-    "beads.html": BEADS_TEMPLATE,
     "verifiability_catalog.html": VERIFIABILITY_CATALOG_TEMPLATE,
     "verifiability_coverage.html": COVERAGE_TEMPLATE,
     "verifiability_mutation.html": MUTATION_TEMPLATE,

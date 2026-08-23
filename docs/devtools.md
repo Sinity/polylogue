@@ -25,16 +25,6 @@ Routine command placement:
 - prefer validation lanes and `devtools verify --lab` to compose executable
   lab checks rather than duplicating domain checks inside `devtools verify`.
 
-## Beads graph checks
-
-Use `bd ready` to inspect executable work and `workspace bead-cluster` before
-parallel dispatch. Validate live task relationships without coupling task
-state to a Git branch:
-
-```bash
-devtools verify bead-graph --json
-```
-
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
 
@@ -105,7 +95,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
-| `devtools verify bead-graph` | Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references. |
 | `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
@@ -155,7 +144,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
 | `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
 | `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
-| `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
 | `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
 | `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |

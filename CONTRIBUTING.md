@@ -131,8 +131,8 @@ provides either a clone-validated non-semantic fast-forward plan or a
 
 During development, classify schema changes before editing: metadata-only,
 index-only, additive-derived, additive-durable, or semantic-reparse-required.
-Batch same-tier schema changes from ready Beads before triggering a live
-rebuild. Do not repeatedly reset and re-ingest the active archive for isolated
+Batch same-tier schema changes before triggering a live rebuild. Do not
+repeatedly reset and re-ingest the active archive for isolated
 index additions that can be grouped into one schema bump, and do not call a
 full reingest necessary unless the changed semantics actually require replaying
 source rows.
@@ -251,7 +251,7 @@ The repository should stay aligned with the workflow above:
 The devshell installs product Git hooks automatically. It anchors
 `core.hooksPath` at `.githooks` in the absolute checkout selected through Git's
 shared common directory, so linked worktrees cannot retain a branch-point
-relative hook path. Beads task state is independent of Git hooks and branches.
+relative hook path. External task state is independent of Git hooks and branches.
 
 - **pre-commit**: `ruff format --check` + `ruff check` on staged files.
   Also runs a worktree-escape detector (#1211): when committing from a

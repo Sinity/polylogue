@@ -94,7 +94,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 
 | Document | Description |
 |----------|-------------|
-| [Design Direction](design/README.md) | Beads-first design doctrine and standing domain-model references. |
+| [Design Direction](design/README.md) | Design doctrine and standing domain-model references. |
 | [Agent-First MCP](design/agent-first-mcp.md) | Agent-facing MCP surface doctrine. |
 | [Archive Storytelling](design/archive-storytelling.md) | Narrative and artifact design for archives. |
 | [Hermes Archival Export Contract](design/hermes-archival-export-contract.md) | Versioned Hermes session export schema, durable lifecycle-event spool, and snapshot reconciliation. |

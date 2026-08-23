@@ -18,28 +18,6 @@ _What was done. Key modules, contracts, and boundaries touched._
 
 _Exact commands run and any manual validation performed._
 
-## Bead disposition matrix
-
-_Required for Bead-scoped PRs. Delete this section when the carrier uses `scope_kind=self_contained`._
-
-| Assigned Bead | Whole-Bead disposition | Evidence refs | Named successor for residual work |
-| --- | --- | --- | --- |
-| `polylogue-...` | satisfied / partial / deferred / superseded | `test:...`, `command:...` | `polylogue-...` or n/a |
-
-<!-- polylogue-pr-scope:v2
-Replace this comment with the output of:
-devtools workspace pr-scope render --input .agent/pr-scope.json > /tmp/pr-scope.md
-
-The stable intent input declares scope_kind, assigned_beads, mutated_beads, and
-one disposition with typed evidence for each assigned Bead. Use
-scope_kind=self_contained with empty Bead lists for a self-contained PR.
-mutated_beads declares every Bead record changed by this PR. Partial, deferred,
-and superseded dispositions require an existing open successor Bead. The body
-does not contain a head SHA or Bead digest. After each push, inspect the live
-attestation with:
-devtools workspace pr-scope sync --pr <PR-number>
--->
-
 ## Changelog
 
 _If user-visible (new flags, renamed/removed commands, output changes, breaking migrations, security fixes), add a one-line entry to the `Unreleased` section of `CHANGELOG.md`. Skip for refactors, internal renames, and test-only PRs._

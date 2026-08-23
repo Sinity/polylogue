@@ -268,7 +268,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Design Direction",
         "design/README.md",
-        "Beads-first design doctrine and standing domain-model references.",
+        "Design doctrine and standing domain-model references.",
         "design",
     ),
     _entry("Agent-First MCP", "design/agent-first-mcp.md", "Agent-facing MCP surface doctrine.", "design"),

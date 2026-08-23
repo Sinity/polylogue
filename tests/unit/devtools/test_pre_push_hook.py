@@ -165,20 +165,13 @@ def test_dirty_worktree_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytes
     assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
 
 
-def test_worktree_is_clean_ignores_beads_only_uncommitted_change(git_repo: Path) -> None:
-    """``.beads/`` is the shared receipt-cleanliness exclusion
-    (`verify_runs.RECEIPT_EXCLUDED_PATHSPECS`, already applied by
-    `worktree_fingerprint`): nothing at runtime reads it, so an uncommitted
-    bead-bookkeeping edit must not read as a dirty worktree."""
-    (git_repo / ".beads").mkdir(parents=True, exist_ok=True)
-    (git_repo / ".beads" / "issues.jsonl").write_text('{"id": "uncommitted"}\n', encoding="utf-8")
+def test_worktree_is_clean_refuses_untracked_change(git_repo: Path) -> None:
+    (git_repo / "untracked.json").write_text('{"id": "uncommitted"}\n', encoding="utf-8")
 
-    assert pre_push_gate._worktree_is_clean(git_repo) is True
+    assert pre_push_gate._worktree_is_clean(git_repo) is False
 
 
 def test_worktree_is_clean_refuses_on_tracked_code_change(git_repo: Path) -> None:
-    """The `.beads` exclusion must not become a general dirty-tree bypass:
-    an uncommitted change to a real tracked file still refuses."""
     _code_update(git_repo)
     (git_repo / "polylogue" / "example.py").write_text("VALUE = 2\n", encoding="utf-8")
 
@@ -193,40 +186,13 @@ class _FakeCheckoutEnvironment:
         return self._payload
 
 
-def test_beads_only_uncommitted_change_permits_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """End-to-end: an uncommitted, *untracked* `.beads/` file alongside an
-    otherwise matching exact-head receipt must still reuse, exercising the
-    real (unmocked) `_worktree_is_clean` AND the real `worktree_fingerprint`
-    through `_current_provenance` -- proving the .beads exclusion holds
-    through the actual fingerprint value, not a fingerprint stubbed away to a
-    constant."""
+def test_untracked_file_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     update = _code_update(git_repo)
     head = _git(git_repo, "rev-parse", "HEAD")
     environment = {"python_executable": "/venv/bin/python", "artifacts": []}
     baseline_fingerprint = worktree_fingerprint(git_repo)
     _quick_receipt(git_repo, head=head, environment=environment, worktree_fingerprint=baseline_fingerprint)
-    (git_repo / ".beads").mkdir(parents=True, exist_ok=True)
-    (git_repo / ".beads" / "issues.jsonl").write_text('{"id": "uncommitted"}\n', encoding="utf-8")
-    commands: list[list[str]] = []
-    monkeypatch.setattr(
-        pre_push_gate, "assert_polylogue_matches_checkout", lambda cwd, context: _FakeCheckoutEnvironment(environment)
-    )
-    monkeypatch.setattr(pre_push_gate, "_run", lambda command, cwd: commands.append(command))
-
-    assert pre_push_gate.run_gate([update], cwd=git_repo) == "reused"
-    assert commands == []
-
-
-def test_tracked_code_change_still_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """End-to-end counterpart: a genuinely dirty tracked file (not
-    `.beads/`) must still refuse reuse through the real, unmocked
-    `_worktree_is_clean` and `worktree_fingerprint`."""
-    update = _code_update(git_repo)
-    head = _git(git_repo, "rev-parse", "HEAD")
-    environment = {"python_executable": "/venv/bin/python", "artifacts": []}
-    baseline_fingerprint = worktree_fingerprint(git_repo)
-    _quick_receipt(git_repo, head=head, environment=environment, worktree_fingerprint=baseline_fingerprint)
-    (git_repo / "polylogue" / "example.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (git_repo / "untracked.json").write_text('{"id": "uncommitted"}\n', encoding="utf-8")
     commands: list[list[str]] = []
     monkeypatch.setattr(
         pre_push_gate, "assert_polylogue_matches_checkout", lambda cwd, context: _FakeCheckoutEnvironment(environment)
@@ -237,17 +203,13 @@ def test_tracked_code_change_still_refuses_receipt_reuse(git_repo: Path, monkeyp
     assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
 
 
-def test_untracked_nonbeads_file_still_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail-closed counterpart at the reuse-gate level: an untracked file
-    outside `.beads/` must still refuse reuse through the real, unmocked
-    `worktree_fingerprint` -- the .beads exclusion must not become a general
-    untracked-content bypass."""
+def test_tracked_code_change_refuses_receipt_reuse(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     update = _code_update(git_repo)
     head = _git(git_repo, "rev-parse", "HEAD")
     environment = {"python_executable": "/venv/bin/python", "artifacts": []}
     baseline_fingerprint = worktree_fingerprint(git_repo)
     _quick_receipt(git_repo, head=head, environment=environment, worktree_fingerprint=baseline_fingerprint)
-    (git_repo / "untracked.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (git_repo / "polylogue" / "example.py").write_text("VALUE = 2\n", encoding="utf-8")
     commands: list[list[str]] = []
     monkeypatch.setattr(
         pre_push_gate, "assert_polylogue_matches_checkout", lambda cwd, context: _FakeCheckoutEnvironment(environment)

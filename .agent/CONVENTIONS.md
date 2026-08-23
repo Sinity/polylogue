@@ -6,20 +6,17 @@ repo-agent conventions that do not need to be in every context window.
 Kept deliberately parallel to `sinex/.agent/CONVENTIONS.md` — divergences are
 intentional and marked.
 
-**The devloop substrate is Beads.** The former bespoke conductor packet
-(`conductor-devloop/`, `DEVLOOP.md`, `devloop-*` scripts) is retired. Do not
-resurrect packet files or `devloop-*` script names; the loop is: `bd prime` →
-`bd ready` → claim → work → PR → close with reasons. (Its evidence may still
-sit in a gitignored, untracked `.agent/archive/devloop-2026-07/` in some
-working checkouts — polylogue-ocby — it is not tracked in this repo and a
-fresh clone will not have it.)
+**Task authority is external.** Do not recreate task workspaces, task-state
+exports, or branch/PR carriers in this repository. A configured append-only
+interaction ledger is archive evidence only; it is never a worktree control
+surface.
 
 ## Dispatch Agent Definitions
 
 `.claude/agents/lane.md` and `.claude/agents/triage.md` are the canonical
 standing contract for dispatched worktree agents in this repo — worktree
-discipline, the no-`bd`-CLI rule, red-first bug fixes, verification commands,
-PR shape, and never-merge. Dispatch prompts that use `subagent_type: lane` or
+discipline, red-first bug fixes, verification commands, PR shape, and
+never-merge. Dispatch prompts that use `subagent_type: lane` or
 `subagent_type: triage` only need to carry task-specific content (which
 bead/files/scope); the operating rules are already loaded from the agent
 definition, not re-typed per dispatch. If the standing contract changes,
@@ -39,47 +36,6 @@ edit those two files, not the per-dispatch prompt template.
   archive/           # retired scaffolds kept as evidence — gitignored, local-only
 ```
 
-Repo-agent helper scripts (bead-graph lint, delivery-gate board, reimport
-guard, batch-show) live under `devtools/` as proper commands, not under
-`.agent/scripts/`/`.agent/tools/` (polylogue-kapb retired both as tracked
-tooling dirs — see `devtools status` / `devtools --list-commands` for the
-full catalog).
-
-## Beads Task Substrate
-
-Beads (`bd`, workspace at `.beads/`, prefix `polylogue`) is the durable task
-substrate: ready work, claims, blockers, dependencies, deferred work, and
-discovered follow-ups. Run `bd prime` for workflow context.
-
-- **Beads** owns work items; anything that should survive the current slice
-  becomes a bead, not a bullet in a markdown file.
-- **Current focus** is the claimed bead; its notes field is the running trail;
-  `bd close <id> --reason "…"` with verification commands ends the slice.
-  There is no active-loop file.
-- **Operator directives** that must survive compaction are beads, never a
-  queue file.
-- **`bd remember`** holds durable cross-session insights; search with
-  `bd memories <keyword>` before re-deriving anything expensive.
-- Discovered work is linked: `bd create ... --deps discovered-from:<bead>`.
-- `blocks` only for true ordering, `related` for affinity; keep
-  `bd dep cycles` clean.
-- No Dolt remote: `.beads/issues.jsonl` in git IS the sync surface; ship
-  bead-state deltas in PRs (`chore(beads):`).
-- Graph lint: run `devtools verify bead-graph` before shipping bead deltas
-  (cycles, missing acceptance criteria, duplicate `wave:` labels, wave
-  inversions). INTENTIONAL DIVERGENCE from sinex: only duplicate `wave:`
-  labels are flagged — polylogue does not (yet) enforce exactly-one-area, and
-  its label taxonomy (`lane:`, `delivery:`, `horizon:`) evolved separately;
-  unify deliberately or not at all.
-
-Execution-grade bar for ready beads at priority ≤ 2 (same as sinex):
-description states the problem + current verified state with dated
-`file:line` cites; design carries the settled decision, exact targets, and
-interacting beads; acceptance names repo-native VERIFY commands — here that
-means `devtools test` (managed pytest-testmon path) or a targeted
-`pytest tests/... -k`, never "tests pass". Reconcile-on-claim: re-verify a
-bead's cited facts against master before coding.
-
 ## Execution Tactics
 
 - **Async is coordinator-only.** An interactive/coordinator session may
@@ -97,20 +53,6 @@ bead's cited facts against master before coding.
   dispatch: no poll loops" section (polylogue-kzse6) — this is the same rule
   the `lane`/`triage` agent definitions carry for a dispatched agent that
   itself spawns background work.
-- **Dispatch hygiene (coordinator).** Immediately after spawning a
-  worktree-isolated lane, run
-  `devtools workspace verify-worktree <path> --expect-branch <branch>` before
-  trusting anything the lane reports — a 2026-08-01 dispatch silently ran in
-  the main checkout and left ~1700 uncommitted lines in the live tree. The
-  same check warns when the worktree's frozen `.beads/issues.jsonl` has gone
-  stale relative to the main checkout. All ordinary `bd` invocations must
-  resolve to the deployed common-checkout `scripts/bd` through the devshell or
-  Git's shared absolute `core.hooksPath`. That wrapper compares rows with live
-  Dolt state, imports only new/strictly newer rows, and disables Beads' blind
-  automatic import for the delegated command. Do not bypass it with the
-  absolute Nix-store binary. Lanes still make no bd
-  writes; coordinators audit and re-apply explicit Beads writes at merge-train
-  boundaries before exporting state (polylogue-2ara).
 - **Serial heavy, parallel light.** Serialize anything sharing the pytest
   temp DBs (`/realm/tmp/polylogue-pytest`) or the archive DB; parallel tool
   calls are for reads/searches only.
@@ -121,23 +63,17 @@ bead's cited facts against master before coding.
 
 ## Greedy Batch / PR Cadence
 
-Identical policy to sinex (canonical text in
-`sinex/.agent/CONVENTIONS.md` — Greedy Batch section; do not fork the
-wording): one complete bead per branch/PR by default; widen to the largest
-coherent acceptance-criteria phase before splitting; a green substep is a
-checkpoint, not a publishing trigger; splitting requires a real boundary
-(risk, reviewability, dependency, ownership, deployment, failure isolation);
-before publishing, record the satisfied/deferred/follow-up AC matrix in the
-PR body and bead notes.
+Batch related implementation into the largest coherent phase. A green
+substep is a checkpoint, not a publishing trigger; split only at a genuine
+boundary (risk, reviewability, dependency, ownership, deployment, or failure
+isolation).
 
 ## Scratch, Demos, Git Boundary
 
 `.agent/scratch/` is gitignored thinking space (README + research notes);
-promote durable insight out: rules → CLAUDE.md/CONVENTIONS.md, work items →
-beads, gotchas → `bd remember`. `.agent/demos/` is a curated shelf, not a
-dump. The tracked `.agent` surface stays small (this file, README, scripts,
-demos, reports, task-history, tools, archive); everything else is ignored
-live state. New tracked files get a deliberate `.gitignore` allowlist entry.
+promote durable repository guidance to CLAUDE.md/CONVENTIONS.md. `.agent/demos/`
+is a curated shelf, not a dump. The tracked `.agent` surface stays small;
+everything else is ignored live state.
 
 ## Pathology Zoo Growth Rule
 

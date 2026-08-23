@@ -208,6 +208,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
     ),
     (
+        "verify-campaign-genesis",
+        "_campaign_genesis",
+        "verify_campaign_genesis_command",
+        "Prove a campaign-genesis record against the immutable Git blobs it pins. Read-only.",
+    ),
+    (
         "live-proof",
         "_live_proof",
         "live_proof_command",

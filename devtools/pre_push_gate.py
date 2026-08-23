@@ -13,7 +13,7 @@ from pathlib import Path
 
 from devtools import repo_root
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
-from devtools.verify_runs import RECEIPT_EXCLUDED_PATHSPECS, worktree_fingerprint
+from devtools.verify_runs import worktree_fingerprint
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,14 +73,8 @@ def _run(command: list[str], *, cwd: Path) -> None:
 
 
 def _worktree_is_clean(cwd: Path) -> bool:
-    # Share the exact exclusion `worktree_fingerprint` already applies
-    # (RECEIPT_EXCLUDED_PATHSPECS): `.beads/` is the tracker JSONL that
-    # nothing at `verify --quick` runtime reads, so an uncommitted
-    # bead-bookkeeping edit must not read as a dirty worktree here either --
-    # otherwise the two cleanliness checks disagree on what "dirty" means for
-    # the exact same receipt.
     result = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", ".", *RECEIPT_EXCLUDED_PATHSPECS],
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", "."],
         cwd=cwd,
         check=False,
         capture_output=True,

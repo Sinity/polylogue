@@ -1,13 +1,9 @@
 # Polylogue Design Direction
 
-Design direction lives in the Beads backlog, not in this directory: each
-surface's owning bead carries its spec in the `design` field (`bd show <id>`),
-and the aesthetics/interaction directions live in a gitignored, untracked
-`.agent/reports/` (not shipped in this repo or a fresh clone) with their
-decisions recorded on beads. Planning documents are mined into beads
-and then purged — there is no "historical reference" tier (superseded
-`docs/execution-plan.md`, and the MK2/MK3 packs, were removed under this
-rule; recover from git history if ever needed).
+Design direction lives in the external task authority, not in this directory.
+This repository retains only durable design references and pinned historical
+evidence; branches and PRs never carry task-state exports. Superseded planning
+documents are recovered from Git history when needed.
 
 What remains here are **standing design references** that describe durable
 domain models rather than plans:
@@ -19,11 +15,10 @@ domain models rather than plans:
 | [Analysis rigor](analysis-rigor.md) | Rigor mechanisms for agent claims: population-validity (metric hashes, pre-registration, holdouts) + comparative judgment (Bradley-Terry rankings, agent judges, cascades) (polylogue-rxdo.9) |
 | [Query set algebra](query-set-algebra.md) | Set-composition semantics over query results (polylogue-fnm.13) |
 | [Agent-first MCP](agent-first-mcp.md) | MCP surface doctrine (polylogue-t46.8, polylogue-rsad) |
-| [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements feeding horizon beads |
+| [Project memory](project-memory.md) · [Second brain](second-brain.md) · [Time machine](time-machine.md) · [Archive storytelling](archive-storytelling.md) · [Whole product](whole-product.md) | Vision statements for future planning |
 | [Query-action workflows](../product/workflows.md) | Standing selection, cardinality, and executable-evidence guide |
 | [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic adversarial corpus for the still-open proof-world work (polylogue-212.11) |
 | [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 
-If a doc here stops matching its owning beads, the beads win — update or
-purge the doc.
+If a doc here stops matching the external task authority, update or purge it.

@@ -384,26 +384,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace bead-cluster",
-        "workspace",
-        "Footprint/overlap/contention clustering of ready Beads (execution frontier).",
-        "devtools.bead_cluster",
-        use_when=(
-            "Before dispatching a batch of ready beads, see which ones share a file/package "
-            "footprint (cluster into one branch/PR sweep) vs. which are genuinely disjoint "
-            "(safe to run as parallel worktree lanes), and flag contention -- beads that touch "
-            "the same durable migration slot or the same generated surface even without an "
-            "exact file-path overlap. Footprints are advisory, so verify them when claiming work."
-        ),
-        examples=(
-            "devtools workspace bead-cluster",
-            "devtools workspace bead-cluster --json",
-            "devtools workspace bead-cluster --all-open",
-            "devtools workspace bead-cluster --max-priority 1",
-            "devtools workspace bead-cluster --input ready.json --validate-roster",
-        ),
-    ),
-    CommandSpec(
         "demo real-slice-screen",
         "workspace",
         "Read-only extraction + privacy screening of a candidate real-archive session slice.",
@@ -1049,24 +1029,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools verify oracle-integrity",
             "devtools verify oracle-integrity --ignore-baseline --json",
-        ),
-    ),
-    CommandSpec(
-        "verify bead-graph",
-        "verification",
-        "Validate typed dependency endpoints, closed dependency kinds, parent cardinality, cycles, forcing closures, and registry Bead references.",
-        "devtools.verify_bead_graph",
-        use_when=(
-            "Run against live `bd` state when changing task relationships. `--revision` validates an "
-            "immutable historical Git snapshot without importing it. `--forcing-root` reports a digest-bound "
-            "transitive blocks closure; "
-            "`--require-resolved` is for an operation boundary that requires no open blockers. The gate "
-            "checks existing registry Bead references and never makes prose or campaign mirrors authority."
-        ),
-        examples=(
-            "devtools verify bead-graph",
-            "devtools verify bead-graph --forcing-root polylogue-818fy --require-resolved --json",
-            "devtools verify bead-graph --revision 317b59f41f938884d289d48737cfe87ec00bd769 --json",
         ),
     ),
     CommandSpec(

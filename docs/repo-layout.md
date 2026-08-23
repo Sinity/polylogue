@@ -10,7 +10,7 @@ repository tools. For the Python package itself, see
 | Entry | Purpose | Managed by |
 |-------|---------|------------|
 | `.agent/` | Agent conventions, checked-in helper state, and repository-owned agent metadata; transient runs remain ignored | repo / agents |
-| `.beads/` | Versioned Beads issue, dependency, and memory export used as the Git-side task authority | Beads / repo |
+| external task authority | Durable task state lives outside the checkout; only configured append-only interaction ledgers may be observed as archive evidence | task service |
 | `.githooks/` | Canonical product Git hooks for commit and push checks | repo |
 | `.circleci/` | CircleCI jobs, images, and pull-request verification entrypoints | CI |
 | `.claude/` | Claude Code project settings, hooks, and generated agent definitions | repo / Claude Code |
@@ -65,5 +65,5 @@ These may exist in a working checkout but are not repository authority.
 
 Local state is never evidence merely because it exists in a checkout. A
 release, migration, or live archive operation must bind the selected Git SHA,
-Beads digest, built package, and receipt rather than relying on an ambient
+built package, and receipt rather than relying on an ambient
 working directory.

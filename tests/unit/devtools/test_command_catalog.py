@@ -48,9 +48,3 @@ def test_featured_command_specs_are_actionable() -> None:
 def test_catalog_uses_command_ownership_categories() -> None:
     assert "verification lab" not in {spec.category for spec in COMMAND_SPECS}
     assert {"verify schema-roundtrip", "bench pipeline", "workspace schema commit"} <= set(COMMANDS)
-
-
-def test_bead_graph_catalog_exposes_json_report() -> None:
-    graph = COMMANDS["verify bead-graph"]
-
-    assert any("--json" in example for example in graph.examples)

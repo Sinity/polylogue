@@ -111,4 +111,4 @@ Until that proof exists, public wording must say “target,” “program,” or
 
 ## Roadmap authority
 
-The owning Sinex program is `sinex-4j2`. Related Polylogue decisions that make a metadata-only bridge permanent should be superseded by a new Beads decision under the maximal direction. GitHub Issues are not roadmap authority for either project.
+The owning Sinex program is `sinex-4j2`. Related Polylogue decisions that make a metadata-only bridge permanent should be superseded in the external task authority under the maximal direction. GitHub Issues are not roadmap authority for either project.
