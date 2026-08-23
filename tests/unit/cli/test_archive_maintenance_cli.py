@@ -4546,11 +4546,12 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
     # generations). Those are wall-clock floats, not part of this helper's
     # typed-empty-receipt contract, so they are checked for shape/presence
     # separately rather than folded into the exact-count comparison below.
-    timing_keys = {"parse_s", "apply_s", "stage_timings_s"}
+    timing_keys = {"parse_s", "apply_s", "stage_timings_s", "whale_envelope"}
     assert timing_keys.issubset(result)
     assert isinstance(result["parse_s"], float)
     assert isinstance(result["apply_s"], float)
     assert isinstance(result["stage_timings_s"], dict)
+    assert isinstance(result["whale_envelope"], dict)
     assert {key: value for key, value in result.items() if key not in timing_keys} == {
         "scanned_raw_count": 0,
         "classified_full_count": 0,

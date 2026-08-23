@@ -482,7 +482,11 @@ def test_real_startup_writer_routes_cannot_pin_process_exit(helper_name: str, wr
                 started.set()
                 threading.Event().wait()
 
-            setattr(cli, {writer_name!r}, writer)
+            if {helper_name!r} == "_run_startup_fts_readiness":
+                from polylogue.daemon.fts_convergence import FtsConvergenceOwner
+                setattr(FtsConvergenceOwner, "run_once_sync", lambda _self, **_kwargs: writer())
+            else:
+                setattr(cli, {writer_name!r}, writer)
             helper = getattr(cli, {helper_name!r})
             caller = asyncio.create_task(helper(coordinator))
             while not started.is_set():

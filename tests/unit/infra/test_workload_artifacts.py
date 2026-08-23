@@ -26,7 +26,6 @@ from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
     NAMED_WORKLOAD_PROFILES,
     BenchmarkWorkloadTier,
-    SeededArchiveQueryLease,
     WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
@@ -1364,32 +1363,27 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 # ---------------------------------------------------------------------------
 
 
-def test_named_seeded_archive_ro_serves_a_readable_uncloned_archive(
-    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
+def test_named_seeded_archive_ro_serves_a_readable_private_clone(
+    named_seeded_archive_ro: Callable[[str], Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The read-only fixture hands back the shared artifact, not a copy of it.
+    """The read-only fixture hands back a private clone for path-based consumers.
 
-    Anti-vacuity: reintroducing a clone makes the ``artifacts/`` containment
-    assertion fail, and reverting the artifact to writable makes the
-    read-only mode assertion fail -- the two properties that let every worker
-    and every test share one copy.
+    Anti-vacuity: returning the shared artifact would make the ``artifacts/``
+    containment assertion fail, exposing a mutation leak into the shared cache.
     """
     monkeypatch.setattr(
         "tests.infra.corpus_fixtures.build_seeded_archive",
         lambda specs: build_seeded_archive(specs, cache_root=tmp_path / "cache"),
     )
-    lease = named_seeded_archive_ro("cli-chatgpt")
-    db_path = lease.path
+    db_path = named_seeded_archive_ro("cli-chatgpt")
 
     assert db_path.is_file()
     assert db_path.name == "index.db"
-    assert "artifacts" in db_path.parts
+    assert "artifacts" not in db_path.parts
     assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(db_path.parent)
-    assert not (db_path.parent.stat().st_mode & stat.S_IWUSR)
-
-    with lease.open() as archive:
+    with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
         assert archive.count_sessions() > 0
 
 

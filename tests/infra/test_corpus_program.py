@@ -288,6 +288,7 @@ def _freeze_runtime_source(
     *,
     expected_raws: int = 1,
 ) -> None:
+    runtime.converge()
     backfill = backfill_historical_revision_evidence(runtime.archive_root)
     assert backfill.scanned == expected_raws
     assert backfill.classified_full == expected_raws

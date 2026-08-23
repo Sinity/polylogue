@@ -12,7 +12,7 @@ must be rebuilt.
 
 `devtools/verify.py` was itself a digest input, because it constructs that
 invocation. But it is also a ~3,500-line orchestrator that formats output,
-records receipts, prunes old runs and parses flags -- none of which touches
+records receipts and parses flags -- none of which touches
 collection. The consequence was that editing a COMMENT in verify.py discarded
 every testmon graph and forced a full-corpus bootstrap, roughly 9.5x a warm run
 (2701s vs 285s, measured over 1233 recorded runs).

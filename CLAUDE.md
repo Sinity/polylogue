@@ -223,7 +223,7 @@ snapshot reference check) to bridge the acquire-blob → commit-row window.
 
 ### Schema regimes (durability-keyed)
 
-Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
+Two evolution regimes, enforced by `devtools verify schema-versioning`:
 
 - **Durable tiers** (`source.db`, `user.db`, `audit.db`): explicit **additive** numbered SQL
   migrations under `storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, one
@@ -338,7 +338,8 @@ sequencing, ownership, or next action.
 Task authority is external to this checkout. Feature worktrees and PRs must
 never import, mutate, carry, or publish live task state; ordinary task activity
 must not dirty Git or change with a branch switch. The former local devloop,
-Beads graph tooling, and task-state carriers are retired. Historical Beads
+Beads graph tooling, and task-state carriers are retired; the bounded
+`workspace dev-loop-service` proof is AgentCTL-owned. Historical Beads
 exports remain immutable Git evidence, and configured append-only interaction
 ledgers remain archive inputs only.
 
@@ -483,8 +484,8 @@ Core loop:
 - `devtools why [--run <id>]` — explain the most recent run: diagnosis, cause,
   remedy, why it selected what it did, non-green tests, failing steps. Use it
   before hand-reading receipt JSON.
-- `devtools lab …` — executable schema/provider/pipeline/lane checks.
-- `devtools lab policy oracle-integrity` — the anti-vacuity gate, in
+- `devtools verify …` — executable schema/provider/pipeline/lane checks.
+- `devtools verify oracle-integrity` — the anti-vacuity gate, in
   `devtools verify --quick`. Fails a test module whose **entire** production
   target set is unreachable from an entrypoint ("certifies dead code") and any
   test that reads an ambient `~/.codex` / `~/.claude` / `/realm` path instead
@@ -515,9 +516,8 @@ implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
 
 Local state: `.cache/` (disposable) and `.local/` (untracked outputs). Keep new
 outputs there, not new top-level roots. Verification receipts under
-`.cache/verify/runs` are pruned automatically to the 100 most recent (anything a
-merge-gate receipt names is retained regardless) — before that policy existed
-they reached 623 directories and 3.0 GB in six days.
+`.cache/verify/runs` are retained indefinitely as durable local evidence; do
+not prune them automatically or delete them merely for age or count.
 
 ---
 
@@ -553,7 +553,7 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green
   `gh pr checks` does **not** mean tests ran — verify locally with
-  `devtools test <files>`. Required merge checks are `lint` + `test`; an
+  `devtools test <files>`. Required merge checks are repository-configured; inspect
   `UNSTABLE`/neutral `mergeStateStatus` is usually the test-skip, not a failure —
   inspect `statusCheckRollup`.
 - Committing from a linked worktree: a hook aborts if you `cd`'d into the main

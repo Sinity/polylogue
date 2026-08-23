@@ -176,6 +176,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     record_revision_application_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    PENDING_RAW_LOGICAL_SOURCE_PREFIX,
     ArchiveSourceBlobRef,
     apply_source_raw_state_update,
     bind_source_raw_revision,
@@ -677,8 +678,8 @@ def write_raw_payload(
         return admission.raw_id
     if revision is not None:
         # Revision-bearing calls are production admissions, rather than fixture
-        # seeding. Establish the row through the typed authority, then bind the
-        # caller's already-proven envelope through the source-tier API.
+        # seeding. Give the chokepoint the caller's already-proven baseline
+        # envelope so it creates the row with that authority atomically.
         admission = admit_raw_observation(
             store._ensure_source_conn(),
             origin=origin_from_provider(provider),
@@ -691,10 +692,10 @@ def write_raw_payload(
             native_id=native_id,
             raw_id=raw_id,
             logical_source_key=revision.logical_source_key,
+            baseline_revision=revision,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
         )
-        bind_source_raw_revision(store._ensure_source_conn(), admission.raw_id, revision)
         return admission.raw_id
     return write_source_raw_session(
         store._ensure_source_conn(),
@@ -2041,6 +2042,35 @@ def record_current_parser_source_census(
     ).fetchone()
     if raw is None:
         raise RuntimeError(f"parser census raw is missing: {raw_id}")
+    if (
+        parser_sessions is not None
+        and len(parser_sessions) == 1
+        and str(raw[0] or "").startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+    ):
+        session = parser_sessions[0]
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                ),
+                kind=RawRevisionKind.FULL,
+                source_revision=raw_id,
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+            manage_transaction=False,
+        )
+        raw = conn.execute(
+            """
+            SELECT logical_source_key, revision_kind,
+                   EXISTS(SELECT 1 FROM raw_artifacts WHERE raw_id = raw_sessions.raw_id AND parse_as_session = 0),
+                   source_index
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
     membership_census = conn.execute(
         """
         SELECT status, detail FROM raw_membership_census

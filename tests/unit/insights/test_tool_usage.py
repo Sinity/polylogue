@@ -636,6 +636,7 @@ class TestListToolUsageInsightsEndToEnd:
         (
             SessionBuilder(db_path, "old-cx")
             .provider("codex")
+            .created_at(old_ts)
             .updated_at(old_ts)
             .add_message(
                 "old-cx-msg", role="assistant", text="Old", timestamp=old_ts, blocks=[command_block, result_block]
@@ -645,6 +646,7 @@ class TestListToolUsageInsightsEndToEnd:
         (
             SessionBuilder(db_path, "recent-cx")
             .provider("codex")
+            .created_at(recent_ts)
             .updated_at(recent_ts)
             .add_message(
                 "recent-cx-msg",
@@ -695,6 +697,7 @@ class TestListToolUsageInsightsEndToEnd:
         (
             SessionBuilder(db_path, "old-cc")
             .provider("claude-code")
+            .created_at(old_ts)
             .updated_at(old_ts)
             .add_message(
                 "old-cc-msg",
@@ -708,6 +711,7 @@ class TestListToolUsageInsightsEndToEnd:
         (
             SessionBuilder(db_path, "recent-cc")
             .provider("claude-code")
+            .created_at(recent_ts)
             .updated_at(recent_ts)
             .add_message(
                 "recent-cc-msg",

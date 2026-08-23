@@ -28,18 +28,6 @@
           }
         ]
       }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR/.venv/bin/python\" -m devtools.lane_stop_hook",
-            "timeout": 30,
-            "statusMessage": "Packaging lane handoff"
-          }
-        ]
-      }
     ]
   }
 }

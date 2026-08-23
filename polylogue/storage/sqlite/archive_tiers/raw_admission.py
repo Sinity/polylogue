@@ -413,6 +413,7 @@ def admit_raw_observation(
     file_mtime_ms: int | None = None,
     native_id: str | None = None,
     logical_source_key: str | None = None,
+    baseline_revision: RawRevisionEnvelope | None = None,
     prior_head: PriorRawHead | None = None,
     raw_id: str | None = None,
     post_parse: bool = False,
@@ -447,10 +448,17 @@ def admit_raw_observation(
     to be about. That absence is now a named arm rather than, as before, a
     bare ``write_source_raw_session`` call that bypassed this module.
     """
-    if post_parse and (logical_source_key is not None or prior_head is not None or artifact is not None):
+    if post_parse and (
+        logical_source_key is not None
+        or prior_head is not None
+        or artifact is not None
+        or baseline_revision is not None
+    ):
         raise ValueError("post-parse admission cannot combine a logical key, prior head, or artifact")
     if not post_parse and not logical_source_key:
         raise ValueError("logical_source_key is required for raw admission")
+    if baseline_revision is not None and baseline_revision.logical_source_key != logical_source_key:
+        raise ValueError("baseline revision logical source key must match raw admission")
     if grouped:
         if post_parse or artifact is not None:
             raise ValueError("grouped admission cannot combine post-parse or artifact resolution")
@@ -563,7 +571,8 @@ def admit_raw_observation(
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=additional_blob_refs,
-            revision=RawRevisionEnvelope(
+            revision=baseline_revision
+            or RawRevisionEnvelope(
                 logical_source_key=logical_source_key,
                 kind=RawRevisionKind.FULL,
                 source_revision=deterministic_blob_hash(payload).hex(),
