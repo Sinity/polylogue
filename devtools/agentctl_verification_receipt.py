@@ -49,6 +49,7 @@ def agentctl_verification_receipt(
         "job_id": _string(values.get(AGENTCTL_JOB_ID_ENV)),
         "run_id": _string(payload.get("run_id")),
         "workspace": {
+            "authority": "agentctl",
             "checkout_id": _string(values.get(AGENTCTL_CHECKOUT_ID_ENV)),
             "declared_head": _string(values.get(AGENTCTL_CHECKOUT_HEAD_ENV)),
             "observed_head": _string(payload.get("git_head")),

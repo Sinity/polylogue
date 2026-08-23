@@ -118,7 +118,6 @@ def agentctl_declared_job_binding(
     env: Mapping[str, str] | None = None,
     cgroup_text: str | None = None,
     current_head: str | None = None,
-    git_common_dir: Path | None = None,
 ) -> AgentctlDeclaredJobBinding | None:
     """Prove that this process is the exact checkout-bound declared job."""
     values = os.environ if env is None else env
@@ -141,30 +140,8 @@ def agentctl_declared_job_binding(
     if observed_head != declared_head:
         return None
 
-    resolved_root = root.resolve()
-    common_dir = git_common_dir
-    if common_dir is None:
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                cwd=resolved_root,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
-            common_dir = Path(result.stdout.strip())
-        except (OSError, subprocess.SubprocessError):
-            return None
-    common_dir = common_dir.resolve()
-    project_root = common_dir.parent if common_dir.name == ".git" else None
-    expected_checkout_id = (
-        "default"
-        if project_root == resolved_root
-        else "worktree-" + hashlib.sha256(str(resolved_root).encode()).hexdigest()[:16]
-    )
     checkout_id = values.get("SINNIXD_CHECKOUT_ID", "")
-    if checkout_id != expected_checkout_id:
+    if not checkout_id:
         return None
 
     if cgroup_text is None:
