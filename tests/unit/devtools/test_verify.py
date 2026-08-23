@@ -24,7 +24,6 @@ import watchfiles
 
 import devtools.pytest_supervisor as pytest_supervisor
 from devtools import run_tests, testmon_bootstrap, verify, verify_runs
-from devtools.agentctl_verification_receipt import agentctl_verification_receipt
 from devtools.checkout_guard import CheckoutImportMismatchError
 from devtools.pytest_supervisor import (
     CGROUP_MODE_ENV,
@@ -35,6 +34,7 @@ from devtools.pytest_supervisor import (
 )
 from devtools.testmon_bootstrap import NativeTestmonRepairError, executable_python_paths
 from devtools.verification_contracts import VerificationScope
+from devtools.verification_result import declared_verification_result
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -60,7 +60,6 @@ from devtools.verify import (
     main,
 )
 from devtools.verify_runs import (
-    AgentctlDeclaredJobBinding,
     CheckoutMutationMonitor,
     CheckoutMutationObservation,
     PytestResourceError,
@@ -69,7 +68,6 @@ from devtools.verify_runs import (
     VerifyRun,
     adaptive_pytest_runtime_policy,
     adaptive_pytest_worker_count,
-    agentctl_declared_job_binding,
     aggregate_native_testmon_run,
     aggregate_pytest_statistics,
     append_verify_history,
@@ -121,9 +119,9 @@ def test_quick_verify_omits_pytest() -> None:
         "verify layering",
         "verify ci-commands",
         "verify doc-commands",
-        "lab schema roundtrip",
-        "lab policy schema-versioning",
-        "lab policy oracle-integrity",
+        "verify schema-roundtrip",
+        "verify schema-versioning",
+        "verify oracle-integrity",
         "schema promotion audit",
         "schema privacy registry",
     ]
@@ -232,12 +230,12 @@ def test_lab_verify_delegates_to_lab_smoke() -> None:
     steps = build_verify_steps(quick=True, lab=True)
 
     labels = [label for label, _command in steps]
-    assert "lab smoke" in labels
+    assert "verify scenario" in labels
     assert "bench slo" in labels
-    lab_step = next(step for step in steps if step[0] == "lab smoke")
+    lab_step = next(step for step in steps if step[0] == "verify scenario")
     assert lab_step == (
-        "lab smoke",
-        [sys.executable, "-m", "devtools", "lab", "smoke", "run", "archive-smoke", "--tier", "0"],
+        "verify scenario",
+        [sys.executable, "-m", "devtools", "verify", "scenario", "run", "archive-smoke", "--tier", "0"],
     )
 
 
@@ -284,13 +282,10 @@ def test_focused_run_can_record_typed_affected_scope(tmp_path: Path) -> None:
     assert json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text()) == payload
 
 
-def test_verify_run_writes_invocation_receipt_without_leaking_token_to_pytest(
+def test_verify_run_keeps_step_identity_scoped_to_the_pytest_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    receipt = tmp_path / "invocation" / "run.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "invocation-1")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
     run = VerifyRun(tier="focused-test", argv=["tests/unit/example.py"], git_head="head", root=tmp_path)
     artifacts = run.start_step(label="pytest focused", cmd=["pytest", "tests/unit/example.py"])
 
@@ -302,10 +297,9 @@ def test_verify_run_writes_invocation_receipt_without_leaking_token_to_pytest(
     )
     child_env = verify_runs.env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
 
-    assert json.loads(receipt.read_text()) == payload
-    assert payload["invocation_id"] == "invocation-1"
-    assert verify_runs.VERIFICATION_INVOCATION_ID_ENV not in child_env
-    assert verify_runs.VERIFICATION_RECEIPT_PATH_ENV not in child_env
+    assert "invocation_id" not in payload
+    assert child_env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
+    assert child_env["POLYLOGUE_PYTEST_RUN_ID"].startswith(f"{run.run_id}-")
 
 
 def test_aggregate_pytest_statistics_reduces_phases_fixtures_and_resources(tmp_path: Path) -> None:
@@ -4665,9 +4659,6 @@ def test_verify_continues_after_failed_cheap_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
-    receipt = tmp_path / "quick-receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "quick-failure")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
 
     def fake_run(label: str, command: list[str], **kwargs: object) -> tuple[int, float, dict[str, object]]:
         calls.append(label)
@@ -4688,100 +4679,34 @@ def test_verify_continues_after_failed_cheap_step(
     assert payload["verification_scope"] == "non-test"
     assert payload["release_baseline_allowed"] is False
     assert payload["pytest_aggregate"]["selection_mode"] == "none"
-    assert json.loads(receipt.read_text())["pytest_aggregate"] == payload["pytest_aggregate"]
 
 
-def test_agentctl_declared_job_binding_requires_outer_job_and_exact_checkout(tmp_path: Path) -> None:
-    root = (tmp_path / "worktree").resolve()
-    head = "a" * 40
-    job_id = "11111111-1111-1111-1111-111111111111"
-    checkout_id = "managed-workspace-opaque-id"
-    environment = {
-        "SINNIXD_OPERATION": "verify_affected",
-        "SINNIXD_JOB_ID": job_id,
-        "SINNIXD_CORRELATION_ID": "22222222-2222-2222-2222-222222222222",
-        "SINNIXD_PROJECT_ID": "polylogue",
-        "SINNIXD_CHECKOUT_ID": checkout_id,
-        "SINNIXD_CHECKOUT_HEAD": head,
-    }
-    cgroup = f"0::/user.slice/agent.slice/sinnixd-job-{job_id}.service\n"
+@pytest.mark.parametrize(
+    ("operation", "argv"),
+    [("verify_affected", []), ("verify_quick", ["--quick"]), ("verify_all", ["--all"])],
+)
+def test_declared_agentctl_operation_accepts_only_its_fixed_argv(
+    monkeypatch: pytest.MonkeyPatch, operation: str, argv: list[str]
+) -> None:
+    monkeypatch.setenv("SINNIXD_OPERATION", operation)
 
-    binding = agentctl_declared_job_binding(
-        root,
-        env=environment,
-        cgroup_text=cgroup,
-        current_head=head,
-    )
-
-    assert binding == AgentctlDeclaredJobBinding(
-        operation="verify_affected",
-        job_id=job_id,
-        checkout_id=checkout_id,
-        checkout_head=head,
-    )
-    assert (
-        agentctl_declared_job_binding(
-            root,
-            env={"SINNIXD_OPERATION": "verify_affected"},
-            cgroup_text=cgroup,
-            current_head=head,
-        )
-        is None
-    )
-    assert (
-        agentctl_declared_job_binding(
-            root,
-            env=environment,
-            cgroup_text="0::/user.slice/agent.slice/not-the-declared-job.service\n",
-            current_head=head,
-        )
-        is None
-    )
-    assert (
-        agentctl_declared_job_binding(
-            root,
-            env={**environment, "SINNIXD_CHECKOUT_HEAD": "b" * 40},
-            cgroup_text=cgroup,
-            current_head=head,
-        )
-        is None
-    )
-    assert (
-        agentctl_declared_job_binding(
-            root,
-            env={**environment, "SINNIXD_CHECKOUT_ID": ""},
-            cgroup_text=cgroup,
-            current_head=head,
-        )
-        is None
-    )
-
-
-def test_agentctl_descriptor_argv_is_part_of_lifecycle_free_proof() -> None:
-    binding = AgentctlDeclaredJobBinding(
-        operation="verify_quick",
-        job_id="11111111-1111-1111-1111-111111111111",
-        checkout_id="default",
-        checkout_head="a" * 40,
-    )
-    with patch("devtools.verify.agentctl_declared_job_binding", return_value=binding):
-        assert verify._agentctl_lifecycle_free_binding(["--quick"]) == binding
-        assert verify._agentctl_lifecycle_free_binding([]) is None
-        assert verify._agentctl_lifecycle_free_binding(["--quick", "--json"]) is None
+    assert verify._declared_agentctl_operation(argv) == operation
+    assert verify._declared_agentctl_operation([*argv, "--json"]) is None
 
 
 def test_declared_agentctl_pytest_bypasses_inner_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    binding = AgentctlDeclaredJobBinding(
-        operation="verify_affected",
-        job_id="11111111-1111-1111-1111-111111111111",
-        checkout_id="default",
-        checkout_head="a" * 40,
-    )
     previous = verify._ACTIVE_VERIFY_RUN
-    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_binding=binding))
+    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_operation="verify_affected"))
+    run = VerifyRun(
+        tier="full",
+        argv=[],
+        git_head="head",
+        root=tmp_path,
+        mirror_current=False,
+    )
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed\n", stderr="")
     policy = SimpleNamespace(to_dict=lambda: {"workers": 1})
     try:
@@ -4798,23 +4723,27 @@ def test_declared_agentctl_pytest_bypasses_inner_lifecycle(
             patch("devtools.verify._persist_pytest_output"),
             patch("devtools.verify._pytest_workload_receipt", return_value={}),
         ):
-            rc, _elapsed, metadata = verify._run_step("pytest native parallel (affected)", ["pytest"])
+            rc, _elapsed, metadata = verify._run_step("pytest native parallel (affected)", ["pytest"], run=run)
     finally:
         verify._ACTIVE_VERIFY_RUN = previous
 
     assert rc == 0
     direct_run.assert_called_once()
+    assert direct_run.call_args.kwargs["stdout"] is sys.stderr
+    assert direct_run.call_args.kwargs["stderr"] is sys.stderr
     assert "timeout" not in direct_run.call_args.kwargs
-    assert metadata["lifecycle_authority"] == "agentctl"
     assert metadata["heartbeat_s"] is None
     assert metadata["stall_timeout_s"] is None
     assert metadata["resource_interval_s"] is None
     assert metadata["containment_path"] is None
+    assert not (tmp_path / verify_runs.CURRENT_RUN_PATH).exists()
+    step_dir = run.run_dir / "steps" / run._payload["steps"][0]["step_id"]
+    assert not (step_dir / "postmortem.json").exists()
 
 
 def test_incomplete_agentctl_environment_retains_inner_lifecycle(tmp_path: Path) -> None:
     previous = verify._ACTIVE_VERIFY_RUN
-    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_binding=None))
+    verify._ACTIVE_VERIFY_RUN = cast(Any, SimpleNamespace(agentctl_operation=None))
     completed = subprocess.CompletedProcess(args=["pytest"], returncode=0, stdout="1 passed\n", stderr="")
     policy = SimpleNamespace(to_dict=lambda: {"workers": 1})
     try:
@@ -4836,22 +4765,16 @@ def test_incomplete_agentctl_environment_retains_inner_lifecycle(tmp_path: Path)
 
     assert rc == 0
     supervised_run.assert_called_once()
-    assert "lifecycle_authority" not in metadata
     assert metadata["heartbeat_s"] == verify._pytest_heartbeat_interval()
     assert metadata["containment_path"] == str(PYTEST_CONTAINMENT_PATH)
 
 
 def test_declared_agentctl_quick_route_skips_snapshot_and_mutation_monitor() -> None:
-    binding = AgentctlDeclaredJobBinding(
-        operation="verify_quick",
-        job_id="11111111-1111-1111-1111-111111111111",
-        checkout_id="default",
-        checkout_head="a" * 40,
-    )
     fingerprint = SimpleNamespace(polylogue_import_path=ROOT / "polylogue", as_dict=lambda: {})
     with (
-        patch("devtools.verify._agentctl_lifecycle_free_binding", return_value=binding),
+        patch("devtools.verify._declared_agentctl_operation", return_value="verify_quick"),
         patch("devtools.verify._should_isolate", side_effect=AssertionError("snapshot decision used")),
+        patch("devtools.verify._terminate_as_interrupt", side_effect=AssertionError("signal handler installed")),
         patch("devtools.verify.CheckoutMutationMonitor", side_effect=AssertionError("mutation monitor used")),
         patch("devtools.verify.assert_polylogue_matches_checkout", return_value=fingerprint),
         patch("devtools.verify._run", return_value=(0, 0.01, {})),
@@ -4865,8 +4788,8 @@ def test_declared_agentctl_quick_route_skips_snapshot_and_mutation_monitor() -> 
     assert rc == 0
 
 
-def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_contract() -> None:
-    receipt = agentctl_verification_receipt(
+def test_declared_verification_result_bounds_public_diagnostics_and_preserves_contract() -> None:
+    receipt = declared_verification_result(
         {
             "run_id": "run-1",
             "status": "success",
@@ -4899,25 +4822,10 @@ def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_c
                 "outcomes": {"passed": 40},
             },
         },
-        env={
-            "SINNIXD_OPERATION": "verify_affected",
-            "SINNIXD_JOB_ID": "job-1",
-            "SINNIXD_CHECKOUT_ID": "workspace-1",
-            "SINNIXD_CHECKOUT_HEAD": "declared-head",
-        },
+        operation="verify_affected",
     )
 
-    assert receipt is not None
     assert receipt["operation"] == "verify_affected"
-    assert receipt["workspace"] == {
-        "authority": "agentctl",
-        "checkout_id": "workspace-1",
-        "declared_head": "declared-head",
-        "observed_head": "observed-head",
-        "final_head": "final-head",
-        "worktree_fingerprint": "before",
-        "final_worktree_fingerprint": "after",
-    }
     assert receipt["scope"] == {
         "verification_scope": "affected",
         "selection_mode": "all",
@@ -4955,48 +4863,6 @@ def test_agentctl_verification_receipt_bounds_public_diagnostics_and_preserves_c
     assert "cmd" not in json.dumps(receipt)
 
 
-def test_verify_run_writes_typed_agentctl_invocation_receipt(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    receipt_path = tmp_path / "receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt_path))
-    monkeypatch.setenv("SINNIXD_OPERATION", "verify_affected")
-    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "workspace-1")
-    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", "declared-head")
-
-    run = VerifyRun(tier="quick", argv=["--quick"], git_head="observed-head", root=tmp_path)
-    run.record_selection(
-        selection_mode="full",
-        state_status="valid",
-        state_reason="the graph is current",
-        environment_digest="testmon-environment",
-    )
-    payload = run.finish(
-        exit_code=0,
-        duration_s=0.1,
-        verification_scope="affected",
-        release_baseline_allowed=False,
-        final_git_head="final-head",
-    )
-
-    persisted = json.loads(receipt_path.read_text())
-    assert persisted["operation"] == "verify_affected"
-    assert persisted["workspace"]["authority"] == "agentctl"
-    assert persisted["workspace"]["checkout_id"] == "workspace-1"
-    assert persisted["workspace"]["observed_head"] == "observed-head"
-    assert persisted["workspace"]["final_head"] == "final-head"
-    assert persisted["testmon_environment"] == {
-        "environment_digest": "testmon-environment",
-        "graph_content_digest": None,
-        "graph_content_digest_available": False,
-        "state": "valid",
-        "reason": "the graph is current",
-    }
-    assert persisted["semantic_status"] == "affected-passed"
-    assert persisted["exit_code"] == payload["exit_code"]
-
-
 @pytest.mark.parametrize(
     ("operation", "scope", "expected_status"),
     [
@@ -5012,10 +4878,6 @@ def test_verify_emits_typed_agentctl_result_for_every_declared_operation(
     scope: str,
     expected_status: str,
 ) -> None:
-    monkeypatch.setenv("SINNIXD_OPERATION", operation)
-    monkeypatch.setenv("SINNIXD_CHECKOUT_ID", "workspace-1")
-    monkeypatch.setenv("SINNIXD_CHECKOUT_HEAD", "declared-head")
-
     verify._emit_machine_result(
         {
             "run_id": "run-1",
@@ -5025,6 +4887,7 @@ def test_verify_emits_typed_agentctl_result_for_every_declared_operation(
             "release_baseline_allowed": scope == "release-baseline",
         },
         use_json=False,
+        declared_operation=operation,
     )
 
     emitted = json.loads(capsys.readouterr().out)
@@ -5253,15 +5116,12 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
             return CheckoutMutationObservation(changed=False, unavailable=False)
 
     history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation" / "run.json"
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setattr(
         verify,
         "assert_polylogue_matches_checkout",
         lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
     )
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
 
     with (
         patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
@@ -5276,9 +5136,7 @@ def test_checkout_stability_failure_controls_every_broad_run_receipt(
     payload = json.loads(capsys.readouterr().out)
     run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
     current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
-    receipt_payload = json.loads(receipt.read_text())
-
-    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+    for durable_payload in (history, payload, run_payload, current_payload):
         assert durable_payload["diagnosis"] == expected_diagnosis
         assert durable_payload["final_worktree_fingerprint"] == fingerprints[1]
 
@@ -5299,7 +5157,6 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
             return CheckoutMutationObservation(changed=True, unavailable=False)
 
     history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation" / "run.json"
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.setattr(
         verify,
@@ -5307,8 +5164,6 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
         lambda *_args, **_kwargs: SimpleNamespace(polylogue_import_path=tmp_path / "polylogue", as_dict=lambda: {}),
     )
     monkeypatch.setattr(verify, "CheckoutMutationMonitor", _ChangedMonitor)
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "broad-invocation")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
 
     with (
         patch("devtools.verify._run", return_value=(0, 0.01, {"diagnosis": "pytest_passed"})),
@@ -5322,8 +5177,7 @@ def test_transient_checkout_mutation_controls_every_broad_run_receipt(
     payload = json.loads(capsys.readouterr().out)
     run_payload = json.loads(next((tmp_path / ".cache" / "verify" / "runs").glob("*/run.json")).read_text())
     current_payload = json.loads((tmp_path / ".cache" / "verify" / "current-run.json").read_text())
-    receipt_payload = json.loads(receipt.read_text())
-    for durable_payload in (history, payload, run_payload, current_payload, receipt_payload):
+    for durable_payload in (history, payload, run_payload, current_payload):
         assert durable_payload["diagnosis"] == "checkout_changed_during_verification"
         assert durable_payload["final_worktree_fingerprint"] == "stable"
 
@@ -5396,16 +5250,12 @@ def test_verify_finalizes_checkout_monitor_when_startup_fingerprint_raises(
     assert payload["final_worktree_fingerprint"] == "final-fingerprint"
 
 
-def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
+def test_import_guard_failure_writes_normalized_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation-receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "import-mismatch")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
-
     with (
         patch("devtools.verify._git_head", return_value="head"),
         patch(
@@ -5420,13 +5270,10 @@ def test_import_guard_failure_writes_normalized_history_and_invocation_receipt(
     assert normalized["timestamp"]
     assert normalized["pytest_aggregate"]["selection_mode"] == "none"
     assert normalized["diagnosis"] == "checkout_import_mismatch"
-    receipt_payload = json.loads(receipt.read_text())
-    assert receipt_payload["diagnosis"] == "checkout_import_mismatch"
-    assert receipt_payload["pytest_aggregate"] == history["pytest_aggregate"]
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "checkout_import_mismatch"
 
 
-def test_git_authority_failure_writes_history_and_invocation_receipt(
+def test_git_authority_failure_writes_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -5453,10 +5300,6 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
         return "stable"
 
     history: dict[str, Any] = {}
-    receipt = tmp_path / "invocation-receipt.json"
-    monkeypatch.setenv(verify_runs.VERIFICATION_INVOCATION_ID_ENV, "git-authority")
-    monkeypatch.setenv(verify_runs.VERIFICATION_RECEIPT_PATH_ENV, str(receipt))
-
     with (
         patch("devtools.verify._git_head", side_effect=git_head),
         patch("devtools.verify._git_commit", return_value=None),
@@ -5469,7 +5312,6 @@ def test_git_authority_failure_writes_history_and_invocation_receipt(
     assert history["diagnosis"] == "native_git_authority_unavailable"
     assert history["final_worktree_fingerprint"] == "stable"
     assert events[-3:] == ["head", "fingerprint", "finish"]
-    assert json.loads(receipt.read_text())["diagnosis"] == "native_git_authority_unavailable"
     assert json.loads(capsys.readouterr().out)["diagnosis"] == "native_git_authority_unavailable"
 
 
@@ -5487,7 +5329,7 @@ def test_failed_step_stop_policy_distinguishes_cheap_and_heavy_steps() -> None:
     assert _stop_after_failed_step("ruff check") is False
     assert _stop_after_failed_step("verify layering") is False
     assert _stop_after_failed_step("pytest native serial (affected)") is False
-    assert _stop_after_failed_step("lab smoke") is True
+    assert _stop_after_failed_step("verify scenario") is True
     assert _stop_after_failed_step("bench slo") is True
     assert _native_lane_failure_requires_stop({"exit": 1, "diagnosis": "pytest_failed"}) is False
     assert _native_lane_failure_requires_stop({"exit": 2, "diagnosis": "pytest_collection_failed"}) is True
@@ -5623,11 +5465,11 @@ def test_verify_does_not_warm_from_default_after_invalid_initial_state(
         patch("devtools.verify.worktree_fingerprint", return_value="stable"),
         patch("devtools.verify._save_history"),
     ):
-        assert main(["--json"]) == 0
+        assert main(["--json"]) == 2
 
     assert preparations == [initial_environment]
     payload = json.loads(capsys.readouterr().out)
-    assert payload["testmon_environment"]["name"] == "initial-environment"
+    assert payload["testmon_selection"]["environment_digest"] == "initial-environment"
 
 
 def test_release_authority_requires_current_complete_green_invocation() -> None:
@@ -5642,7 +5484,7 @@ def test_release_authority_requires_current_complete_green_invocation() -> None:
     }
 
     assert _release_baseline_allowed(
-        selection_mode="bootstrap",
+        selection_mode="full",
         verification_scope=VerificationScope.RELEASE_BASELINE,
         exit_code=0,
         checkout_stable=True,
@@ -5766,7 +5608,7 @@ def test_collection_failure_still_persists_native_run_aggregate(
 
     preparation = SimpleNamespace(
         environment_name="env",
-        selection_mode="bootstrap",
+        selection_mode="affected",
         removed_paths=(),
         copied_from=None,
         # A real NativeTestmonPreparation always carries local_state; the
@@ -5829,7 +5671,7 @@ def test_a_long_invocation_is_not_killed_now_that_the_budget_is_disabled(
 
     preparation = SimpleNamespace(
         environment_name="env",
-        selection_mode="bootstrap",
+        selection_mode="affected",
         removed_paths=(),
         copied_from=None,
         # A real NativeTestmonPreparation always carries local_state; the

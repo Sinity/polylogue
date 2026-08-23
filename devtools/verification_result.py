@@ -1,42 +1,18 @@
-"""Bounded public verification results for declared AgentCTL operations."""
+"""Bounded semantic results for AgentCTL-declared verification operations."""
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import Any, Final
 
-AGENTCTL_OPERATION_ENV: Final = "SINNIXD_OPERATION"
-AGENTCTL_CHECKOUT_ID_ENV: Final = "SINNIXD_CHECKOUT_ID"
-AGENTCTL_CHECKOUT_HEAD_ENV: Final = "SINNIXD_CHECKOUT_HEAD"
-AGENTCTL_JOB_ID_ENV: Final = "SINNIXD_JOB_ID"
-SUPPORTED_OPERATIONS: Final = frozenset({"verify_affected", "verify_quick", "verify_all"})
 RECEIPT_SCHEMA_VERSION: Final = 1
 MAX_GATE_OUTCOMES: Final = 16
 MAX_DIAGNOSTIC_PATHS: Final = 16
 MAX_PUBLIC_STRING_LENGTH: Final = 160
 
 
-def agentctl_verification_operation(env: Mapping[str, str] | None = None) -> str | None:
-    """Return the declared verification operation, never a caller-selected name."""
-    operation = (os.environ if env is None else env).get(AGENTCTL_OPERATION_ENV)
-    return operation if operation in SUPPORTED_OPERATIONS else None
-
-
-def agentctl_verification_receipt(
-    payload: Mapping[str, Any], *, env: Mapping[str, str] | None = None
-) -> dict[str, Any] | None:
-    """Project one verifier ledger into the stable AgentCTL result contract.
-
-    The full verifier ledger remains checkout-local forensic evidence. This
-    result intentionally excludes commands, output, exception text, and paths
-    outside the declared repository so AgentCTL can retain and expose it.
-    """
-    values = os.environ if env is None else env
-    operation = agentctl_verification_operation(values)
-    if operation is None:
-        return None
-
+def declared_verification_result(payload: Mapping[str, Any], *, operation: str) -> dict[str, Any]:
+    """Project verifier semantics without duplicating AgentCTL job metadata."""
     selection = _mapping(payload.get("testmon_selection"))
     aggregate = _mapping(payload.get("pytest_aggregate"))
     missing_paths = _strings(selection.get("missing_executable_paths"))
@@ -46,17 +22,6 @@ def agentctl_verification_receipt(
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "kind": "polylogue.verification-result",
         "operation": operation,
-        "job_id": _string(values.get(AGENTCTL_JOB_ID_ENV)),
-        "run_id": _string(payload.get("run_id")),
-        "workspace": {
-            "authority": "agentctl",
-            "checkout_id": _string(values.get(AGENTCTL_CHECKOUT_ID_ENV)),
-            "declared_head": _string(values.get(AGENTCTL_CHECKOUT_HEAD_ENV)),
-            "observed_head": _string(payload.get("git_head")),
-            "final_head": _string(payload.get("final_git_head")),
-            "worktree_fingerprint": _string(payload.get("worktree_fingerprint")),
-            "final_worktree_fingerprint": _string(payload.get("final_worktree_fingerprint")),
-        },
         "scope": {
             "verification_scope": verification_scope,
             "selection_mode": _string(selection.get("selection_mode")),
@@ -88,9 +53,7 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 
 def _string(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    return value[:MAX_PUBLIC_STRING_LENGTH]
+    return value[:MAX_PUBLIC_STRING_LENGTH] if isinstance(value, str) else None
 
 
 def _integer(value: object) -> int | None:
@@ -116,22 +79,23 @@ def _bounded_strings(values: list[str]) -> dict[str, Any]:
 def _gate_outcomes(value: object) -> dict[str, Any]:
     steps = [step for step in value if isinstance(step, Mapping)] if isinstance(value, list) else []
     gates = [step for step in steps if not str(step.get("name", "")).startswith("pytest")]
-    items = [
-        {
-            "name": _string(step.get("name")),
-            "status": _step_status(step),
-            "exit_code": _integer(step.get("exit")),
-            "diagnosis": _string(step.get("diagnosis")),
-        }
-        for step in gates[:MAX_GATE_OUTCOMES]
-    ]
-    return {"count": len(gates), "items": items, "truncated": len(gates) > MAX_GATE_OUTCOMES}
-
-
-def _step_status(step: Mapping[str, Any]) -> str:
-    if step.get("status") == "running":
-        return "running"
-    return "passed" if step.get("exit") == 0 else "failed"
+    return {
+        "count": len(gates),
+        "items": [
+            {
+                "name": _string(step.get("name")),
+                "status": "running"
+                if step.get("status") == "running"
+                else "passed"
+                if step.get("exit") == 0
+                else "failed",
+                "exit_code": _integer(step.get("exit")),
+                "diagnosis": _string(step.get("diagnosis")),
+            }
+            for step in gates[:MAX_GATE_OUTCOMES]
+        ],
+        "truncated": len(gates) > MAX_GATE_OUTCOMES,
+    }
 
 
 def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
@@ -167,25 +131,9 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
         return "running"
     exit_code = _integer(payload.get("exit_code"))
     if exit_code == 0:
-        if verification_scope == "release-baseline":
-            return "release-baseline-passed"
-        if verification_scope == "affected":
-            return "affected-passed"
-        if verification_scope == "non-test":
-            return "non-test-passed"
-        return "passed"
-    if exit_code == 130:
-        return "interrupted"
-    return "failed"
-
-
-__all__ = [
-    "AGENTCTL_CHECKOUT_HEAD_ENV",
-    "AGENTCTL_CHECKOUT_ID_ENV",
-    "AGENTCTL_JOB_ID_ENV",
-    "AGENTCTL_OPERATION_ENV",
-    "RECEIPT_SCHEMA_VERSION",
-    "SUPPORTED_OPERATIONS",
-    "agentctl_verification_operation",
-    "agentctl_verification_receipt",
-]
+        return {
+            "release-baseline": "release-baseline-passed",
+            "affected": "affected-passed",
+            "non-test": "non-test-passed",
+        }.get(verification_scope or "", "passed")
+    return "interrupted" if exit_code == 130 else "failed"

@@ -213,13 +213,11 @@ def _run_production_verify(
     """Run the production verifier orchestration against a tiny fixture corpus.
 
     The subprocess keeps the real native preparation, two-lane runner,
-    containment, deadline, aggregate, invocation receipt, and XDG history.
+    containment, deadline, aggregate, and XDG history.
     Only unrelated static gates are filtered so this fixture need not copy the
     entire Polylogue source tree.
     """
     state_root = repo.parent / f"{repo.name}-verify-state"
-    receipt = state_root / "receipts" / f"{uuid.uuid4().hex}.json"
-    invocation_id = uuid.uuid4().hex
     driver = """
 import os
 import shutil
@@ -259,8 +257,6 @@ raise SystemExit(verify.main(sys.argv[2:]))
             "PYTHONPATH": str(PROJECT_ROOT),
             "XDG_STATE_HOME": str(state_root / "xdg-state"),
             "POLYLOGUE_PYTEST_WORKERS": "1",
-            "POLYLOGUE_VERIFICATION_INVOCATION_ID": invocation_id,
-            "POLYLOGUE_VERIFICATION_RECEIPT_PATH": str(receipt),
             "GIT_OPTIONAL_LOCKS": "0",
         }
     )
@@ -284,7 +280,7 @@ raise SystemExit(verify.main(sys.argv[2:]))
             # A complete synthetic release route launches all three native
             # lanes. On this host the slowest observed route took 42.5s, so
             # the former 30s cap killed a progressing verifier before it
-            # could write its receipt. Keep this bounded while allowing twice
+            # could finish its result. Keep this bounded while allowing twice
             # that measured duration for scheduler contention.
             timeout=90,
         )
@@ -306,10 +302,6 @@ raise SystemExit(verify.main(sys.argv[2:]))
             else ""
         )
         pytest.fail(f"production verify fixture timed out\nstdout:\n{stdout}\nstderr:\n{stderr}")
-    if not receipt.exists():
-        pytest.fail(
-            f"production verify wrote no invocation receipt\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
-        )
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
@@ -321,17 +313,6 @@ raise SystemExit(verify.main(sys.argv[2:]))
         pytest.fail(
             f"production verify rejected the fixture checkout\npayload:\n{completed.stdout}\nstderr:\n{completed.stderr}"
         )
-    try:
-        persisted = json.loads(receipt.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        pytest.fail(
-            f"production verify wrote invalid receipt JSON ({exc})\n"
-            f"returncode={completed.returncode}\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
-        )
-    assert persisted["invocation_id"] == invocation_id
-    assert persisted["pytest_aggregate"] == payload["pytest_aggregate"]
-    for authority_field in ("diagnosis", "exit_code", "release_baseline_allowed"):
-        assert persisted.get(authority_field) == payload.get(authority_field)
     return completed, payload
 
 
@@ -1644,11 +1625,6 @@ def test_production_verify_reports_stdout_when_json_payload_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def invalid_json_result(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        environment = kwargs["env"]
-        assert isinstance(environment, dict)
-        receipt = Path(environment["POLYLOGUE_VERIFICATION_RECEIPT_PATH"])
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text("{}\n", encoding="utf-8")
         return subprocess.CompletedProcess(command, 1, "not JSON", "verifier diagnostics")
 
     monkeypatch.setattr(subprocess, "run", invalid_json_result)
@@ -1658,28 +1634,6 @@ def test_production_verify_reports_stdout_when_json_payload_is_invalid(
 
     assert "production verify emitted no JSON payload" in str(failure.value)
     assert "stdout:\nnot JSON" in str(failure.value)
-    assert "stderr:\nverifier diagnostics" in str(failure.value)
-
-
-def test_production_verify_reports_stdout_when_receipt_json_is_invalid(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def invalid_receipt_result(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        environment = kwargs["env"]
-        assert isinstance(environment, dict)
-        receipt = Path(environment["POLYLOGUE_VERIFICATION_RECEIPT_PATH"])
-        receipt.parent.mkdir(parents=True, exist_ok=True)
-        receipt.write_text("not JSON", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 1, "{}", "verifier diagnostics")
-
-    monkeypatch.setattr(subprocess, "run", invalid_receipt_result)
-
-    with pytest.raises(pytest.fail.Exception) as failure:
-        _run_production_verify(tmp_path)
-
-    assert "production verify wrote invalid receipt JSON" in str(failure.value)
-    assert "stdout:\n{}" in str(failure.value)
     assert "stderr:\nverifier diagnostics" in str(failure.value)
 
 
