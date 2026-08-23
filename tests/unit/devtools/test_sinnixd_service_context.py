@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -119,3 +121,26 @@ def test_terminate_process_group_reaps_descendants(tmp_path: Path) -> None:
             os.kill(descendant, 0)
     finally:
         terminate_process_group(process, timeout_s=0.2)
+
+
+def test_terminate_process_group_leaves_final_reap_to_systemd_after_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, signal.Signals]] = []
+
+    class StubbornProcess:
+        pid = 4242
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @staticmethod
+        def wait(*, timeout: float) -> None:
+            raise subprocess.TimeoutExpired(cmd=["stubborn"], timeout=timeout)
+
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+
+    terminate_process_group(cast(Any, StubbornProcess()), timeout_s=0.01)
+
+    assert signals == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]

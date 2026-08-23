@@ -117,7 +117,7 @@ def require_declared_service_context(
 
 
 def terminate_process_group(process: subprocess.Popen[Any], *, timeout_s: float = 2.0) -> None:
-    """Terminate a launcher and all children in its dedicated process group."""
+    """Boundedly signal a process group; systemd remains final cgroup reaper."""
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -132,4 +132,5 @@ def terminate_process_group(process: subprocess.Popen[Any], *, timeout_s: float 
     except ProcessLookupError:
         return
     if process.poll() is None:
-        process.wait(timeout=timeout_s)
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=timeout_s)
