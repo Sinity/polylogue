@@ -164,9 +164,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
-| `devtools workspace integrate` | Apply an ordered list of lane commits to a clean linked integration worktree. |
-| `devtools workspace lane-finish` | Package a clean lane's exact commits and changed paths for coordinator assimilation. |
-| `devtools workspace lane-init` | Provision a lane worktree with an isolated, guard-verified interpreter. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-artifact-census` | Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts. |
@@ -185,8 +182,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
 | `devtools workspace unknown-export-reclassification-apply` | Reclassify proven ChatGPT browser-capture raws and write durable receipts. |
-| `devtools workspace verify-worktree` | Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch. |
-| `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

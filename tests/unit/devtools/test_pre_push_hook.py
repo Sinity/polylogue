@@ -430,39 +430,7 @@ def test_incompatible_or_missing_quick_receipt_reruns_gate(
     assert commands == [[sys.executable, "-m", "devtools", "verify", "--quick"]]
 
 
-def test_main_routes_through_the_invoking_lane_before_touching_the_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``main()`` must ask ``reexec_into_lane`` before parsing args or running
-    the gate at all -- otherwise a coordinator-inherited interpreter samples
-    checkout provenance itself instead of routing to the lane's own venv."""
-    calls: list[tuple[str, list[str]]] = []
-
-    def _fake_reexec(module: str, argv: list[str], **kwargs: object) -> int | None:
-        calls.append((module, list(argv)))
-        return 17
-
-    monkeypatch.setattr(pre_push_gate, "reexec_into_lane", _fake_reexec)
-    monkeypatch.setattr(
-        pre_push_gate,
-        "run_gate",
-        lambda *a, **k: pytest.fail("run_gate must not execute when routing hands off to the lane"),
-    )
-
-    updates_file = tmp_path / "updates"
-    updates_file.write_text("", encoding="utf-8")
-
-    assert pre_push_gate.main([str(updates_file)]) == 17
-    assert calls == [("devtools.pre_push_gate", [str(updates_file)])]
-
-
-def test_main_proceeds_normally_when_already_the_lane_interpreter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Preserves direct module invocation: when routing decides no re-exec is
-    needed (already the lane's own interpreter, or no lane applies), ``main()``
-    must still parse args and run the gate exactly as before."""
-    monkeypatch.setattr(pre_push_gate, "reexec_into_lane", lambda module, argv, **kwargs: None)
+def test_main_parses_updates_and_runs_the_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     observed: list[list[pre_push_gate.PushUpdate]] = []
 
     def fake_run_gate(updates: list[pre_push_gate.PushUpdate], cwd: Path) -> str:

@@ -383,9 +383,9 @@ Classify every schema change first: durable tier means additive numbered migrati
 
 Use tools to eliminate repeated manual steps, not to prove a local ceremony happened. The normal delivery unit is one coherent integration branch, not one PR per implementation lane.
 
-- **Lane bootstrap:** a harness-created lane runs `python -m devtools workspace lane-init "$PWD"` first. The command derives an existing lane branch, provisions and guard-verifies its local venv, and verifies Git isolation. Later `devtools` commands route through that local interpreter automatically. Do not export or repair interpreter variables by hand.
-- **Lane work:** give each lane concrete ownership and focused verification. A lane commits each completed logical chunk and reports verification normally. The project `SubagentStop` hook automatically records its exact commits and changed paths under the shared Git directory. Clean stopped lanes are unlocked for later cleanup; dirty lanes stay locked with a blocked handoff. Lanes do not run a handoff ceremony, open individual PRs, render carriers, or run merge-gate receipt rituals unless they own an explicitly assigned batch branch.
-- **Integration:** assimilate completed lane handoffs with `devtools workspace integrate`. Successful source-ref integration automatically removes only clean, unlocked generated lane worktrees and their landed branches. Run `devtools workspace worktree-gc --apply` after explicit-SHA or manual integration; it applies the same preservation rules. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Use `devtools workspace bead-cluster` as advisory planning, then check actual changed paths before integration. Do not serialize independent implementation behind a coordinator PR queue.
+- **Workspace lifecycle:** create, inspect, checkpoint, recover, stack, publish, land, finish, and reap workspaces through `agentctl workspace`. AgentCTL owns Git identity and exact-head job binding; Polylogue does not keep a second worktree registry or handoff protocol.
+- **Lane work:** give each lane concrete ownership and focused verification. A lane commits each completed logical chunk and reports verification normally. Dirty or divergent work remains protected by AgentCTL until it is checkpointed, recovered, or explicitly resolved.
+- **Integration:** use AgentCTL stacks for dependent workspace histories and GitHub PRs for publication. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Use `devtools workspace bead-cluster` as advisory planning, then check actual changed paths before integration. Do not serialize independent implementation behind a coordinator PR queue.
 - **Verification:** lanes run exact focused `devtools test` selectors. Plain `devtools verify` runs the compatible selected testmon set or refuses; it never promotes an unavailable graph into a complete corpus. `devtools verify --all` is an explicit end-of-wave or operator-directed checkpoint.
 - **Publication:** open one PR for a coherent batch. Keep merge automation only where it removes real manual mistakes; do not make receipts, carrier updates, or a complete corpus a per-lane admission requirement. The lane runtime and merge surface are being reduced toward derived Git/job state and batch integration.
 
@@ -554,7 +554,7 @@ Core loop:
   it. A `[type-only]` module reaches production **only** through a
   `TYPE_CHECKING` import: reported for a human, never failed, and never proof
   of dead code.
-- `devtools workspace …` — task history, worktree-gc, evidence; `workspace merge` executes the validated carrier dispositions after a successful squash and exports `.beads/issues.jsonl`, with loud recovery diagnostics on failure.
+- `devtools workspace …` — Polylogue-specific task history, archive operations, evidence, and advisory Beads clustering. Generic workspace and delivery lifecycle belongs to `agentctl workspace`.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.

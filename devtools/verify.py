@@ -239,7 +239,7 @@ def _native_testmon_source_lifecycle_lock(
         yield True
         return
     try:
-        # The caller already holds the lane-local lock. lane_init acquires its
+        # The caller already holds the lane-local lock. The launcher acquires its
         # linked-worktree locks in this same lane-then-common order, so waiting
         # for the common source lock cannot form an inverse lock cycle.
         with native_testmon_lifecycle_lock(linked_info[1], timeout_s=timeout_s, waiter_label="verify-source"):
