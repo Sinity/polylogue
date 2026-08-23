@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -171,7 +172,17 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
 def test_watcher_append_uses_durable_replay_metadata_without_historical_full_reads(tmp_path: Path) -> None:
     """An established append cohort replays only its selected full and tail."""
     plan = _seed_cohort_and_append_plan(tmp_path)
-    with append_cohort_memory_counter() as counter:
+
+    def unexpected_worker_start(_worker: threading.Thread, *_args: object, **_kwargs: object) -> None:
+        raise AssertionError("append-cohort collection must not start a parallel reader")
+
+    # The canary measures the same synchronous call stack it exercises.  A
+    # collector refactor that starts a background reader would make this fail
+    # before it can hide historical reads from the route assertions below.
+    with (
+        patch.object(threading.Thread, "start", autospec=True, side_effect=unexpected_worker_start),
+        append_cohort_memory_counter() as counter,
+    ):
         result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
         counter.snapshot("quiescent")
 
