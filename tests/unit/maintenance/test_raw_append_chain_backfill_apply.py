@@ -56,17 +56,40 @@ def _write_append_raw(
         source_index=-1,
         acquired_at_ms=1_700_000_000_000,
         raw_id=raw_id,
-        revision=RawRevisionEnvelope(
-            logical_source_key=logical_source_key,
-            kind=RawRevisionKind.APPEND,
-            source_revision=f"{raw_id}-revision",
-            acquisition_generation=0,
-            predecessor_source_revision=f"{raw_id}-predecessor",
-            append_start_offset=start_offset,
-            append_end_offset=end_offset,
-            authority=RawRevisionAuthority.QUARANTINED,
-        ),
     )
+    revision = RawRevisionEnvelope(
+        logical_source_key=logical_source_key,
+        kind=RawRevisionKind.APPEND,
+        source_revision=f"{raw_id}-revision",
+        acquisition_generation=0,
+        predecessor_source_revision=f"{raw_id}-predecessor",
+        append_start_offset=start_offset,
+        append_end_offset=end_offset,
+        authority=RawRevisionAuthority.QUARANTINED,
+    )
+    with archive._ensure_source_conn():
+        archive._ensure_source_conn().execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
+                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                append_start_offset = ?, append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
+            WHERE raw_id = ?
+            """,
+            (
+                revision.logical_source_key,
+                revision.kind.value,
+                revision.source_revision,
+                revision.predecessor_source_revision,
+                revision.predecessor_raw_id,
+                revision.baseline_raw_id,
+                revision.append_start_offset,
+                revision.append_end_offset,
+                revision.acquisition_generation,
+                revision.authority.value,
+                raw_id,
+            ),
+        )
 
 
 def _write_membership(conn: sqlite3.Connection, *, raw_id: str, logical_source_key: str) -> None:

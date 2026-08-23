@@ -54,6 +54,33 @@ from tests.infra.revision_backfill_benchmark import (
 )
 
 
+def _seed_historical_revision(archive: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
+    """Plant a retained legacy revision shape below live raw admission."""
+    with archive._ensure_source_conn():
+        archive._ensure_source_conn().execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
+                predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?,
+                append_start_offset = ?, append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
+            WHERE raw_id = ?
+            """,
+            (
+                revision.logical_source_key,
+                revision.kind.value,
+                revision.source_revision,
+                revision.predecessor_source_revision,
+                revision.predecessor_raw_id,
+                revision.baseline_raw_id,
+                revision.append_start_offset,
+                revision.append_end_offset,
+                revision.acquisition_generation,
+                revision.authority.value,
+                raw_id,
+            ),
+        )
+
+
 def _chatgpt_session(native_id: str, *texts: str) -> dict[str, object]:
     mapping: dict[str, object] = {}
     previous: str | None = None
@@ -116,14 +143,22 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
             payload=b"legacy-empty-receipt",
             source_path="legacy-empty.jsonl",
             acquired_at_ms=1,
-            revision=RawRevisionEnvelope("codex:legacy-membership", RawRevisionKind.FULL, "legacy-v1", 0),
+        )
+        _seed_historical_revision(
+            archive,
+            legacy_raw_id,
+            RawRevisionEnvelope("codex:legacy-membership", RawRevisionKind.FULL, "legacy-v1", 0),
         )
         canonical_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b"canonical-receipt",
             source_path="canonical.jsonl",
             acquired_at_ms=2,
-            revision=RawRevisionEnvelope("codex:canonical-membership", RawRevisionKind.FULL, "canonical-v1", 0),
+        )
+        _seed_historical_revision(
+            archive,
+            canonical_raw_id,
+            RawRevisionEnvelope("codex:canonical-membership", RawRevisionKind.FULL, "canonical-v1", 0),
         )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -174,7 +209,11 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
             payload=baseline,
             source_path="legacy-fragment.jsonl",
             acquired_at_ms=1,
-            revision=RawRevisionEnvelope(
+        )
+        _seed_historical_revision(
+            archive,
+            baseline_raw_id,
+            RawRevisionEnvelope(
                 logical_key, RawRevisionKind.FULL, "baseline", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
@@ -184,7 +223,11 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
             source_path="legacy-fragment.jsonl",
             source_index=-1,
             acquired_at_ms=2,
-            revision=RawRevisionEnvelope(
+        )
+        _seed_historical_revision(
+            archive,
+            raw_id,
+            RawRevisionEnvelope(
                 logical_key,
                 RawRevisionKind.APPEND,
                 "append-1",
@@ -3245,7 +3288,11 @@ def _write_append_raw_with_recovered_identity(
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
         native_id=native_id,
-        revision=RawRevisionEnvelope(
+    )
+    _seed_historical_revision(
+        archive,
+        raw_id,
+        RawRevisionEnvelope(
             logical_source_key=f"codex:{native_id}",
             kind=RawRevisionKind.APPEND,
             source_revision=f"{raw_id}-revision",
