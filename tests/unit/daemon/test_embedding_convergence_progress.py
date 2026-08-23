@@ -116,7 +116,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
             """
         )
 
-    embedded_calls: list[tuple[Path, str, Path | None]] = []
+    embedded_calls: list[tuple[Path, str]] = []
 
     def fake_embed(db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         embedded_calls.append((db_path, session_id))
@@ -254,7 +254,7 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
             """
         )
     observed_vector_db_paths: list[Path] = []
-    embedded_calls: list[tuple[Path, str]] = []
+    embedded_calls: list[tuple[Path, str, Path | None]] = []
     fake_provider = MagicMock()
 
     def fake_create_vector_provider(**kwargs: object) -> object:
