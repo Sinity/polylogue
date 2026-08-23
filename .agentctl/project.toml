@@ -40,7 +40,7 @@ exclusive_keys = ["polylogue:testmon-graph"]
 description = "Run Polylogue's static fast verification gates"
 exec = ["devtools", "verify", "--quick"]
 pool = "normal"
-result = "exit"
+result = "pytest"
 cache = "tree+environment"
 
 [operations.verify_all]
