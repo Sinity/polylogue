@@ -34,7 +34,7 @@ def test_declared_browser_smoke_is_private_and_has_one_leased_cdp_port() -> None
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
-def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
+def test_declared_live_provider_proof_has_only_a_receiver_service_lease() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["live_provider_proof"]
 
@@ -45,7 +45,6 @@ def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
         "readiness": "project-command",
         "lifetime": "job",
         "ports": {
-            "browser_cdp": {"environment": "POLYLOGUE_LIVE_PROVIDER_CDP_PORT", "range": [49056, 49119]},
             "browser_capture": {"environment": "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT", "range": [49120, 49183]},
         },
     }
@@ -53,7 +52,7 @@ def test_declared_live_provider_proof_has_fixed_service_owned_inputs() -> None:
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_sinnixd_parser_accepts_complete_adapter_and_models_provisioning_as_a_job() -> None:
+def test_sinnixd_parser_accepts_the_shared_chrome_operation() -> None:
     """Cross-contract proof against the production Sinnixd descriptor parser."""
     repository_root = Path(__file__).resolve().parents[3]
     sinnix_root = Path("/realm/project/sinnix")
@@ -70,14 +69,14 @@ from pathlib import Path
 from sinnixd.projects import load_project_adapter
 
 adapter = load_project_adapter(Path(sys.argv[1]))
-provisioning = adapter.operation("live_provider_profile_provision")
+proof = adapter.operation("live_provider_proof")
 print(json.dumps({
     "project_id": adapter.project_id,
     "operation_count": len(adapter.operations),
-    "provisioning": {
-        "command": provisioning.command,
-        "parameters": provisioning.parameters,
-        "service": provisioning.service.catalog_row() if provisioning.service is not None else None,
+    "proof": {
+        "command": proof.command,
+        "parameters": proof.parameters,
+        "service": proof.service.catalog_row() if proof.service is not None else None,
     },
     "service_operations": sorted(operation.name for operation in adapter.operations if operation.service is not None),
 }))
@@ -94,14 +93,24 @@ print(json.dumps({
     assert completed.returncode == 0, completed.stderr
     parsed = json.loads(completed.stdout)
     assert parsed["project_id"] == "polylogue"
-    assert parsed["operation_count"] >= 7
-    assert parsed["provisioning"] == {
-        "command": ["python", "-m", "devtools.live_provider_profile_provision_service", "--json"],
+    assert parsed["operation_count"] >= 6
+    assert parsed["proof"] == {
+        "command": ["python", "-m", "devtools.live_provider_proof_service", "--json"],
         "parameters": [],
-        "service": None,
+        "service": {
+            "lifetime": "job",
+            "readiness": "project-command",
+            "ports": [
+                {
+                    "name": "browser_capture",
+                    "environment": "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT",
+                    "range": [49120, 49183],
+                }
+            ],
+        },
     }
     assert parsed["service_operations"] == ["deployment_browser_smoke", "dev_loop_proof", "live_provider_proof"]
-    assert all(spec.module != "devtools.live_provider_profile_provision_service" for spec in COMMAND_SPECS)
+    assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
 def test_private_live_provider_module_imports_without_launching_chrome() -> None:
@@ -122,13 +131,13 @@ def test_private_live_provider_module_imports_without_launching_chrome() -> None
     assert completed.stdout == ""
 
 
-def test_live_provider_uses_an_unconfigured_chromium_binary() -> None:
+def test_live_provider_rejects_an_agent_window_without_hidden_parking() -> None:
     completed = subprocess.run(
         [
             "node",
             "--input-type=module",
             "--eval",
-            "import('./scripts/live_provider_proof.mjs').then(m => console.log(m.resolveChromeBinary()))",
+            "import('./scripts/live_provider_proof.mjs').then(m => { try { m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: false, workspace: 'special:agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/'); process.exitCode = 2; } catch (error) { console.log(error.message); } })",
         ],
         cwd="browser-extension",
         text=True,
@@ -137,8 +146,25 @@ def test_live_provider_uses_an_unconfigured_chromium_binary() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "google-chrome" not in completed.stdout
-    assert "chromium" in completed.stdout
+    assert "verified hidden on special:agentbrowser" in completed.stdout
+
+
+def test_live_provider_accepts_a_parked_control_plane_window() -> None:
+    completed = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            "import('./scripts/live_provider_proof.mjs').then(m => console.log(m.assertAgentWindow({ id: 'A'.repeat(32), url: 'https://chatgpt.com/', parked: true, workspace: 'special:agentbrowser', show_with: 'F7' }, 'https://chatgpt.com/')))",
+        ],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "A" * 32
 
 
 def test_live_provider_module_rejects_forged_environment_before_node_can_launch(tmp_path: Path) -> None:
@@ -146,7 +172,6 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
         "SINNIXD_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
         "SINNIXD_PROJECT_ID": "polylogue",
         "SINNIXD_OPERATION": "live_provider_proof",
-        "POLYLOGUE_LIVE_PROVIDER_CDP_PORT": "49056",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT": "49120",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN": "forged",
         "TMPDIR": str(tmp_path),

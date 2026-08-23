@@ -106,9 +106,10 @@ The proof starts a temporary receiver, proves unauthenticated rejection, loads
 the unpacked extension into headless Chromium/Chrome, captures deterministic
 ChatGPT and Claude fixture pages, and verifies archive/API convergence without
 cookies or raw turn text in its bounded result. AgentCTL owns the process,
-ports, timeout, cancellation, and cleanup. The copied-profile proof runs only
-through the declared `live_provider_proof` AgentCTL operation. It has no npm or
-devtools launcher and does not create another Polylogue daemon lifecycle.
+ports, timeout, cancellation, and cleanup. The shared-Chrome proof runs only
+through the declared `live_provider_proof` AgentCTL operation. It opens parked,
+proof-owned windows in the authenticated browser and does not create another
+Polylogue daemon lifecycle.
 
 ## Mission control, pairing, and ambient status
 

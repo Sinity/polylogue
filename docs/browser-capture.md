@@ -64,7 +64,7 @@ agentctl job result <job-id>
 ```
 
 That smoke does not certify private MCP browser launch, extension ids,
-authenticated ChatGPT/Claude.ai pages, or copied-profile cookies.
+authenticated ChatGPT/Claude.ai pages, or shared-browser cookies.
 
 Accepted captures are typed browser-capture envelopes and are written
 atomically under the configured capture spool at `<provider>/...json`.
@@ -276,15 +276,12 @@ deterministic provider capture, then reports archive and API convergence through
 the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
 wait, and result commands.
 
-Live copied-profile proof runs only through the declared `live_provider_proof`
+Live shared-Chrome proof runs only through the declared `live_provider_proof`
 AgentCTL operation. It must not create an alternative Polylogue daemon
-lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher.
-Provision its fixed profile first with the declared
-`live_provider_profile_provision` operation. That operation has no arguments:
-it copies Sinnix's shared `$HOME/.config/chrome-ws` `Local State` and `Default` into the
-private `/realm/state/polylogue/live-provider-proof-profile` destination,
-excluding Chrome singleton locks and rejecting symlinks or copies over 20,000
-files or 1 GB. It never launches Chrome.
+lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher. It
+uses Sinnix's `agent-window` control boundary in the running authenticated
+browser, verifies each proof window hidden on `special:agentbrowser`, and closes
+only proof-created targets.
 
 ## Current residual map for #1824 / #1847
 

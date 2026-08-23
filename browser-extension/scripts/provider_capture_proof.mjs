@@ -1054,7 +1054,7 @@ export async function runProviderCapture() {
         version: localManifest.version,
         manifest_version: localManifest.manifest_version,
       },
-      privacy_posture: "deterministic fixture pages only; summary omits raw turn text and copied-profile data",
+      privacy_posture: "deterministic fixture pages only; summary omits raw turn text and browser-state data",
       profile_dir: profileDir,
       receiver_base_url: receiverBaseUrl,
       receiver_configured: {

@@ -27,9 +27,9 @@ For a manually focused check, use the managed test harness:
 devtools test tests/unit/devtools/test_dev_loop_service.py
 ```
 
-## Copied-profile live-provider proof
+## Shared-Chrome live-provider proof
 
-`live_provider_proof` is a separate declared AgentCTL operation. Its internal Node implementation has no exported launcher and accepts no caller-selected executable, profile, token, receiver, output path, port, provider list, or timeout. Before a live proof, run the declared `live_provider_profile_provision` operation. It copies the Sinnix-managed shared Chrome source at `$HOME/.config/chrome-ws` into `/realm/state/polylogue/live-provider-proof-profile`, including only `Local State` and `Default`, excluding singleton locks, rejecting symlinks, and stopping at 20,000 files or 1 GB. Reprovisioning replaces that fixed private copy. Provisioning is a finite non-service job and leases no port. The proof fixes Chrome resolution, the unpacked extension in its registered checkout, both providers, scratch output, and a fresh in-service receiver token. The descriptor leases the CDP and receiver ports. It refuses common live browser profile roots and emits a redacted summary without transcript text.
+`live_provider_proof` is a separate declared AgentCTL operation. Its internal Node implementation has no exported launcher and accepts no caller-selected browser executable, profile, token, receiver, output path, port, provider list, or timeout. It uses the installed `sinnix-chrome-control` boundary against the already-running authenticated Chrome at `127.0.0.1:9222`. The proof runtime-loads the unpacked extension, configures a fresh in-service receiver token, and opens one agent window for each fixed provider. `agent-window` parks and verifies every window hidden on `special:agentbrowser`; proof capture is correlated with the resulting CDP target and browser window, so it addresses no operator tab. Receiver settings are restored and cleanup closes only those created target IDs. The descriptor leases only the receiver port and emits a redacted summary without transcript text.
 
 The live proof's Node workflow has a 90-second total deadline, the Python child wait is 120 seconds, and the AgentCTL operation deadline is 180 seconds. Timeout failures terminate the Node process group and return a bounded typed JSON result.
 
