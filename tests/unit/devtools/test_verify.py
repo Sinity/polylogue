@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 
 from devtools import verify
-from devtools.verify_runs import VerifyRun, aggregate_pytest_statistics, env_for_pytest_step
+from devtools.verify_runs import (
+    CURRENT_RUN_PATH,
+    VERIFY_CACHE_OWNER_MARKER_PATH,
+    VerifyRun,
+    aggregate_pytest_statistics,
+    env_for_pytest_step,
+)
 
 
 def test_quick_steps_are_static_gates() -> None:
@@ -75,3 +81,16 @@ def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(run.run_id)
     assert Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) == artifacts.events_dir
+
+
+def test_agentctl_verify_run_marks_cache_without_mirroring_current_receipt(tmp_path: Path) -> None:
+    """AgentCTL-owned verification has cache provenance without owning the UI mirror."""
+    VerifyRun(tier="all", argv=["--all"], git_head="head", root=tmp_path, mirror_current=False)
+
+    owner = json.loads((tmp_path / VERIFY_CACHE_OWNER_MARKER_PATH).read_text(encoding="utf-8"))
+    assert owner == {
+        "kind": "verify-cache-owner",
+        "version": 1,
+        "checkout_root": str(tmp_path.resolve()),
+    }
+    assert not (tmp_path / CURRENT_RUN_PATH).exists()

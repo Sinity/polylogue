@@ -68,6 +68,8 @@ from pathlib import Path
 
 import tomllib
 
+from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_CACHE, VERIFY_CACHE_OWNER_MARKER_PATH
+
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
@@ -126,8 +128,9 @@ class CheckoutEnvironmentFingerprint:
         }
 
 
-_VERIFY_STATE_DIR = Path(".cache/verify")
-_VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
+_VERIFY_STATE_DIR = VERIFY_CACHE
+_VERIFY_STATE_OWNER_MARKER = VERIFY_CACHE_OWNER_MARKER_PATH
+_VERIFY_STATE_LEGACY_MARKER = CURRENT_RUN_PATH
 _QUICK_GATE_EXECUTABLES = ("ruff", "mypy", "dmypy")
 _QUICK_GATE_PACKAGE_FILES = ("pyproject.toml", "uv.lock")
 
@@ -367,15 +370,30 @@ def _marker_origin(marker: Path) -> Path | None:
     return Path(raw).resolve()
 
 
+def _verify_cache_owner_origin(marker: Path) -> Path | None:
+    """Read the canonical VerifyRun cache-owner marker, if it is valid."""
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if payload.get("kind") != "verify-cache-owner" or payload.get("version") != 1:
+        return None
+    raw = payload.get("checkout_root")
+    return Path(raw).resolve() if isinstance(raw, str) and raw else None
+
+
 def _cache_artifact(
     *,
     repo_root: Path,
     state_dir: Path,
-    marker: Path,
+    owner_marker: Path,
+    legacy_marker: Path,
     kind: str,
     remediation: str,
 ) -> tuple[Path | None, EnvironmentArtifact | None]:
-    """Classify one cache directory by its explicit checkout-root marker."""
+    """Classify verifier cache ownership, accepting a valid legacy receipt only when needed."""
     state_path = repo_root / state_dir
     if not state_path.exists():
         return None, None
@@ -385,8 +403,18 @@ def _cache_artifact(
             return None, None
     except OSError:
         pass
-    marker_path = repo_root / marker
-    origin = _marker_origin(marker_path)
+    owner_marker_path = repo_root / owner_marker
+    legacy_marker_path = repo_root / legacy_marker
+    if owner_marker_path.exists():
+        marker_path = owner_marker_path
+        origin = _verify_cache_owner_origin(marker_path)
+    else:
+        # Archives created before the ownership-marker contract used the
+        # current-run receipt as their only provenance. Keep accepting an
+        # attributable legacy receipt, but never treat unmarked cache content
+        # as trustworthy.
+        marker_path = legacy_marker_path
+        origin = _marker_origin(marker_path)
     if origin == repo_root:
         return origin, None
     if origin is None:
@@ -397,7 +425,7 @@ def _cache_artifact(
         origin,
         EnvironmentArtifact(
             kind=kind,
-            path=repo_root / marker if (repo_root / marker).exists() else state_path,
+            path=marker_path if marker_path.exists() else state_path,
             detail=detail,
             remediation=remediation,
         ),
@@ -465,7 +493,8 @@ def checkout_environment_fingerprint(
         verify_origin, verify_artifact = _cache_artifact(
             repo_root=resolved_root,
             state_dir=_VERIFY_STATE_DIR,
-            marker=_VERIFY_STATE_MARKER,
+            owner_marker=_VERIFY_STATE_OWNER_MARKER,
+            legacy_marker=_VERIFY_STATE_LEGACY_MARKER,
             kind="inherited_verify_cache",
             remediation=f"remove {resolved_root / _VERIFY_STATE_DIR} and rerun the managed devtools command",
         )

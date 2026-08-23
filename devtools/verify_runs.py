@@ -25,6 +25,7 @@ from typing import Any
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
+VERIFY_CACHE_OWNER_MARKER_PATH = VERIFY_CACHE / "checkout-owner.json"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
@@ -117,6 +118,17 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        # The cache owner is deliberately independent of ``current-run``.
+        # AgentCTL runs suppress that mutable UI mirror, but nested gates still
+        # need an atomic, checkout-bound proof that this cache belongs here.
+        _write_json(
+            self.root / VERIFY_CACHE_OWNER_MARKER_PATH,
+            {
+                "kind": "verify-cache-owner",
+                "version": 1,
+                "checkout_root": str(self.root.resolve()),
+            },
+        )
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 

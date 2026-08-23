@@ -31,7 +31,7 @@ from devtools.checkout_guard import (
     quick_gate_toolchain_fingerprint,
     resolved_polylogue_path,
 )
-from devtools.verify_runs import VerifyRun
+from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_CACHE_OWNER_MARKER_PATH, VerifyRun
 
 
 def test_resolved_polylogue_path_matches_the_running_package() -> None:
@@ -254,6 +254,63 @@ def test_checkout_preflight_reports_runtime_provenance_but_not_testmon_state(
     assert str(data) not in message
 
 
+def test_checkout_guard_accepts_agentctl_cache_owner_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A nested gate may trust AgentCTL cache ownership without a current-run mirror."""
+    root = _fake_linked_checkout(tmp_path)
+    VerifyRun(tier="all", argv=["--all"], git_head="head", root=root, mirror_current=False)
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    fingerprint = assert_polylogue_matches_checkout(
+        root,
+        context="nested render",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.verify_state_origin == root.resolve()
+    assert (root / VERIFY_CACHE_OWNER_MARKER_PATH).exists()
+    assert not (root / CURRENT_RUN_PATH).exists()
+
+
+@pytest.mark.parametrize("owner", [None, "foreign"])
+def test_checkout_guard_rejects_unowned_or_foreign_nonempty_verify_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str | None
+) -> None:
+    """Cache contents without local ownership remain unsafe for linked worktrees."""
+    root = _fake_linked_checkout(tmp_path)
+    run_dir = root / ".cache" / "verify" / "runs" / "received-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run.json").write_text("{}", encoding="utf-8")
+    if owner == "foreign":
+        (root / VERIFY_CACHE_OWNER_MARKER_PATH).write_text(
+            json.dumps(
+                {
+                    "kind": "verify-cache-owner",
+                    "version": 1,
+                    "checkout_root": str((tmp_path / "other-checkout").resolve()),
+                }
+            ),
+            encoding="utf-8",
+        )
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
+        assert_polylogue_matches_checkout(
+            root,
+            context="nested render",
+            python_executable=root / ".venv" / "bin" / "python",
+        )
+
+    message = str(excinfo.value)
+    assert "checkout environment is untrustworthy" in message
+    if owner is None:
+        assert "no verifiable checkout-root marker" in message
+    else:
+        assert "other-checkout" in message
+
+
 def test_verify_run_persists_environment_fingerprint(tmp_path: Path) -> None:
     root = _fake_linked_checkout(tmp_path)
     (root / "node_modules").mkdir()
@@ -276,19 +333,21 @@ def test_verify_run_persists_environment_fingerprint(tmp_path: Path) -> None:
     assert payload["checkout_root"] == str(root.resolve())
 
 
-def test_verify_run_marker_is_attributable_without_a_fingerprint(tmp_path: Path) -> None:
+def test_checkout_guard_accepts_legacy_current_run_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _fake_linked_checkout(tmp_path)
-    run = VerifyRun(tier="legacy-marker", argv=[], git_head=None, root=root)
+    (root / CURRENT_RUN_PATH).parent.mkdir(parents=True)
+    (root / CURRENT_RUN_PATH).write_text(json.dumps({"checkout_root": str(root.resolve())}), encoding="utf-8")
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
 
-    fingerprint = checkout_environment_fingerprint(
+    fingerprint = assert_polylogue_matches_checkout(
         root,
-        polylogue_import_path=root / "polylogue" / "__init__.py",
+        context="legacy nested gate",
         python_executable=root / ".venv" / "bin" / "python",
     )
 
     assert fingerprint.clean
     assert fingerprint.verify_state_origin == root.resolve()
-    assert json.loads((root / ".cache" / "verify" / "current-run.json").read_text())["run_id"] == run.run_id
 
 
 _MYPY_WRAPPER_BODY = (
