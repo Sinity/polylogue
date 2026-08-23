@@ -132,6 +132,24 @@ def test_receiver_smoke_proves_auth_rejection_and_accepted_capture(tmp_path: Pat
     assert isinstance(payload["artifact_ref"], str)
 
 
+def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[str] = []
+
+    def live(url: str, **_kwargs: object) -> tuple[int, dict[str, str]]:
+        observed.append(url)
+        return 200, {"status": "alive"}
+
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_http_get_json",
+        live,
+    )
+
+    dev_loop_service._await_api(base_url="http://127.0.0.1:48801", timeout_s=0.1)
+
+    assert observed == ["http://127.0.0.1:48801/healthz/live"]
+
+
 def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(dev_loop_service, "run_proof", lambda: (_ for _ in ()).throw(ValueError("x" * 600)))
 
