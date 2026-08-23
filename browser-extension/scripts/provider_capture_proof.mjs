@@ -5,6 +5,7 @@
 // cookies or cloud browser state.
 
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -27,10 +28,25 @@ function declaredCdpPort() {
 }
 
 function requireExpectedServiceContext() {
-  // This rejects ordinary shell invocation. Sinnixd, not these environment
-  // values, authorizes the operation and owns its lease and service cgroup.
+  const jobId = process.env.SINNIXD_JOB_ID || "";
+  const unit = `sinnixd-job-${jobId}.service`;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    throw new Error("provider capture requires a Sinnixd job UUID");
+  }
   if (process.env.SINNIXD_PROJECT_ID !== "polylogue" || process.env.SINNIXD_OPERATION !== "dev_loop_proof") {
     throw new Error("provider capture rejects execution outside the fixed dev-loop service context");
+  }
+  const cgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((line) => line.includes("::"))?.split("::", 2)[1] || "";
+  if (!cgroup.includes(`/agent.slice/${unit}`)) {
+    throw new Error("provider capture is not inside its matching Sinnixd transient unit");
+  }
+  const unitEnvironment = spawnSync(
+    "systemctl",
+    ["--user", "show", unit, "--property=Environment", "--value"],
+    { encoding: "utf8", timeout: 2000 },
+  );
+  if (unitEnvironment.status !== 0 || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => unitEnvironment.stdout.split(/\s+/).includes(`${name}=${process.env[name]}`))) {
+    throw new Error("provider capture transient unit does not match the declared operation");
   }
 }
 
@@ -52,6 +68,38 @@ const stressTextRepeat = Number(process.env.POLYLOGUE_PROVIDER_SMOKE_STRESS_TEXT
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function terminateProcessGroup(child) {
+  if (!child || child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return;
+  }
+  await Promise.race([child.exitCode === null ? once(child, "close") : sleep(200), sleep(2000)]);
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (child.exitCode === null) await once(child, "close");
+}
+
+let activeChrome = null;
+let shutdownRequested = false;
+
+function installShutdownCleanup() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      if (shutdownRequested) return;
+      shutdownRequested = true;
+      terminateProcessGroup(activeChrome)
+        .catch((error) => process.stderr.write(`${error.stack || error.message || error}\n`))
+        .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    });
+  }
 }
 
 async function waitJson(url, timeout = timeoutMs) {
@@ -834,6 +882,7 @@ function safeProviderSummary(providerConfig, capturePayload) {
 
 export async function runProviderCapture() {
   requireExpectedServiceContext();
+  installShutdownCleanup();
   const localManifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
   const expectedWorkerSuffix = serviceWorkerSuffix(localManifest);
   mkdirSync(profileDir, { recursive: true });
@@ -857,7 +906,8 @@ export async function runProviderCapture() {
     "about:blank",
   ];
   if (headless) chromeArgs.splice(2, 0, "--headless=new");
-  const chrome = spawn(chromeBinary, chromeArgs, { detached: false, stdio: ["ignore", "pipe", "pipe"] });
+  const chrome = spawn(chromeBinary, chromeArgs, { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  activeChrome = chrome;
   let stdout = "";
   let stderr = "";
   chrome.stdout.on("data", (chunk) => {
@@ -1034,7 +1084,8 @@ export async function runProviderCapture() {
     }
     chrome.stdout.destroy();
     chrome.stderr.destroy();
-    chrome.unref();
+    await terminateProcessGroup(chrome);
+    activeChrome = null;
     await closeServer(proxyServer.server);
     await closeServer(fixtureServer.server);
     if (!keepProfile && !process.env.POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR) {

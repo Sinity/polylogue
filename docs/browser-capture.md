@@ -276,8 +276,8 @@ deterministic provider capture, then reports archive and API convergence through
 the canonical job result. See [`docs/dev-loop.md`](dev-loop.md) for the start,
 wait, and result commands.
 
-Live copied-profile investigation remains private product semantics pending a
-typed AgentCTL operation. It must not create an alternative Polylogue daemon
+Live copied-profile proof runs only through the declared `live_provider_proof`
+AgentCTL operation. It must not create an alternative Polylogue daemon
 lifecycle, ad hoc receiver lease, free CDP port, or direct Chrome launcher.
 
 ## Current residual map for #1824 / #1847

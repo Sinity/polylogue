@@ -13,6 +13,7 @@ import os
 from dataclasses import asdict
 
 from devtools import deployment_smoke
+from devtools.sinnixd_service_context import require_declared_service_context
 
 _CDP_PORT_ENV = "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT"
 _CDP_PORT_RANGE = (48992, 49055)
@@ -25,11 +26,7 @@ def _service_context_port() -> int:
     Sinnixd authorizes the job, binds the checkout, leases the port, and owns
     the transient systemd cgroup.
     """
-    if (
-        os.environ.get("SINNIXD_PROJECT_ID") != "polylogue"
-        or os.environ.get("SINNIXD_OPERATION") != "deployment_browser_smoke"
-    ):
-        raise ValueError("deployment browser smoke rejects execution outside its fixed service context")
+    require_declared_service_context("deployment_browser_smoke")
     raw_port = os.environ.get(_CDP_PORT_ENV)
     try:
         port = int(raw_port) if raw_port is not None else None

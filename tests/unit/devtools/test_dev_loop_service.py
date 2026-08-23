@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,10 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
 
 
 def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dev_loop_service, "require_declared_service_context", lambda operation: f"unit-{operation}")
     monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
     monkeypatch.setenv("SINNIXD_OPERATION", "dev_loop_proof")
+    monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
     monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CDP_PORT", "48929")
@@ -50,6 +53,7 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
     started: dict[str, object] = {}
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **kwargs: started.update(kwargs))
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
     monkeypatch.setattr(
         dev_loop_service,
@@ -98,6 +102,15 @@ def test_service_context_guard_rejects_missing_or_wrong_shell_context(
     message: str,
 ) -> None:
     _fixed_service_context(monkeypatch)
+    monkeypatch.setattr(
+        dev_loop_service,
+        "require_declared_service_context",
+        lambda operation: (
+            (_ for _ in ()).throw(ValueError("rejects execution outside its fixed service context"))
+            if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue" or os.environ.get("SINNIXD_OPERATION") != operation
+            else f"unit-{operation}"
+        ),
+    )
     if value is None:
         monkeypatch.delenv(environment, raising=False)
     else:

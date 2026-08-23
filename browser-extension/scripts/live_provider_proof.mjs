@@ -1,20 +1,119 @@
-// Private copied-profile provider proof semantics. This module deliberately has
-// no executable entrypoint, environment launcher, free-port allocator, or
-// process-tree cleanup policy. A future typed AgentCTL operation must provide
-// the copied profile, receiver, output location, and descriptor-leased CDP port.
+// Fixed copied-profile provider proof semantics for the declared AgentCTL
+// operation. Imports are non-launching; direct execution checks its transient
+// Sinnixd unit before it can spawn Chrome.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PROVIDERS = {
   chatgpt: { host: "chatgpt.com", url: "https://chatgpt.com/", provider: "chatgpt", adapters: ["chatgpt-native-v1", "chatgpt-dom-v1"] },
   claude: { host: "claude.ai", url: "https://claude.ai/", provider: "claude-ai", adapters: ["claude-ai-native-v1", "claude-ai-dom-v1"] },
 };
+const _CDP_PORT_RANGE = [49056, 49119];
+const _RECEIVER_PORT_RANGE = [49120, 49183];
+const _PROFILE_DIR = "/realm/state/polylogue/live-provider-proof-profile";
+
+function requiredEnvironment(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} must be supplied by the declared live-provider service`);
+  return value;
+}
+
+function leasedPort(name, range) {
+  const port = Number(requiredEnvironment(name));
+  if (!Number.isInteger(port) || port < range[0] || port > range[1]) {
+    throw new Error(`${name} is outside its declared AgentCTL lease range`);
+  }
+  return port;
+}
+
+function requireExpectedServiceContext() {
+  const jobId = process.env.SINNIXD_JOB_ID || "";
+  const unit = `sinnixd-job-${jobId}.service`;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+    throw new Error("live provider proof requires a Sinnixd job UUID");
+  }
+  if (process.env.SINNIXD_PROJECT_ID !== "polylogue" || process.env.SINNIXD_OPERATION !== "live_provider_proof") {
+    throw new Error("live provider proof rejects execution outside its fixed service context");
+  }
+  const cgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((line) => line.includes("::"))?.split("::", 2)[1] || "";
+  if (!cgroup.includes(`/agent.slice/${unit}`)) {
+    throw new Error("live provider proof is not inside its matching Sinnixd transient unit");
+  }
+  const unitEnvironment = spawnSync(
+    "systemctl",
+    ["--user", "show", unit, "--property=Environment", "--value"],
+    { encoding: "utf8", timeout: 2000 },
+  );
+  if (unitEnvironment.status !== 0 || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => unitEnvironment.stdout.split(/\s+/).includes(`${name}=${process.env[name]}`))) {
+    throw new Error("live provider proof transient unit does not match the declared operation");
+  }
+}
+
+function resolveChromeBinary() {
+  for (const candidate of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome-for-testing"]) {
+    const resolved = spawnSync("sh", ["-c", `command -v ${candidate}`], { encoding: "utf8" });
+    if (resolved.status === 0 && resolved.stdout.trim()) return resolved.stdout.trim();
+  }
+  throw new Error("no fixed Chrome/Chromium executable is available on the declared service PATH");
+}
+
+function fixedInputs() {
+  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const cdpPort = leasedPort("POLYLOGUE_LIVE_PROVIDER_CDP_PORT", _CDP_PORT_RANGE);
+  const receiverPort = leasedPort("POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT", _RECEIVER_PORT_RANGE);
+  return {
+    chromeBinary: resolveChromeBinary(),
+    cdpPort,
+    extensionRoot: path.resolve(scriptDirectory, ".."),
+    outputPath: path.join(requiredEnvironment("TMPDIR"), "polylogue-live-provider-proof.json"),
+    profileDir: _PROFILE_DIR,
+    receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,
+    receiverToken: requiredEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"),
+    providers: ["chatgpt", "claude"],
+    timeoutMs: 120000,
+    interactiveWaitMs: 45000,
+  };
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function terminateProcessGroup(child) {
+  if (!child || child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return;
+  }
+  await Promise.race([child.exitCode === null ? once(child, "close") : sleep(200), sleep(2000)]);
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+  }
+  if (child.exitCode === null) await once(child, "close");
+}
+
+let activeChrome = null;
+let shutdownRequested = false;
+
+function installShutdownCleanup() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      if (shutdownRequested) return;
+      shutdownRequested = true;
+      terminateProcessGroup(activeChrome)
+        .catch((error) => process.stderr.write(`${error.stack || error.message || error}\n`))
+        .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    });
+  }
 }
 
 function sha256(value) {
@@ -154,9 +253,10 @@ function providerSummary(provider, payload) {
   };
 }
 
-export async function runLiveProviderProof({ chromeBinary, cdpPort, extensionRoot, outputPath, profileDir, receiverBaseUrl, receiverToken, providers = ["chatgpt", "claude"], timeoutMs = 120000, interactiveWaitMs = 45000 }) {
-  if (!Number.isInteger(cdpPort) || cdpPort < 1024 || cdpPort > 65535) throw new Error("a descriptor-leased CDP port is required");
-  if (!chromeBinary || !extensionRoot || !outputPath || !receiverBaseUrl || !receiverToken) throw new Error("typed live-provider service inputs are required");
+async function runLiveProviderProof() {
+  requireExpectedServiceContext();
+  installShutdownCleanup();
+  const { chromeBinary, cdpPort, extensionRoot, outputPath, profileDir, receiverBaseUrl, receiverToken, providers, timeoutMs, interactiveWaitMs } = fixedInputs();
   const profile = assertCopiedProfile(profileDir);
   const selected = providers.map((name) => {
     const provider = PROVIDERS[name];
@@ -170,7 +270,8 @@ export async function runLiveProviderProof({ chromeBinary, cdpPort, extensionRoo
     "--no-first-run", "--disable-default-apps", "--no-default-browser-check", "--enable-unsafe-extension-debugging",
     `--unsafely-treat-insecure-origin-as-secure=${receiverBaseUrl}`,
     `--disable-extensions-except=${extensionRoot}`, `--load-extension=${extensionRoot}`, "--new-window", "about:blank",
-  ], { detached: false, stdio: "ignore" });
+  ], { detached: true, stdio: "ignore" });
+  activeChrome = chrome;
   let browserClient;
   let workerClient;
   try {
@@ -188,6 +289,16 @@ export async function runLiveProviderProof({ chromeBinary, cdpPort, extensionRoo
   } finally {
     if (workerClient) workerClient.close();
     if (browserClient) { await browserClient.call("Browser.close").catch(() => undefined); browserClient.close(); }
-    chrome.unref();
+    await terminateProcessGroup(chrome);
+    activeChrome = null;
   }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runLiveProviderProof()
+    .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
+    .catch((error) => {
+      process.stderr.write(`${error.stack || error.message || error}\n`);
+      process.exitCode = 1;
+    });
 }

@@ -73,7 +73,7 @@ That fixed operation launches a fresh headless profile against Polylogue's web
 root with a descriptor-leased CDP port and a transient systemd cgroup. Its job
 receipt, not the checkout, proves lifecycle and lease behavior. It does not
 claim MCP DevTools control, copied-profile cookies, or live provider pages.
-The private copied-profile helper and its blocked typed-operation contract are
+The declared copied-profile proof operation and its service boundary are
 documented in [`docs/dev-loop.md`](dev-loop.md).
 
 On NixOS, import the flake module shown in the Nix section below. It creates a

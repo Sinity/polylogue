@@ -19,6 +19,7 @@ from threading import Thread
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.archive_init import initialize_archive_tier_files
 
@@ -57,10 +58,7 @@ def _require_agentctl_service_context() -> dict[str, int]:
     declared operation, lease, and service cgroup before it invokes this
     module. This guard only fails closed for ordinary accidental invocation.
     """
-    if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue":
-        raise ValueError("dev-loop proof rejects execution outside its fixed service context")
-    if os.environ.get("SINNIXD_OPERATION") != "dev_loop_proof":
-        raise ValueError("dev-loop proof rejects execution outside its fixed service context")
+    require_declared_service_context("dev_loop_proof")
     ports = {name: _leased_port(name, bounds) for name, bounds in _DECLARED_PORTS.items()}
     if len(set(ports.values())) != len(ports):
         raise ValueError("fixed dev-loop service context contains duplicate ports")
@@ -187,12 +185,11 @@ def _await_api(*, base_url: str, timeout_s: float) -> None:
 
 def _start_daemon(
     *, repo_root: Path, environment: dict[str, str], artifact_root: Path, api_port: int, capture_port: int
-) -> None:
+) -> subprocess.Popen[Any]:
     """Start the fixed product daemon as a child of AgentCTL's service cgroup.
 
-    There is intentionally no PID receipt, process group, local timeout, or
-    stop path here.  AgentCTL owns the cgroup and cleans every descendant when
-    the declared job reaches a terminal state.
+    The dedicated child process group is terminated locally on every proof
+    exit. Sinnixd retains lifecycle authority and is the outer cleanup net.
     """
     spool = artifact_root / "browser-capture"
     spool.mkdir(parents=True, exist_ok=True)
@@ -213,13 +210,14 @@ def _start_daemon(
         "--no-source-catchup",
     ]
     with log_path.open("w", encoding="utf-8") as log_file:
-        subprocess.Popen(
+        return subprocess.Popen(
             command,
             cwd=str(repo_root),
             env=environment,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
+            start_new_session=True,
         )
 
 
@@ -252,7 +250,7 @@ def _run_provider_capture(
             "POLYLOGUE_PROVIDER_SMOKE_SESSION_ID": session_id,
         }
     )
-    completed = subprocess.run(
+    process = subprocess.Popen(
         [
             "node",
             "--input-type=module",
@@ -265,10 +263,20 @@ def _run_provider_capture(
         ],
         cwd=str(extension_root),
         env=environment,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=60)
+    except subprocess.TimeoutExpired as error:
+        terminate_process_group(process)
+        process.communicate()
+        raise RuntimeError("browser/provider capture script timed out") from error
+    finally:
+        terminate_process_group(process)
+    completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     if completed.returncode != 0 or not result_path.exists():
         raise RuntimeError("browser/provider capture script did not produce a successful result")
     payload = json.loads(result_path.read_text(encoding="utf-8"))
@@ -326,7 +334,7 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     receiver_auth = run_receiver_smoke(spool_path=artifact_root / "receiver-auth")
     if receiver_auth.get("ok") is not True:
         raise RuntimeError("receiver authentication proof failed")
-    _start_daemon(
+    daemon = _start_daemon(
         repo_root=checkout,
         environment=environment,
         artifact_root=artifact_root,
@@ -335,56 +343,59 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     )
     api_url = f"http://127.0.0.1:{api_port}"
     receiver_url = f"http://127.0.0.1:{capture_port}"
-    _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
-    session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
-    providers = _run_provider_capture(
-        repo_root=checkout,
-        artifact_root=artifact_root,
-        receiver_url=receiver_url,
-        session_id=session_id,
-        api_url=api_url,
-        cdp_port=cdp_port,
-    )
-    archive_ok = False
-    api_ok = False
-    if isinstance(providers, dict):
-        archive_rows: list[bool] = []
-        api_rows: list[bool] = []
-        for item in providers.values():
-            if not isinstance(item, dict):
-                continue
-            provider = item.get("provider")
-            provider_session_id = item.get("provider_session_id")
-            if not isinstance(provider, str) or not isinstance(provider_session_id, str):
-                continue
-            archive_rows.append(
-                _poll_archive_state(
-                    receiver_url=receiver_url,
-                    provider=provider,
-                    provider_session_id=provider_session_id,
-                    timeout_s=readiness_timeout_s,
+    try:
+        _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
+        session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
+        providers = _run_provider_capture(
+            repo_root=checkout,
+            artifact_root=artifact_root,
+            receiver_url=receiver_url,
+            session_id=session_id,
+            api_url=api_url,
+            cdp_port=cdp_port,
+        )
+        archive_ok = False
+        api_ok = False
+        if isinstance(providers, dict):
+            archive_rows: list[bool] = []
+            api_rows: list[bool] = []
+            for item in providers.values():
+                if not isinstance(item, dict):
+                    continue
+                provider = item.get("provider")
+                provider_session_id = item.get("provider_session_id")
+                if not isinstance(provider, str) or not isinstance(provider_session_id, str):
+                    continue
+                archive_rows.append(
+                    _poll_archive_state(
+                        receiver_url=receiver_url,
+                        provider=provider,
+                        provider_session_id=provider_session_id,
+                        timeout_s=readiness_timeout_s,
+                    )
                 )
-            )
-            api_rows.append(
-                _fetch_api_messages(
-                    api_url=api_url,
-                    session_id=_session_id_for_provider(provider, provider_session_id),
+                api_rows.append(
+                    _fetch_api_messages(
+                        api_url=api_url,
+                        session_id=_session_id_for_provider(provider, provider_session_id),
+                    )
                 )
-            )
-        archive_ok = bool(archive_rows) and all(archive_rows)
-        api_ok = bool(api_rows) and all(api_rows)
-    if not archive_ok or not api_ok:
-        raise RuntimeError("archive/API convergence proof failed")
-    return {
-        "ok": True,
-        "ports": {"api": api_port, "browser_capture": capture_port, "browser_cdp": cdp_port},
-        "receiver_auth": {"ok": True},
-        "provider_capture": {
-            "providers": sorted(str(name) for name in providers),
-            "archive_converged": archive_ok,
-            "api_converged": api_ok,
-        },
-    }
+            archive_ok = bool(archive_rows) and all(archive_rows)
+            api_ok = bool(api_rows) and all(api_rows)
+        if not archive_ok or not api_ok:
+            raise RuntimeError("archive/API convergence proof failed")
+        return {
+            "ok": True,
+            "ports": {"api": api_port, "browser_capture": capture_port, "browser_cdp": cdp_port},
+            "receiver_auth": {"ok": True},
+            "provider_capture": {
+                "providers": sorted(str(name) for name in providers),
+                "archive_converged": archive_ok,
+                "api_converged": api_ok,
+            },
+        }
+    finally:
+        terminate_process_group(daemon)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from devtools.sinnixd_service_context import terminate_process_group
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -781,14 +782,25 @@ def _browser_executable_resolution(path: str, executable: str | None) -> dict[st
 
 
 def _run_browser_command(command: list[str], *, path: str, timeout_s: float) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    process = subprocess.Popen(
         command,
         env=_command_env(path),
         text=True,
-        capture_output=True,
-        timeout=timeout_s + 5,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s + 5)
+    except subprocess.TimeoutExpired as error:
+        terminate_process_group(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command, timeout_s, output=stdout or error.output, stderr=stderr or error.stderr
+        ) from error
+    finally:
+        terminate_process_group(process)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _timeout_output_text(value: object) -> str:
