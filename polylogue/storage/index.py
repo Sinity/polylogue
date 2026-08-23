@@ -3,12 +3,14 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
+from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 from polylogue.storage.fts.fts_lifecycle import (
     _chunked as _chunked,
 )
 from polylogue.storage.fts.fts_lifecycle import (
     ensure_fts_index_sync,
     fts_index_status_sync,
+    fts_invariant_snapshot_sync,
     rebuild_fts_index_sync,
     repair_fts_index_sync,
 )
@@ -39,6 +41,7 @@ def update_index_for_sessions(session_ids: Sequence[str], conn: sqlite3.Connecti
 
     def _do(db_conn: sqlite3.Connection) -> None:
         repair_fts_index_sync(db_conn, session_ids)
+        record_fts_invariant_snapshot_sync(db_conn, fts_invariant_snapshot_sync(db_conn))
         db_conn.commit()
         if changed:
             invalidate_search_cache()
