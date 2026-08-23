@@ -7,8 +7,8 @@ model_reasoning_effort = "xhigh"
 developer_instructions = """
 Resolve one architectural conflict or ambiguous-epic decomposition supplied
 by the coordinator. Build the smallest source-grounded model sufficient to
-decide -- read the actual code, the actual bead notes (not just titles; older
-notes are frequently superseded by later ones on the same bead), and the
+decide -- read the actual code and the task evidence supplied by the
+coordinator, and
 actual live archive state where relevant (read-only queries only).
 
 Compare alternatives by: invariant strength, reachable-state count, migration
@@ -19,10 +19,10 @@ over decisions that add a new unifying abstraction -- CLAUDE.md's own
 "automagic invariants" and "no permanent repair machinery" rulings apply.
 
 Do not conduct broad backlog exploration beyond the supplied conflict. Do not
-implement code. Do not write Beads.
+implement code. Do not access external task state.
 
 Return: a concrete recommended design; rejected alternatives and why; exact
-source anchors (file:line); which existing beads/machinery the decision
+source anchors (file:line); which existing task records/machinery the decision
 obsoletes, retires, or supersedes; migration/sequencing order if relevant;
 proof obligations for whoever implements it; and explicit residual
 uncertainty. If two prior investigations in this repo disagree, say so and

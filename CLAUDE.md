@@ -241,7 +241,7 @@ Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
 
 Before editing schema, classify the change: metadata-only, index-only,
 additive-derived, additive-durable, or semantic-reparse-required. Batch
-same-tier bumps from ready Beads before triggering a live rebuild; don't
+same-tier bumps before triggering a live rebuild; don't
 repeatedly reset+reingest the active archive for isolated index additions.
 
 ---
@@ -324,35 +324,23 @@ These override default agent behavior.
 
 ### Active campaign: devtools/harness overhaul → reindex readiness
 
-The canonical campaign root is Bead `polylogue-reindex-2026`. Reload with:
+The historical reindex campaign root is `polylogue-reindex-2026`. Consult
 
-1. `bd show polylogue-reindex-2026 --json`
-2. `bd graph --open polylogue-reindex-2026`
-3. `bd list --label campaign:reindex-2026 --status open,in_progress --sort priority --limit 0`
-4. `bd ready --label campaign:reindex-2026 --explain --json`
-5. `bd list --label campaign:reindex-2026 --label-pattern 'batch:*' --status open,in_progress --limit 0` and inspect each batch's `authoritative_beads` metadata.
+the external task authority, not this checkout. Workstream epics A-H are
+closure gates, not executable tasks. Historical campaign genesis is verified
+against pinned Git blobs in `docs/campaign-genesis/`; it is evidence, not a
+current operational queue. `.agent/campaigns/2026-08-overhaul/` is historical
+migration evidence only and must not be consulted for current status,
+sequencing, ownership, or next action.
 
-Workstream epics A-H are closure gates, not executable tasks. Existing member Beads remain durable scope; ship coherent thematic PRs and update satisfied or split member Beads directly in the Dolt task backend. Campaign-wide rules live here; machine receipts stay in their evidence stores and are referenced by digest. `.agent/campaigns/2026-08-overhaul/` is historical migration evidence only and must not be consulted for current status, sequencing, ownership, or next action.
+### External task authority
 
-### Beads issue tracking
-
-This repo uses `bd` (Beads) for durable task state AND as the devloop: `bd
-prime` -> `bd ready` -> claim -> work -> PR -> close with reasons. The former
-bespoke conductor packet is retired — do not resurrect it or `devloop-*`
-scripts under any name. (Its evidence may still sit in a gitignored,
-untracked `.agent/archive/devloop-2026-07/` in some working checkouts —
-polylogue-ocby — it is not part of the repo and a fresh clone will not have
-it.) Repo agent conventions: `.agent/CONVENTIONS.md`; run
-`devtools verify bead-graph` after changing task relationships. Run `bd prime` when task
-context, ready work, blockers, or project memory matter. Use `bd ready --json`,
-`bd show <id> --json`, `bd update <id> --claim --json`,
-`bd close <id> --reason "…" --json`. Create linked Beads issues for discovered
-follow-up work rather than leaving markdown TODOs as the source of truth.
-`bd dolt push` publishes task state independently of Git branches and PRs.
-
-Task mutations are Dolt state, not Git content: claims, notes, relations, and
-closures must never create a code commit or PR. Git revisions of historical
-JSONL snapshots remain evidence inputs only and are never imported on checkout.
+Task authority is external to this checkout. Feature worktrees and PRs must
+never import, mutate, carry, or publish live task state; ordinary task activity
+must not dirty Git or change with a branch switch. The former local devloop,
+Beads graph tooling, and task-state carriers are retired. Historical Beads
+exports remain immutable Git evidence, and configured append-only interaction
+ledgers remain archive inputs only.
 
 ### Issue-first for non-trivial work
 
@@ -380,9 +368,9 @@ Use tools to eliminate repeated manual steps, not to prove a local ceremony happ
 
 - **Workspace lifecycle:** create, inspect, checkpoint, recover, stack, publish, land, finish, and reap workspaces through `agentctl workspace`. AgentCTL owns Git identity and exact-head job binding; Polylogue does not keep a second worktree registry or handoff protocol.
 - **Lane work:** give each lane concrete ownership and focused verification. A lane commits each completed logical chunk and reports verification normally. Dirty or divergent work remains protected by AgentCTL until it is checkpointed, recovered, or explicitly resolved.
-- **Integration:** use AgentCTL stacks for dependent workspace histories and GitHub PRs for publication. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Use `devtools workspace bead-cluster` as advisory planning, then check actual changed paths before integration. Do not serialize independent implementation behind a coordinator PR queue.
+- **Integration:** use AgentCTL stacks for dependent workspace histories and GitHub PRs for publication. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Check actual changed paths before integration; do not serialize independent implementation behind a coordinator PR queue.
 - **Verification:** lanes run exact focused `devtools test` selectors. Plain `devtools verify` runs the compatible selected testmon set or refuses; it never promotes an unavailable graph into a complete corpus. `devtools verify --all` is an explicit end-of-wave or operator-directed checkpoint.
-- **Publication:** open one PR for a coherent batch. Keep merge automation only where it removes real manual mistakes; do not make receipts, carrier updates, or a complete corpus a per-lane admission requirement. The lane runtime and merge surface are being reduced toward derived Git/job state and batch integration.
+- **Publication:** open one PR for a coherent batch. Keep merge automation only where it removes real manual mistakes; do not make a complete corpus a per-lane admission requirement. The lane runtime and merge surface are derived from Git/job state and batch integration.
 
 ### Coordinator dispatch: no poll loops
 
@@ -397,9 +385,8 @@ All product code lands via **feature branches + squash-merged PRs** to `master`
   `docs:`/`chore:`). The **PR title is the squash-merge subject** on `master` —
   ≤72 chars, imperative, describes what changed. Ends up as permanent history.
 - PR body sections (all required): **Summary**, **Problem** (evidence, not "user
-  asked"), **Solution** (modules touched, non-obvious decisions), **Verification**
-  (exact commands + the output line that matters, not "tests pass"), and a
-  human whole-Bead disposition matrix plus the rendered `pr-scope` carrier.
+  asked"), **Solution** (modules touched, non-obvious decisions), and
+  **Verification** (exact commands + the output line that matters, not "tests pass").
 - Routine PRs do **not** edit `pyproject.toml` `version` or `CHANGELOG.md` —
   release-please owns those from conventional subjects on `master`.
 - **Claim verification:** before writing that something is "unified"/"aligned"/
@@ -549,7 +536,7 @@ Core loop:
   it. A `[type-only]` module reaches production **only** through a
   `TYPE_CHECKING` import: reported for a human, never failed, and never proof
   of dead code.
-- `devtools workspace …` — Polylogue-specific task history, archive operations, evidence, and advisory Beads clustering. Generic workspace and delivery lifecycle belongs to `agentctl workspace`.
+- `devtools workspace …` — Polylogue-specific archive operations and evidence. Generic workspace and delivery lifecycle belongs to `agentctl workspace`.
 
 Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.

@@ -47,8 +47,6 @@ def main() -> int:
     required = (
         root / "index.html",
         root / "project.json",
-        root / "beads" / "index.html",
-        root / "beads" / "issues.jsonl",
     )
     missing = [path.relative_to(root).as_posix() for path in required if not path.is_file()]
     broken: list[str] = []

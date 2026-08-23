@@ -2758,7 +2758,6 @@ def build_verify_steps(
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
         steps.append(("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")))
         steps.append(("verify insight-honesty", _devtools_cmd("verify insight-honesty")))
-        steps.append(("verify bead-graph", _devtools_cmd("verify bead-graph")))
     return steps
 
 

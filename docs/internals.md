@@ -189,8 +189,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
     newer runtime as appropriate.
 - During development, schema changes are triaged before reset/reingest:
   metadata-only, index-only, additive-derived, additive-durable, or
-  semantic-reparse-required. Same-tier schema changes from ready Beads should be
-  batched before a live rebuild so the active archive is not reset repeatedly.
+  semantic-reparse-required. Same-tier schema changes should be batched before
+  a live rebuild so the active archive is not reset repeatedly.
 - `devtools verify schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
   derived changes must use declared lifecycle deltas and clone-validated

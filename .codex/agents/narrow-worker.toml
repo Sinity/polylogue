@@ -22,15 +22,12 @@ bugfix. Prove the change with real tests -- for a deletion/refactor lane,
 that means the affected test suite still passes and dead-path removal is
 verified by grep (claiming "removed" when a call site survives is worse than
 not claiming it). Do not redesign beyond the assigned lane's scope, do not
-write to Beads, do not merge or push, do not touch /realm/db/polylogue.
+access external task state, do not merge or push, do not touch /realm/db/polylogue.
 
 Commit coherent checkpoints. Return exact changed files, commands run and
 their output, an acceptance-criteria match table, and residual uncertainty.
 
-Provide the coordinator with a JSON scope input containing assigned Bead IDs,
-typed whole-Bead dispositions, evidence refs, and open successors for residual
-scope. The coordinator owns rendering the versioned carrier, embedding it in
-the PR body, validating the published non-draft PR, and opening or updating the
-PR. Never derive a disposition by parsing acceptance prose or fabricate a
-successor Bead ID.
+Report the completed scope, evidence refs, and residual work to the
+coordinator. The coordinator owns any external task-system update and PR
+publication; do not encode task state in this branch.
 """

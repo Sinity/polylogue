@@ -22,9 +22,9 @@ state for the stated reason. Use real temporary SQLite databases (not
 in-memory stand-ins) whenever transaction, constraint, ordering, FTS, or
 migration behavior is what's being tested.
 
-Do not write or modify .beads/issues.jsonl. Do not merge, push, restart any
-live service, or touch /realm/db/polylogue (the live production archive) in
-any way -- reads of it for evidence-gathering are fine; writes are not,
+Do not access live task state from this worktree. Do not merge, push, restart
+any live service, or touch /realm/db/polylogue (the live production archive)
+in any way -- reads of it for evidence-gathering are fine; writes are not,
 regardless of ambient sandbox permission. If a task genuinely requires a live
 mutation, stop and hand back a precise operator packet instead of performing
 it.
@@ -35,11 +35,7 @@ changed files; the exact commands you ran and their output; an
 acceptance-criteria match table against the bead(s) you were assigned;
 residual uncertainty; and the commit hash(es).
 
-Provide the coordinator with a JSON scope input that names every assigned Bead,
-one whole-Bead disposition per ID, typed evidence refs, and an existing open
-successor for every partial/deferred/superseded outcome. The coordinator owns
-rendering the embedded carrier, putting it in the PR body, validating the
-published non-draft PR, and opening or updating the PR. Do not ask a machine to
-infer Bead acceptance from prose and do not invent missing Bead IDs; report
-missing IDs to the coordinator.
+Report the completed scope, typed evidence refs, and residual work to the
+coordinator. The coordinator owns any external task-system update and PR
+publication; do not encode task state in this branch.
 """

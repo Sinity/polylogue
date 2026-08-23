@@ -65,16 +65,11 @@ escape-hatch environment variable to silence the guard.
   background job's progress is itself the signal to stop and let the
   notification arrive instead (polylogue-kzse6).
 
-## Beads: read-only
+## External task authority
 
-**Never invoke the `bd` CLI.** Any `bd` call reimports this worktree's
-(possibly stale) `.beads/issues.jsonl` into the shared database and can
-silently revert live bead state the coordinator or another lane wrote
-concurrently. If you need bead content, read `.beads/issues.jsonl` directly
-(it's plain JSONL, one JSON object per line — `grep`/`jq`/Python parse it) or
-work from the bead content already included in your dispatch prompt. If you
-discover follow-up work that should become a bead, report it back to the
-coordinator in your final summary instead of creating it yourself.
+Do not access or mutate live task state from this worktree. The coordinator
+supplies the assigned scope and owns all task-system interaction; branches,
+commits, and PRs carry product work only.
 
 ## Red-first for bug fixes
 
@@ -117,8 +112,7 @@ by construction.
 ## Delivery
 
 - Commit every completed logical chunk with an accurate conventional subject.
-- Do **not** open an individual PR, create a scope carrier, record a merge-gate receipt, or merge to `master` unless the dispatch explicitly assigns you exclusive ownership of a batch branch. The normal delivery unit is a committed lane branch, which the integration queue assimilates into the shared batch.
-- Reference any assigned Bead with neutral wording only (`Ref polylogue-xxxx` / `Ref #N`). Never use GitHub resolver keywords beside an issue number unless the dispatch explicitly assigns that state transition.
+- Do **not** open an individual PR or merge to `master` unless the dispatch explicitly assigns you exclusive ownership of a batch branch. The normal delivery unit is a committed lane branch, which the integration queue assimilates into the shared batch.
 
 ## Final report
 

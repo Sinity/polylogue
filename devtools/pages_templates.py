@@ -23,7 +23,6 @@ BASE_TEMPLATE = """<!DOCTYPE html>
             <nav class="primary-nav" aria-label="Primary navigation">
                 <a class="nav-essential" href="{{ get_started_href }}">Get started</a>
                 <a href="{{ docs_href }}">Documentation</a>
-                <a class="nav-essential" href="{{ board_href }}">Roadmap</a>
                 <a href="https://github.com/Sinity/polylogue">GitHub</a>
             </nav>
             <button class="theme-toggle" type="button" onclick="toggleTheme(this)" title="Toggle color theme" aria-label="Toggle color theme">◐</button>
@@ -47,7 +46,7 @@ BASE_TEMPLATE = """<!DOCTYPE html>
     <footer class="site-footer">
         <div class="footer-inner">
             <span>Polylogue · local evidence for AI work</span>
-            <span><a href="{{ docs_href }}">Documentation</a> · <a href="{{ board_href }}">Roadmap</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
+            <span><a href="{{ docs_href }}">Documentation</a> · <a href="https://github.com/Sinity/polylogue">Source</a></span>
         </div>
     </footer>
     <script>
@@ -89,7 +88,6 @@ HOME_TEMPLATE = """{% extends "base.html" %}
     <div class="hero-actions">
         <a class="button button-primary" href="{{ get_started_href }}">Get started <span aria-hidden="true">→</span></a>
         <a class="button" href="{{ demos_href }}">Run a private-data-free proof</a>
-        <a class="button" href="{{ board_href }}">Browse the roadmap</a>
     </div>
     <div class="hero-command"><pre><code>nix run github:Sinity/polylogue -- demo receipts --compact</code></pre></div>
 </section>
@@ -258,7 +256,6 @@ PAGES_TEMPLATES = {
     "base.html": BASE_TEMPLATE,
     "home.html": HOME_TEMPLATE,
     "doc.html": DOC_TEMPLATE,
-    "beads.html": BEADS_TEMPLATE,
     "verifiability_catalog.html": VERIFIABILITY_CATALOG_TEMPLATE,
     "verifiability_coverage.html": COVERAGE_TEMPLATE,
     "verifiability_mutation.html": MUTATION_TEMPLATE,

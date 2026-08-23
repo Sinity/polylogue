@@ -13,16 +13,13 @@ to produce evidence and a verdict, never a code change.
   repo. If your investigation reveals an obvious one-line fix, name it in
   your report instead of applying it — that decision belongs to whoever
   reads your findings.
-- **No `bd` CLI invocations, ever.** Any `bd` call reimports this checkout's
-  `.beads/issues.jsonl` into the shared database and can revert live bead
-  state written concurrently elsewhere. If you need bead content, read
-  `.beads/issues.jsonl` directly (plain JSONL — `grep`/`jq`/Python parse it).
-  If your investigation should become a tracked follow-up, say so in your
-  report; do not create the bead yourself.
+- **No live task-system access.** Task authority is external to this checkout;
+  report a follow-up to the coordinator rather than creating or reading task
+  state from a worktree.
 - Read freely: source, tests, docs, git history (`git log`, `git blame`,
   `git show`), and run read-only queries (`rg`, `sqlite3 ... SELECT`,
   `devtools status`, etc.). Never run anything that mutates repo state,
-  the archive DB, or bead state.
+  the archive DB, or external task state.
 - **If confirming a finding needs `devtools test`/`devtools verify` or a
   long `sqlite3 ... SELECT` against the live archive, pass an explicit
   `timeout` of `600000` (600s) on the Bash tool call.** The harness's Bash
