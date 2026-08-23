@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Origin, Provider
 from polylogue.pipeline.services.acquisition_persistence import persist_raw_record
 from polylogue.pipeline.services.acquisition_records import make_raw_record
@@ -21,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     execute_raw_admission_plan_sync,
     plan_raw_admission,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import raw_writes
 
@@ -147,6 +149,35 @@ async def test_pending_preparse_conflict_has_no_async_side_effects_after_rollbac
                 await backend.admit_raw(conflicting)
     await backend.close()
     assert _snapshot(root / "source.db") == before
+
+
+async def test_reacquiring_post_parse_bound_raw_keeps_its_bound_revision(tmp_path: Path) -> None:
+    """Parser binding is a refinement, not a later acquisition conflict."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    request = _request(receipt=None)
+    backend = SQLiteBackend(db_path=root / "index.db")
+    async with backend.bulk_connection():
+        first = await backend.admit_raw(request)
+    with sqlite3.connect(root / "source.db") as conn:
+        bind_source_raw_revision(
+            conn,
+            first.result.raw_id,
+            RawRevisionEnvelope(
+                logical_source_key="chatgpt-export:conversation-1",
+                kind=RawRevisionKind.FULL,
+                source_revision="parsed-revision",
+                acquisition_generation=1,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+        )
+        conn.commit()
+    async with backend.bulk_connection():
+        repeated = await backend.admit_raw(request)
+    await backend.close()
+
+    assert repeated.inserted is False
+    assert repeated.result.raw_id == first.result.raw_id
 
 
 async def test_two_acquisition_coordinates_share_one_blob_but_not_raw_identity(tmp_path: Path) -> None:

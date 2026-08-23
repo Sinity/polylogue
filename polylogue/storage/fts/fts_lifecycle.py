@@ -535,7 +535,12 @@ async def rebuild_fts_index_async(
     progress_callback: Callable[[int, str | None], None] | None = None,
     progress_desc: Callable[[int, int], str] | None = None,
 ) -> None:
-    """Rebuild the full FTS index from persisted archive rows."""
+    """Rebuild the full FTS index from persisted archive rows.
+
+    A whole-archive rebuild owns enough state to publish the same exact
+    invariant snapshot as the synchronous lifecycle.  Scoped repairs remain
+    bounded observations and therefore stay stale until an exact pass.
+    """
     await ensure_fts_index_async(conn)
     if session_ids is not None:
         await repair_fts_index_async(
@@ -545,21 +550,10 @@ async def rebuild_fts_index_async(
             progress_desc=progress_desc,
         )
         return
-    await conn.execute(FTS_REBUILD_SQL)
-    await conn.execute(insert_all_message_rows_sql())
-    await conn.execute(FTS_IDENTITY_REBUILD_SQL)
-    await conn.execute(insert_all_message_identity_rows_sql())
-    readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
-    from polylogue.storage.fts.freshness import STALE, record_fts_surface_state_async
-
-    await record_fts_surface_state_async(
-        conn,
-        surface="messages_fts",
-        state=STALE,
-        source_rows=int(readiness["total_rows"]),
-        indexed_rows=int(readiness["indexed_rows"]),
-        detail="async rebuild requires a sync exact invariant publication",
-    )
+    # Keep the exact scan on aiosqlite's owning worker thread.  The sync
+    # lifecycle is the canonical full-rebuild path and couples the rebuild to
+    # its transaction-bound freshness publication.
+    await conn._execute(rebuild_fts_index_sync, conn._conn)  # type: ignore[no-untyped-call]
 
 
 def repair_message_fts_index_sync(

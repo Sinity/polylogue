@@ -419,7 +419,7 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                 )
                 freshness_ready = (
                     True
-                    if freshness_records is None
+                    if freshness_records is None or freshness is None
                     else freshness_ready_record_trusted(
                         state=recorded_state,
                         source_rows=source_rows,
@@ -428,6 +428,18 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                         excess_rows=excess_rows,
                         duplicate_rows=duplicate_rows,
                         identity_mismatch_rows=identity_mismatch_rows,
+                        verification_kind=(
+                            str(freshness.get("verification_kind"))
+                            if freshness.get("verification_kind") is not None
+                            else None
+                        ),
+                        exact_checked_at=(
+                            str(freshness.get("exact_checked_at"))
+                            if freshness.get("exact_checked_at") is not None
+                            else None
+                        ),
+                        exact_generation=_row_int(freshness.get("exact_generation")),
+                        current_generation=_row_int(conn.execute("PRAGMA user_version").fetchone()[0]),
                         source_has_rows=source_has_rows,
                     )
                 )

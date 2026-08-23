@@ -169,6 +169,9 @@ def _freshness_record(conn: sqlite3.Connection, surface: str) -> dict[str, objec
         "excess_rows",
         "duplicate_rows",
         "identity_mismatch_rows",
+        "verification_kind",
+        "exact_checked_at",
+        "exact_generation",
     ):
         if name in columns:
             selected.append(name)
@@ -200,6 +203,18 @@ def _ready_freshness_marker(conn: sqlite3.Connection, surface: str, triggers: tu
         return False
     source_rows = _int_or_zero(record.get("source_rows"))
     indexed_rows = _int_or_zero(record.get("indexed_rows"))
+    # Pre-evidence archives are handled by the repair path's existing
+    # structural checks.  Once the evidence columns exist, READY is trusted
+    # only when the recorded exact generation is current.
+    if "verification_kind" not in record:
+        return (
+            str(record["state"]) == "ready"
+            and source_rows == indexed_rows
+            and _int_or_zero(record.get("missing_rows")) == 0
+            and _int_or_zero(record.get("excess_rows")) == 0
+            and _int_or_zero(record.get("duplicate_rows")) == 0
+            and _int_or_zero(record.get("identity_mismatch_rows")) == 0
+        )
     return freshness_ready_record_trusted(
         state=str(record["state"]),
         source_rows=source_rows,
@@ -208,6 +223,10 @@ def _ready_freshness_marker(conn: sqlite3.Connection, surface: str, triggers: tu
         excess_rows=_int_or_zero(record.get("excess_rows")),
         duplicate_rows=_int_or_zero(record.get("duplicate_rows")),
         identity_mismatch_rows=_int_or_zero(record.get("identity_mismatch_rows")),
+        verification_kind=str(record.get("verification_kind")) if record.get("verification_kind") is not None else None,
+        exact_checked_at=str(record.get("exact_checked_at")) if record.get("exact_checked_at") is not None else None,
+        exact_generation=_int_or_zero(record.get("exact_generation")),
+        current_generation=_int_or_zero(conn.execute("PRAGMA user_version").fetchone()[0]),
         source_has_rows=_source_has_rows(conn, surface) if source_rows == 0 and indexed_rows == 0 else False,
     )
 

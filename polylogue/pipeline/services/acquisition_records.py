@@ -86,7 +86,10 @@ def make_raw_record(
         )
     else:
         raw_id = deterministic_raw_session_id(
-            origin_from_provider(Provider.from_string(source_name)),
+            # Raw identity names the acquisition coordinate.  Parser hints
+            # refine the retained origin later, but must never create a new
+            # observation for the same captured bytes.
+            origin_from_provider(capture_mode),
             raw_data.source_path,
             raw_data.source_index or 0,
             bytes.fromhex(blob_hash),

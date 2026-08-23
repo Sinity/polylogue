@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import aiosqlite
 
@@ -48,6 +49,28 @@ async def execute_raw_admission_plan_async(
     publication-reservation behavior.
     """
     request = plan.request
+    # Before coordinate-sensitive raw ids, normal acquisition used the blob
+    # hash itself as its raw id.  Reuse that legacy row only when it proves the
+    # same coordinate and bytes; a different coordinate must retain the new
+    # distinct observation identity.
+    legacy_raw_id = request.blob_hash.hex()
+    if plan.raw_id != legacy_raw_id:
+        cursor = await conn.execute(
+            """
+            SELECT native_id, source_path, source_index, blob_hash, blob_size
+            FROM raw_sessions WHERE raw_id = ?
+            """,
+            (legacy_raw_id,),
+        )
+        legacy = await cursor.fetchone()
+        if legacy is not None and tuple(legacy) == (
+            request.native_id,
+            request.source_path,
+            request.source_index,
+            request.blob_hash,
+            request.blob_size,
+        ):
+            plan = replace(plan, raw_id=legacy_raw_id)
     cursor = await conn.execute("PRAGMA database_list")
     schemas = {str(row[1]) for row in await cursor.fetchall()}
     excision_schema = "source_tier" if "source_tier" in schemas else "main"
@@ -99,7 +122,13 @@ async def execute_raw_admission_plan_async(
                     f"raw id is already bound to a conflicting origin: {plan.raw_id} "
                     f"(stored={stored_origin!r}, incoming={incoming_origin!r})"
                 )
-        if retained_values[6:] != _revision_values(plan):
+        # A pre-parse reservation is deliberately replaced by the parser's
+        # typed revision envelope.  Re-acquiring the same observation after
+        # that bind is idempotent; only an unrelated non-pending conflict is
+        # fatal.
+        retained_revision = retained_values[6:]
+        pending_revision = _revision_values(plan)
+        if retained_revision != pending_revision and plan.revision.authority is not RawRevisionAuthority.QUARANTINED:
             raise ValueError(f"raw id is already bound to a different revision envelope: {plan.raw_id}")
     else:
         origin = getattr(request.origin, "value", request.origin)
