@@ -1,62 +1,77 @@
-"""Fixed AgentCTL-owned browser-render smoke for the deployed Polylogue web root.
-
-Sinnixd is the admission and lifecycle authority. This private module performs
-the product probe after the declared operation has created the service cgroup
-and leased its CDP port.
-"""
+"""Fixed AgentCTL-owned shared-Chrome render proof for the deployed web root."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from dataclasses import asdict
+import subprocess
+from pathlib import Path
 
-from devtools import deployment_smoke
-from devtools.sinnixd_service_context import require_declared_service_context
+from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
 
-_CDP_PORT_ENV = "POLYLOGUE_DEPLOYMENT_BROWSER_CDP_PORT"
-_CDP_PORT_RANGE = (48992, 49055)
-
-
-def _service_context_port() -> int:
-    """Reject ordinary shell calls that lack the expected fixed service context.
-
-    This is defense in depth only. Its environment values are not a capability;
-    Sinnixd authorizes the job, binds the checkout, leases the port, and owns
-    the transient systemd cgroup.
-    """
-    require_declared_service_context("deployment_browser_smoke")
-    raw_port = os.environ.get(_CDP_PORT_ENV)
-    try:
-        port = int(raw_port) if raw_port is not None else None
-    except ValueError as error:
-        raise ValueError(f"{_CDP_PORT_ENV} must be an integer fixed-service port") from error
-    if port is None or not _CDP_PORT_RANGE[0] <= port <= _CDP_PORT_RANGE[1]:
-        raise ValueError(f"{_CDP_PORT_ENV} is outside the fixed deployment-browser port range")
-    return port
+_NODE_PROOF_TIMEOUT_S = 90.0
+_MAX_ERROR_MESSAGE = 512
 
 
-def run_smoke(*, timeout_s: float = 90.0) -> deployment_smoke.BrowserRenderProbe:
-    """Render the fixed deployed web root and require Chrome to exit cleanly."""
-    port = _service_context_port()
-    return deployment_smoke._probe_browser_render(
-        "http://127.0.0.1:8766/",
-        path=deployment_smoke.SYSTEMWIDE_PATH,
-        timeout_s=timeout_s,
-        executable=None,
-        debugging_port=port,
+def _proof_environment() -> dict[str, str]:
+    """Pass runtime essentials without accepting private-browser configuration."""
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if "CDP" in name or "PROFILE" in name or "BROWSER_EXECUTABLE" in name:
+            environment.pop(name)
+    return environment
+
+
+def run_smoke(*, repo_root: Path | None = None, timeout_s: float = _NODE_PROOF_TIMEOUT_S) -> dict[str, object]:
+    """Render the deployed root in one proof-owned parked Chrome target."""
+    require_declared_operation_context("deployment_browser_smoke")
+    root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
+    process = subprocess.Popen(
+        ["node", "scripts/deployment_shared_chrome_smoke.mjs"],
+        cwd=root / "browser-extension",
+        env=_proof_environment(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
+    try:
+        stdout, _stderr = process.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired as error:
+        terminate_process_group(process)
+        raise RuntimeError("shared-Chrome deployment render proof timed out") from error
+    finally:
+        terminate_process_group(process)
+    if process.returncode != 0:
+        raise RuntimeError("shared-Chrome deployment render proof failed")
+    payload = json.loads(stdout)
+    render = payload.get("render") if isinstance(payload, dict) else None
+    if payload.get("ok") is not True or not isinstance(render, dict):
+        raise RuntimeError("shared-Chrome deployment render proof reported an unsuccessful result")
+    if (
+        render.get("url") != "http://127.0.0.1:8766/"
+        or not isinstance(render.get("dom_bytes"), int)
+        or isinstance(render.get("dom_bytes"), bool)
+        or render["dom_bytes"] <= 0
+        or not isinstance(render.get("screenshot_bytes"), int)
+        or isinstance(render.get("screenshot_bytes"), bool)
+        or render["screenshot_bytes"] <= 0
+        or render.get("target_closed") is not True
+    ):
+        raise RuntimeError("shared-Chrome deployment render proof returned an invalid result")
+    return {"ok": True, "render": render}
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit one bounded JSON result.")
     parser.parse_args(argv)
+    payload: dict[str, object]
     try:
-        payload = asdict(run_smoke())
-    except (OSError, ValueError) as error:
-        payload = {"ok": False, "error": str(error)[:512]}
+        payload = run_smoke()
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
+        payload = {"ok": False, "error": str(error)[:_MAX_ERROR_MESSAGE]}
     print(json.dumps(payload, sort_keys=True))
     return 0 if payload.get("ok") is True else 1
 

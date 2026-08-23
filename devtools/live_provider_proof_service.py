@@ -1,9 +1,9 @@
-"""Declared AgentCTL entrypoint for the private copied-profile provider proof.
+"""Declared AgentCTL entrypoint for the shared-Chrome provider proof.
 
-The profile path, Chrome resolution, providers, receiver, output, and leased
-ports are fixed by this operation. Sinnixd remains the authority for admission,
-exact-head binding, and leases. This module verifies it is still inside that
-specific transient unit before it can start Node or Chrome.
+The providers and receiver are fixed by this operation. The Node workflow uses
+the Sinnix shared-Chrome control boundary, which opens and parks proof-owned
+windows in the existing authenticated browser. Sinnixd remains the authority
+for admission, exact-head binding, and the receiver lease.
 """
 
 from __future__ import annotations
@@ -21,9 +21,7 @@ from typing import Any
 from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 
-_CDP_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_CDP_PORT"
 _RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
-_CDP_PORT_RANGE = (49056, 49119)
 _RECEIVER_PORT_RANGE = (49120, 49183)
 _NODE_PROOF_TIMEOUT_S = 120
 _MAX_ERROR_MESSAGE = 512
@@ -40,14 +38,14 @@ def _leased_port(name: str, bounds: tuple[int, int]) -> int:
     return port
 
 
-def _service_context_ports() -> tuple[int, int]:
+def _service_context_receiver_port() -> int:
     require_declared_service_context("live_provider_proof")
-    return (_leased_port(_CDP_PORT_ENV, _CDP_PORT_RANGE), _leased_port(_RECEIVER_PORT_ENV, _RECEIVER_PORT_RANGE))
+    return _leased_port(_RECEIVER_PORT_ENV, _RECEIVER_PORT_RANGE)
 
 
 def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
-    """Run only the fixed copied-profile implementation under its service lease."""
-    cdp_port, receiver_port = _service_context_ports()
+    """Run the shared-Chrome workflow under its receiver service lease."""
+    receiver_port = _service_context_receiver_port()
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     extension_root = root / "browser-extension"
     scratch = Path(os.environ["TMPDIR"]).resolve() / "polylogue-live-provider-proof"
@@ -72,7 +70,7 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
         )
         assert process is not None
         try:
-            stdout, stderr = process.communicate(timeout=_NODE_PROOF_TIMEOUT_S)
+            stdout, _stderr = process.communicate(timeout=_NODE_PROOF_TIMEOUT_S)
         except subprocess.TimeoutExpired as error:
             terminate_process_group(process)
             with suppress(subprocess.TimeoutExpired):
@@ -81,13 +79,13 @@ def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
                 ["node", "scripts/live_provider_proof.mjs"], _NODE_PROOF_TIMEOUT_S
             ) from error
         if process.returncode != 0:
-            raise RuntimeError((stderr or stdout or "live provider proof failed")[:512])
+            raise RuntimeError("live provider proof failed")
         result = json.loads(stdout)
         if not isinstance(result, dict) or result.get("ok") is not True:
             raise RuntimeError("live provider proof reported an unsuccessful result")
         return {
             "ok": True,
-            "ports": {"browser_cdp": cdp_port, "browser_capture": receiver_port},
+            "ports": {"browser_capture": receiver_port},
             "providers": sorted(result.get("providers", {})),
         }
     finally:

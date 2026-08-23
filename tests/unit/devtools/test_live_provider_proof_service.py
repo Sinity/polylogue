@@ -36,7 +36,7 @@ def test_live_provider_timeout_terminates_group_and_becomes_typed_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("TMPDIR", str(tmp_path))
-    monkeypatch.setattr(live_provider_proof_service, "_service_context_ports", lambda: (49056, 49120))
+    monkeypatch.setattr(live_provider_proof_service, "_service_context_receiver_port", lambda: 49120)
     monkeypatch.setattr(live_provider_proof_service, "make_server", lambda *_args, **_kwargs: _FakeServer())
     monkeypatch.setattr(live_provider_proof_service, "Thread", _FakeThread)
     process = SimpleNamespace(

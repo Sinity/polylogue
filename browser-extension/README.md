@@ -102,13 +102,7 @@ agentctl job start polylogue dev_loop_proof --workspace <workspace-id>
 agentctl job result <job-id>
 ```
 
-The proof starts a temporary receiver, proves unauthenticated rejection, loads
-the unpacked extension into headless Chromium/Chrome, captures deterministic
-ChatGPT and Claude fixture pages, and verifies archive/API convergence without
-cookies or raw turn text in its bounded result. AgentCTL owns the process,
-ports, timeout, cancellation, and cleanup. The copied-profile proof runs only
-through the declared `live_provider_proof` AgentCTL operation. It has no npm or
-devtools launcher and does not create another Polylogue daemon lifecycle.
+The proof starts a temporary receiver, proves unauthenticated rejection, asks Sinnix's shared-Chrome control boundary to load the unpacked extension and create one parked `agentbrowser` window, submits deterministic ChatGPT and Claude captures through the receiver, and verifies archive/API convergence without cookies or raw turn text in its bounded result. It never launches Chrome or Chromium, creates a browser profile, or allocates a private CDP port. AgentCTL owns the process, ports, timeout, cancellation, and cleanup. The shared-Chrome provider proof runs only through the declared `live_provider_proof` AgentCTL operation. It opens parked, proof-owned windows in the authenticated browser and does not create another Polylogue daemon lifecycle.
 
 ## Mission control, pairing, and ambient status
 

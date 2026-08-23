@@ -68,9 +68,9 @@ anything different; release-please consumes the existing history.
 These pre-flight checks are source-safe: they build from the checkout, install
 or inspect the produced artifact, and run against an empty or explicit archive
 root. Browser first-paint proof uses the declared `deployment_browser_smoke`
-AgentCTL operation, which records its leased CDP port, DOM bytes, and screenshot
-bytes for the web root. It is not a claim about MCP DevTools navigation, copied profiles,
-authenticated provider pages, or production archive timings.
+AgentCTL operation, which records DOM and screenshot bytes from one proof-owned
+target in the shared operator Chrome. It is not a claim about MCP DevTools navigation,
+copied profiles, authenticated provider pages, or production archive timings.
 
 ## Cut (the normal path)
 

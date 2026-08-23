@@ -25,15 +25,14 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 
 _API_PORT_ENV = "POLYLOGUE_API_PORT"
 _BROWSER_CAPTURE_PORT_ENV = "POLYLOGUE_BROWSER_CAPTURE_PORT"
-_BROWSER_CDP_PORT_ENV = "POLYLOGUE_BROWSER_CDP_PORT"
 _DECLARED_PORTS = {
     _API_PORT_ENV: (48800, 48863),
     _BROWSER_CAPTURE_PORT_ENV: (48864, 48927),
-    _BROWSER_CDP_PORT_ENV: (48928, 48991),
 }
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
+_SHARED_CHROME_TIMEOUT_S = 30
 
 
 def _leased_port(name: str, bounds: tuple[int, int]) -> int:
@@ -104,20 +103,26 @@ def _http_get_json(url: str, *, timeout_s: float = 5.0) -> tuple[int, dict[str, 
         connection.close()
 
 
-def _receiver_payload() -> dict[str, object]:
+def _receiver_payload(*, provider: str = "chatgpt", session_id: str = "polylogue-agentctl-proof") -> dict[str, object]:
+    source_url = {
+        "chatgpt": f"https://chatgpt.com/c/{session_id}",
+        "claude-ai": f"https://claude.ai/chat/{session_id}",
+    }.get(provider)
+    if source_url is None:
+        raise ValueError(f"unsupported deterministic provider: {provider}")
     return {
         "polylogue_capture_kind": "browser_llm_session",
         "schema_version": 1,
         "provenance": {
-            "source_url": "https://chatgpt.com/c/polylogue-agentctl-proof",
+            "source_url": source_url,
             "page_title": "Polylogue AgentCTL proof",
             "captured_at": "2026-08-23T00:00:00+00:00",
             "adapter_name": "agentctl-proof",
             "extension_instance_id": "agentctl-proof-instance",
         },
         "session": {
-            "provider": "chatgpt",
-            "provider_session_id": "polylogue-agentctl-proof",
+            "provider": provider,
+            "provider_session_id": session_id,
             "title": "Polylogue AgentCTL proof",
             "turns": [{"provider_turn_id": "turn-1", "role": "user", "text": "proof"}],
         },
@@ -223,46 +228,17 @@ def _start_daemon(
         )
 
 
-def _run_provider_capture(
-    *,
-    repo_root: Path,
-    artifact_root: Path,
-    receiver_url: str,
-    session_id: str,
-    api_url: str,
-    cdp_port: int,
-) -> dict[str, object]:
-    """Run the real extension/provider fixture contract under the leased receiver."""
+def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CHROME_TIMEOUT_S) -> None:
+    """Exercise the existing Chrome only through Sinnix's owned control boundary."""
     extension_root = repo_root / "browser-extension"
-    result_path = artifact_root / "browser-provider-result.json"
     environment = os.environ.copy()
     environment.update(
         {
-            "POLYLOGUE_PROVIDER_SMOKE_EXTENSION_ROOT": str(extension_root),
-            "POLYLOGUE_PROVIDER_SMOKE_KEEP_PROFILE": "1",
-            "POLYLOGUE_PROVIDER_SMOKE_OUT": str(result_path),
-            "POLYLOGUE_PROVIDER_SMOKE_TIMEOUT_MS": "25000",
-            "POLYLOGUE_PROVIDER_SMOKE_PROFILE_DIR": str(artifact_root / "browser-profile"),
-            "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_TOKEN": _RECEIVER_TOKEN,
-            "POLYLOGUE_PROVIDER_SMOKE_RECEIVER_URL": receiver_url,
-            "POLYLOGUE_PROVIDER_SMOKE_CDP_PORT": str(cdp_port),
-            "POLYLOGUE_PROVIDER_SMOKE_READER_BASE_URL": api_url,
-            "POLYLOGUE_PROVIDER_SMOKE_READER_SESSION_ID": _session_id_for_provider("chatgpt", session_id),
-            "POLYLOGUE_PROVIDER_SMOKE_SPOOL_DIR": str(artifact_root / "browser-capture"),
-            "POLYLOGUE_PROVIDER_SMOKE_SESSION_ID": session_id,
+            "POLYLOGUE_DEV_LOOP_EXTENSION_ROOT": str(extension_root),
         }
     )
     process = subprocess.Popen(
-        [
-            "node",
-            "--input-type=module",
-            "--eval",
-            (
-                "import('./scripts/provider_capture_proof.mjs')"
-                ".then(({ runProviderCapture }) => runProviderCapture())"
-                ".catch((error) => { console.error(error.stack || error.message || error); process.exit(1); })"
-            ),
-        ],
+        ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
         cwd=str(extension_root),
         env=environment,
         stdout=subprocess.PIPE,
@@ -271,23 +247,35 @@ def _run_provider_capture(
         start_new_session=True,
     )
     try:
-        stdout, stderr = process.communicate(timeout=60)
+        stdout, stderr = process.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired as error:
         terminate_process_group(process)
         process.communicate()
-        raise RuntimeError("browser/provider capture script timed out") from error
+        raise RuntimeError("shared-Chrome control proof timed out") from error
     finally:
         terminate_process_group(process)
     completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
-    if completed.returncode != 0 or not result_path.exists():
-        raise RuntimeError("browser/provider capture script did not produce a successful result")
-    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    if completed.returncode != 0:
+        raise RuntimeError("shared-Chrome control proof did not produce a successful result")
+    payload = json.loads(stdout)
     if not isinstance(payload, dict) or payload.get("ok") is not True:
-        raise RuntimeError("browser/provider capture script reported failure")
-    providers = payload.get("providers")
-    if not isinstance(providers, dict):
-        raise RuntimeError("browser/provider capture result is missing providers")
-    return providers
+        raise RuntimeError("shared-Chrome control proof reported failure")
+
+
+def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dict[str, dict[str, str]]:
+    """Keep receiver, archive, and API convergence deterministic and browser-free."""
+    captures: dict[str, dict[str, str]] = {}
+    for provider in ("chatgpt", "claude-ai"):
+        provider_session_id = f"{session_id}-{provider}"
+        status, _accepted = _receiver_post(
+            port=capture_port,
+            body=_receiver_payload(provider=provider, session_id=provider_session_id),
+            token=_RECEIVER_TOKEN,
+        )
+        if status != 202:
+            raise RuntimeError(f"deterministic {provider} capture was not accepted")
+        captures[provider] = {"provider": provider, "provider_session_id": provider_session_id}
+    return captures
 
 
 def _poll_archive_state(*, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float) -> bool:
@@ -323,7 +311,6 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     ports = _require_agentctl_service_context()
     api_port = ports[_API_PORT_ENV]
     capture_port = ports[_BROWSER_CAPTURE_PORT_ENV]
-    cdp_port = ports[_BROWSER_CDP_PORT_ENV]
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
     initialize_active_archive_root(archive_root)
@@ -348,14 +335,8 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     try:
         _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
         session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
-        providers = _run_provider_capture(
-            repo_root=checkout,
-            artifact_root=artifact_root,
-            receiver_url=receiver_url,
-            session_id=session_id,
-            api_url=api_url,
-            cdp_port=cdp_port,
-        )
+        _run_shared_chrome_control(repo_root=checkout)
+        providers = _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
         archive_ok = False
         api_ok = False
         if isinstance(providers, dict):
@@ -388,8 +369,9 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
             raise RuntimeError("archive/API convergence proof failed")
         return {
             "ok": True,
-            "ports": {"api": api_port, "browser_capture": capture_port, "browser_cdp": cdp_port},
+            "ports": {"api": api_port, "browser_capture": capture_port},
             "receiver_auth": {"ok": True},
+            "shared_chrome": {"ok": True},
             "provider_capture": {
                 "providers": sorted(str(name) for name in providers),
                 "archive_converged": archive_ok,
