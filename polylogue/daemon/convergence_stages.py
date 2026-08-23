@@ -1388,53 +1388,18 @@ def _repair_changed_session_fts(
 
 
 def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> None:
-    """Record the real archive-wide ``messages_fts`` freshness state after a
-    targeted (session-scoped) repair.
+    """Mark a targeted ``messages_fts`` repair stale without a global scan.
 
-    A targeted repair only proves the sessions it touched are indexed -- it
-    says nothing about the rest of the archive. This used to call
-    ``message_fts_readiness_sync(conn, verify_total_rows=False)``, a cheap
-    boolean that is really just "has the FTS index ever been populated at
-    all AND does *any* indexable block exist" (``SELECT 1 ... LIMIT 1`` on
-    each side), not "every indexable block is indexed". Because that boolean
-    is true for almost any non-empty, previously-populated archive, every
-    targeted repair call unconditionally wrote ``state=ready,
-    missing_rows=0`` over the ledger's single global ``messages_fts`` row --
-    discarding whatever accurate ``missing_rows`` an exact snapshot had
-    previously recorded and asserting a global verdict a scoped repair never
-    measured. Surface-coherence audit 2026-07-31 caught this live: 12,659
-    blocks missing from the index while the ledger reported ``ready`` with
-    ``missing_rows=0``.
-
-    Fix: mirror ``session_work_events_fts``, which only ever gets its
-    freshness row from an exact, archive-wide invariant snapshot
-    (``fts_invariant_snapshot_sync``) -- never a scoped/cheap approximation.
-    Reuse that same snapshot here for
-    the messages surface; it runs the identical anti-join query the hourly
-    ``fts_orphan_audit`` sweep already accepts at that cadence
-    (``storage/fts/fts_lifecycle.py``'s ``_trigger_invariant_sync``), so its
-    cost is already an accepted class for this surface.
+    A session-scoped repair proves only its requested rows. Preserve the last
+    exact counters until an archive-wide invariant snapshot publishes the next
+    READY verdict.
     """
-    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
-    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+    from polylogue.storage.fts.freshness import record_fts_surface_stale_preserving_counts_sync
 
-    surface = fts_invariant_snapshot_sync(conn).messages
-    ready = bool(surface.ready)
-    record_fts_surface_state_sync(
+    record_fts_surface_stale_preserving_counts_sync(
         conn,
         surface="messages_fts",
-        state=READY if ready else STALE,
-        source_rows=int(surface.source_rows),
-        indexed_rows=int(surface.indexed_rows),
-        missing_rows=int(surface.missing_rows),
-        excess_rows=int(surface.excess_rows),
-        duplicate_rows=int(surface.duplicate_rows),
-        identity_mismatch_rows=int(surface.identity_mismatch_rows),
-        detail=(
-            "targeted changed-session repair complete"
-            if ready
-            else "targeted changed-session repair left an archive-wide FTS gap"
-        ),
+        detail="targeted changed-session repair requires exact invariant verification",
     )
 
 
@@ -1448,22 +1413,10 @@ def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> None:
     invariant here so every production insights route owns the same final
     state; test harnesses must not repair the ledger themselves.
     """
-    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
-    from polylogue.storage.fts.fts_lifecycle import session_work_events_fts_invariant_sync
+    from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-    surface = session_work_events_fts_invariant_sync(conn)
-    record_fts_surface_state_sync(
-        conn,
-        surface=surface.name,
-        state=READY if surface.ready else STALE,
-        source_rows=surface.source_rows,
-        indexed_rows=surface.indexed_rows,
-        missing_rows=surface.missing_rows,
-        excess_rows=surface.excess_rows,
-        duplicate_rows=surface.duplicate_rows,
-        identity_mismatch_rows=surface.identity_mismatch_rows,
-        detail=None if surface.ready else "exact invariant failed after insights refresh",
-    )
+    record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
@@ -1888,7 +1841,7 @@ def repair_messages_fts_surface_result(db_path: Path) -> FtsSurfaceRepairResult:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
-            from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+            from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
             from polylogue.storage.fts.fts_lifecycle import (
                 fts_invariant_snapshot_sync,
                 reconcile_message_fts_rows_once_sync,
@@ -1896,31 +1849,15 @@ def repair_messages_fts_surface_result(db_path: Path) -> FtsSurfaceRepairResult:
 
             configure_bounded_repair_connection(conn)
             inserted_total, deleted_total = reconcile_message_fts_rows_once_sync(conn)
-            surface = fts_invariant_snapshot_sync(conn).messages
-            record_fts_surface_state_sync(
-                conn,
-                surface="messages_fts",
-                state=READY if surface.ready else STALE,
-                source_rows=surface.source_rows,
-                indexed_rows=surface.indexed_rows,
-                missing_rows=surface.missing_rows,
-                excess_rows=surface.excess_rows,
-                duplicate_rows=surface.duplicate_rows,
-                identity_mismatch_rows=surface.identity_mismatch_rows,
-                detail=None if surface.ready else "exact message FTS parity failed after repair",
-            )
+            snapshot = fts_invariant_snapshot_sync(conn)
+            record_fts_invariant_snapshot_sync(conn, snapshot)
+            surface = snapshot.messages
             conn.commit()
             logger.info(
-                "fts: archive messages_fts surface repair complete ready=%s inserted=%d deleted=%d "
-                "source_rows=%d indexed_rows=%d missing=%d excess=%d identity_mismatch=%d",
+                "fts: archive messages_fts surface repair complete ready=%s inserted=%d deleted=%d",
                 surface.ready,
                 inserted_total,
                 deleted_total,
-                surface.source_rows,
-                surface.indexed_rows,
-                surface.missing_rows,
-                surface.excess_rows,
-                surface.identity_mismatch_rows,
             )
             return FtsSurfaceRepairResult(
                 success=surface.ready,
@@ -2164,7 +2101,12 @@ def _embed_archive_sessions_sync(
     for session_id in tuple(dict.fromkeys(session_ids)):
         if time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
             break
-        outcome = embed_archive_session_sync(db_path, vec_provider, session_id)
+        outcome = embed_archive_session_sync(
+            db_path,
+            vec_provider,
+            session_id,
+            embeddings_db_path=embeddings_db,
+        )
         if outcome.status == "embedded":
             embedded += 1
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:

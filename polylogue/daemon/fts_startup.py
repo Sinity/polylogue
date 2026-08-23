@@ -26,6 +26,11 @@ _FTS_STARTUP_BUSY_TIMEOUT_MS = 120_000
 _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS = 10_000
 
 
+def _index_generation_sync(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return 0 if row is None else _int_or_zero(row[0])
+
+
 def _open_fts_startup_write_connection(db_path: Path) -> sqlite3.Connection:
     from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -211,6 +216,7 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
                 return True
     source_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
     indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize") if docsize_exists else 0
+    rebuild_published_exact_snapshot = False
     if fts_exists and (not triggers_present or indexed_rows != source_rows):
         drift_rows = abs(source_rows - indexed_rows)
         if drift_rows <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS:
@@ -220,6 +226,7 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             rebuild_fts_index_sync(conn)
             indexed_rows = _count_or_zero(conn, "SELECT COUNT(*) FROM messages_fts_docsize")
             triggers_present = not _missing_named_triggers_sync(conn, _ARCHIVE_MESSAGE_FTS_TRIGGERS)
+            rebuild_published_exact_snapshot = True
         else:
             logger.warning(
                 "daemon: archive message FTS drift exceeds bounded startup reconciliation; "
@@ -232,7 +239,11 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
             )
             _record_message_fts_surface_debt(db_path, _MESSAGE_FTS_STARTUP_DEBT_DETAIL)
 
-    ready = fts_exists and triggers_present and indexed_rows == source_rows
+    if rebuild_published_exact_snapshot:
+        # The full rebuild published a generation-bound exact snapshot. Do not
+        # replace it with this pre-rebuild bounded observation.
+        return True
+
     drift_detail = (
         "archive startup FTS readiness failed"
         if abs(source_rows - indexed_rows) <= _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS
@@ -241,12 +252,14 @@ def _ensure_archive_messages_fts_startup_readiness_sync(
     record_fts_surface_state_sync(
         conn,
         surface="messages_fts",
-        state=READY if ready else STALE,
+        state=STALE,
         source_rows=source_rows,
         indexed_rows=indexed_rows,
         missing_rows=max(source_rows - indexed_rows, 0),
         excess_rows=max(indexed_rows - source_rows, 0),
-        detail=None if ready else drift_detail,
+        detail=drift_detail
+        if abs(source_rows - indexed_rows)
+        else "startup observation requires exact invariant verification",
     )
     return True
 
@@ -278,7 +291,7 @@ def _record_optional_fts_surface_debt(db_path: Path | None, error: str) -> None:
 
 def _message_fts_freshness_row_sync(
     conn: sqlite3.Connection,
-) -> tuple[object, object, object, object, object, object, object] | None:
+) -> tuple[object, object, object, object, object, object, object, object, object, object] | None:
     from polylogue.storage.fts.freshness import (
         MESSAGE_SURFACE,
         ensure_fts_freshness_table_sync,
@@ -289,7 +302,7 @@ def _message_fts_freshness_row_sync(
         row = conn.execute(
             """
             SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows,
-                   identity_mismatch_rows
+                   identity_mismatch_rows, verification_kind, exact_checked_at, exact_generation
             FROM fts_freshness_state
             WHERE surface = ?
             """,
@@ -297,7 +310,7 @@ def _message_fts_freshness_row_sync(
         ).fetchone()
         if row is None:
             return None
-        return (row[0], row[1], row[2], row[3], row[4], row[5], row[6])
+        return (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9])
     except sqlite3.Error:
         return None
 
@@ -314,7 +327,8 @@ def _message_fts_docsize_has_rows_sync(conn: sqlite3.Connection) -> bool:
 
 
 def _message_fts_freshness_row_ready_sync(
-    conn: sqlite3.Connection, row: tuple[object, object, object, object, object, object, object] | None
+    conn: sqlite3.Connection,
+    row: tuple[object, object, object, object, object, object, object, object, object, object] | None,
 ) -> bool:
     if row is None:
         return False
@@ -338,12 +352,16 @@ def _message_fts_freshness_row_ready_sync(
         excess_rows=excess_rows,
         duplicate_rows=duplicate_rows,
         identity_mismatch_rows=identity_mismatch_rows,
+        verification_kind=str(row[7]) if row[7] is not None else None,
+        exact_checked_at=str(row[8]) if row[8] is not None else None,
+        exact_generation=_int_or_zero(row[9]),
+        current_generation=_index_generation_sync(conn),
         source_has_rows=source_has_rows,
     )
 
 
 def _message_fts_freshness_row_stale_sync(
-    row: tuple[object, object, object, object, object, object, object] | None,
+    row: tuple[object, object, object, object, object, object, object, object, object, object] | None,
 ) -> bool:
     if row is None:
         return False

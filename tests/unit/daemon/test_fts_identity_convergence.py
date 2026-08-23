@@ -1,16 +1,9 @@
 """Periodic exact FTS identity-ledger drift recompute (polylogue-miwv).
 
-Exercises ``run_fts_identity_drift_recompute_once_sync`` -- the sync body the
-periodic daemon loop (``periodic_fts_identity_drift_recompute``) schedules on
-a quiet cadence -- directly against a real archive fixture (never a
-mock/stub of the reconciliation SQL). Proves it is the recompute AUTHORITY
-for ``identity_mismatch_rows``: a hand-corrupted ledger row makes the next
-recompute pass record a nonzero count, and repairing the row makes the pass
-after that record 0 again. A second test reproduces the exact hazard the
-bead names -- ``daemon/fts_startup.py``'s bounded STALE-write path can reset
-a recorded nonzero ``identity_mismatch_rows`` to 0 without recomputing --
-and proves the periodic recompute corrects that stale zero back to the true
-count on its next tick.
+Exercises the periodic sync body against a real archive fixture. A corrupted
+identity ledger becomes a nonzero mismatch on the next exact pass, and a
+repair returns it to zero. Bounded stale writers preserve those last exact
+counters until the next recomputation.
 """
 
 from __future__ import annotations
@@ -22,7 +15,7 @@ from polylogue.daemon.fts_identity_convergence import (
     FtsIdentityDriftRecomputeResult,
     run_fts_identity_drift_recompute_once_sync,
 )
-from polylogue.storage.fts.freshness import MESSAGE_SURFACE, READY, record_fts_surface_state_sync
+from polylogue.storage.fts.freshness import MESSAGE_SURFACE, STALE, record_fts_surface_state_sync
 
 
 def _write_seed_session(db_path: Path) -> str:
@@ -130,15 +123,8 @@ class TestFtsIdentityDriftRecomputeStage:
         assert repaired.ready
         assert _freshness_identity_mismatch_rows(test_db) == 0
 
-    def test_recompute_corrects_a_stale_zero_left_by_bounded_startup_write(self, test_db: Path) -> None:
-        """Reproduces the documented hazard: fts_startup.py's bounded
-        STALE-write path (``_ensure_archive_messages_fts_startup_readiness_sync``)
-        calls ``record_fts_surface_state_sync`` without
-        ``identity_mismatch_rows`` (defaults to 0), which the ``ON CONFLICT``
-        upsert then writes over any previously recorded nonzero value. This
-        proves the periodic recompute is the authority that corrects that
-        stale zero on its next tick, rather than trusting the last writer.
-        """
+    def test_bounded_write_preserves_exact_identity_counter(self, test_db: Path) -> None:
+        """A scoped update cannot erase the last exact identity mismatch counter."""
         real_block_id = _write_seed_session(test_db)
         _corrupt_identity_row(test_db, real_block_id)
 
@@ -146,26 +132,23 @@ class TestFtsIdentityDriftRecomputeStage:
         assert first_pass.identity_mismatch_rows == 1
         assert _freshness_identity_mismatch_rows(test_db) == 1
 
-        # Simulate the bounded STALE-write hazard: some other bounded caller
-        # (e.g. fts_startup.py) re-records the surface state without ever
-        # computing identity_mismatch_rows, silently resetting it to 0 even
-        # though the underlying corruption is still there.
+        # A bounded caller does not recompute identity drift.
         from polylogue.storage.sqlite.connection import open_connection
 
         with open_connection(test_db) as conn:
             record_fts_surface_state_sync(
                 conn,
                 surface=MESSAGE_SURFACE,
-                state=READY,
+                state=STALE,
                 source_rows=1,
                 indexed_rows=1,
                 missing_rows=0,
                 excess_rows=0,
                 duplicate_rows=0,
-                # identity_mismatch_rows omitted -- defaults to 0, the hazard.
+                # identity_mismatch_rows omitted: it must be preserved.
             )
             conn.commit()
-        assert _freshness_identity_mismatch_rows(test_db) == 0, "test setup must reproduce the stale-zero hazard"
+        assert _freshness_identity_mismatch_rows(test_db) == 1
 
         second_pass = run_fts_identity_drift_recompute_once_sync(test_db)
         assert second_pass.identity_mismatch_rows == 1, (

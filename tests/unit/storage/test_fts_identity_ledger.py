@@ -18,10 +18,14 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING
 
+import pytest
+
 from polylogue.storage.fts.freshness import (
+    EXACT,
     READY,
     ensure_fts_freshness_table_sync,
     freshness_ready_record_trusted,
+    record_fts_invariant_snapshot_sync,
     record_fts_surface_state_sync,
 )
 from polylogue.storage.fts.fts_lifecycle import (
@@ -29,6 +33,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_fts_triggers_sync,
 )
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, message_identity_mismatch_sql
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops_write import list_fts_drift_samples, record_fts_drift_sample
 from tests.infra.identity import archive_message_id
 
@@ -274,7 +279,9 @@ class TestIdentityLedgerBlockIdCollisionRepro:
 class TestIdentityMismatchDetection:
     """Anti-vacuity: prove the exact check actually flags corruption, not just 0/0."""
 
-    def test_corrupted_ledger_row_is_detected_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
+    def test_equal_count_identity_substitution_stays_stale_after_exact_snapshot(
+        self, test_conn: sqlite3.Connection
+    ) -> None:
         """Simulate the historical bug directly: hand-write a stale identity row.
 
         This bypasses the trigger entirely to reproduce exactly what a
@@ -306,6 +313,15 @@ class TestIdentityMismatchDetection:
         snapshot = fts_invariant_snapshot_sync(test_conn)
         assert snapshot.messages.identity_mismatch_rows == 1
         assert not snapshot.messages.ready
+        record_fts_invariant_snapshot_sync(test_conn, snapshot)
+        row = test_conn.execute(
+            "SELECT state, source_rows, indexed_rows, identity_mismatch_rows, verification_kind "
+            "FROM fts_freshness_state WHERE surface = 'messages_fts'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "stale"
+        assert row[1] == row[2]
+        assert row[3:] == (1, EXACT)
 
     def test_stale_source_hash_is_detected_as_mismatch(self, test_conn: sqlite3.Connection) -> None:
         """A block's content_hash moved on but the ledger row didn't -- caught."""
@@ -402,12 +418,15 @@ class TestIdentityMismatchGatesReadiness:
             excess_rows=0,
             duplicate_rows=0,
             identity_mismatch_rows=1,
+            verification_kind=EXACT,
+            exact_checked_at="2026-08-23T00:00:00+00:00",
+            exact_generation=INDEX_SCHEMA_VERSION,
+            current_generation=INDEX_SCHEMA_VERSION,
             source_has_rows=True,
         )
 
-    def test_freshness_ready_record_trusted_defaults_identity_mismatch_to_zero(self) -> None:
-        """Backward compatibility: callers that never computed it still pass."""
-        assert freshness_ready_record_trusted(
+    def test_freshness_ready_record_trusted_rejects_count_only_evidence(self) -> None:
+        assert not freshness_ready_record_trusted(
             state=READY,
             source_rows=10,
             indexed_rows=10,
@@ -417,21 +436,44 @@ class TestIdentityMismatchGatesReadiness:
             source_has_rows=True,
         )
 
-    def test_record_fts_surface_state_round_trips_identity_mismatch_column(self, test_conn: sqlite3.Connection) -> None:
+    def test_bounded_state_preserves_exact_identity_mismatch(self, test_conn: sqlite3.Connection) -> None:
         ensure_fts_freshness_table_sync(test_conn)
+        record_fts_invariant_snapshot_sync(test_conn, fts_invariant_snapshot_sync(test_conn))
+        record_fts_surface_state_sync(test_conn, surface="messages_fts", state="stale")
+        test_conn.execute("UPDATE fts_freshness_state SET identity_mismatch_rows = 2 WHERE surface = 'messages_fts'")
         record_fts_surface_state_sync(
             test_conn,
             surface="messages_fts",
-            state=READY,
+            state="stale",
             source_rows=5,
             indexed_rows=5,
-            identity_mismatch_rows=2,
         )
         row = test_conn.execute(
             "SELECT identity_mismatch_rows FROM fts_freshness_state WHERE surface = 'messages_fts'"
         ).fetchone()
         assert row is not None
         assert int(row[0]) == 2
+
+    def test_bounded_writer_cannot_publish_ready_but_exact_snapshot_can(self, test_conn: sqlite3.Connection) -> None:
+        """The public bounded writer cannot bypass the source-verified publisher."""
+        with pytest.raises(ValueError, match="record_fts_invariant_snapshot_sync"):
+            record_fts_surface_state_sync(
+                test_conn,
+                surface="messages_fts",
+                state=READY,
+                source_rows=0,
+                indexed_rows=0,
+            )
+
+        record_fts_invariant_snapshot_sync(test_conn, fts_invariant_snapshot_sync(test_conn))
+        row = test_conn.execute(
+            "SELECT state, verification_kind, exact_checked_at, exact_generation FROM fts_freshness_state "
+            "WHERE surface = 'messages_fts'"
+        ).fetchone()
+        assert row is not None
+        assert tuple(row[:2]) == (READY, EXACT)
+        assert row[2] is not None
+        assert row[3] == INDEX_SCHEMA_VERSION
 
     def test_upgraded_freshness_table_defaults_identity_mismatch_to_zero(self, test_conn: sqlite3.Connection) -> None:
         """A row written before this column existed reads back as 0, not NULL."""

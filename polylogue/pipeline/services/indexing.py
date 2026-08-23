@@ -61,6 +61,7 @@ async def rebuild_index(
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
+    full_rebuild = session_ids is None
     session_id_list = (
         session_ids if session_ids is not None else [session_id async for session_id in backend.iter_session_ids()]
     )
@@ -74,7 +75,7 @@ async def rebuild_index(
             )
         await rebuild_fts_index_async(
             conn,
-            session_ids=session_id_list,
+            session_ids=None if full_rebuild else session_id_list,
             progress_callback=progress_callback,
             progress_desc=(
                 _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None

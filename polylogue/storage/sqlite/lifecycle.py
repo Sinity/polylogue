@@ -998,6 +998,20 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # identities without treating a mutable head as historical evidence.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=72,
+        # FTS freshness evidence is derived metadata. A replace-table
+        # fast-forward retains the last measured counters while the sanitizer
+        # downgrades legacy count-only READY rows before the stricter CHECK.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v72-fts-freshness-exact-evidence",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "fts_freshness_state"),),
+            ),
+        ),
+    ),
 )
 
 

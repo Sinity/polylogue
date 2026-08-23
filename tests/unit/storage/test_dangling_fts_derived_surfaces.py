@@ -27,7 +27,7 @@ from polylogue.storage.fts.fts_lifecycle import (
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 
-def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) -> None:
+def test_repair_missing_fts_rows_leaves_derived_surfaces_stale_until_exact_snapshot(tmp_path: Path) -> None:
     db = tmp_path / "archive.db"
     conn = sqlite3.connect(db)
     try:
@@ -56,7 +56,7 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
 
     assert outcome.success is True
     assert work_events == 1
-    assert states["session_work_events_fts"] == "ready"
+    assert states["session_work_events_fts"] == "stale"
 
 
 def test_dangling_derived_repairs_preserve_l_stroke_recall(tmp_path: Path) -> None:
@@ -214,8 +214,8 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
 
     assert outcome.success is True
     assert states == {
-        "messages_fts": "ready",
-        "session_work_events_fts": "ready",
+        "messages_fts": "stale",
+        "session_work_events_fts": "stale",
     }
 
 
@@ -255,8 +255,8 @@ def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Pat
     assert readiness["ready"] is False
     assert readiness["total_rows"] == 1
     assert readiness["indexed_rows"] == 0
-    assert state == "stale"
-    assert recorded == (1, 0, "exact message readiness failed")
+    assert state == "unknown"
+    assert recorded == (0, 0, None)
 
 
 def test_search_readiness_trusts_stale_ledger_without_exact_recount(tmp_path: Path) -> None:
@@ -411,8 +411,8 @@ def test_search_readiness_rejects_ready_marker_when_triggers_are_missing(tmp_pat
     assert readiness["triggers_present"] is False
     assert readiness["total_rows"] == 1
     assert readiness["indexed_rows"] == 1
-    assert state == "stale"
-    assert recorded == ("stale", 1, 1, "exact message readiness failed")
+    assert state == "unknown"
+    assert recorded == ("ready", 1, 1, None)
 
 
 def test_search_readiness_uses_blocks_as_zero_count_trust_source(tmp_path: Path) -> None:
@@ -516,4 +516,4 @@ def test_repair_stale_fts_rows_recomputes_poisoned_archive_counts(tmp_path: Path
 
     assert outcome.success is True
     assert indexed == 1
-    assert messages == ("ready", 1, 1, 0, 0, 0)
+    assert messages == ("stale", 1, 1, 0, 0, 0)

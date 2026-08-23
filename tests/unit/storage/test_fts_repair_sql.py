@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from polylogue.storage.fts.dangling_repair import insert_missing_message_fts_rows_sync
-from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 from polylogue.storage.fts.fts_lifecycle import (
     delete_excess_message_rows_batched_sync,
     rebuild_fts_index_sync,
@@ -114,6 +115,32 @@ def test_incremental_fts_repair_uses_direct_fts_rowid_deletes(test_conn: sqlite3
             ).fetchone()[0]
         )
     ]
+
+
+def test_targeted_repair_never_runs_an_archive_wide_exact_snapshot(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session repair remains bounded even if a legacy caller asks for exact."""
+    import polylogue.storage.fts.fts_lifecycle as lifecycle
+
+    restore_fts_triggers_sync(test_conn)
+    _seed_text_block(
+        test_conn,
+        native_session_id="conv-no-duplicate-exact",
+        native_message_id="msg-no-duplicate-exact",
+        text="bounded target",
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "fts_invariant_snapshot_sync",
+        lambda _conn: (_ for _ in ()).throw(AssertionError("targeted repair attempted an exact snapshot")),
+    )
+
+    repair_message_fts_index_sync(
+        test_conn,
+        ["unknown-export:conv-no-duplicate-exact"],
+        record_exact_snapshot=True,
+    )
 
 
 def test_global_missing_fts_sql_is_rowid_bounded() -> None:
@@ -240,7 +267,7 @@ def test_message_fts_repair_dedupes_duplicate_session_ids(test_conn: sqlite3.Con
     assert row[0] == 1
 
 
-def test_message_fts_repair_refreshes_ready_freshness_ledger(test_conn: sqlite3.Connection) -> None:
+def test_message_fts_repair_leaves_freshness_stale_for_owner_verification(test_conn: sqlite3.Connection) -> None:
     restore_fts_triggers_sync(test_conn)
     _seed_text_block(
         test_conn,
@@ -249,14 +276,6 @@ def test_message_fts_repair_refreshes_ready_freshness_ledger(test_conn: sqlite3.
         text="freshness ledger needle",
     )
     session_id = "unknown-export:conv-message-repair-freshness"
-    record_fts_surface_state_sync(
-        test_conn,
-        surface="messages_fts",
-        state="ready",
-        source_rows=0,
-        indexed_rows=0,
-    )
-
     repair_message_fts_index_sync(test_conn, [session_id])
 
     state = test_conn.execute(
@@ -267,9 +286,9 @@ def test_message_fts_repair_refreshes_ready_freshness_ledger(test_conn: sqlite3.
         """
     ).fetchone()
     assert dict(state) == {
-        "state": "ready",
-        "source_rows": 1,
-        "indexed_rows": 1,
+        "state": "stale",
+        "source_rows": 0,
+        "indexed_rows": 0,
         "missing_rows": 0,
         "excess_rows": 0,
         "duplicate_rows": 0,

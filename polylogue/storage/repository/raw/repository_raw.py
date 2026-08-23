@@ -13,9 +13,15 @@ from polylogue.storage.runtime import (
     ArtifactObservationRecord,
     RawSessionRecord,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    RawAdmissionExecution,
+    RawAdmissionRequest,
+    plan_raw_admission,
+)
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import cursor as cursor_queries
 from polylogue.storage.sqlite.queries import raw as raw_queries
+from polylogue.storage.sqlite.queries import raw_writes
 
 logger = get_logger(__name__)
 
@@ -29,6 +35,16 @@ class RepositoryRawMixin:
             return await raw_queries.save_raw_session(
                 conn,
                 record,
+                self._backend.transaction_depth,
+            )
+
+    async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution:
+        """Apply normal pre-parse acquisition through the admission planner."""
+        plan = plan_raw_admission(request)
+        async with self._backend.connection() as conn:
+            return await raw_writes.execute_raw_admission_plan_async(
+                conn,
+                plan,
                 self._backend.transaction_depth,
             )
 
