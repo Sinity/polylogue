@@ -8,6 +8,10 @@ import pytest
 from devtools import live_provider_profile_provision_service as provision
 
 
+def test_profile_provision_uses_sinnix_managed_chrome_root() -> None:
+    assert Path.home() / ".config" / "chrome-ws" == provision._SOURCE_ROOT
+
+
 def _source_profile(root: Path) -> Path:
     (root / "Default" / "Network").mkdir(parents=True)
     (root / "Local State").write_text('{"profile": "state"}', encoding="utf-8")

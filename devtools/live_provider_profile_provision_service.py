@@ -16,7 +16,10 @@ from typing import Any
 
 from devtools.sinnixd_service_context import require_declared_operation_context
 
-_SOURCE_ROOT = Path.home() / ".config" / "google-chrome"
+# Sinnix launches the one shared operator Chrome with this explicit persistent
+# user-data directory (modules/features/desktop/browser.nix). The upstream
+# default path is intentionally unused on this host.
+_SOURCE_ROOT = Path.home() / ".config" / "chrome-ws"
 _DESTINATION_ROOT = Path("/realm/state/polylogue/live-provider-proof-profile")
 _MAX_FILES = 20_000
 _MAX_BYTES = 1_000_000_000
