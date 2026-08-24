@@ -96,6 +96,33 @@ def test_warm_parses_pending_candidates_off_writer_hold(tmp_path: Path) -> None:
         assert payload_bytes > 0
 
 
+def test_warm_raw_ids_enforces_aggregate_payload_budget(tmp_path: Path) -> None:
+    """One warm operation never retains every raw merely because each fits."""
+    payloads = {
+        "a.jsonl": _codex_payload("session-a", "same-sized-a"),
+        "b.jsonl": _codex_payload("session-b", "same-sized-b"),
+        "c.jsonl": _codex_payload("session-c", "same-sized-c"),
+    }
+    _seed_raws(tmp_path, payloads)
+    with sqlite3.connect(tmp_path / "source.db") as connection:
+        raw_ids = [
+            str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_sessions ORDER BY source_path").fetchall()
+        ]
+
+    stage = DaemonParseStage(max_workers=3, max_inflight_bytes=10_000_000)
+    try:
+        warmed = stage.warm_raw_ids(
+            _config(tmp_path),
+            raw_ids=raw_ids,
+            max_payload_bytes=max(len(payload) for payload in payloads.values()),
+        )
+    finally:
+        stage.shutdown()
+
+    assert warmed == 1
+    assert len(stage.cache) == 1
+
+
 def test_warm_candidate_scope_excludes_ordinary_queue_members(tmp_path: Path) -> None:
     """Whale warming discovers only the selected authority component.
 

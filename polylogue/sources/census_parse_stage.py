@@ -645,7 +645,8 @@ class CensusParseStage:
         # This bounds concurrent full-payload decodes; a raw that is too large
         # for the remaining budget is left for the writer-held fallback path.
         futures: dict[Future[Any], str] = {}
-        payload_budget = self.cache.max_inflight_bytes
+        payload_budget = min(self.cache.max_inflight_bytes, max_payload_bytes)
+        reserved_this_warm = 0
         try:
             for raw_id in raw_ids:
                 if self._stop_requested.is_set():
@@ -654,8 +655,11 @@ class CensusParseStage:
                 if descriptor is None:
                     continue
                 provider, blob_hash, source_path, kind, payload_size = descriptor
-                if payload_size > payload_budget or not self._reserve_pending_payload(raw_id, payload_size):
+                if payload_size > payload_budget - reserved_this_warm or not self._reserve_pending_payload(
+                    raw_id, payload_size
+                ):
                     continue
+                reserved_this_warm += payload_size
                 if self._stop_requested.is_set():
                     self._release_pending_payload(raw_id, None)
                     break

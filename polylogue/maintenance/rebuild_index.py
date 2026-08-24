@@ -563,11 +563,9 @@ def _save_rebuild_pass_receipt_after_receipt_validation(
 
 
 #: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
-#: parameter for symmetry with the daemon's own call site
-#: (``daemon/bulk_rebuild.py``); the parameter is currently accepted but not
-#: consulted inside ``warm_raw_ids`` itself, so this value has no observable
-#: effect today, but every caller supplies one so a future budget check does
-#: not silently start unbounded for whichever caller forgot to pass it.
+#: parameter. ``CensusParseStage`` treats it as the aggregate raw-payload
+#: admission ceiling for one warm operation, independently of its longer-lived
+#: cache ceiling, so a large rebuild cannot submit its entire raw set at once.
 _OFFLINE_PREFETCH_WARM_MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
 
 
