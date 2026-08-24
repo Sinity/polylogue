@@ -158,8 +158,11 @@ def test_managed_pytest_kills_its_process_group_before_propagating_interrupt(
 
     process = _Process()
     killed: list[tuple[int, signal.Signals]] = []
-    monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *args, **kwargs: process)
-    monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))
+    monkeypatch.setattr("devtools.pytest_scratch.subprocess.Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        "devtools.pytest_scratch.os.killpg",
+        lambda pid, signum: killed.append((pid, signum)),
+    )
 
     with pytest.raises(KeyboardInterrupt):
         run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})
