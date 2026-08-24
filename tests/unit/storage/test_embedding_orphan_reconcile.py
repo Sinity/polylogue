@@ -16,6 +16,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -179,7 +180,7 @@ def _traced_reconcile_connect(traced_sql: list[str]) -> Callable[..., sqlite3.Co
     real_connect = sqlite3.connect
 
     def traced_connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = real_connect(database, *args, **kwargs)
+        connection = cast(sqlite3.Connection, cast(Any, real_connect)(database, *args, **kwargs))
         connection.set_trace_callback(traced_sql.append)
         return connection
 

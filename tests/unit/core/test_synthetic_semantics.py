@@ -25,6 +25,7 @@ from typing import Protocol
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.json import JSONValue
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import (
     PROVIDER_WIRE_FORMATS,
@@ -715,7 +716,7 @@ class TestParseRoundtrip:
         """
         from polylogue.archive.artifact_taxonomy import classify_artifact
 
-        payload = {
+        payload: dict[str, JSONValue] = {
             "artifactType": "brain-metadata",
             "summary": "Synthetic sidecar evidence",
             "updatedAt": "2026-01-01T00:00:00Z",
