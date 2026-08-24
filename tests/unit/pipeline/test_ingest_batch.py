@@ -22,6 +22,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus, BlockType, Origin, Provider
+from polylogue.core.errors import DatabaseError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.types import SessionId
 from polylogue.daemon.status import RawFailureSample, raw_failure_info_for_root
@@ -3020,7 +3021,7 @@ def test_iter_ingest_results_sync_emits_heartbeat_while_workers_are_pending(
     assert heartbeat_count == 1
 
 
-def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cache(
+def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_search_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3112,8 +3113,11 @@ def test_process_ingest_batch_sync_commits_fts_repair_and_invalidates_search_cac
             == 1
         )
 
-    second_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
-    assert [hit.session_id for hit in second_result.hits] == [session_id]
+    # The targeted repair proves this session's rows but cannot publish an
+    # archive-wide READY snapshot. Readers remain fail-closed until the daemon
+    # runs the exact invariant pass; direct SQL above proves the bounded repair.
+    with pytest.raises(DatabaseError, match="Search index is incomplete"):
+        search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
 
 
 @pytest.mark.parametrize("payload", [b"production ingest attachment", b""], ids=["nonempty", "empty"])

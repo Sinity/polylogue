@@ -1087,12 +1087,11 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
             owned_inactive_generation=(generation.generation_id, generation.owner_id),
         )
     )
-    # Timing fields (parse_s / apply_s / stage_timings_s, added for the
-    # rebuild cost split) are wall-clock and differ run to run. Two rebuilds
-    # producing identical content in different durations ARE equivalent, so
-    # equivalence is asserted over the content counts only.
-    _TIMING_KEYS = {"parse_s", "apply_s", "stage_timings_s"}
-    assert {k: v for k, v in rebuild_result.items() if k not in _TIMING_KEYS} == {
+    # Timing and memory-envelope telemetry vary with the host and run. They are
+    # verified by their own bounded-envelope contract; content equivalence is
+    # asserted over deterministic replay counts only.
+    _TELEMETRY_KEYS = {"parse_s", "apply_s", "stage_timings_s", "whale_envelope"}
+    assert {k: v for k, v in rebuild_result.items() if k not in _TELEMETRY_KEYS} == {
         "scanned_raw_count": 4,
         "classified_full_count": 4,
         "replayed_logical_source_count": 3,
@@ -1103,6 +1102,11 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
         "raw_batch_size": 500,
         "ingest_workers": 1,
     }
+    whale_envelope = rebuild_result["whale_envelope"]
+    assert isinstance(whale_envelope, dict)
+    assert whale_envelope["decoded_cache_tree_budget_bytes"] > 0
+    assert whale_envelope["whale_cache_tree_budget_bytes"] >= whale_envelope["decoded_cache_tree_budget_bytes"]
+    assert whale_envelope["largest_tree_bytes_seen"] > 0
     rebuilt_insights = repair_session_insights(
         _config(generation_root, index_path=generation_path),
         dry_run=False,

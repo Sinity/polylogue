@@ -1473,9 +1473,16 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     against.
     """
     path = archive_root / "source.db"
+    target, expected_identity, is_directory = _stable_link_target(path, label="source snapshot")
+    if is_directory:
+        raise RuntimeError(f"source snapshot is not a regular file: {path}")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
+    fd = os.open(target, flags)
     try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != expected_identity:
+            raise RuntimeError(f"source snapshot changed during descriptor admission: {path}")
+        _require_path_identity(path, expected_identity, label="source snapshot")
         with closing(sqlite3.connect(f"file:/proc/self/fd/{fd}?mode=ro", uri=True)) as conn:
             yield conn
     finally:

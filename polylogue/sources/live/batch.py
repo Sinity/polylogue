@@ -2852,7 +2852,7 @@ class LiveBatchProcessor:
                     raw_authority_complete = True
                     if len(sessions) == 1:
                         session = sessions[0]
-                        logical_source_key = f"{provider.value}:{session.provider_session_id}"
+                        logical_source_key = f"{origin_from_provider(provider).value}:{session.provider_session_id}"
                         # Receiver artifacts are complete, mutable snapshots of
                         # one browser-visible session. Their stable path does
                         # not make successive serialized JSON payloads a

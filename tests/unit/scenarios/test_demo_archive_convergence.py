@@ -32,8 +32,8 @@ EXPECTED_DEMO_SESSIONS = (
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
-        1746826781690,
         1714493799513,
+        1746826781690,
         3,
     ),
     (

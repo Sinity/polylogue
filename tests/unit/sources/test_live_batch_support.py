@@ -986,7 +986,9 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
 
     replay = backfill_historical_revision_evidence(tmp_path)
 
-    assert replay.replayed_logical_sources == 2
+    # Both acquired coordinates carry identical bytes and therefore replay as
+    # one logical source while the source-tier coordinate rows remain distinct.
+    assert replay.replayed_logical_sources == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("zip-chatgpt", 2)]
     with sqlite3.connect(tmp_path / "source.db") as conn:

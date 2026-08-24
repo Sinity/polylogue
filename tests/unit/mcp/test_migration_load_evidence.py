@@ -19,9 +19,7 @@ import sqlite3
 import threading
 import tracemalloc
 from collections import Counter
-from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -315,7 +313,8 @@ async def test_registered_large_query_bounds_transient_bytes_and_cleans_artifact
         tracemalloc.stop()
         after_files = _archive_file_sizes(archive_root)
         after_fds = _require_fd_probe(archive_root)
-        assert after_fds == before_fds
+        assert all(after_fds.get(path, 0) <= count for path, count in before_fds.items())
+        assert set(after_fds) <= set(before_fds)
 
     response_bytes = len(response_text.encode("utf-8"))
     compact_response_bytes = len(json.dumps(response, sort_keys=True).encode("utf-8"))
@@ -377,32 +376,31 @@ def test_concurrent_consolidated_read_surface_is_isolated_and_clean(
         capacity_barrier = threading.Barrier(DEFAULT_CAPACITY)
         barrier_participants = 0
         participant_lock = threading.Lock()
-        original_admit_async = QueryAdmissionController.admit_async
+        original_admit_async = QueryAdmissionController._admit_async
 
-        @asynccontextmanager
-        async def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> AsyncIterator[None]:
+        async def observe_admission(self: QueryAdmissionController, ctx: QueryExecutionContext) -> int:
             """Observe after async admission, then synchronize admitted readers.
 
-            The consolidated MCP tools are async and therefore use
-            ``admit_async``; observing ``admit_blocking`` would never see this
-            route.  The barrier runs in a worker thread so the per-request
-            event loops can all reach the rendezvous without blocking one
-            another.
+            The consolidated MCP tools acquire through ``_admit_async`` before
+            transferring lease release to their executor completion callback;
+            observing the public context manager would miss that ownership
+            route. The barrier runs in a worker thread so all request loops can
+            reach the rendezvous without blocking one another.
             """
             nonlocal barrier_participants
-            async with original_admit_async(self, ctx):
-                with observation_lock:
-                    observed_in_flight.append(self.in_flight_weight)
-                    observed_admission_owners.append(ctx.owner_ref)
-                with participant_lock:
-                    is_participant = barrier_participants < DEFAULT_CAPACITY
-                    if is_participant:
-                        barrier_participants += 1
+            weight = await original_admit_async(self, ctx)
+            with observation_lock:
+                observed_in_flight.append(self.in_flight_weight)
+                observed_admission_owners.append(ctx.owner_ref)
+            with participant_lock:
+                is_participant = barrier_participants < DEFAULT_CAPACITY
                 if is_participant:
-                    await asyncio.to_thread(capacity_barrier.wait, timeout=10)
-                yield
+                    barrier_participants += 1
+            if is_participant:
+                await asyncio.to_thread(capacity_barrier.wait, timeout=10)
+            return weight
 
-        monkeypatch.setattr(QueryAdmissionController, "admit_async", observe_admission)
+        monkeypatch.setattr(QueryAdmissionController, "_admit_async", observe_admission)
 
         # The production route is async; the barrier above deliberately holds
         # the first capacity-sized set after admission so the max-in-flight

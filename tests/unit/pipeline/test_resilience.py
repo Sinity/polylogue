@@ -402,10 +402,10 @@ def test_parse_gemini_missing_text_fields(tmp_path: Path) -> None:
 
 @settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(acquisition_input_batch_strategy(max_items=4))
-async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
+async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_normalizes_provider_hints(
     batch: tuple[AcquisitionInputSpec, ...],
 ) -> None:
-    """Acquisition should store each unique raw payload once and keep raw provider hints canonical."""
+    """Acquisition preserves observations while identical payloads share one blob."""
     with TemporaryDirectory() as tempdir:
         backend = SQLiteBackend(db_path=Path(tempdir) / "acquire.db")
         source_name = "generated-source"
@@ -420,32 +420,34 @@ async def test_acquisition_law_counts_unique_raws_and_normalizes_provider_hints(
             for index, spec in enumerate(batch)
         ]
 
-        expected_first_provider: dict[str, str] = {}
-        for spec in batch:
-            expected_first_provider.setdefault(spec.payload_id, spec.provider_hint or "unknown")
-
         try:
             with patch("polylogue.pipeline.services.acquisition.iter_source_raw_data", return_value=iter(raw_items)):
                 result = await AcquisitionService(backend=backend).acquire_sources(
                     [Source(name=source_name, path=Path("/tmp/inbox"))]
                 )
 
-            unique_payloads = list(dict.fromkeys(spec.payload_id for spec in batch))
-            assert result.counts["acquired"] == len(unique_payloads)
-            assert result.counts["skipped"] == len(batch) - len(unique_payloads)
-            assert len(result.raw_ids) == len(unique_payloads)
+            assert result.counts["acquired"] == len(batch)
+            assert result.counts["skipped"] == 0
+            assert len(result.raw_ids) == len(batch)
+            assert len(set(result.raw_ids)) == len(batch)
 
-            for raw_id in result.raw_ids:
+            blob_hashes: set[str] = set()
+            for raw_id, spec in zip(result.raw_ids, batch, strict=True):
                 stored = await backend.get_raw_session(raw_id)
                 assert stored is not None
-                raw_bytes = BlobStore(Path(tempdir) / "blob").read_all(raw_id)
+                assert stored.blob_hash is not None
+                blob_hashes.add(stored.blob_hash)
+                raw_bytes = BlobStore(Path(tempdir) / "blob").read_all(stored.blob_hash)
                 payload_id = json.loads(raw_bytes)["id"]
-                assert stored.source_name == expected_first_provider[payload_id]
+                assert payload_id == spec.payload_id
+                expected_provider = spec.provider_hint or "unknown"
+                assert stored.source_name == expected_provider
                 # #1743: raw_sessions stores a single origin column; payload_provider
                 # projects from it on read (no separate nullable hint column), so the
                 # normalized hint surfaces through both source_name and payload_provider.
                 assert stored.payload_provider is not None
-                assert stored.payload_provider.value == expected_first_provider[payload_id]
+                assert stored.payload_provider.value == expected_provider
+            assert len(blob_hashes) == len({spec.payload_id for spec in batch})
         finally:
             await backend.close()
 
