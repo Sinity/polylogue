@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from tests.benchmarks.perf_floors import (
     FloorComparison,
     compare_to_floors,
@@ -177,6 +179,7 @@ def test_format_delta_table_marks_regressions_and_new_metrics() -> None:
     assert "NEW" in table
 
 
+@pytest.mark.load_sensitive
 def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) -> None:
     """End-to-end smoke run in --quick shape over every measurement group.
 

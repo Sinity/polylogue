@@ -75,6 +75,7 @@ REINDEX_PRODUCTION_SEAMS = (
 )
 
 
+@pytest.mark.load_sensitive
 def test_selected_reindex_proof_tests_are_production_reachable() -> None:
     """The selected reindex proofs bind to replay and terminal convergence."""
     root = Path(__file__).resolve().parents[3]
