@@ -32,6 +32,21 @@ class _FixedHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class _NotReadyHandler(http.server.BaseHTTPRequestHandler):
+    """A structured readiness refusal is still an interactive HTTP response."""
+
+    def do_GET(self) -> None:
+        body = b'{"status":"not_ready","reasons":["convergence_debt"]}'
+        self.send_response(503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args: object) -> None:
+        pass
+
+
 @pytest.fixture
 def healthy_server() -> object:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FixedHandler)
@@ -110,6 +125,31 @@ def test_responsiveness_probe_records_connection_refused_as_failure() -> None:
     assert samples
     assert all(not sample.ok for sample in samples)
     assert all(sample.error is not None for sample in samples)
+
+
+def test_responsiveness_probe_counts_not_ready_response_as_responsive() -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _NotReadyHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with ResponsivenessProbe(
+            base_url,
+            endpoints=("/healthz/ready",),
+            interval_seconds=0.02,
+            timeout_seconds=1.0,
+        ) as probe:
+            import time
+
+            time.sleep(0.2)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    samples = probe.samples()
+    assert samples
+    assert all(sample.ok and sample.status_code == 503 and sample.error is None for sample in samples)
 
 
 def test_evaluate_responsiveness_fails_when_endpoint_never_responds() -> None:

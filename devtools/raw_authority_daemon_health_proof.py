@@ -23,7 +23,9 @@ numbers are expected to improve under the free-threading program (polylogue-xikl
 The probe/evaluate pieces (``ResponsivenessProbe``, ``summarize_endpoint``,
 ``evaluate_responsiveness``) are unit-tested directly against local HTTP fixtures,
 including a mutation case where an endpoint never responds. The full run -- real corpus
-generation, a real subprocess, a real drain -- is slow-lane (tests/integration).
+generation, a real subprocess, a real drain -- is slow-lane (tests/integration). A
+structured readiness HTTP 503 means "responsive but not ready" and is therefore a
+successful responsiveness sample; other non-2xx responses remain failures.
 """
 
 from __future__ import annotations
@@ -185,7 +187,14 @@ class ResponsivenessProbe:
             ok = 200 <= status_code < 300
         except HTTPError as exc:
             status_code = exc.code
-            error = f"http_error:{exc.code}"
+            # Readiness may deliberately refuse traffic while convergence debt
+            # drains. That structured response proves the route and event loop
+            # stayed interactive even though urllib represents it as an error.
+            if endpoint == "/healthz/ready" and exc.code == 503:
+                exc.read()
+                ok = True
+            else:
+                error = f"http_error:{exc.code}"
         except (URLError, OSError, TimeoutError) as exc:
             error = f"{type(exc).__name__}:{exc}"
         latency_ms = (time.perf_counter() - started) * 1000
