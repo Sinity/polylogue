@@ -74,6 +74,12 @@ def blob_gc_command(max_batch: int, output_format: str) -> None:
     click.echo("Blob GC dry-run (inspect, read-only)")
     click.echo(f"Archive DB: {result.db_path}")
     click.echo(f"Blob root:  {result.blob_dir}")
+    if result.blocked_reason is not None:
+        # A refused pass reports zero candidates for the same reason it
+        # refuses to delete any -- say why, rather than let it read as
+        # "nothing to reclaim".
+        click.echo(f"Blocked:    {result.blocked_reason}")
+        return
     click.echo(f"Candidates: {result.candidate_count:,}")
     click.echo(f"Inspected:  {result.inspected_count:,}")
     click.echo(f"Result:     would delete {result.would_delete_count:,} blob(s)")
