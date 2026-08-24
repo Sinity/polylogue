@@ -19,6 +19,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
+from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -52,7 +53,11 @@ def _bind_append_revision(
     """Persist an APPEND envelope from the append plan's durable identity."""
     if plan.cursor_fingerprint is None:
         raise ValueError("append payload did not prove cursor identity")
-    logical_source_key = f"{provider.value}:{session_id}"
+    # Full-ingest governance keys cohorts by canonical Origin, not by the
+    # provider wire token (notably ``codex-session`` versus ``codex``). An
+    # append must join that same cohort or its proven byte-contiguous parent
+    # is invisible and the append is quarantined forever.
+    logical_source_key = f"{origin_from_provider(provider).value}:{session_id}"
     parent = archive.raw_append_revision_parent(
         logical_source_key,
         plan.start_offset,

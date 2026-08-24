@@ -654,6 +654,8 @@ def _analyze_registry_tables(index_db: Path) -> None:
 
 def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
     """Seed the current partial-convergence workload through typed archive writes."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
     root.mkdir(parents=True, exist_ok=True)
     index_db = root / "index.db"
     source_db = root / "source.db"
@@ -663,6 +665,11 @@ def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partial
     target_size = convergence_stages._HOT_INSIGHT_SOURCE_BYTES + 1 if target_hot else 1_024
     truncate_sparse(target_source, target_size)
     truncate_sparse(unrelated_source, 1_024)
+
+    # ``connection_profile.open_connection`` deliberately applies only the
+    # connection profile. Build the real split-tier schema before seeding the
+    # production writer, just as an initialized archive would.
+    initialize_active_archive_root(root)
 
     with closing(open_connection(index_db)) as conn:
         target_session_id = _seed_raw_source_session(
