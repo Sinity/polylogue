@@ -82,7 +82,7 @@ _CHATGPT = "chatgpt-export"
 _DESIGN = "claude-design-session"
 _GEMINI = "aistudio-drive"
 _CLAUDE_VINTAGE_NATIVE_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
-_CLAUDE_VINTAGE_LOGICAL_SOURCE_KEY = f"claude-ai:{_CLAUDE_VINTAGE_NATIVE_ID}"
+_CLAUDE_VINTAGE_LOGICAL_SOURCE_KEY = f"{_CLAUDE_AI}:{_CLAUDE_VINTAGE_NATIVE_ID}"
 
 
 PATHOLOGY_ZOO_MANIFEST: tuple[PathologyZooMember, ...] = (

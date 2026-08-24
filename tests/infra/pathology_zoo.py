@@ -161,7 +161,7 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
         """,
         (
             Origin.CLAUDE_AI_EXPORT.value,
-            f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+            CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
         ),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(

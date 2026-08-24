@@ -68,7 +68,7 @@ def _insert_claude_identity_collision_rows(source_db: Path) -> tuple[str, ...]:
         (
             "same-origin-different-logical-key",
             CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
-            f"claude-ai:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+            f"{CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN}:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
             "foreign-origin/same-origin-different-key.json",
             "claude-ai",
         ),
@@ -2818,7 +2818,9 @@ def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic
     assert "claude-vintage-live-proof" in green_check.evidence["checked_member_ids"]
     assert "claude-vintage-live-proof" not in green_check.evidence["failed_member_ids"]
     collision_logical_keys = {
-        "same-origin-different-logical-key": f"claude-ai:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+        "same-origin-different-logical-key": (
+            f"{CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN}:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
+        ),
         "different-origin-same-logical-key": CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     }
 

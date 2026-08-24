@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+import zlib
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
@@ -55,10 +56,20 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Reject unbounded or effectively disabled per-test timeout markers."""
+    """Apply suite-wide timeout and bounded-memory execution contracts."""
     from tests.infra.timeout_policy import timeout_marker_error
 
     for item in items:
+        # A merged-head 12-worker census measured 0.5-0.9 GiB of private
+        # memory per worker while rebuild-index tests from the same files ran
+        # concurrently, producing a 14.6 GiB cgroup peak. Keep file-local
+        # fixture isolation, but distribute this family over four stable
+        # loadgroups so unrelated tests can still use every configured worker.
+        item_path = Path(str(item.path))
+        if item_path.parent.name == "maintenance" and item_path.name.startswith("test_rebuild_index_"):
+            bucket = zlib.crc32(item_path.name.encode()) % 4
+            item.add_marker(pytest.mark.xdist_group(name=f"rebuild-index-memory-{bucket}"))
+
         marker = item.get_closest_marker("timeout")
         if marker is None:
             continue

@@ -1057,7 +1057,7 @@ def _inspect_quarantined_accepted_raw(
     if (
         origin_from_provider(parsed.source_name) != origin
         or str(make_session_id(parsed.source_name, parsed.provider_session_id)) != str(head["session_id"])
-        or f"{provider.value}:{parsed.provider_session_id}" != logical_source_key
+        or f"{origin_from_provider(parsed.source_name).value}:{parsed.provider_session_id}" != logical_source_key
         or bytes.fromhex(session_content_hash(parsed)) != accepted_hash
     ):
         return _quarantined_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")
