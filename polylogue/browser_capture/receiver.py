@@ -339,7 +339,10 @@ def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
 
 
 def _columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
-    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    # ``sessions.session_id`` is a generated canonical identity. SQLite's
+    # table_info projection omits generated columns, while table_xinfo includes
+    # both ordinary and generated columns with the same ``name`` field.
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_xinfo({table_name})").fetchall()}
 
 
 def _origin_candidates_for_provider(provider: str) -> tuple[str, ...]:

@@ -4646,6 +4646,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             lineage=lineage,
         )
         return {
+            "session_id": session_id,
             "messages": [
                 {
                     "id": str(msg.id),
@@ -4723,6 +4724,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         total = envelope.total_message_count if envelope.total_message_count is not None else len(page)
         placement = self._archive_semantic_card_placement(envelope)
         return {
+            "session_id": envelope.session_id,
             "messages": [
                 self._archive_message_payload(
                     envelope.session_id,

@@ -68,7 +68,11 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
             "claude-ai": {"provider": "claude-ai", "provider_session_id": "agentctl-proof-claude-ai"},
         },
     )
-    monkeypatch.setattr(dev_loop_service, "_poll_archive_state", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_poll_archive_state",
+        lambda **kwargs: {"indexed_session_id": f"indexed:{kwargs['provider_session_id']}"},
+    )
     monkeypatch.setattr(dev_loop_service, "_fetch_api_messages", lambda **_kwargs: True)
 
     payload = dev_loop_service.run_proof()
@@ -93,7 +97,7 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
 
 
-def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
     launched: dict[str, object] = {}
@@ -116,6 +120,102 @@ def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatc
     assert isinstance(command, list)
     token_index = command.index("--browser-capture-auth-token")
     assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
+    api_token_index = command.index("--api-auth-token")
+    assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
+
+
+def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[dict[str, object]] = []
+
+    def fake_get(url: str, **kwargs: object) -> tuple[int, dict[str, object]]:
+        observed.append({"url": url, **kwargs})
+        if "archive-state" in url:
+            return 200, {"raw_row_exists": True, "indexed_session_exists": True, "indexed_session_id": "indexed"}
+        return 200, {
+            "session_id": "indexed",
+            "messages": [
+                {
+                    "id": "message-1",
+                    "role": "user",
+                    "text": "proof",
+                    "target_ref": {
+                        "target_type": "message",
+                        "target_id": "message-1",
+                        "session_id": "indexed",
+                        "message_id": "message-1",
+                        "identity_key": "message:indexed:message-1",
+                    },
+                }
+            ],
+        }
+
+    monkeypatch.setattr(dev_loop_service, "_http_get_json", fake_get)
+
+    assert (
+        dev_loop_service._poll_archive_state(
+            receiver_url="http://receiver",
+            provider="chatgpt",
+            provider_session_id="proof",
+            timeout_s=0.1,
+        )
+        is not None
+    )
+    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is True
+    assert observed == [
+        {
+            "url": "http://receiver/v1/archive-state?provider=chatgpt&provider_session_id=proof",
+            "bearer_token": dev_loop_service._RECEIVER_TOKEN,
+        },
+        {
+            "url": "http://api/api/sessions/indexed/messages?limit=5",
+            "bearer_token": dev_loop_service._API_TOKEN,
+        },
+    ]
+
+
+def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_service_context(monkeypatch)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
+    monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", lambda _root: None)
+    monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **_kwargs: object())
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
+    monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_submit_deterministic_captures",
+        lambda **_kwargs: {
+            "chatgpt": {"provider": "chatgpt", "provider_session_id": "capture-id"},
+            "claude-ai": {"provider": "claude-ai"},
+        },
+    )
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_poll_archive_state",
+        lambda **_kwargs: pytest.fail("malformed captures must fail before convergence polling"),
+    )
+
+    with pytest.raises(RuntimeError, match="entries were malformed: claude-ai"):
+        dev_loop_service.run_proof()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"session_id": "wrong", "messages": [{"id": "message-1", "role": "user", "target_ref": {}}]},
+        {"session_id": "indexed", "messages": [{}]},
+        {"session_id": "indexed", "messages": []},
+    ],
+)
+def test_api_message_convergence_rejects_wrong_or_malformed_response(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
+) -> None:
+    monkeypatch.setattr(dev_loop_service, "_http_get_json", lambda *_args, **_kwargs: (200, payload))
+
+    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is False
 
 
 @pytest.mark.parametrize(
@@ -187,6 +287,25 @@ def test_shared_chrome_control_is_the_only_dev_loop_browser_handoff(
     environment = cast(dict[str, str], kwargs["env"])
     assert environment["POLYLOGUE_DEV_LOOP_EXTENSION_ROOT"] == str(tmp_path / "browser-extension")
     assert not {name for name in environment if name.startswith("POLYLOGUE_") and ("CDP" in name or "PROFILE" in name)}
+
+
+def test_shared_chrome_control_preserves_bounded_child_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    process = type(
+        "Process",
+        (),
+        {
+            "args": ["node", "scripts/dev_loop_shared_chrome_proof.mjs"],
+            "returncode": 1,
+            "communicate": lambda self, **_kwargs: ("", "first line\ncontrol boundary rejected the window\n"),
+        },
+    )()
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
+
+    with pytest.raises(RuntimeError, match="control boundary rejected the window") as failure:
+        dev_loop_service._run_shared_chrome_control(repo_root=tmp_path)
+
+    assert "\n" not in str(failure.value)
 
 
 def test_deterministic_captures_still_exercise_receiver_provider_identity(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -144,7 +144,8 @@ def _seed_browser_capture_archive(
         conn.execute(
             """
             CREATE TABLE sessions (
-                session_id TEXT,
+                origin TEXT NOT NULL,
+                session_id TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE,
                 raw_id TEXT,
                 native_id TEXT,
                 message_count INTEGER,
@@ -154,10 +155,10 @@ def _seed_browser_capture_archive(
         )
         conn.execute(
             """
-            INSERT INTO sessions (session_id, raw_id, native_id, message_count, updated_at_ms)
+            INSERT INTO sessions (origin, raw_id, native_id, message_count, updated_at_ms)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (f"chatgpt-export:{native_id}", raw_id, native_id, message_count, updated_at_ms),
+            ("chatgpt-export", raw_id, native_id, message_count, updated_at_ms),
         )
 
 
@@ -754,6 +755,7 @@ def test_receiver_archive_state_reports_archived_only_with_raw_index_and_message
     assert state.captured is True
     assert state.raw_row_exists is True
     assert state.indexed_session_exists is True
+    assert state.indexed_session_id == "chatgpt-export:conv-123"
     assert state.indexed_message_count == 1
 
 

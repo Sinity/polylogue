@@ -1417,6 +1417,7 @@ class TestReaderSessionState:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/sessions/claude-code-session:c1/messages")
         assert isinstance(payload, dict)
+        assert payload["session_id"] == C1
         assert payload["total"] == 1
         message = payload["messages"][0]
         assert message["text"] == "Hello reader"

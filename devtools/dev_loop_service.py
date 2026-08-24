@@ -32,7 +32,10 @@ _DECLARED_PORTS = {
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
+_API_TOKEN = "polylogue-agentctl-proof-api-token"
 _SHARED_CHROME_TIMEOUT_S = 30
+_CHILD_ERROR_TAIL_CHARS = 384
+_DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
 
 
 def _leased_port(name: str, bounds: tuple[int, int]) -> int:
@@ -89,13 +92,19 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int
     return environment
 
 
-def _http_get_json(url: str, *, timeout_s: float = 5.0) -> tuple[int, dict[str, object]]:
+def _http_get_json(
+    url: str,
+    *,
+    timeout_s: float = 5.0,
+    bearer_token: str | None = None,
+) -> tuple[int, dict[str, object]]:
     from urllib.parse import urlsplit
 
     parts = urlsplit(url)
     connection = HTTPConnection(parts.hostname or "127.0.0.1", parts.port or 80, timeout=timeout_s)
     try:
-        connection.request("GET", parts.path + (f"?{parts.query}" if parts.query else ""))
+        headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token is not None else {}
+        connection.request("GET", parts.path + (f"?{parts.query}" if parts.query else ""), headers=headers)
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
         return response.status, body if isinstance(body, dict) else {"body": body}
@@ -214,6 +223,8 @@ def _start_daemon(
         str(spool),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,
+        "--api-auth-token",
+        _API_TOKEN,
         "--no-source-catchup",
     ]
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -256,7 +267,8 @@ def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CH
         terminate_process_group(process)
     completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
     if completed.returncode != 0:
-        raise RuntimeError("shared-Chrome control proof did not produce a successful result")
+        detail = " ".join(stderr.split())[-_CHILD_ERROR_TAIL_CHARS:] or f"exit {completed.returncode}"
+        raise RuntimeError(f"shared-Chrome control proof failed: {detail}")
     payload = json.loads(stdout)
     if not isinstance(payload, dict) or payload.get("ok") is not True:
         raise RuntimeError("shared-Chrome control proof reported failure")
@@ -265,7 +277,7 @@ def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CH
 def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dict[str, dict[str, str]]:
     """Keep receiver, archive, and API convergence deterministic and browser-free."""
     captures: dict[str, dict[str, str]] = {}
-    for provider in ("chatgpt", "claude-ai"):
+    for provider in _DETERMINISTIC_PROVIDERS:
         provider_session_id = f"{session_id}-{provider}"
         status, _accepted = _receiver_post(
             port=capture_port,
@@ -278,31 +290,92 @@ def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dic
     return captures
 
 
-def _poll_archive_state(*, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float) -> bool:
+def _poll_archive_state(
+    *, receiver_url: str, provider: str, provider_session_id: str, timeout_s: float
+) -> dict[str, object] | None:
     query = urlencode({"provider": provider, "provider_session_id": provider_session_id})
     deadline = time.monotonic() + timeout_s
     while time.monotonic() <= deadline:
         try:
-            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}")
+            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}", bearer_token=_RECEIVER_TOKEN)
         except OSError:
             status, payload = 0, {}
         if status == 200 and payload.get("raw_row_exists") is True and payload.get("indexed_session_exists") is True:
-            return True
+            return payload
         time.sleep(0.25)
-    return False
-
-
-def _session_id_for_provider(provider: str, provider_session_id: str) -> str:
-    return (
-        {"chatgpt": "chatgpt-export", "claude-ai": "claude-ai-export"}.get(provider, provider)
-        + ":"
-        + provider_session_id
-    )
+    return None
 
 
 def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
-    status, payload = _http_get_json(f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5")
-    return status == 200 and isinstance(payload.get("messages"), list) and bool(payload["messages"])
+    status, payload = _http_get_json(
+        f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5",
+        bearer_token=_API_TOKEN,
+    )
+    messages = payload.get("messages")
+    if status != 200 or payload.get("session_id") != session_id or not isinstance(messages, list) or not messages:
+        return False
+    return all(
+        isinstance(message, dict)
+        and isinstance(message.get("id"), str)
+        and bool(message["id"])
+        and isinstance(message.get("role"), str)
+        and bool(message["role"])
+        and "text" in message
+        and (message["text"] is None or isinstance(message["text"], str))
+        and isinstance(message.get("target_ref"), dict)
+        and message["target_ref"]
+        == {
+            "target_type": "message",
+            "target_id": message["id"],
+            "session_id": session_id,
+            "message_id": message["id"],
+            "identity_key": f"message:{session_id}:{message['id']}",
+        }
+        for message in messages
+    )
+
+
+def _validated_provider_captures(captures: object) -> dict[str, dict[str, str]]:
+    """Validate the complete deterministic capture contract before polling."""
+    if not isinstance(captures, dict):
+        raise RuntimeError("deterministic provider captures were not a provider mapping")
+    expected = set(_DETERMINISTIC_PROVIDERS)
+    actual = set(captures)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected_count = len(actual - expected)
+        raise RuntimeError(
+            "deterministic provider capture set mismatch: "
+            + json.dumps({"missing": missing, "unexpected_count": unexpected_count}, sort_keys=True)
+        )
+    validated: dict[str, dict[str, str]] = {}
+    invalid: list[str] = []
+    for provider in _DETERMINISTIC_PROVIDERS:
+        item = captures[provider]
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"provider", "provider_session_id"}
+            or item.get("provider") != provider
+            or not isinstance(item.get("provider_session_id"), str)
+            or not item["provider_session_id"]
+        ):
+            invalid.append(provider)
+            continue
+        validated[provider] = {"provider": provider, "provider_session_id": item["provider_session_id"]}
+    if invalid:
+        raise RuntimeError("deterministic provider capture entries were malformed: " + ", ".join(invalid))
+    return validated
+
+
+def _redacted_convergence(convergence: dict[str, dict[str, object]]) -> dict[str, dict[str, bool]]:
+    return {
+        provider: {
+            "archive": row.get("archive") is True,
+            "api": row.get("api") is True,
+            "indexed_session_id_present": isinstance(row.get("indexed_session_id"), str),
+        }
+        for provider, row in convergence.items()
+    }
 
 
 def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.0) -> dict[str, object]:
@@ -336,37 +409,38 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
         session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
         _run_shared_chrome_control(repo_root=checkout)
-        providers = _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
+        providers = _validated_provider_captures(
+            _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
+        )
         archive_ok = False
         api_ok = False
-        if isinstance(providers, dict):
-            archive_rows: list[bool] = []
-            api_rows: list[bool] = []
-            for item in providers.values():
-                if not isinstance(item, dict):
-                    continue
-                provider = item.get("provider")
-                provider_session_id = item.get("provider_session_id")
-                if not isinstance(provider, str) or not isinstance(provider_session_id, str):
-                    continue
-                archive_rows.append(
-                    _poll_archive_state(
-                        receiver_url=receiver_url,
-                        provider=provider,
-                        provider_session_id=provider_session_id,
-                        timeout_s=readiness_timeout_s,
-                    )
-                )
-                api_rows.append(
-                    _fetch_api_messages(
-                        api_url=api_url,
-                        session_id=_session_id_for_provider(provider, provider_session_id),
-                    )
-                )
-            archive_ok = bool(archive_rows) and all(archive_rows)
-            api_ok = bool(api_rows) and all(api_rows)
+        convergence: dict[str, dict[str, object]] = {}
+        for provider in _DETERMINISTIC_PROVIDERS:
+            item = providers[provider]
+            provider_session_id = item["provider_session_id"]
+            archive_state = _poll_archive_state(
+                receiver_url=receiver_url,
+                provider=provider,
+                provider_session_id=provider_session_id,
+                timeout_s=readiness_timeout_s,
+            )
+            indexed_session_id = archive_state.get("indexed_session_id") if archive_state is not None else None
+            provider_api_ok = isinstance(indexed_session_id, str) and _fetch_api_messages(
+                api_url=api_url,
+                session_id=indexed_session_id,
+            )
+            convergence[provider] = {
+                "archive": archive_state is not None,
+                "api": provider_api_ok,
+                "indexed_session_id": indexed_session_id,
+            }
+        archive_ok = bool(convergence) and all(row["archive"] is True for row in convergence.values())
+        api_ok = bool(convergence) and all(row["api"] is True for row in convergence.values())
         if not archive_ok or not api_ok:
-            raise RuntimeError("archive/API convergence proof failed")
+            raise RuntimeError(
+                "archive/API convergence proof failed: "
+                + json.dumps(_redacted_convergence(convergence), sort_keys=True)
+            )
         return {
             "ok": True,
             "ports": {"api": api_port, "browser_capture": capture_port},
