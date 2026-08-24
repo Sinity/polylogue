@@ -46,7 +46,7 @@ cache = "tree+environment"
 
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=16", "devtools", "verify", "--all"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=12", "devtools", "verify", "--all"]
 pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
