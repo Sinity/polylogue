@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -27,7 +28,9 @@ from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
     NAMED_WORKLOAD_PROFILES,
     ArtifactGcDisposition,
+    ArtifactGcReport,
     BenchmarkWorkloadTier,
+    SeededArchiveClone,
     WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
@@ -1618,6 +1621,137 @@ def test_artifact_gc_preserves_active_per_key_lock_and_query_lease(tmp_path: Pat
         lease.close()
     assert leased.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LEASE
     assert artifact.root.exists()
+
+
+def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clone's shared lease wins the race before its first source read."""
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    artifact = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(artifact.root)
+    copy_started = threading.Event()
+    allow_copy = threading.Event()
+    clone_result: list[object] = []
+    gc_result: list[object] = []
+    original_copy = artifacts._copy_tree
+
+    def blocked_copy(source: Path, destination: Path) -> None:
+        copy_started.set()
+        assert allow_copy.wait(5), "clone did not receive its release signal"
+        original_copy(source, destination)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", blocked_copy)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+
+    def run_clone() -> None:
+        try:
+            clone_result.append(clone_seeded_archive(artifact, tmp_path / "clone"))
+        except BaseException as exc:  # surfaced below with the thread result
+            clone_result.append(exc)
+
+    def collect() -> None:
+        gc_result.append(
+            gc_seeded_archive_artifacts(
+                cache_root=cache_root,
+                reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+                grace_period_s=1,
+                now=10_000,
+                dry_run=False,
+            )
+        )
+
+    clone_thread = threading.Thread(target=run_clone)
+    clone_thread.start()
+    assert copy_started.wait(5), "clone did not reach its source read barrier"
+    gc_thread = threading.Thread(target=collect)
+    gc_thread.start()
+    gc_thread.join(5)
+    allow_copy.set()
+    clone_thread.join(5)
+
+    assert not gc_thread.is_alive()
+    assert not clone_thread.is_alive()
+    assert len(gc_result) == 1
+    gc_report = cast(ArtifactGcReport, gc_result[0])
+    assert gc_report.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert len(clone_result) == 1 and not isinstance(clone_result[0], BaseException)
+    cloned = cast(SeededArchiveClone, clone_result[0])
+    assert cloned.root.exists()
+    cloned.close()
+    assert artifact.root.exists()
+
+
+def test_rejected_hardlink_clone_cleans_residue_without_mutating_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    source_manifest = (artifact.root / "manifest.json").read_bytes()
+    source_index = artifact.root / "index.db"
+    source_mode = stat.S_IMODE(source_index.stat().st_mode)
+    destination = tmp_path / "hardlink-clone"
+    original_copy = artifacts._copy_tree
+
+    def inject_hardlink(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        target.chmod(target.stat().st_mode | stat.S_IWUSR)
+        target_index = target / "index.db"
+        target_index.unlink()
+        os.link(source / "index.db", target_index)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", inject_hardlink)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="inode was not detached"):
+        clone_seeded_archive(artifact, destination)
+
+    assert not destination.exists()
+    assert source_index.exists()
+    assert stat.S_IMODE(source_index.stat().st_mode) == source_mode
+    assert (artifact.root / "manifest.json").read_bytes() == source_manifest
+
+
+def test_rejected_symlink_clone_cleans_residue_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    source_manifest = (artifact.root / "manifest.json").read_bytes()
+    destination = tmp_path / "symlink-clone"
+    outside = tmp_path / "outside"
+    outside.write_text("must remain", encoding="utf-8")
+    original_copy = artifacts._copy_tree
+
+    def inject_symlink(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        target.chmod(target.stat().st_mode | stat.S_IWUSR)
+        (target / "unsafe-link").symlink_to(outside)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", inject_symlink)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="symlink"):
+        clone_seeded_archive(artifact, destination)
+
+    assert not destination.exists()
+    assert outside.read_text(encoding="utf-8") == "must remain"
+    assert (artifact.root / "manifest.json").read_bytes() == source_manifest
 
 
 def test_artifact_gc_retains_corruption_and_explicit_worktree_protection(tmp_path: Path) -> None:

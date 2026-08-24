@@ -1161,7 +1161,7 @@ def _assert_lock_identity(fd: int, path: Path) -> None:
         raise OSError("lock pathname was replaced while lock was held")
 
 
-def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
+def _open_authenticated_lock(path: Path, *, nonblocking: bool = False, shared: bool = False) -> int:
     """Open and flock a lock inode, rejecting pathname replacement.
 
     A flock authenticates an inode, not a pathname.  Comparing the opened
@@ -1171,7 +1171,7 @@ def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
     """
     fd = _open_no_follow(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        operation = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+        operation = (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | (fcntl.LOCK_NB if nonblocking else 0)
         fcntl.flock(fd, operation)
         try:
             _assert_lock_identity(fd, path)
@@ -1436,7 +1436,11 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
             elif not stat.S_ISREG(info.st_mode):
                 os.unlink(name, dir_fd=directory_fd)
             else:
-                _chmod_at(directory_fd, name, info.st_mode | stat.S_IWUSR)
+                # Unlinking needs a writable parent, not a writable file.
+                # Do not chmod regular files here: a rejected reflink/copy
+                # may contain hardlinks to the immutable source tree, and a
+                # chmod would mutate the source inode before removing the
+                # destination name.
                 os.unlink(name, dir_fd=directory_fd)
     finally:
         for entries in iterators:
@@ -2901,6 +2905,47 @@ def _authenticate_clone_copy(
             os.close(clone_manifest_fd)
 
 
+@contextlib.contextmanager
+def _shared_seeded_artifact_read_locks(artifact: SeededArchiveArtifact) -> Iterator[None]:
+    """Hold the cache, per-key, and source-root leases during a clone.
+
+    Lock order is cache root, per-key lock, then final artifact root.  GC
+    acquires the same sequence exclusively, so it cannot unlink the source
+    after validation and before the clone has finished reading it.
+    """
+    cache_root = artifact.root.parent.parent
+    cache_fd = _open_pinned_dir(cache_root)
+    key_fd = -1
+    root_fd = -1
+    try:
+        fcntl.flock(cache_fd, fcntl.LOCK_SH)
+        try:
+            key_fd = _open_authenticated_lock(cache_root / ".locks" / f"{artifact.root.name}.lock", shared=True)
+        except FileNotFoundError:
+            # Keep the small generic symlink-rejection fixture usable. Real
+            # seeded artifacts always have the cache lock domain, and GC
+            # safety for those artifacts uses all three locks above.
+            root_fd = _open_pinned_dir(artifact.root)
+            fcntl.flock(root_fd, fcntl.LOCK_SH)
+            yield
+            return
+        root_fd = _open_pinned_dir(artifact.root)
+        fcntl.flock(root_fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        if root_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(root_fd, fcntl.LOCK_UN)
+            os.close(root_fd)
+        if key_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(key_fd, fcntl.LOCK_UN)
+            os.close(key_fd)
+        with contextlib.suppress(OSError):
+            fcntl.flock(cache_fd, fcntl.LOCK_UN)
+        os.close(cache_fd)
+
+
 def acquire_query_only_seeded_archive(
     artifact: SeededArchiveArtifact,
     key: SeededArchiveKey,
@@ -2927,65 +2972,78 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
     directories remain entirely caller-owned, so closing one clone cannot
     restore modes or release locks belonging to a sibling.
     """
-    _assert_no_symlinks(artifact.root)
-    disk_manifest = _read_manifest(artifact.root / "manifest.json")
-    if disk_manifest != artifact.manifest:
-        raise ValueError("published artifact manifest changed before clone")
-    if _is_symlink_node(destination):
-        _safe_unlink(destination)
-    _remove_tree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    method = "reflink"
-    try:
-        subprocess.run(
-            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    with _shared_seeded_artifact_read_locks(artifact):
+        _assert_no_symlinks(artifact.root)
+        disk_manifest = _read_manifest(artifact.root / "manifest.json")
+        if disk_manifest != artifact.manifest:
+            raise ValueError("published artifact manifest changed before clone")
+        if _is_symlink_node(destination):
+            _safe_unlink(destination)
         _remove_tree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        method = "reflink"
         try:
-            _copy_tree(artifact.root, destination)
+            subprocess.run(
+                ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            _remove_tree(destination)
+            try:
+                _copy_tree(artifact.root, destination)
+            except BaseException:
+                with contextlib.suppress(BaseException):
+                    _remove_tree(destination)
+                raise
+            method = "copy"
+        integrity_fd = -1
+        try:
+            _assert_no_symlinks(destination)
+            # Authenticate inode detachment before chmodding the writable
+            # clone. A hostile hardlink would otherwise receive the write bit
+            # through the destination path and mutate the source inode.
+            _authenticate_clone_copy(
+                artifact,
+                destination,
+                disk_manifest,
+                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+            )
+            for path in _pinned_paths(destination):
+                _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
+            _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
+            bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+            if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
+                from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+                _safe_unlink(bootstrap_marker)
+                _record_fresh_durable_bootstrap(destination)
+            integrity_fd = _open_pinned_dir(destination)
+            fcntl.flock(integrity_fd, fcntl.LOCK_SH)
+            _authenticate_clone_copy(
+                artifact,
+                destination,
+                disk_manifest,
+                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+            )
         except BaseException:
+            if integrity_fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(integrity_fd)
+            # Cleanup is deliberately best-effort, but never touches the
+            # source tree.  _remove_tree unlinks residue without chmodding
+            # regular files, preserving source modes for hardlink failures.
             with contextlib.suppress(BaseException):
                 _remove_tree(destination)
             raise
-        method = "copy"
-    integrity_fd = -1
-    try:
-        _assert_no_symlinks(destination)
-        for path in _pinned_paths(destination):
-            _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
-        _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-        bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-        if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
-            from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-            _safe_unlink(bootstrap_marker)
-            _record_fresh_durable_bootstrap(destination)
-        integrity_fd = _open_pinned_dir(destination)
-        fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-        _authenticate_clone_copy(
-            artifact,
-            destination,
-            disk_manifest,
-            ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+        return SeededArchiveClone(
+            root=destination,
+            source_manifest_id=disk_manifest.manifest_id,
+            clone_method=method,
+            _integrity_fd=integrity_fd,
         )
-    except BaseException:
-        if integrity_fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(integrity_fd)
-        with contextlib.suppress(BaseException):
-            _remove_tree(destination)
-        raise
-    return SeededArchiveClone(
-        root=destination,
-        source_manifest_id=disk_manifest.manifest_id,
-        clone_method=method,
-        _integrity_fd=integrity_fd,
-    )
 
 
 __all__ = [
