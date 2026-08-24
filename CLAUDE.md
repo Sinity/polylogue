@@ -1,598 +1,174 @@
 # Polylogue
 
-Polylogue is a **local, single-writer archive for AI coding/chat sessions** —
+Polylogue is a local, single-writer archive for AI coding/chat sessions —
 Claude (web + Code), ChatGPT, Codex, Gemini/Drive, Antigravity, Hermes — that
-ingests heterogeneous exports into a split SQLite file set, derives rich read
-models, and serves them through a query-first CLI, an MCP server, a Python API,
-and an HTTP daemon. Pure Python, no native deps beyond pre-built wheels.
+ingests heterogeneous exports and live captures into a split SQLite file set,
+derives rich read models, and serves them through a query-first CLI, an MCP
+server, a Python API, and an HTTP daemon. Pure Python.
 
-This file is **standalone**: it carries the working understanding you need to
-be effective here. For depth, read the referenced docs on demand (see
-[Reference docs](#reference-docs)) — they are not auto-loaded.
+This file carries repository semantics only. Task authority is external
+(`bd` redirects outside the checkout); generic workspace/job/publication
+mechanics are environment-level concerns, not Polylogue's.
 
----
+## Public boundary
+
+Treat tracked content, commits, CI logs, and PR/review text as public. Never
+commit operator archives, transcripts, private exports, local databases,
+receipts, or scratch state; tests use neutral synthetic fixtures. Review the
+complete staged diff before publication.
 
 ## Orientation
 
-The system has four rings; substrate owns meaning, surfaces are leaf adapters:
-
-```
+```text
 sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materialize→ insights/
                                               │                              │
                             surfaces: cli/  mcp/  api/  daemon/  ─read-through─┘
                             verification:   devtools/  tests/  schemas/
 ```
 
-That diagram names eleven of **33 top-level packages**. The rest are not cruft
-— they are two thirds of the tree by count and over 100k LOC — so the full map
-follows, with LOC and the number of production files importing each. Read it
-before concluding a package is dead: low importer counts here are usually
-*foundational or deliberately early*, not abandoned.
+New semantics go into the substrate (`storage`/`insights`) or product layer
+first; surfaces adapt through `insights`/`operations`/`api`. Surface→substrate
+imports are a ratchet enforced by `devtools verify layering` (baseline may
+shrink, never grow); substrate→surface imports are forbidden outright.
 
-| Package | LOC | importers | Role |
-| --- | --- | --- | --- |
-| `archive/` | 34,758 | 283 | Query DSL, `SessionFilter`, revision membership — the read-side model over storage |
-| `maintenance/` | 27,119 | 73 | Rebuild, remediation passes, verification gates, live proofs (the reindex campaign's machinery) |
-| `operations/` | 14,644 | 52 | High-level archive operations and their typed contracts |
-| `core/` | 7,063 | 483 | Enums, hashing, sources vocabulary — the most-imported package in the tree |
-| `surfaces/` | 5,256 | 54 | Wire payload classes shared by CLI/MCP/API |
-| `rendering/` | 4,440 | 19 | Transcript and view rendering |
-| `browser_capture/` | 4,430 | 10 | Receiver and spool for live browser capture |
-| `demo/` | 4,089 | 2 | Private-data-free seed/verify corpus |
-| `scenarios/` | 3,797 | 13 | Executable scenario definitions |
-| `annotations/` | 3,342 | 10 | Versioned annotation schemas and batch provenance |
-| `coordination/` | 3,147 | 7 | Cross-agent blackboard assertions |
-| `agent_integration/` | 2,529 | 7 | Hook and agent-harness installers |
-| `sinex/` | 2,495 | 8 | Sinex-backed mode — **built ahead of `polylogue-303r`, unfinished by design** |
-| `readiness/` | 2,162 | 20 | Archive readiness and schema-currency checks |
-| `security/` | 1,967 | 9 | Redaction and privacy boundaries |
-| `material_protocol/` | 1,864 | 9 | Normalized-session wire format — **also early, see `docs/material-protocol-v1.md`** |
-| `ui/` | 1,799 | 13 | Facade for the reader UIs |
-| `product/` | 1,505 | 3 | Product-level query/action workflows |
-| `context/` | 1,359 | 8 | Context packs and recall |
-| `hooks/` | 987 | 5 | Hook event ingestion |
-| `cost/` | 819 | 7 | Pricing catalog and cost attribution |
-| `declarations/` | 694 | 9 | Declarative registries |
-| `paths/` | 415 | 126 | XDG/archive root resolution — tiny, and second only to `core/` in fan-in |
-| `telemetry/` | 244 | 2 | OTel export (`api.export_otel` is a documented public method) |
+## Identity and content model (know this cold)
 
-Two cautions this table exists to prevent, both of which have already cost
-this repo a real incident: `sinex/` and `material_protocol/` have single-digit
-importer counts because they are **built ahead of** a mode that has not
-shipped, not because they are dead; and `paths/`, at 415 LOC, is imported by
-126 production files, so "small" says nothing about blast radius.
-
-Entry points:
-
-| File | Role |
-| --- | --- |
-| `polylogue/api/__init__.py` | Async library facade (`Polylogue`) — deliberately thin |
-| `polylogue/config.py` | 5-layer config resolution + inventory-driven diagnostics |
-| `polylogue/cli/click_app.py` | Root query-first CLI dispatch |
-| `polylogue/operations/specs.py` | High-level archive operations (`operations/archive.py` is just `ArchiveStats`; the real operation logic lives here + `import_operations.py` + contracts) |
-| `polylogue/daemon/cli.py` | Daemon runner (`polylogued run`) |
-
-**Working rule:** new semantics go into the substrate (`storage`/`insights`) or
-product layer first, then surfaces adapt. New surface code should not import
-substrate (`storage`/`pipeline`/`sources`) internals directly — route through
-`insights`/`operations`/`api` instead. `docs/plans/layering.yaml` enforces
-this as a **ratchet, not a clean boundary**: `cli`/`mcp`/`api`/`daemon` each
-carry a large pre-existing baseline of direct substrate imports
-(`docs/plans/layering-surface-baseline.json`, 311 entries as of
-polylogue-2ciy) that `devtools verify layering` exempts, but any import not
-already in that baseline fails the (required, CI-gated) check. The genuinely
-clean, zero-exception direction is the reverse one: `storage`/`pipeline`/
-`sources` must not import surface adapters, enforced with no baseline at all.
-
----
-
-## Architecture
-
-### The data model (know this cold)
-
-Identity is **computed, never stored redundantly** — every id is a SQLite
-generated column:
+Identity is computed, never stored redundantly (SQLite generated columns):
 
 - `sessions.session_id = origin || ':' || native_id`
 - `messages.message_id = session_id || ':' || COALESCE(native_id, position||'.'||variant_index)`
 - `blocks.block_id = message_id || ':' || position`
 
-Three-level content tree **sessions → messages → blocks**, all `STRICT` tables.
-Load-bearing columns:
+Sessions → messages → blocks, all `STRICT`. Load-bearing semantics:
 
-- **`messages.material_origin`** (`core/enums.py`) — the authoredness axis
-  `Role` can't express (`human_authored`, `assistant_authored`,
-  `operator_command`, `runtime_protocol`, `runtime_context`, `tool_result`,
-  `generated_context_pack`, …). This is what makes honest cost/user-word
-  accounting possible: Claude Code `role=user` protocol rows are excluded from
-  authored-user counts.
-- **`blocks.tool_result_is_error` / `tool_result_exit_code`** (index v16
-  keystone) — provider-reported outcomes read from structure; `NULL` = unknown,
-  never regex-guessed from prose.
-- **`actions` is a VIEW**, not a table — it left-joins `tool_use ↔ tool_result`
-  blocks by `tool_id`. The queryable "action" relation is derived on read.
-- FTS5 is **contentless** (`content=''`, `contentless_delete=1`) over
-  `blocks.search_text`, kept in sync by three triggers. `tokenize=unicode61`
-  (no porter stemmer in this build — don't change it).
-- CHECK constraints are **generated from Python types** where a call site
-  exists — `check`/`nullable_check` (`storage/sqlite/archive_tiers/common.py`)
-  embed a `PolylogueStrEnum`'s values via `sql_check_in`/`nullable_sql_check_in`
-  (e.g. `check("origin", Origin)`, `check("role", Role)`), and `literal_check`
-  does the same for `typing.Literal` columns (e.g.
-  `delegation_facts.mapping_state`/`.result_status` via
-  `literal_check("mapping_state", *get_args(DelegationMappingState))`).
-  This is real for the ~20 enum-backed columns and the handful of
-  `literal_check` call sites wired so far (polylogue-u6tl) — most
-  hand-written `CHECK(col IN (...))` lists across `archive_tiers/*.py`
-  still have no generator tie and can drift silently; `RunStatus`
-  (`insights/run_projection.py`) is intentionally storage-free (an
-  in-memory projection, never a column) and has no SQL surface to generate.
+- `messages.material_origin` is the authoredness axis roles can't express —
+  what makes honest cost/user-word accounting possible.
+- `blocks.tool_result_is_error` / `tool_result_exit_code` are provider-reported
+  outcomes read from structure; `NULL` = unknown, never regex-guessed.
+- `actions` is a VIEW joining tool_use ↔ tool_result blocks by `tool_id`.
+- FTS5 is contentless over `blocks.search_text`, trigger-maintained,
+  `unicode61` (no porter stemmer in this build).
+- Enum/`Literal`-backed CHECK constraints are generated from Python types
+  where wired (`check`/`literal_check` in `archive_tiers/common.py`).
 
-**Lineage normalization** (`session_links`, index v12+) is the sharpest design
-point. Forks/resumes/subagents/auto-compaction physically replay the parent's
-prefix, so the writer stores only the child's **divergent tail** plus
-`branch_point_message_id` + `inheritance` (`prefix-sharing` | `spawned-fresh`);
-reads recompose parent-up-to-branch + child-tail. `branch_point_message_id` is
-**deliberately not a FK** — an `ON DELETE SET NULL` would null it during a
-parent full-replace's DELETE step (cascade fires before re-INSERT) and
-permanently break composition. `session_links` is also the topology-edge table
-(the docs' older `topology_edges` name): it persists every parent reference a
-parser asserts, even when the parent isn't ingested yet, keyed
-`(src_session_id, dst_origin, dst_native_id, link_type)`, resolved on each save
-by `_resolve_session_graph`/`_resolve_outbound_session_links`
-(`storage/sqlite/archive_tiers/write.py`) — the sole production
-implementation, invoked unconditionally from `write_parsed_session_to_archive`
-(the single choke point both live incremental ingest and full raw
-replay/reindex go through). `storage/sqlite/queries/session_links.py`'s
-similarly-named async `resolve_session_links_for_session` has no production
-caller; it exists only as test infrastructure (`polylogue-enium`).
-`TopologyEdgeStatus` = unresolved/resolved/repaired/**quarantined**
-(cycle-break).
+**Lineage**: forks/resumes/subagents/compaction physically replay the parent's
+prefix; the writer stores only the child's divergent tail +
+`branch_point_message_id` + inheritance mode; reads recompose.
+`branch_point_message_id` is deliberately not an FK (parent full-replace must
+not null it). `session_links` is also the topology-edge table, persisting
+parser-asserted parent references resolved on each save through
+`write_parsed_session_to_archive` — the single choke point shared by live
+ingest and full replay/reindex.
 
-### The six tiers (durability is the axis)
+## Six storage tiers (durability is the axis)
 
 | Tier | durability | holds |
 | --- | --- | --- |
-| `source.db` | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
-| `index.db` | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
-| `embeddings.db` | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
-| `user.db` | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
-| `audit.db` | **durable, append-only authority** | mutation previews, authorizations, attempts, receipts, and continuity heads |
-| `ops.db` | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs |
+| `source.db` | durable | raw acquired bytes, artifact taxonomy, blob/GC substrate, hook events, sidecars |
+| `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
+| `embeddings.db` | rebuildable | vectors, meta, status |
+| `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
+| `audit.db` | durable, append-only | previews, authorizations, attempts, continuity |
+| `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
 
-`user.db` is a **single unified `assertions` table** keyed by a closed
-`AssertionKind` (mark / tag / correction / annotation / suppression / metadata /
-saved_query / recall_pack / workspace_note / note / decision / caveat / lesson /
-blocker / handoff / judgment / pathology / …). It collapsed the old separate
-overlay tables; `context_policy_json` (default `{"inject":false}`) gates whether
-an assertion is injected into agent context. The column is plain `TEXT` so the
-vocabulary can grow without a user-tier schema bump. User corrections are
-`AssertionKind.CORRECTION` rows here. Versioned
-annotation construct definitions live in `annotation_schemas`; independent
-label-run provenance lives in `annotation_batches`, while the labels remain
-ordinary assertion rows scoped by `annotation-batch:<id>` ObjectRefs.
+Never use rebuildable state as authority for durable mutation; never strand
+existing durable archives with a schema shortcut. Archive writes are
+idempotent by content hash (SHA-256 over NFC-normalized payload, excluding
+user metadata — tagging never re-imports).
 
-### Content-hash idempotency
+**Schema regimes**: durable tiers evolve by additive numbered migrations under
+`storage/sqlite/migrations/{source,user,audit}/` behind a verified backup;
+derived tiers declare a lifecycle delta class per version bump
+(`storage/sqlite/lifecycle.py`) — only `SEMANTIC_REPARSE` deltas force a full
+rebuild, and rebuild runs through the production daemon route (there is no
+separate manual rebuild mechanism). Classify every schema change before
+editing: metadata-only, index-only, additive-derived, additive-durable, or
+semantic-reparse.
 
-Archive writes are idempotent by content hash (`pipeline/ids.py`,
-`core/hashing.py`): SHA-256 over an **NFC-normalized** payload with
-None/empty/missing sentinels, hashing title + timestamps + messages + blocks +
-attachments (sorted) + session events. It **excludes** user metadata by
-construction — tagging/annotating never triggers re-import. Re-ingest with a
-matching hash is skipped; a differing hash updates the session and rebuilds
-dependent insights.
+## Provider vs Origin vs Source
 
-### Provider detection & parsing
+`Origin` is the public source-origin token on query surfaces and read payloads
+(**public filters use `origin`**). `Provider` is the older provider-wire token
+— legitimate at raw acquisition/parser/schema boundaries, a leak on public
+surfaces. `Source` carries richer acquisition identity. The GEMINI+DRIVE →
+AISTUDIO_DRIVE mapping is non-injective: never reverse an Origin into a
+guessed Provider. Full table: `docs/provider-origin-identity.md`.
 
-`sources/dispatch.py:detect_provider()` is shape-based, in **tightness order**
-(not filename order): structural/document detectors first (browser-capture,
-gemini-cli, hermes, antigravity), then Pydantic-validated record checks (Codex,
-Claude Code), then loose dict-key checks (ChatGPT, Claude web, Gemini). Insert a
-new detector at the tightness level it deserves or an earlier parser claims its
-records. `_lower_payload_specs` then recursively lowers a payload into typed
-`LoweredPayloadSpec`s (handling bundles, grouped JSONL split by `sessionId`,
-drive-like nesting, single-document providers), and `_parse_lowered_spec` routes
-each to a concrete parser. A memory-bounded streaming path exists for multi-GiB
-Claude Code JSONL.
-
----
+Detection (`sources/dispatch.py`) is shape-based in tightness order; insert new
+detectors at the tightness they deserve or an earlier parser claims their
+records.
 
 ## Runtime
 
-The **daemon owns all writes** (`polylogued run`). Ingest stages:
-**acquire → parse → materialize → index** (`reprocess` = parse+materialize+index
-without re-acquire; `all` = full). Raw acquire/parse/materialize lives in
-`pipeline/services/ingest_batch/`.
-
-The **`DaemonConverger`** (`daemon/convergence.py`) drives *derived-model*
-convergence (FTS repair, embedding catch-up, insights) after ingest. Each
-`ConvergenceStage` has check/execute, plus optional batch (`check_many`/
-`execute_many`) and session-scoped (`check_sessions`/`execute_sessions`, for
-retrying `convergence_debt` without re-resolving source paths) variants. Two
-deliberate tricks:
-
-- `false_means_pending` — a stage does bounded work and returns `False` to push
-  the *remaining* backlog into `convergence_debt` as retry-able, not a failure
-  ("insights deferred until quiet").
-- Hot-file quiet deferral (`convergence_stages.py`) batches still-appending
-  Codex/Claude sessions until a quiet window; embed runs in bounded windows.
-
-The main process is the **sole SQLite writer** — no convergence stage runs in
-a worker process. Blob GC uses two independent safety invariants (leases +
-snapshot reference check) to bridge the acquire-blob → commit-row window.
-
-### Schema regimes (durability-keyed)
-
-Two evolution regimes, enforced by `devtools verify schema-versioning`:
-
-- **Durable tiers** (`source.db`, `user.db`, `audit.db`): explicit **additive** numbered SQL
-  migrations under `storage/sqlite/migrations/{source,user,audit}/NNN_*.sql`, one
-  `PRAGMA user_version` step at a time, behind a **verified backup manifest**.
-  Destructive durable changes need a copy-forward design + explicit consent.
-- **Derived tiers** (`index.db`, `embeddings.db`): no migration *chain*, but not
-  "always rebuild" either. Every index bump above the compatibility floor
-  declares a delta class in `storage/sqlite/lifecycle.py`; a declared
-  non-semantic delta upgrades an existing generation **in place** through
-  `index_fast_forward_plan()` on connect. Only a `SEMANTIC_REPARSE` delta — one
-  whose result depends on parser semantics — routes to
-  `polylogue ops maintenance rebuild-index`. A bump without a declaration
-  is a policy violation, not a free rebuild: the lint fails and the archive
-  silently falls back to full raw replay.
-
-Before editing schema, classify the change: metadata-only, index-only,
-additive-derived, additive-durable, or semantic-reparse-required. Batch
-same-tier bumps before triggering a live rebuild; don't
-repeatedly reset+reingest the active archive for isolated index additions.
-
----
+The daemon owns all writes (`polylogued run`); the main process is the sole
+SQLite writer. Ingest stages: acquire → parse → materialize → index; the
+`DaemonConverger` drives derived-model convergence (FTS, embeddings, insights)
+with bounded work, quiet-window deferral for hot files, and `convergence_debt`
+for retryable backlog. Derived read models converge from durable evidence —
+there is no standing "repair" product concept; a failure state is either
+explicit-and-retryable or a typed permanent refusal.
 
 ## Surfaces
 
-- **CLI is query-first** (`cli/click_app.py`): `find QUERY then ACTION`. Verbs:
-  `find` / `read` / `analyze` / `mark` / `select` / `delete` / `continue`
-  (+ `read --view transcript|messages|…`). Root filters go **before** `find`,
-  verb options **after** the action. Use `--origin` (not `-p`/`--provider`),
-  `read --all` (there is no `list`/`show`/`stats` verb).
-  - **Strict command floor (#1842):** query mode needs *signalled intent* — the
-    `find` keyword, a **quoted** expression (single argv token with internal
-    whitespace), or **field syntax** (`repo:x`, `since:7d`). A bare *unquoted*
-    plain word (`polylogue foo`) raises a `UsageError` with a did-you-mean/`find`
-    hint; it does **not** silently search.
-  - The query grammar (`archive/query/expression.py`) is a real Lark DSL:
-    fielded predicates, booleans, `near:"…"`, count/date ranges, `with <units>`
-    projection, and pipeline stages (`sessions where … | group by … | count`)
-    over unit sources sessions/actions/messages/observed-events, lowered to SQL.
-- **Python API** (`api/__init__.py`): the `Polylogue` facade is deliberately
-  thin — it holds config/services and exposes `repository`/`backend`. The rich
-  verbs live on the mixin-composed `SessionRepository`
-  (`storage/repository/__init__.py`: archive reads, archive writes, raw,
-  vectors, + six insight readers — profile, run-projection, timeline, thread,
-  summary, topology) and on `services.py`.
-- **MCP** (`mcp/`): the large agent-facing surface — consolidated into 10
-  role-gated operation-dispatcher tools (`status`, `read`, `get`, `query`,
-  `explain`, `context`, plus `write`/`run` behind the write role, `judge`
-  behind the review role, `maintenance` behind the admin role), pinned by
-  `tests/unit/mcp/test_server_surfaces.py` against `EXPECTED_TOOL_NAMES` —
-  search/list/get, insights, corrections, context/recall, postmortem
-  bundles. This, not the API, is the continuity surface. Adding an
-  operation requires updating the dispatcher's declared verb table + a tool
-  contract.
-- **Insights** (`insights/registry.py`): descriptor-driven — one
-  `INSIGHT_REGISTRY` where each `InsightType` declares field accessors + a
-  Pydantic query model + operations method + CLI/MCP metadata, driving
-  plaintext, JSON, and MCP from one place. Insight models carry canonical
-  `origin` fields directly; surfaces serialize them without a vocabulary shim.
-- **`SessionFilter`** (`archive/filter/filters.py`) is a fluent shell over an
-  immutable `SessionQueryPlan` that separates SQL-pushdown from post-filters and
-  summaries-from-full loading, plus the `with_units` projection.
-
----
-
-## Vocabulary: Provider vs Origin vs Source
-
-Three origin-related vocabularies with different scopes (`core/enums.py`,
-`core/sources.py`; full table in `docs/provider-origin-identity.md`):
-
-- **`Origin`** — the public source-origin token on query surfaces and read
-  payloads: `claude-code-session`, `claude-ai-export`, `chatgpt-export`,
-  `codex-session`, `gemini-cli-session`, `hermes-session`,
-  `antigravity-session`, `aistudio-drive`, `grok-export`, `unknown-export`.
-  **Public filters use `origin`.**
-- **`Provider`** — the older provider-wire token (mixes lab/product/source-family
-  identity). Still legitimate at wire boundaries (raw export parsing,
-  `schemas/providers/`, provider/embedding-provider metadata) but a **leak** on
-  public surfaces.
-- **`Source`** — richer identity (`family`, `runtime_root`, `originating_lab`).
-
-Normalized archive identity carries `Origin`; `source_name` in rebuildable
-storage rows is a persistence detail converted while hydrating typed models,
-never a second public identity vocabulary.
-
-`Provider` deliberately remains at raw acquisition/parser/schema boundaries
-and in genuinely provider-scoped concepts such as embedding backends, pricing
-catalog vendors, provider-reported cost, and provider-usage billing. The
-`GEMINI` + `DRIVE` → `AISTUDIO_DRIVE` mapping is non-injective, so normalized
-code must not reverse an `Origin` into a guessed `Provider`; raw-wire code uses
-its original acquisition evidence. Anti-goal: provider wording on
-source-origin public filters or payloads.
-
----
-
-## Working Rules (agent workflow)
-
-These override default agent behavior.
-
-### Active campaign: devtools/harness overhaul → reindex readiness
-
-The historical reindex campaign root is `polylogue-reindex-2026`. Consult
-
-the external task authority, not this checkout. Workstream epics A-H are
-closure gates, not executable tasks. Historical campaign genesis is verified
-against pinned Git blobs in `docs/campaign-genesis/`; it is evidence, not a
-current operational queue. `.agent/campaigns/2026-08-overhaul/` is historical
-migration evidence only and must not be consulted for current status,
-sequencing, ownership, or next action.
-
-### External task authority
-
-Task authority is external to this checkout. Feature worktrees and PRs must
-never import, mutate, carry, or publish live task state; ordinary task activity
-must not dirty Git or change with a branch switch. The former local devloop,
-Beads graph tooling, and task-state carriers are retired; the bounded
-`workspace dev-loop-service` proof is AgentCTL-owned. Historical Beads
-exports remain immutable Git evidence, and configured append-only interaction
-ledgers remain archive inputs only.
-
-### Issue-first for non-trivial work
-
-Open an issue before work that is non-trivial, spans multiple PRs, or introduces
-architectural decisions — it defines scope and acceptance criteria. Reference it
-from the PR with neutral wording (`Ref #NNN`). Skip issues for self-contained
-fixes where the PR body suffices.
-
-**Do not use GitHub resolver keywords** (the close/fix/resolve family) next to
-issue numbers in agent-authored PR bodies/comments/commits unless the operator
-explicitly asks for that exact PR to change that exact issue's state. Use
-`Ref #N` + explicit `Remaining #N scope:` instead.
-
-### Verification and schema
-
-Use `devtools`, never bare `pytest`. It supplies the checkout guard, containment, and managed testmon state. `devtools test <node-or--k>` is the focused inner loop. Plain `devtools verify` reuses a compatible testmon graph and runs its selected tests; without a compatible graph it refuses rather than starting the whole corpus. `devtools verify --all` is the explicit complete-corpus route for intentional integration checkpoints. `devtools verify --quick` is the static fast gate. Use `devtools why` before reading receipts by hand.
-
-Batch changes before verification. Classify unrelated selected failures instead of claiming them fixed. Verify in the context that failed. Touching dependencies, `conftest.py`, `devtools/pytest*.py`, the interpreter, or collection environment changes the testmon digest, so batch those edits deliberately. Record disproved hypotheses on the relevant Bead.
-
-Classify every schema change first: durable tier means additive numbered migration plus verified backup manifest; derived tier means canonical DDL plus declared lifecycle delta. Semantic parser changes require `polylogue ops maintenance rebuild-index`; do not add an ad hoc third upgrade path.
-
-### Parallel lane workflow
-
-Use tools to eliminate repeated manual steps, not to prove a local ceremony happened. The normal delivery unit is one coherent integration branch, not one PR per implementation lane.
-
-- **Workspace lifecycle:** create, inspect, checkpoint, recover, stack, publish, land, finish, and reap workspaces through `agentctl workspace`. AgentCTL owns Git identity and exact-head job binding; Polylogue does not keep a second worktree registry or handoff protocol.
-- **Lane work:** give each lane concrete ownership and focused verification. A lane commits each completed logical chunk and reports verification normally. Dirty or divergent work remains protected by AgentCTL until it is checkpointed, recovered, or explicitly resolved.
-- **Integration:** use AgentCTL stacks for dependent workspace histories and GitHub PRs for publication. Resolve only actual Git, generated-surface, schema-slot, or test-environment conflicts. Check actual changed paths before integration; do not serialize independent implementation behind a coordinator PR queue.
-- **Verification:** lanes run exact focused `devtools test` selectors. Plain `devtools verify` runs the compatible selected testmon set or refuses; it never promotes an unavailable graph into a complete corpus. `devtools verify --all` is an explicit end-of-wave or operator-directed checkpoint.
-- **Publication:** open one PR for a coherent batch. Keep merge automation only where it removes real manual mistakes; do not make a complete corpus a per-lane admission requirement. The lane runtime and merge surface are derived from Git/job state and batch integration.
-
-### Coordinator dispatch: no poll loops
-
-Completion notifications are authoritative. `Monitor` is only for a concrete until-condition; `ScheduleWakeup` is only for an external deadline. Do not poll background agents. On an older runtime where notifications are unreliable, use one bounded deadline wakeup instead.
-
-### Commit / PR discipline
-
-All product code lands via **feature branches + squash-merged PRs** to `master`
-(protected; no direct pushes). Branch names: `feature/<category>/<desc>`.
-
-- Conventional commit subjects (`feat:`/`fix:`/`refactor:`/`perf:`/`test:`/
-  `docs:`/`chore:`). The **PR title is the squash-merge subject** on `master` —
-  ≤72 chars, imperative, describes what changed. Ends up as permanent history.
-- PR body sections (all required): **Summary**, **Problem** (evidence, not "user
-  asked"), **Solution** (modules touched, non-obvious decisions), and
-  **Verification** (exact commands + the output line that matters, not "tests pass").
-- Routine PRs do **not** edit `pyproject.toml` `version` or `CHANGELOG.md` —
-  release-please owns those from conventional subjects on `master`.
-- **Claim verification:** before writing that something is "unified"/"aligned"/
-  "converged"/"complete", grep the diff and check both paths. A claim the code
-  doesn't support is worse than no claim. State partial work honestly.
-- **Acceptance-criteria honesty:** address each AC as satisfied / deferred (to a
-  named follow-up issue) / misframed. Tests are not a substitute for missing
-  runtime wiring.
-- Stage by path (`git add <file>`), never `git add -A` / `-a` on significant
-  changes. Never `--no-verify` unless the operator asked; a hook failure means
-  fix the root cause in a **new** commit (don't `--amend` a successful one).
-
-Issues and PR bodies are durable artifacts — write them to stand alone for a
-reader with no conversation context (file paths, AC, design references).
-
----
-
-## Testing essentials
-
-Full detail in `TESTING.md`. Layout: `tests/unit` (~95%), `tests/property`
-(Hypothesis), `tests/integration` (slow, protected), `tests/benchmarks`,
-`tests/fuzz`. Shared infra in `tests/infra/` (`SessionBuilder`, `make_message`,
-`seeded_archive`/`named_seeded_archive`/`named_seeded_archive_ro`, schema-driven
-strategies). `workspace_env` fixture gives
-isolated XDG paths + archive root.
-
-- **Prefer `devtools test`** over raw pytest — it runs through the project
-  harness (repo environment, single-process default, live output, checkout
-  guard, and typed receipt). `POLYLOGUE_PYTEST_WORKERS=N` overrides.
-- **Clock hygiene:** timestamp-sensitive tests use the `frozen_clock` fixture
-  (`tests/infra/frozen_clock.py`), not the host wall clock. An autouse guard
-  (`tests/infra/clock_guard.py`) makes direct `datetime.now`/`time.time` reads
-  from test code raise immediately — there is no allowlist; genuine
-  exceptions opt out inline via `@pytest.mark.uses_real_clock("reason")`.
-- Verify-run artifacts land under `.cache/verify/`
-  (`current-pytest-{progress,selection,summary}.json`, `-output.log`).
-
-Demo path (private-data-free) for read/search/reader checks:
-`polylogue demo seed … && polylogue demo verify …`, or
-`polylogue import --demo --wait`.
-
----
-
-## devtools (the control plane)
-
-`devtools` owns repo readiness: generated-surface rendering, verification,
-validation-lane dispatch, packaging, PR-readiness. Domain semantics live in
-lab/schema/scenario/insight modules; `devtools` commands are thin entrypoints.
-
-**devtools is THE way to run things here, and when it is lacking the answer is
-to improve it — never to go around it.**
-
-That is one rule with two halves, and the second half is what makes the first
-honest. `devtools` is this repository's own code: if a command is slow, noisy,
-missing a flag, or wrong for your case, changing it is ordinary work, usually
-smaller than the workaround, and it fixes the problem for every later session
-instead of just this one. There is therefore never a situation where "devtools
-doesn't do what I need" justifies bypassing it — that sentence is a bug report
-against a file you can edit.
-
-Going around it is not neutral. A bare `pytest` silently opts out of:
-
-- the **checkout guard**, which catches a worktree running another checkout's
-  code (a 2026-07-31 incident corrupted four lanes for a day this way);
-- **containment** — the systemd scope, stall detection and runtime caps that
-  keep a runaway suite from taking the machine with it;
-- the **receipts** that `devtools why`, the merge gate and the lynchpin
-  substrate all read, so the run leaves no trace anyone can act on later.
-
-And it is slower: 124s versus 393s on the same 1342 tests.
-
-This is enforced, not merely written down, because writing it down demonstrably
-failed — bare pytest was reached for dozens of times in one session, each time
-for a real local reason. `.claude/hooks/require-devtools.sh` now denies those
-invocations with the right command in the message.
-`POLYLOGUE_ALLOW_BARE_PYTEST=1` exists for the genuine one-off; needing it twice
-means the harness is missing something, and the fix is to add it there.
-
-If you extend devtools, add the command to the list below in the same change —
-a tool with no line in this file is a tool the next session will not use.
-
-Core loop:
-
-- `devtools status` — repo state, generated-surface drift, next steps.
-- `devtools render all [--check]` — refresh/verify every generated surface after
-  changing docs, CLI help, or schema. **Gotcha:** `render all --check` can print
-  per-surface `sync OK` yet still exit 1 — grep the output for `out of sync`,
-  don't trust the tail line.
-- `devtools verify [--quick|--lab|--all]` — plain verification runs testmon's
-  selected tests from a compatible graph; `--all` is the explicit complete-corpus
-  route. See [Verification](#verification--testmon-inner-loop-never-blanket-run).
-- `devtools test <sel>` — focused pytest through the managed harness. Forwards
-  arbitrary pytest args and is faster than bare pytest; see Verification.
-- `devtools why [--run <id>]` — explain the most recent run: diagnosis, cause,
-  remedy, why it selected what it did, non-green tests, failing steps. Use it
-  before hand-reading receipt JSON.
-- `devtools verify …` — executable schema/provider/pipeline/lane checks.
-- `devtools verify oracle-integrity` — the anti-vacuity gate, in
-  `devtools verify --quick`. Fails a test module whose **entire** production
-  target set is unreachable from an entrypoint ("certifies dead code") and any
-  test that reads an ambient `~/.codex` / `~/.claude` / `/realm` path instead
-  of a fixture. Reachability is module-level over the import graph and
-  additionally seeded from four root classes import edges alone miss: Click
-  lazy commands, `python -m`-invoked modules (`if __name__ == "__main__"`),
-  ancestor packages of a reachable module, and literal-container registries
-  (`REPAIR_HANDLERS`, `ARCHIVE_VERIFICATION_CHECKS`). A symbol re-exported
-  through an unreachable facade resolves per-symbol to its defining module, so
-  a pass-through never reads as dead. Import edges alone under-report — this
-  repo has four recorded wrong deletions derived from grep. It also scans
-  `polylogue/**` for **import-time home capture**: a module-level constant
-  computed from `Path.home()`/`expanduser` is evaluated once at first import,
-  before any per-test env patching, so no test fixture can undo it (the same
-  call inside a function body is fine and is not flagged). Baseline entries are
-  keyed by a line-independent fingerprint, so an unrelated edit above a finding
-  does not invalidate its exemption; entries carrying a `note` are annotated
-  judgments (a guarded pattern or a known false positive), not worklist items. `--ignore-baseline` prints the pre-existing findings,
-  which are the WS-F deletion worklist in
-  `docs/plans/oracle-integrity-baseline.json`; `--write-baseline` regenerates
-  it. A `[type-only]` module reaches production **only** through a
-  `TYPE_CHECKING` import: reported for a human, never failed, and never proof
-  of dead code.
-- `devtools workspace …` — Polylogue-specific archive operations and evidence. Generic workspace and delivery lifecycle belongs to `agentctl workspace`.
-
-Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
-implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
-
-Local state: `.cache/` (disposable) and `.local/` (untracked outputs). Keep new
-outputs there, not new top-level roots. `.cache/verify/history.jsonl` is the
-append-only authority for terminal verification summaries. Detailed run trees
-under `.cache/verify/runs` are bounded automatically after that summary is
-fsynced: keep the newest eight successes and, for failures, the newest run plus
-up to twelve recent runs within seven days and 64 MiB. Malformed or unsafe
-trees are retained for manual inspection.
-
----
-
-## Cloud lane (Claude Code Web / Codex Cloud)
-
-Well-suited to cloud sandboxes: pure Python, all paths overridable via
-`POLYLOGUE_ARCHIVE_ROOT`. Bootstrap: `.claude/setup.sh`; env from
-`.claude/settings.json` (`POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-archive`,
-`POLYLOGUE_FORCE_PLAIN=1`, `HYPOTHESIS_PROFILE=ci`).
-
-- **Safe:** `uv run pytest tests/unit -q` / `tests/property -q`;
-  `ruff check`/`format --check`; `mypy polylogue`; `devtools verify` (slow);
-  `render all --check`; `polylogued run --no-api --no-watch --no-browser-capture`
-  against synthetic fixtures only.
-- **Never in cloud:** uploading a real `~/.claude/projects/` or
-  `~/.codex/sessions/` corpus (fixtures only); browser-capture flows; any
-  `/realm/data/...` path (not mounted). Privacy tier follows the running
-  account — confirm before enabling cloud lanes on sensitive repos
-  (`docs/cloud-agents.md`).
-
----
-
-## Gotchas (hard-won)
-
-- `render all --check` exits 1 even while printing `sync OK` per surface — grep
-  for `out of sync`.
-- New Click params on query verbs must go **last** — a positional shift silently
+- **CLI is query-first**: root filters before `find`, verb options after the
+  action; verbs `find/read/analyze/mark/select/delete/continue`. Query mode
+  needs signalled intent (the `find` keyword, a quoted expression, or field
+  syntax) — a bare unquoted word errors with a hint. The grammar
+  (`archive/query/expression.py`) is a real DSL lowered to SQL.
+- **MCP**: 10 capability-gated operation-dispatcher tools; adding an operation
+  updates the dispatcher's verb table + a tool contract
+  (`EXPECTED_TOOL_NAMES` is derived; a missing contract fails discovery).
+- **Insights** are descriptor-driven (`insights/registry.py`); one registry
+  drives plaintext, JSON, and MCP.
+- New Click params on query verbs go last — a positional shift silently
   reroutes args.
-- New MCP tool → add its tool contract. `EXPECTED_TOOL_NAMES` is *derived*
-  (`set(declared_tool_names(ALL_CAPABILITIES))` in `tests/infra/mcp.py`), so it
-  needs no hand-editing; a missing contract is what fails discovery tests.
-- New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
-  in `render openapi` + `render cli-output-schemas` — regenerate them.
-- Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green
-  `gh pr checks` does **not** mean tests ran — verify locally with
-  `devtools test <files>`. Required merge checks are repository-configured; inspect
-  `UNSTABLE`/neutral `mergeStateStatus` is usually the test-skip, not a failure —
-  inspect `statusCheckRollup`.
-- Committing from a linked worktree: a hook aborts if you `cd`'d into the main
-  checkout from inside a worktree (worktree-escape detector, #1211); set
-  `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree flows.
-- **Committing from a worktree requires `git -C /absolute/path`.** A bare
-  `git commit` from inside a linked worktree is refused by the wrong-checkout
-  guard even when the cwd is correct.
-- `devtools/checkout_guard.py` keeps one project-semantic check: the resolved
-  `polylogue` package must be contained by the invoking Polylogue checkout.
-  It refuses before command or verifier state is created. Installed CLI use
-  outside a Polylogue checkout remains a no-op.
-- `AGENTS.md` is a **symlink to this file** (`CLAUDE.md`) — edit CLAUDE.md, never
-  AGENTS.md; there is no render step.
 
----
+## Verification
 
-## Reference docs
+`devtools` owns repo readiness. Top-level commands: `bench demo release render
+status test verify why workspace` (catalog: `devtools/command_catalog.py`; add
+a command → add its `CommandSpec` + `render devtools-reference`).
 
-Read on demand (paths relative to repo root):
+- `devtools test <sel>` — focused pytest through the managed harness (checkout
+  guard, environment, typed result). Never bare `pytest`.
+- `devtools verify` — selected/affected verification from a compatible testmon
+  graph (refuses without one); `--quick` static gates; `--all` the true full
+  corpus, run at merge-train/master boundaries, not per-lane.
+- `devtools why` — explain the last run before reading receipts by hand.
+- `devtools render all --check` can print per-surface `sync OK` yet exit 1 —
+  grep for `out of sync`.
 
-| Topic | Doc |
-| --- | --- |
-| System rings, data flow, provider table | `docs/architecture.md` |
-| Invariants, hot files, schema-version history, extension points | `docs/internals.md` |
-| Target shape + architectural decision log | `docs/architecture-spine.md` |
-| Execution control center hotspot map + decomposition sequence | `docs/architecture-hotspots.md` |
-| Contributor workflow (branches, PRs, hooks, releases) | `CONTRIBUTING.md` |
-| Full testing reference | `TESTING.md` |
-| devtools command catalog | `docs/devtools.md` |
-| Cloud-agent setup + privacy | `docs/cloud-agents.md` |
-| Provider/Origin/Source vocabulary table | `docs/provider-origin-identity.md` |
-| Retrieval lanes + search semantics | `docs/search.md` |
-| Public Python domain models | `docs/data-model.md` |
-| Daemon convergence + threat model | `docs/daemon.md`, `docs/daemon-threat-model.md` |
-| Cost/usage model | `docs/cost-model.md` |
-| CLI reference (generated) | `docs/cli-reference.md` |
-| MCP reference | `docs/mcp-reference.md` |
-| Normalized-session material protocol v1 (Sinex-independent wire format) | `docs/material-protocol-v1.md` |
+Testmon is an advisory accelerator: a selected green proves the selected scope
+only, and the tooling refuses to represent it as corpus coverage. A test names
+its anti-vacuity condition — what mutation or bypass would make it red.
+Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
+seeded archives, pathology composer, corpus programs); timestamp-sensitive
+tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep
+ambient machine data out of tests. Per-PR CI runs only the quick gate — a
+green PR check does not mean tests ran; verify locally.
+
+Change cross-checks: parser/detection → origin specs + real fixtures + replay
+parity; storage/schema → fresh DDL + declared lifecycle + readers/writers +
+restart; query/read → CLI/API/MCP parity + pagination + cancellation; daemon →
+lifecycle + cancellation + restart; MCP → registry + shared product route;
+fixture/harness → proves a production route.
+
+## Commit / PR discipline
+
+Product code lands via feature branches + squash-merged PRs to protected
+`master`. Conventional subjects; PR title = the squash subject (≤72 chars,
+imperative). PR body: Summary, Problem (evidence), Solution, Verification
+(exact commands + the line that matters), honest residuals. No resolver
+keywords next to issue numbers unless the operator asks. Stage by path.
+Release-please owns version/CHANGELOG. Before writing "unified"/"complete",
+grep the diff and check both paths.
+
+## Documentation map
+
+`docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
+schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
+`CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,
+`docs/search.md`, `docs/cost-model.md`, `docs/provider-origin-identity.md`,
+`docs/material-protocol-v1.md`. `AGENTS.md` is a symlink to this file — edit
+CLAUDE.md only. This file must not carry campaign state, tracker rosters, or
+operational history — Beads and dated scratch notes own those.
