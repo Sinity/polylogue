@@ -39,6 +39,7 @@ from devtools.pytest_collection_contract import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.pytest_scratch import Outcome, PytestScratchLease, scratch_root_from_environment
 from devtools.verify_runs import (
     VerifyRun,
     append_verify_history,
@@ -329,10 +330,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
+    lease: PytestScratchLease | None = None
     try:
         pytest_env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
         _normalize_managed_pytest_environment(pytest_env)
+        lease = PytestScratchLease.acquire(
+            root=scratch_root_from_environment(pytest_env),
+            run_id=run.run_id,
+            lane="focused",
+            evidence_dir=artifacts.step_dir,
+        )
+        cmd = lease.command(cmd)
+        pytest_env = lease.environment(pytest_env)
         rc, elapsed, metadata = _run(
             "pytest focused",
             cmd,
@@ -354,6 +364,18 @@ def main(argv: list[str] | None = None) -> int:
         }
         elapsed = time.monotonic() - started
         sys.stderr.write(f"devtools test: cannot start pytest: {exc}\n")
+    finally:
+        if lease is not None:
+            outcome: Outcome = (
+                "success"
+                if "rc" in locals() and rc == 0
+                else "cancelled"
+                if "rc" in locals() and rc == 130
+                else "worker_crash"
+                if "rc" in locals() and rc == 3
+                else "failure"
+            )
+            lease.finalize(outcome)
     run.finish_step(
         step_id=artifacts.step_id,
         result={"duration_s": elapsed, "exit": rc, **metadata},

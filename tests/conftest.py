@@ -136,6 +136,8 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
         "POLYLOGUE_VISUAL_EVIDENCE_DIR",
+        "POLYLOGUE_PYTEST_SCRATCH_ROOT",
+        "POLYLOGUE_PYTEST_SCRATCH_LANE",
     }
 )
 
@@ -265,7 +267,7 @@ def _clear_polylogue_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     request: pytest.FixtureRequest,
-) -> None:
+) -> Iterator[None]:
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
     from polylogue.storage.sqlite.connection import _clear_connection_cache
@@ -395,6 +397,12 @@ def _clear_polylogue_env(
     # respond to in-process or subprocess CLI invocations. Port 1 is reserved
     # (TCPMUX) and reliably refuses on a developer host (#1325).
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
+    try:
+        yield
+    finally:
+        from devtools.pytest_progress_plugin import record_test_scratch_usage
+
+        record_test_scratch_usage(request.node.nodeid, tmp_path)
 
 
 @pytest.fixture

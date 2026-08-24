@@ -37,6 +37,7 @@ _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
+_SCRATCH_HIGH_WATER: dict[str, int] = {"apparent_bytes": 0, "allocated_bytes": 0, "file_count": 0, "directory_count": 0}
 
 
 @dataclass
@@ -50,6 +51,7 @@ class _SessionState:
     collection_duration_s: float | None
     controller_collection_payload: dict[str, Any] | None
     artifact_environment: dict[str, str | None]
+    scratch_high_water: dict[str, int]
 
 
 _SESSION_STATE_STACK: list[_SessionState] = []
@@ -68,6 +70,7 @@ def _capture_session_state() -> _SessionState:
             dict(_CONTROLLER_COLLECTION_PAYLOAD) if _CONTROLLER_COLLECTION_PAYLOAD else None
         ),
         artifact_environment={name: os.environ.get(name) for name in _ARTIFACT_ENV_NAMES},
+        scratch_high_water=dict(_SCRATCH_HIGH_WATER),
     )
 
 
@@ -88,6 +91,8 @@ def _restore_session_state(state: _SessionState) -> None:
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
+    _SCRATCH_HIGH_WATER.clear()
+    _SCRATCH_HIGH_WATER.update(state.scratch_high_water)
 
 
 def _reset_session_state() -> None:
@@ -101,6 +106,34 @@ def _reset_session_state() -> None:
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
     _CONTROLLER_COLLECTION_PAYLOAD = None
+    for key in _SCRATCH_HIGH_WATER:
+        _SCRATCH_HIGH_WATER[key] = 0
+
+
+def record_test_scratch_usage(nodeid: str, root: Path) -> None:
+    """Record the test-owned temp tree without scanning every worker root."""
+    if not os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT"):
+        return
+    from devtools.pytest_scratch import measure_tree
+
+    usage = measure_tree(root)
+    payload = {
+        "apparent_bytes": usage.apparent_bytes,
+        "allocated_bytes": usage.allocated_bytes,
+        "file_count": usage.file_count,
+        "directory_count": usage.directory_count,
+    }
+    for key, value in payload.items():
+        _SCRATCH_HIGH_WATER[key] = max(_SCRATCH_HIGH_WATER[key], value)
+    _write_event(
+        {
+            "event": "scratch_test_observed",
+            "nodeid": nodeid,
+            "lane": os.environ.get("POLYLOGUE_PYTEST_SCRATCH_LANE"),
+            "usage": payload,
+            "high_water": dict(_SCRATCH_HIGH_WATER),
+        }
+    )
 
 
 def _isolate_nested_artifact_destinations() -> None:
@@ -413,6 +446,13 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
     try:
+        _write_event(
+            {
+                "event": "scratch_worker_high_water",
+                "lane": os.environ.get("POLYLOGUE_PYTEST_SCRATCH_LANE"),
+                "high_water": dict(_SCRATCH_HIGH_WATER),
+            }
+        )
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared
         # summary path, so an empty worker summary cannot overwrite it.

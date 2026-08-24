@@ -176,7 +176,6 @@ def test_main_preserves_path_valued_options_from_subdirectory(
             [
                 "-k",
                 "proof",
-                "--basetemp=diagnostic",
                 "--rootdir",
                 ".",
                 "--ignore",
@@ -190,7 +189,6 @@ def test_main_preserves_path_valued_options_from_subdirectory(
     )
 
     command = cast(list[str], captured["cmd"])
-    assert f"--basetemp={invocation / 'diagnostic'}" in command
     assert command[command.index("--rootdir") + 1] == str(invocation)
     assert command[command.index("--ignore") + 1] == str(invocation / "fixtures")
     assert f"--ignore-glob={invocation / 'fixtures' / '*.json'}" in command
@@ -371,6 +369,53 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_exit", "expected_outcome"),
+    [
+        ((0, 0.01, {"diagnosis": "pytest_passed"}), 0, "success"),
+        ((1, 0.01, {"diagnosis": "pytest_failed"}), 1, "failure"),
+        ((3, 0.01, {"diagnosis": "pytest_failed"}), 3, "worker_crash"),
+        (KeyboardInterrupt(), 130, "cancelled"),
+    ],
+)
+def test_managed_runner_reclaims_its_scratch_for_every_terminal_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    result: tuple[int, float, dict[str, str]] | KeyboardInterrupt,
+    expected_exit: int,
+    expected_outcome: str,
+) -> None:
+    """Mutation: removing the runner's ``finally`` leaks the private lease."""
+    scratch_root = tmp_path / "scratch"
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "scratch_root_from_environment", lambda _env: scratch_root)
+
+    def fake_run(_label: str, command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, str]]:
+        basetemp = Path(next(part.split("=", 1)[1] for part in command if part.startswith("--basetemp=")))
+        basetemp.mkdir(parents=True)
+        basetemp.joinpath("small-diagnostic.txt").write_text("evidence", encoding="utf-8")
+        if isinstance(result, KeyboardInterrupt):
+            raise result
+        return result
+
+    monkeypatch.setattr(run_tests, "_run", fake_run)
+
+    assert run_tests.main(["tests/unit/example.py"]) == expected_exit
+
+    metrics = next((tmp_path / ".cache" / "verify" / "runs").glob("*/steps/*/scratch-metrics.json"))
+    payload = json.loads(metrics.read_text())
+    assert payload["outcome"] == expected_outcome
+    assert payload["cleanup_complete"] is True
+    runs = scratch_root / "runs"
+    assert not list(runs.rglob("lease.json"))
+    assert not list(runs.iterdir())
 
 
 @pytest.mark.parametrize("invocation_location", ["inside", "external"])

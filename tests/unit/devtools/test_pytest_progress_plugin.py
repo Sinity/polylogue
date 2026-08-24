@@ -201,6 +201,7 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
     env = dict(os.environ)
     for name in ("POLYLOGUE_PYTEST_RUN_ID",):
         env.pop(name, None)
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
     env.update(
         {
             "POLYLOGUE_PYTEST_EVENTS_DIR": str(events_dir),
@@ -277,6 +278,26 @@ def test_progress_plugin_write_failures_do_not_escape(monkeypatch: pytest.Monkey
     monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", "/dev/null/events.jsonl")
 
     pytest_progress_plugin.pytest_runtest_logreport(_Report("test_body", "call", "failed", longrepr="boom"))
+
+
+def test_progress_plugin_records_test_scratch_high_water(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    events_path = tmp_path / "events.jsonl"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    scratch.joinpath("payload").write_bytes(b"x" * 4_097)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", str(events_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SCRATCH_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SCRATCH_LANE", "parallel")
+    pytest_progress_plugin.pytest_sessionstart(object())
+
+    pytest_progress_plugin.record_test_scratch_usage("tests/a.py::test_scratch", scratch)
+
+    event = json.loads(events_path.read_text().splitlines()[-1])
+    assert event["event"] == "scratch_test_observed"
+    assert event["nodeid"] == "tests/a.py::test_scratch"
+    assert event["lane"] == "parallel"
+    assert event["usage"]["apparent_bytes"] == 4_097
+    assert event["high_water"]["allocated_bytes"] >= 4_097
 
 
 class _Item:

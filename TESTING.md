@@ -29,6 +29,15 @@ devtools verify
 nix flake check
 ```
 
+Managed pytest invocations allocate a unique Btrfs/NVMe scratch lease under
+`/realm/tmp/polylogue-pytest/runs`. The runner records apparent and allocated
+bytes, file counts, Btrfs exclusive/shared extent evidence where available,
+and per-worker/test observed high-water values in its verification receipt.
+The lease is removed after every terminal outcome. Failed runs retain at most
+64 MiB of small diagnostic files plus a manifest; abandoned leases are reclaimed
+only after their owner process is proven dead. Do not pass `--basetemp` to
+`devtools test` or `devtools verify`: the runner owns that isolation boundary.
+
 ### First-party browser credential journey
 
 The browser security journey launches the production daemon against a fresh,
