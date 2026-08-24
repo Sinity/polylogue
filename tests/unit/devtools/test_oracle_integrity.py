@@ -187,6 +187,7 @@ def test_allowlist_suppresses_only_the_named_subtree(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.load_sensitive
 def test_repository_is_clean_against_its_baseline() -> None:
     """The gate is green today; only NEW violations fail."""
     report = check_oracle_integrity(_REPO_ROOT)
@@ -408,6 +409,7 @@ def test_lambda_body_is_call_time_not_import_time(tmp_path: Path) -> None:
     assert scan_import_time_home_capture(Path("polylogue/sources/lazy.py"), *_parsed(path)) == ()
 
 
+@pytest.mark.load_sensitive
 def test_real_repository_has_exactly_one_import_time_capture_module() -> None:
     """Calibration against the live tree (y9106/hhg58 forensics agree).
 

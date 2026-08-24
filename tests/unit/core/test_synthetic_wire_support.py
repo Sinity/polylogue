@@ -631,7 +631,10 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
     )
 
 
-@pytest.mark.parametrize("returned_session", ["empty", "unrelated", "metadata", "id_only"])
+@pytest.mark.parametrize(
+    "returned_session",
+    ["empty", "unrelated", "metadata", pytest.param("id_only", marks=pytest.mark.load_sensitive)],
+)
 def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
     monkeypatch: pytest.MonkeyPatch,
     returned_session: str,

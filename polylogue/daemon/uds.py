@@ -33,16 +33,21 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         auth_token: str | None = None,
         write_bridge: DaemonWriteThreadBridge | None = None,
     ) -> None:
+        # UnixStreamServer may call server_close() while super().__init__ is
+        # unwinding a failed bind.  Establish every attribute that cleanup
+        # reads before crossing that boundary so the original OSError remains
+        # authoritative.
+        self.socket_path = socket_path
+        self.archive_query_executor: ThreadPoolExecutor | None = None
+        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with __import__("contextlib").suppress(FileNotFoundError):
             socket_path.unlink()
         super().__init__(str(socket_path), handler_class)
-        self.socket_path = socket_path
         self.auth_token = auth_token
         self.api_host = "127.0.0.1"
         self.started_at = datetime.now(UTC).isoformat()
         self.web_credentials = WebCredentialRegistry()
-        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         if write_bridge is None:
             self._owned_write_runtime = _StandaloneWriteRuntime()
             write_bridge = self._owned_write_runtime.bridge
@@ -62,8 +67,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         executor = getattr(self, "archive_query_executor", None)
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
-        if self._owned_write_runtime is not None:
-            self._owned_write_runtime.close()
+        owned_write_runtime = getattr(self, "_owned_write_runtime", None)
+        if owned_write_runtime is not None:
+            owned_write_runtime.close()
             self._owned_write_runtime = None
         super().server_close()
         with __import__("contextlib").suppress(FileNotFoundError):

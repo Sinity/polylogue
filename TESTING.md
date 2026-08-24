@@ -102,12 +102,14 @@ Focused and verification runs are foreground semantic commands. Devtools records
 project selection, gate results, decoded pytest outcomes, and the scope it
 actually ran.
 
-Managed pytest scratch records each test tree's high-water usage. A test tree
-is removed only after both its call and teardown pass; failed, skipped, or
-interrupted trees remain until the lease finalizer copies bounded failure
-evidence into the run detail. The finalizer then removes its authenticated
-lease root regardless of outcome, so a completed run does not leave the full
-pytest tree behind.
+Managed pytest scratch records each test tree's high-water usage. Once a test's
+teardown report has durably recorded its outcome and failure details, its tree
+is removed regardless of outcome so completed failures cannot exhaust the
+bounded scratch filesystem and cascade into unrelated ENOSPC errors. A test
+interrupted before teardown keeps its tree until the lease finalizer copies
+bounded failure evidence into the run detail. The finalizer then removes its
+authenticated lease root regardless of outcome, so a completed run does not
+leave the full pytest tree behind.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so

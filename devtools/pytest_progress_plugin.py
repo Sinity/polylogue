@@ -40,7 +40,6 @@ _COLLECTION_FACT_SUFFIX = ".collection.json"
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
 _SCRATCH_HIGH_WATER: dict[str, int] = {"apparent_bytes": 0, "allocated_bytes": 0, "file_count": 0, "directory_count": 0}
 _TEST_SCRATCH_TREES: dict[str, Path] = {}
-_TEST_CALL_OUTCOMES: dict[str, str] = {}
 
 
 @dataclass
@@ -56,7 +55,6 @@ class _SessionState:
     artifact_environment: dict[str, str | None]
     scratch_high_water: dict[str, int]
     test_scratch_trees: dict[str, Path]
-    test_call_outcomes: dict[str, str]
 
 
 _SESSION_STATE_STACK: list[_SessionState] = []
@@ -77,7 +75,6 @@ def _capture_session_state() -> _SessionState:
         artifact_environment={name: os.environ.get(name) for name in _ARTIFACT_ENV_NAMES},
         scratch_high_water=dict(_SCRATCH_HIGH_WATER),
         test_scratch_trees=dict(_TEST_SCRATCH_TREES),
-        test_call_outcomes=dict(_TEST_CALL_OUTCOMES),
     )
 
 
@@ -102,8 +99,6 @@ def _restore_session_state(state: _SessionState) -> None:
     _SCRATCH_HIGH_WATER.update(state.scratch_high_water)
     _TEST_SCRATCH_TREES.clear()
     _TEST_SCRATCH_TREES.update(state.test_scratch_trees)
-    _TEST_CALL_OUTCOMES.clear()
-    _TEST_CALL_OUTCOMES.update(state.test_call_outcomes)
 
 
 def _reset_session_state() -> None:
@@ -120,7 +115,6 @@ def _reset_session_state() -> None:
     for key in _SCRATCH_HIGH_WATER:
         _SCRATCH_HIGH_WATER[key] = 0
     _TEST_SCRATCH_TREES.clear()
-    _TEST_CALL_OUTCOMES.clear()
 
 
 def record_test_scratch_usage(nodeid: str, root: Path) -> None:
@@ -150,12 +144,17 @@ def record_test_scratch_usage(nodeid: str, root: Path) -> None:
     )
 
 
-def _remove_successful_test_tree(nodeid: str, teardown_outcome: str) -> None:
-    """Remove one worker-owned tree only after call and teardown both pass."""
+def _remove_completed_test_tree(nodeid: str) -> None:
+    """Remove one worker-owned tree after its durable teardown report exists.
+
+    Failure details and measured scratch usage are written to the event ledger
+    before this hook runs.  Keeping completed failure trees until session end
+    lets a small number of failures exhaust the bounded scratch filesystem and
+    turn the rest of a run into unrelated ENOSPC errors.  An interrupted test
+    has no teardown report, so its tree remains available to the lease
+    finalizer as bounded crash evidence.
+    """
     root = _TEST_SCRATCH_TREES.pop(nodeid, None)
-    call_outcome = _TEST_CALL_OUTCOMES.pop(nodeid, None)
-    if call_outcome not in {"passed", "xpassed"} or teardown_outcome not in {"passed", "xpassed"}:
-        return
     scratch_raw = os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT")
     if not scratch_raw or root is None:
         return
@@ -167,7 +166,7 @@ def _remove_successful_test_tree(nodeid: str, teardown_outcome: str) -> None:
             return
         shutil.rmtree(resolved_root)
     except (OSError, RuntimeError, ValueError):
-        # A missing or changed tree is retained as evidence rather than
+        # A missing or changed tree is left alone rather than
         # broadening deletion to an ambiguous path.
         return
 
@@ -452,8 +451,6 @@ def _record_phase_report(report: Any, *, write_event: bool = True) -> None:
     }
     if payload["outcome"] == "failed":
         payload["longrepr"] = str(getattr(report, "longrepr", ""))
-    if when == "call":
-        _TEST_CALL_OUTCOMES[nodeid] = outcome
     _remember_report(payload)
     if write_event:
         _write_event(payload)
@@ -478,10 +475,7 @@ def pytest_runtest_logreport(report: Any) -> None:
         return
     _record_phase_report(report)
     if str(getattr(report, "when", "")) == "teardown":
-        _remove_successful_test_tree(
-            str(getattr(report, "nodeid", "")),
-            _durable_report_outcome(report, str(getattr(report, "outcome", ""))),
-        )
+        _remove_completed_test_tree(str(getattr(report, "nodeid", "")))
 
 
 @pytest.hookimpl

@@ -15,11 +15,25 @@ import pytest
 @pytest.fixture
 def _short_uds_runtime_dir() -> Iterator[Path]:
     """Keep UDS route tests under the operating system socket-path limit."""
-    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-client-uds-"))
+    # Managed pytest deliberately puts TMPDIR under its deeply nested lease.
+    # AF_UNIX counts the complete encoded path, so choose a short socket-only
+    # root independently of fixture storage.
+    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-uds-", dir="/tmp"))
     try:
         yield runtime_dir
     finally:
         shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+def test_uds_server_preserves_bind_error_during_partial_initialization(tmp_path: Path) -> None:
+    """A failed AF_UNIX bind is not masked by cleanup of uninitialized state."""
+    from http.server import BaseHTTPRequestHandler
+
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+
+    overlong_socket = tmp_path / ("socket-" + "x" * 160)
+    with pytest.raises(OSError, match="AF_UNIX path too long"):
+        DaemonAPIUnixHTTPServer(overlong_socket, BaseHTTPRequestHandler)
 
 
 def test_daemon_client_import_does_not_load_storage() -> None:
