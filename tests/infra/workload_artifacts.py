@@ -2680,7 +2680,15 @@ def _build_seeded_archive_inner(
                         "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
                         SyntheticAntigravityLanguageServerClient,
                     ):
-                        asyncio.run(parse_sources_archive(staging, sources))
+                        # This fixture builds many tiny, isolated archives under
+                        # pytest-xdist.  Letting each outer test worker inherit
+                        # the production cpu-count default creates a nested
+                        # process fan-out (xdist workers × parse workers) whose
+                        # spawn/import memory dwarfs the corpus itself.  Pool
+                        # semantics have dedicated importer tests; this helper's
+                        # contract is the real admission/write route, which the
+                        # exact sequential escape hatch preserves.
+                        asyncio.run(parse_sources_archive(staging, sources, parse_workers=1))
                 inspect_raw_authority_frontier(
                     Config(
                         archive_root=staging,
