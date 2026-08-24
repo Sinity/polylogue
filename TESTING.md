@@ -102,20 +102,26 @@ Focused and verification runs are foreground semantic commands. Devtools records
 project selection, gate results, decoded pytest outcomes, and the scope it
 actually ran.
 
+Managed pytest scratch records each test tree's high-water usage. A test tree
+is removed only after both its call and teardown pass; failed, skipped, or
+interrupted trees remain until the lease finalizer copies bounded failure
+evidence into the run detail. The finalizer then removes its authenticated
+lease root regardless of outcome, so a completed run does not leave the full
+pytest tree behind.
+
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so
 broad collection does not retain or write unbounded node-id lists in controller
 or worker processes.
 
 The detailed artifacts above are checkout-local and disposable. Each `devtools
-verify` or `devtools test` invocation automatically appends its compact run
-summary to `$POLYLOGUE_VERIFY_HISTORY_PATH` when that is set, otherwise to
-`$XDG_STATE_HOME/polylogue/devtools/verify-history.jsonl` (or the corresponding
-`~/.local/state` path), shared across linked worktrees without a separate
-recording command. The override exists so an operator can keep this history in
-a canonical data location -- it is the only verification artifact that outlives
-a checkout, and cross-worktree comparison depends on every lane appending to
-one file. `devtools why --history` reads the recent cross-worktree runs. A
+verify` or `devtools test` invocation appends its compact terminal summary to
+`.cache/verify/history.jsonl` before any detail is removed. The append and
+retention pass share one authenticated lock. Detail retention keeps the newest
+eight successful runs and, for failures, always keeps the newest run plus up to
+twelve runs that fit within seven days and 64 MiB. A malformed receipt, unsafe
+tree, or active lock retains the affected detail instead of guessing. `devtools
+why --history HOURS` reads the compact checkout-local history. A
 native verify record carries its selected scope, gate-step results, and decoded
 pytest outcomes. Setup, call, and teardown timings come only from pytest
 reports in the event stream.
