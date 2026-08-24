@@ -35,6 +35,7 @@ _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
 _API_TOKEN = "polylogue-agentctl-proof-api-token"
 _SHARED_CHROME_TIMEOUT_S = 30
 _CHILD_ERROR_TAIL_CHARS = 384
+_DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
 
 
 def _leased_port(name: str, bounds: tuple[int, int]) -> int:
@@ -276,7 +277,7 @@ def _run_shared_chrome_control(*, repo_root: Path, timeout_s: float = _SHARED_CH
 def _submit_deterministic_captures(*, capture_port: int, session_id: str) -> dict[str, dict[str, str]]:
     """Keep receiver, archive, and API convergence deterministic and browser-free."""
     captures: dict[str, dict[str, str]] = {}
-    for provider in ("chatgpt", "claude-ai"):
+    for provider in _DETERMINISTIC_PROVIDERS:
         provider_session_id = f"{session_id}-{provider}"
         status, _accepted = _receiver_post(
             port=capture_port,
@@ -310,7 +311,71 @@ def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
         f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5",
         bearer_token=_API_TOKEN,
     )
-    return status == 200 and isinstance(payload.get("messages"), list) and bool(payload["messages"])
+    messages = payload.get("messages")
+    if status != 200 or payload.get("session_id") != session_id or not isinstance(messages, list) or not messages:
+        return False
+    return all(
+        isinstance(message, dict)
+        and isinstance(message.get("id"), str)
+        and bool(message["id"])
+        and isinstance(message.get("role"), str)
+        and bool(message["role"])
+        and "text" in message
+        and (message["text"] is None or isinstance(message["text"], str))
+        and isinstance(message.get("target_ref"), dict)
+        and message["target_ref"]
+        == {
+            "target_type": "message",
+            "target_id": message["id"],
+            "session_id": session_id,
+            "message_id": message["id"],
+            "identity_key": f"message:{session_id}:{message['id']}",
+        }
+        for message in messages
+    )
+
+
+def _validated_provider_captures(captures: object) -> dict[str, dict[str, str]]:
+    """Validate the complete deterministic capture contract before polling."""
+    if not isinstance(captures, dict):
+        raise RuntimeError("deterministic provider captures were not a provider mapping")
+    expected = set(_DETERMINISTIC_PROVIDERS)
+    actual = set(captures)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected_count = len(actual - expected)
+        raise RuntimeError(
+            "deterministic provider capture set mismatch: "
+            + json.dumps({"missing": missing, "unexpected_count": unexpected_count}, sort_keys=True)
+        )
+    validated: dict[str, dict[str, str]] = {}
+    invalid: list[str] = []
+    for provider in _DETERMINISTIC_PROVIDERS:
+        item = captures[provider]
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"provider", "provider_session_id"}
+            or item.get("provider") != provider
+            or not isinstance(item.get("provider_session_id"), str)
+            or not item["provider_session_id"]
+        ):
+            invalid.append(provider)
+            continue
+        validated[provider] = {"provider": provider, "provider_session_id": item["provider_session_id"]}
+    if invalid:
+        raise RuntimeError("deterministic provider capture entries were malformed: " + ", ".join(invalid))
+    return validated
+
+
+def _redacted_convergence(convergence: dict[str, dict[str, object]]) -> dict[str, dict[str, bool]]:
+    return {
+        provider: {
+            "archive": row.get("archive") is True,
+            "api": row.get("api") is True,
+            "indexed_session_id_present": isinstance(row.get("indexed_session_id"), str),
+        }
+        for provider, row in convergence.items()
+    }
 
 
 def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.0) -> dict[str, object]:
@@ -344,17 +409,15 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
         session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
         _run_shared_chrome_control(repo_root=checkout)
-        providers = _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
+        providers = _validated_provider_captures(
+            _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
+        )
         archive_ok = False
         api_ok = False
         convergence: dict[str, dict[str, object]] = {}
-        for item in providers.values():
-            if not isinstance(item, dict):
-                continue
-            provider = item.get("provider")
-            provider_session_id = item.get("provider_session_id")
-            if not isinstance(provider, str) or not isinstance(provider_session_id, str):
-                continue
+        for provider in _DETERMINISTIC_PROVIDERS:
+            item = providers[provider]
+            provider_session_id = item["provider_session_id"]
             archive_state = _poll_archive_state(
                 receiver_url=receiver_url,
                 provider=provider,
@@ -374,7 +437,10 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         archive_ok = bool(convergence) and all(row["archive"] is True for row in convergence.values())
         api_ok = bool(convergence) and all(row["api"] is True for row in convergence.values())
         if not archive_ok or not api_ok:
-            raise RuntimeError("archive/API convergence proof failed: " + json.dumps(convergence, sort_keys=True))
+            raise RuntimeError(
+                "archive/API convergence proof failed: "
+                + json.dumps(_redacted_convergence(convergence), sort_keys=True)
+            )
         return {
             "ok": True,
             "ports": {"api": api_port, "browser_capture": capture_port},

@@ -131,7 +131,23 @@ def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.M
         observed.append({"url": url, **kwargs})
         if "archive-state" in url:
             return 200, {"raw_row_exists": True, "indexed_session_exists": True, "indexed_session_id": "indexed"}
-        return 200, {"messages": [{"role": "user", "text": "proof"}]}
+        return 200, {
+            "session_id": "indexed",
+            "messages": [
+                {
+                    "id": "message-1",
+                    "role": "user",
+                    "text": "proof",
+                    "target_ref": {
+                        "target_type": "message",
+                        "target_id": "message-1",
+                        "session_id": "indexed",
+                        "message_id": "message-1",
+                        "identity_key": "message:indexed:message-1",
+                    },
+                }
+            ],
+        }
 
     monkeypatch.setattr(dev_loop_service, "_http_get_json", fake_get)
 
@@ -155,6 +171,51 @@ def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.M
             "bearer_token": dev_loop_service._API_TOKEN,
         },
     ]
+
+
+def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_service_context(monkeypatch)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
+    monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", lambda _root: None)
+    monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **_kwargs: object())
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
+    monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_submit_deterministic_captures",
+        lambda **_kwargs: {
+            "chatgpt": {"provider": "chatgpt", "provider_session_id": "capture-id"},
+            "claude-ai": {"provider": "claude-ai"},
+        },
+    )
+    monkeypatch.setattr(
+        dev_loop_service,
+        "_poll_archive_state",
+        lambda **_kwargs: pytest.fail("malformed captures must fail before convergence polling"),
+    )
+
+    with pytest.raises(RuntimeError, match="entries were malformed: claude-ai"):
+        dev_loop_service.run_proof()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"session_id": "wrong", "messages": [{"id": "message-1", "role": "user", "target_ref": {}}]},
+        {"session_id": "indexed", "messages": [{}]},
+        {"session_id": "indexed", "messages": []},
+    ],
+)
+def test_api_message_convergence_rejects_wrong_or_malformed_response(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, object]
+) -> None:
+    monkeypatch.setattr(dev_loop_service, "_http_get_json", lambda *_args, **_kwargs: (200, payload))
+
+    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is False
 
 
 @pytest.mark.parametrize(

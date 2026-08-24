@@ -8,6 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { assertAgentWindow, firstControlJson, runChromeControlBytes } from "./shared_chrome_control.mjs";
+import { createOwnedTargetCleanup } from "./shared_chrome_proof_cleanup.mjs";
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -52,13 +53,15 @@ export async function runSharedChromeControlWorkflow({ extensionRoot, control = 
   await control(["status"]);
   await control(["load-extension", "--path", extensionRoot]);
   let createdTargetId = null;
+  let cleanup = null;
   try {
     const target = await control(["agent-window", "--url", "about:blank"]);
     if (typeof target?.id === "string" && /^[A-F0-9]{32}$/i.test(target.id)) createdTargetId = target.id;
+    if (createdTargetId !== null) cleanup = createOwnedTargetCleanup({ control, targetId: createdTargetId });
     assertAgentWindow(target, "about:blank");
     return { ok: true, shared_chrome: { extension_loaded: true, target_closed: true } };
   } finally {
-    if (createdTargetId !== null) await control(["close", createdTargetId]);
+    if (cleanup !== null) await cleanup.finish();
   }
 }
 

@@ -344,3 +344,34 @@ try {
     payload = json.loads(completed.stdout)
     assert payload["message"] == "shared Chrome deployment render did not contain the Polylogue root marker"
     assert payload["calls"][-1] == ["close", "C" * 32]
+
+
+def test_shared_chrome_signal_cleanup_closes_only_the_owned_target_once() -> None:
+    program = r"""
+import { createOwnedTargetCleanup } from './scripts/shared_chrome_proof_cleanup.mjs';
+
+const targetId = 'D'.repeat(32);
+const unrelatedTargetId = 'E'.repeat(32);
+const cleanup = createOwnedTargetCleanup({
+  targetId,
+  control: async (args) => {
+    if (args[0] !== 'close' || args[1] !== targetId) throw new Error('attempted to close an unowned target');
+    process.stdout.write(JSON.stringify({ closed: args[1] }) + '\n');
+  },
+});
+process.stdout.write(JSON.stringify({ ready: true, unrelatedTargetId }) + '\n');
+setInterval(() => {}, 1000);
+setTimeout(() => process.kill(process.pid, 'SIGTERM'), 10);
+await new Promise(() => {});
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", program],
+        cwd="browser-extension",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == -15, completed.stderr
+    events = [json.loads(line) for line in completed.stdout.splitlines() if line]
+    assert events == [{"ready": True, "unrelatedTargetId": "E" * 32}, {"closed": "D" * 32}]

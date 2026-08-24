@@ -5,6 +5,7 @@
 import { pathToFileURL } from "node:url";
 
 import { assertAgentWindow, firstControlJson, runChromeControlBytes } from "./shared_chrome_control.mjs";
+import { createOwnedTargetCleanup } from "./shared_chrome_proof_cleanup.mjs";
 
 const DEPLOYED_ROOT_URL = "http://127.0.0.1:8766/";
 const RENDER_TIMEOUT_S = 30;
@@ -19,10 +20,12 @@ export function assertDeployedRoot(dom) {
 export async function runDeploymentSharedChromeSmoke({ control = runChromeControlBytes } = {}) {
   await control(["status"]);
   let targetId = null;
+  let cleanup = null;
   try {
     const target = firstControlJson(await control(["agent-window", "--url", DEPLOYED_ROOT_URL]));
     if (target === null) throw new Error("shared Chrome control returned invalid agent-window JSON");
     if (typeof target.id === "string" && /^[A-F0-9]{32}$/i.test(target.id)) targetId = target.id;
+    if (targetId !== null) cleanup = createOwnedTargetCleanup({ control, targetId });
     targetId = assertAgentWindow(target, DEPLOYED_ROOT_URL);
     await control([
       "await",
@@ -46,7 +49,7 @@ export async function runDeploymentSharedChromeSmoke({ control = runChromeContro
       },
     };
   } finally {
-    if (targetId !== null) await control(["close", targetId]);
+    if (cleanup !== null) await cleanup.finish();
   }
 }
 
