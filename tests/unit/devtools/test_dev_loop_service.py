@@ -97,7 +97,7 @@ def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
     assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
 
 
-def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
     launched: dict[str, object] = {}
@@ -120,6 +120,41 @@ def test_started_daemon_uses_the_proof_receiver_token(tmp_path: Path, monkeypatc
     assert isinstance(command, list)
     token_index = command.index("--browser-capture-auth-token")
     assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
+    api_token_index = command.index("--api-auth-token")
+    assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
+
+
+def test_convergence_reads_use_the_matching_service_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[dict[str, object]] = []
+
+    def fake_get(url: str, **kwargs: object) -> tuple[int, dict[str, object]]:
+        observed.append({"url": url, **kwargs})
+        if "archive-state" in url:
+            return 200, {"raw_row_exists": True, "indexed_session_exists": True, "indexed_session_id": "indexed"}
+        return 200, {"messages": [{"role": "user", "text": "proof"}]}
+
+    monkeypatch.setattr(dev_loop_service, "_http_get_json", fake_get)
+
+    assert (
+        dev_loop_service._poll_archive_state(
+            receiver_url="http://receiver",
+            provider="chatgpt",
+            provider_session_id="proof",
+            timeout_s=0.1,
+        )
+        is not None
+    )
+    assert dev_loop_service._fetch_api_messages(api_url="http://api", session_id="indexed") is True
+    assert observed == [
+        {
+            "url": "http://receiver/v1/archive-state?provider=chatgpt&provider_session_id=proof",
+            "bearer_token": dev_loop_service._RECEIVER_TOKEN,
+        },
+        {
+            "url": "http://api/api/sessions/indexed/messages?limit=5",
+            "bearer_token": dev_loop_service._API_TOKEN,
+        },
+    ]
 
 
 @pytest.mark.parametrize(

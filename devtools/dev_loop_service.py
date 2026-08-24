@@ -32,6 +32,7 @@ _DECLARED_PORTS = {
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
+_API_TOKEN = "polylogue-agentctl-proof-api-token"
 _SHARED_CHROME_TIMEOUT_S = 30
 _CHILD_ERROR_TAIL_CHARS = 384
 
@@ -90,13 +91,19 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int
     return environment
 
 
-def _http_get_json(url: str, *, timeout_s: float = 5.0) -> tuple[int, dict[str, object]]:
+def _http_get_json(
+    url: str,
+    *,
+    timeout_s: float = 5.0,
+    bearer_token: str | None = None,
+) -> tuple[int, dict[str, object]]:
     from urllib.parse import urlsplit
 
     parts = urlsplit(url)
     connection = HTTPConnection(parts.hostname or "127.0.0.1", parts.port or 80, timeout=timeout_s)
     try:
-        connection.request("GET", parts.path + (f"?{parts.query}" if parts.query else ""))
+        headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token is not None else {}
+        connection.request("GET", parts.path + (f"?{parts.query}" if parts.query else ""), headers=headers)
         response = connection.getresponse()
         body = json.loads(response.read().decode("utf-8"))
         return response.status, body if isinstance(body, dict) else {"body": body}
@@ -215,6 +222,8 @@ def _start_daemon(
         str(spool),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,
+        "--api-auth-token",
+        _API_TOKEN,
         "--no-source-catchup",
     ]
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -287,7 +296,7 @@ def _poll_archive_state(
     deadline = time.monotonic() + timeout_s
     while time.monotonic() <= deadline:
         try:
-            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}")
+            status, payload = _http_get_json(f"{receiver_url}/v1/archive-state?{query}", bearer_token=_RECEIVER_TOKEN)
         except OSError:
             status, payload = 0, {}
         if status == 200 and payload.get("raw_row_exists") is True and payload.get("indexed_session_exists") is True:
@@ -297,7 +306,10 @@ def _poll_archive_state(
 
 
 def _fetch_api_messages(*, api_url: str, session_id: str) -> bool:
-    status, payload = _http_get_json(f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5")
+    status, payload = _http_get_json(
+        f"{api_url}/api/sessions/{quote(session_id, safe='')}/messages?limit=5",
+        bearer_token=_API_TOKEN,
+    )
     return status == 200 and isinstance(payload.get("messages"), list) and bool(payload["messages"])
 
 
