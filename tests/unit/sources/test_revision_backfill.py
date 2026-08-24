@@ -3259,6 +3259,44 @@ def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypat
     assert _sessions(sequential_root) == _sessions(thread_root)
 
 
+def test_thread_parse_normalizes_derived_timestamps_matching_sequential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stateless workers still apply the retained timestamp authority contract."""
+    initialize_active_archive_root(tmp_path)
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2):
+            native_id = f"timestamp-session-{index}"
+            payload = (
+                f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
+                f'{{"timestamp":"2025-02-14T11:08:01.474463+00:00","type":"response_item",'
+                f'"payload":{{"type":"message","id":"m-{index}","role":"user",'
+                f'"content":[{{"type":"input_text","text":"hello {index}"}}]}}}}\n'
+            ).encode()
+            raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=payload,
+                    source_path=f"timestamp-{index}.jsonl",
+                    acquired_at_ms=index,
+                )
+            )
+
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        sequential = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=1)
+
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        threaded = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=2)
+
+    for raw_id in raw_ids:
+        sequential_sessions, _size, _kind = sequential[raw_id]  # type: ignore[misc]
+        threaded_sessions, _thread_size, _thread_kind = threaded[raw_id]  # type: ignore[misc]
+        assert threaded_sessions == sequential_sessions
+
+
 def _append_delta_without_self_describing_identity(text: str) -> bytes:
     """A Codex append-delta payload with no ``session_meta`` record of its
     own -- the polylogue-u19l shape: the parser has no self-describing

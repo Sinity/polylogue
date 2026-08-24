@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
@@ -3000,6 +3001,7 @@ def _enrich_retained_parse_results(
             continue
         provider, _blob_hash, source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
         sessions, payload_bytes, kind = outcome
+        sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
         if sessions:
             provider = Provider.from_string(sessions[0].source_name)
         results[raw_id] = (
@@ -3014,6 +3016,30 @@ def _enrich_retained_parse_results(
             payload_bytes,
             kind,
         )
+
+
+def _normalize_retained_parse_sessions(
+    source_conn: sqlite3.Connection,
+    raw_id: str,
+    sessions: list[ParsedSession],
+) -> list[ParsedSession]:
+    """Apply the timestamp contract after every stateless retained decode.
+
+    ``census_parse_worker`` deliberately owns no ``ArchiveStore`` and therefore
+    cannot recover the retained file-mtime fallback itself.  Both its threaded
+    caller and the pipelined spill prefetcher pass through this helper before a
+    parsed tree can be classified, hashed, or cached.  The sequential parser
+    already normalizes internally; applying the operation again is idempotent
+    and keeps both dispatch modes byte-identical.
+    """
+    row = source_conn.execute(
+        "SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"unknown raw revision {raw_id}")
+    fallback_timestamp = datetime.fromtimestamp(int(row[0]) / 1000, UTC).isoformat() if row[0] is not None else None
+    return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
 
 def _replay_safe_enrich_sessions(
@@ -3660,7 +3686,11 @@ class _ReplaySpillPrefetcher:
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()
         if rows:
-            sessions = [cast(ParsedSession, pickle.loads(bytes(row[0]))) for row in rows]
+            sessions = _normalize_retained_parse_sessions(
+                source_conn,
+                raw_id,
+                [cast(ParsedSession, pickle.loads(bytes(row[0]))) for row in rows],
+            )
             self.hits += 1
             self.decode_seconds += time.perf_counter() - started
             return sessions, int(rows[0][1]), False
@@ -3687,6 +3717,7 @@ class _ReplaySpillPrefetcher:
             # Do not buffer failures: the writer's inline decode raises the
             # identical error at the identical point in the identical order.
             return None
+        sessions_or_none = _normalize_retained_parse_sessions(source_conn, raw_id, sessions_or_none)
         sessions_or_none = _replay_safe_enrich_sessions(
             source_conn,
             provider=provider,
