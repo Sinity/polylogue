@@ -347,38 +347,34 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
         providers = _submit_deterministic_captures(capture_port=capture_port, session_id=session_id)
         archive_ok = False
         api_ok = False
-        if isinstance(providers, dict):
-            convergence: dict[str, dict[str, object]] = {}
-            for item in providers.values():
-                if not isinstance(item, dict):
-                    continue
-                provider = item.get("provider")
-                provider_session_id = item.get("provider_session_id")
-                if not isinstance(provider, str) or not isinstance(provider_session_id, str):
-                    continue
-                archive_state = _poll_archive_state(
-                    receiver_url=receiver_url,
-                    provider=provider,
-                    provider_session_id=provider_session_id,
-                    timeout_s=readiness_timeout_s,
-                )
-                indexed_session_id = archive_state.get("indexed_session_id") if archive_state is not None else None
-                provider_api_ok = isinstance(indexed_session_id, str) and _fetch_api_messages(
-                    api_url=api_url,
-                    session_id=indexed_session_id,
-                )
-                convergence[provider] = {
-                    "archive": archive_state is not None,
-                    "api": provider_api_ok,
-                    "indexed_session_id": indexed_session_id,
-                }
-            archive_ok = bool(convergence) and all(row["archive"] is True for row in convergence.values())
-            api_ok = bool(convergence) and all(row["api"] is True for row in convergence.values())
-        if not archive_ok or not api_ok:
-            raise RuntimeError(
-                "archive/API convergence proof failed: "
-                + json.dumps(convergence if isinstance(providers, dict) else {}, sort_keys=True)
+        convergence: dict[str, dict[str, object]] = {}
+        for item in providers.values():
+            if not isinstance(item, dict):
+                continue
+            provider = item.get("provider")
+            provider_session_id = item.get("provider_session_id")
+            if not isinstance(provider, str) or not isinstance(provider_session_id, str):
+                continue
+            archive_state = _poll_archive_state(
+                receiver_url=receiver_url,
+                provider=provider,
+                provider_session_id=provider_session_id,
+                timeout_s=readiness_timeout_s,
             )
+            indexed_session_id = archive_state.get("indexed_session_id") if archive_state is not None else None
+            provider_api_ok = isinstance(indexed_session_id, str) and _fetch_api_messages(
+                api_url=api_url,
+                session_id=indexed_session_id,
+            )
+            convergence[provider] = {
+                "archive": archive_state is not None,
+                "api": provider_api_ok,
+                "indexed_session_id": indexed_session_id,
+            }
+        archive_ok = bool(convergence) and all(row["archive"] is True for row in convergence.values())
+        api_ok = bool(convergence) and all(row["api"] is True for row in convergence.values())
+        if not archive_ok or not api_ok:
+            raise RuntimeError("archive/API convergence proof failed: " + json.dumps(convergence, sort_keys=True))
         return {
             "ok": True,
             "ports": {"api": api_port, "browser_capture": capture_port},
