@@ -17,6 +17,8 @@ repair call clears it).
 
 from __future__ import annotations
 
+import os
+
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 
@@ -45,7 +47,10 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         import tempfile
         from pathlib import Path
 
-        self._tmpdir = tempfile.TemporaryDirectory(prefix="polylogue-fts-identity-", dir="/realm/tmp")
+        self._tmpdir = tempfile.TemporaryDirectory(
+            prefix="polylogue-fts-identity-",
+            dir=os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT"),
+        )
         self._db_path = Path(self._tmpdir.name) / "test.db"
         self._conn_cm = open_connection(self._db_path)
         self._conn = self._conn_cm.__enter__()

@@ -566,7 +566,16 @@ def test_published_hook_adapters_fall_back_to_the_archive_root_env_var(
     knob (polylogue-o7hx)."""
 
     scratch_archive_root = tmp_path / "scratch-archive-root"
-    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp", "POLYLOGUE_ARCHIVE_ROOT": str(scratch_archive_root)}
+    subprocess_tmp = tmp_path / "tmp"
+    subprocess_tmp.mkdir()
+    environment = (
+        os.environ
+        | extra_env
+        | {
+            "TMPDIR": str(subprocess_tmp),
+            "POLYLOGUE_ARCHIVE_ROOT": str(scratch_archive_root),
+        }
+    )
     result = subprocess.run(
         command,
         input='{"session_id":"external-session","tool_name":"exec"}',
@@ -607,7 +616,9 @@ def test_published_hook_adapters_spool_then_materialize(
 
     spool_root = tmp_path / "hooks"
     archive_root = tmp_path / "archive"
-    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp"}
+    subprocess_tmp = tmp_path / "tmp"
+    subprocess_tmp.mkdir()
+    environment = os.environ | extra_env | {"TMPDIR": str(subprocess_tmp)}
     result = subprocess.run(
         (*command, "--sidecar-dir", str(spool_root)),
         input='{"session_id":"external-session","tool_name":"exec"}',
@@ -643,7 +654,9 @@ def test_published_hook_adapters_refuse_duplicated_transcript_payloads(
     """The standalone (non-bundled) producers enforce the same no-transcript-duplication rule."""
 
     spool_root = tmp_path / "hooks"
-    environment = os.environ | extra_env | {"TMPDIR": "/realm/tmp"}
+    subprocess_tmp = tmp_path / "tmp"
+    subprocess_tmp.mkdir()
+    environment = os.environ | extra_env | {"TMPDIR": str(subprocess_tmp)}
     oversized_payload = json.dumps({"session_id": "external-session", "text": "x" * 5000})
     result = subprocess.run(
         (*command, "--sidecar-dir", str(spool_root)),

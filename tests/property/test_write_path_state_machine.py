@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -496,7 +497,9 @@ class WritePathStateMachine(RuleBasedStateMachine):
 
 def test_repository_get_messages_composes_prefix_sharing_child() -> None:
     """The public repository route composes a prefix-sharing child transcript."""
-    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+    with tempfile.TemporaryDirectory(
+        prefix="polylogue-write-model-", dir=os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT")
+    ) as root_text:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
@@ -541,7 +544,9 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
     from live positions, never a stale cached offset (#866e: the property
     state machine's own model bookkeeping, not this production read path,
     was found to mis-cascade the shift for exactly this multi-hop shape)."""
-    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+    with tempfile.TemporaryDirectory(
+        prefix="polylogue-write-model-", dir=os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT")
+    ) as root_text:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
@@ -623,7 +628,9 @@ def test_session_link_resolver_quarantines_cycle() -> None:
     ``tests/unit/storage/test_topology_cycle_quarantine_live.py`` for the
     fuller cross-ingest/self-loop/diamond-DAG coverage of this same live
     path)."""
-    with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
+    with tempfile.TemporaryDirectory(
+        prefix="polylogue-write-model-", dir=os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT")
+    ) as root_text:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
