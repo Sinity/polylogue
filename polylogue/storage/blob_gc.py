@@ -7,12 +7,17 @@ longer referenced by any archive row.
 Safety invariants
 -----------------
 1. Never delete a blob that still has a DB reference (message text,
-   content_blocks, attachments).
+   content_blocks, attachments). A reference surface that cannot be read is
+   a blocker, never an answer: an unavailable tier aborts the pass rather
+   than being treated as holding no references.
 2. Never delete a blob with a durable publication receipt. Archive
    orchestration commits per-publication receipt IDs before exposing final
    paths, and exact reference transactions consume only their own receipts.
-3. Serialize the final reference/reservation recheck and unlink under the
-   source-tier write lock.
+3. Serialize the final reference/reservation recheck and unlink under a
+   write lock on *every* tier the recheck reads -- the control tier and each
+   sibling reference tier -- so no concurrent writer can commit a reference
+   between the check and the unlink. Tiers are locked in a fixed order
+   (control, source, index).
 4. Only delete blobs older than the previous completed GC generation
    plus MIN_AGE seconds (defense-in-depth against clockskew and any
    uninstrumented writer path).
@@ -45,7 +50,7 @@ import logging
 import os
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -96,6 +101,7 @@ class BlobGCResult:
     generation_id: str | None = None
     generation_written: bool = False
     older_than_s: float = 0.0
+    blocked_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -115,6 +121,7 @@ class BlobGCResult:
             "generation_id": self.generation_id,
             "generation_written": self.generation_written,
             "older_than_s": self.older_than_s,
+            "blocked_reason": self.blocked_reason,
         }
 
 
@@ -186,6 +193,40 @@ BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = (
 
 # Private alias retained for the GC implementation's existing local naming.
 _BLOB_REF_LIVENESS_JOIN = BLOB_REF_LIVENESS_JOIN
+
+
+def _open_recheck_connection(path: Path, *, dry_run: bool) -> sqlite3.Connection:
+    """Open a sibling reference tier for the final recheck window.
+
+    A destructive pass takes a write transaction so no other process can
+    commit a new reference between the recheck and the unlink. A dry run
+    reads only and takes no lock, so it never blocks an ingest.
+    """
+    if dry_run:
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute("BEGIN IMMEDIATE")
+    return conn
+
+
+def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
+    """Return a reason per reference tier that cannot be read.
+
+    A tier counts as available when its path resolves to a file that SQLite
+    can open read-only. A dangling symlink (the shape a reset or a swapped
+    generation leaves behind) is unavailable, not empty.
+    """
+    blockers: list[str] = []
+    for tier, path in tier_paths.items():
+        if not path.exists():
+            blockers.append(f"{tier} tier is unavailable at {path} (path does not resolve)")
+            continue
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as probe:
+                probe.execute("SELECT 1").fetchone()
+        except sqlite3.Error as exc:
+            blockers.append(f"{tier} tier at {path} could not be opened for reading: {exc}")
+    return tuple(blockers)
 
 
 def _blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
@@ -561,6 +602,31 @@ def run_blob_gc_report(
         if db_path_obj.name != "source.db" and _database_has_table(sibling_source_db, "gc_generations")
         else db_path_obj
     )
+
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    sibling_index_db = ArchiveLocation.resolve(db_path_obj.parent).active_index_path
+    # Fail closed on an unreadable reference tier before a single candidate is
+    # considered. Proceeding without one silently converts "cannot tell" into
+    # "not referenced" for every blob only that tier knows about.
+    #
+    # The index tier carries ``attachments.blob_hash``: on the live archive
+    # 1,240 distinct attachment payloads (~425 MB) are reachable through it and
+    # nowhere else. It is *rebuildable* and reached through a symlink into a
+    # generations directory, so a reset or an interrupted generation promotion
+    # leaves the path absent. This is the same fail-closed rule the
+    # per-ref-type join already applies to a missing referent table or column.
+    required_tiers: dict[str, Path] = {"index": sibling_index_db}
+    if db_path_obj.name == "index.db":
+        # A split file set names its durable source tier explicitly; a
+        # single-file fixture's control database *is* its source surface.
+        required_tiers["source"] = sibling_source_db
+    blockers = _reference_tier_blockers(required_tiers)
+    if blockers:
+        reason = "; ".join(blockers)
+        logger.error("Blob GC refused to run: %s", reason)
+        report.blocked_reason = reason
+        return report
     # Filesystem enumeration is deliberately outside the destructive source
     # lock. The lock protects only the bounded final recheck+unlink window.
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as planning_conn:
@@ -574,9 +640,6 @@ def run_blob_gc_report(
     if not candidates:
         return report
 
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    sibling_index_db = ArchiveLocation.resolve(db_path_obj.parent).active_index_path
     evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
     shortlist: list[tuple[str, float]] = []
 
@@ -593,9 +656,13 @@ def run_blob_gc_report(
     planning_source_legacy_hook_status = "not_applicable"
     planning_index_legacy_hook_status = "not_applicable"
     try:
+        # The source sibling is optional: for a single-file set the control
+        # database is itself the source surface. The index sibling is not --
+        # it was proven readable above, so it is opened unconditionally and a
+        # failure here aborts the pass rather than silently omitting the tier.
         if control_db_path != sibling_source_db and sibling_source_db.exists():
             planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
-        if control_db_path != sibling_index_db and sibling_index_db.exists():
+        if control_db_path != sibling_index_db:
             planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
         planning_legacy_hook_status = _legacy_hook_liveness_status(planning_conn)
         if planning_source_conn is not None:
@@ -665,12 +732,19 @@ def run_blob_gc_report(
     reclaimed_bytes = 0
     started_at_ms = int(time.time() * 1000)
     try:
+        # Invariant 3 spans every tier the recheck reads, not just the control
+        # tier. A read-only sibling connection excludes no writer, so a
+        # concurrent commit could create the very reference this pass is about
+        # to decide does not exist. Each sibling therefore takes its own
+        # BEGIN IMMEDIATE for the recheck+unlink window. Tiers are always
+        # locked in the same order (control, then source, then index) so two
+        # GC passes cannot deadlock against each other.
         if not dry_run:
             conn.execute("BEGIN IMMEDIATE")
         if control_db_path != sibling_source_db and sibling_source_db.exists():
-            source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
-        if control_db_path != sibling_index_db and sibling_index_db.exists():
-            index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+            source_conn = _open_recheck_connection(sibling_source_db, dry_run=dry_run)
+        if control_db_path != sibling_index_db:
+            index_conn = _open_recheck_connection(sibling_index_db, dry_run=dry_run)
         legacy_hook_status = _legacy_hook_liveness_status(conn)
         if source_conn is not None:
             source_legacy_hook_status = _legacy_hook_liveness_status(source_conn)
@@ -750,10 +824,16 @@ def run_blob_gc_report(
             conn.rollback()
         raise
     finally:
-        if source_conn is not None:
-            source_conn.close()
-        if index_conn is not None:
-            index_conn.close()
+        # The sibling tiers are read during the recheck and never written, so
+        # their transactions are always rolled back; the lock existed only to
+        # exclude a concurrent reference commit.
+        for sibling in (index_conn, source_conn):
+            if sibling is None:
+                continue
+            if not dry_run:
+                with suppress(sqlite3.Error):
+                    sibling.rollback()
+            sibling.close()
         conn.close()
 
 

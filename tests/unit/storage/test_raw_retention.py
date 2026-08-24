@@ -3104,3 +3104,74 @@ def test_stale_supersession_reissue_refuses_when_head_is_in_progress_append(tmp_
             "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = 'raw-baseline'"
         ).fetchone()[0]
     assert count == 1
+
+
+def test_superseded_cleanup_keeps_blob_named_by_a_ledgerless_surviving_raw(tmp_path: Path) -> None:
+    """A shared CAS payload survives when only another raw row's hash names it.
+
+    Blobs are content-addressed, so two raw snapshots of identical bytes share
+    one file. On the live archive 399 raw payload hashes carry no ``blob_refs``
+    row at all, so proving deadness from the ledger alone unlinks bytes a
+    surviving ``raw_sessions`` row still points at.
+    """
+    db_path = tmp_path / "source.db"
+    superseded_source = tmp_path / "superseded.jsonl"
+    superseded_source.write_text('{"type":"message"}\n', encoding="utf-8")
+    other_source = tmp_path / "other.jsonl"
+    other_source.write_text('{"type":"message"}\n', encoding="utf-8")
+    blob_store = BlobStore(tmp_path / "blob")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    _ensure_archive_source_schema(conn)
+
+    shared_hash, shared_size = _write_blob(blob_store, b"deduplicated payload")
+    current_hash, current_size = _write_blob(blob_store, b"current payload")
+
+    # The superseded snapshot on one source path: a GC candidate, and the only
+    # holder of a ledger row for the shared payload.
+    _insert_archive_raw_session(
+        conn,
+        raw_id=shared_hash,
+        source_path=superseded_source,
+        source_index=0,
+        blob_hash=shared_hash,
+        blob_size=shared_size,
+        acquired_at_ms=1_000,
+    )
+    _insert_archive_raw_session(
+        conn,
+        raw_id=current_hash,
+        source_path=superseded_source,
+        source_index=0,
+        blob_hash=current_hash,
+        blob_size=current_size,
+        acquired_at_ms=2_000,
+    )
+    # A live raw snapshot of the same bytes on a different source path, with no
+    # ledger row -- its own ``blob_hash`` column is the whole reference.
+    conn.execute(
+        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, source_index,
+            blob_hash, blob_size, acquired_at_ms
+        ) VALUES (?, 'codex', ?, ?, 0, ?, ?, ?)
+        """,
+        ("ledgerless-raw", "ledgerless-raw", str(other_source), bytes.fromhex(shared_hash), shared_size, 3_000),
+    )
+    conn.commit()
+
+    candidates = superseded_raw_snapshot_candidates(conn, limit=100)
+    assert {candidate.raw_id for candidate in candidates} == {shared_hash}
+
+    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+
+    assert result.deleted_raw_count == 1
+    assert result.deleted_blob_count == 0
+    assert blob_store.exists(shared_hash), "unlinked a payload a surviving raw row still names"
+    assert {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")} == {
+        current_hash,
+        "ledgerless-raw",
+    }
+    conn.close()

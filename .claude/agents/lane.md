@@ -10,21 +10,40 @@ your own isolated git worktree. This file is your standing contract — it
 applies to every task you are given here, in addition to whatever
 task-specific instructions accompany the dispatch.
 
-## Step 0 — self-provision (before ANY other command)
+## Step 0 — prove your isolation (before ANY other command)
 
-`devtools workspace lane-init` is the automatic environment bootstrap. It
-accepts the harness's inherited environment only for this exact command,
-derives the already-checked-out lane branch, then provisions and proves the
-worktree-local interpreter before any ordinary command can run. Invoke it
-first, every time:
+Run these three, in order, and report immediately if any disagrees:
 
 ```
-python -m devtools workspace lane-init "$PWD"
+git -C "$PWD" rev-parse --show-toplevel     # must be your worktree, not /realm/project/polylogue
+git -C "$PWD" branch --show-current         # must not be master
+python -c "import polylogue, pathlib, sys; p=pathlib.Path(polylogue.__file__).resolve(); print(p); sys.exit(0 if str(p).startswith('$PWD') else 1)"
 ```
 
-If provisioning fails, STOP and report the error. Do not repair shell state by
-hand, run `devtools`/`pytest` from an unprovisioned worktree, or use an
-escape-hatch environment variable to silence the guard.
+The third is the one that matters: it proves the `polylogue` you import is
+*your checkout's*, not another worktree's. A stale or wrong-checkout import
+produces correct-looking, wrong results — this corrupted four lanes for a day
+on 2026-07-31. If any of these fails, STOP and report. Do not repair shell
+state by hand or use an escape-hatch environment variable to silence a guard.
+
+## Echo checkpoints — say these out loud, in these words
+
+Four moments in your run must appear verbatim in your output, each followed
+by your actual reasoning. Phrases workers are required to emit reliably get
+emitted; a discipline that is merely encouraged does not.
+
+1. **`Now, scope reading:`** — after reading your task, before any edit. What
+   it actually asks for and what it explicitly does not.
+2. **`Now, greedy-batching consideration:`** — before your first edit. What
+   the whole coherent change is, across all files, decided once. Then
+   implement that batch rather than editing and testing one detail at a time.
+3. **`Now, adversarial self-review:`** — after implementation, before you
+   declare done. Argue against your own change. Name what you searched for
+   and what a reviewer would call out; an empty pass with no stated search is
+   the failure mode this exists to prevent.
+4. **`Now, anti-vacuity statement:`** — with your verification. Name the
+   exact mutation to your own implementation that would make your new test
+   fail. If you cannot name one, your test does not test anything.
 
 ## Worktree discipline
 
@@ -116,6 +135,13 @@ by construction.
 
 ## Final report
 
-The project `SubagentStop` hook packages your exact commits and changed paths automatically. A clean lane is unlocked for later assimilation cleanup; a dirty lane stays locked and its blocked handoff is recorded. Do not run a separate handoff or unlock command.
+No hook packages your handoff — state it yourself, explicitly:
 
-In your closing message, state the branch, PR URL (or why none was opened), exact verification commands and outcomes, and anything intentionally left out of scope. Be honest about partial completion. The coordinator receives the machine-readable handoff from the lifecycle hook rather than reconstructing it from this prose.
+- the branch name and every commit SHA you made, with its subject;
+- every path you changed;
+- the exact verification commands you ran and their outcomes;
+- anything intentionally left out of scope, and anything you discovered that
+  deserves its own bead.
+
+Be honest about partial completion. A lane that reports 80% accurately is
+worth more than one that reports 100% and is wrong.
