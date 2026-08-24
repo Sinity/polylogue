@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 const CONTROL_COMMAND = "/home/sinity/.local/bin/sinnix-chrome-control";
 const AGENT_WORKSPACE = "agentbrowser";
-const CONTROL_TIMEOUT_MS = 10_000;
+const CONTROL_TIMEOUT_MS = 30_000;
 
 export function firstControlJson(bytes) {
   for (const line of Buffer.from(bytes).toString("utf8").split("\n")) {
