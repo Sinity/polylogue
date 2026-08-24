@@ -128,11 +128,8 @@ def _read_pinned_status(location: ArchiveLocation, identity: ArchiveIdentity) ->
         return InterruptibleSQLiteRead(transaction.context).run(
             location.configured_root,
             _status_payload,
-            store_factory=lambda: ArchiveStore.open_existing(
-                location.configured_root,
-                index_path=index.resolved_path,
-                opened_main_fd=index_fd,
-            ),
+            index_path=index.resolved_path,
+            opened_main_fd=index_fd,
         )
     except AdapterError:
         raise

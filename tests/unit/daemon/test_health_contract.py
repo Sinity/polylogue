@@ -134,8 +134,15 @@ def _seed_ready_message_fts(index_db: Path) -> None:
                 duplicate_rows INTEGER NOT NULL DEFAULT 0,
                 detail TEXT
             ) STRICT;
-            INSERT OR REPLACE INTO fts_freshness_state
-            VALUES ('messages_fts', 'ready', '2026-05-24T00:00:00+00:00', 0, 0, 0, 0, 0, 'ready');
+            INSERT OR REPLACE INTO fts_freshness_state (
+                surface, state, checked_at, source_rows, indexed_rows,
+                missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows,
+                verification_kind, exact_checked_at, exact_generation, detail
+            )
+            VALUES (
+                'messages_fts', 'ready', '2026-05-24T00:00:00+00:00',
+                0, 0, 0, 0, 0, 0, 'exact', '2026-05-24T00:00:00+00:00', 72, 'ready'
+            );
             """
         )
 

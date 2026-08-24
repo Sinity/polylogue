@@ -450,7 +450,15 @@ async def list_summaries_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[SessionSummary]:
-    rank_first = bool(plan.fts_terms and plan.sort is None)
+    rank_first = bool(
+        plan.sort is None
+        and (
+            plan.fts_terms
+            or plan.similar_text is not None
+            or plan.similar_session_id is not None
+            or plan.retrieval_lane in {"semantic", "hybrid"}
+        )
+    )
 
     def read(archive: ArchiveStore) -> list[SessionSummary]:
         archive_rows = _archive_summaries(
@@ -494,7 +502,15 @@ async def list_archive(
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[Session]:
-    rank_first = bool(plan.fts_terms and plan.sort is None)
+    rank_first = bool(
+        plan.sort is None
+        and (
+            plan.fts_terms
+            or plan.similar_text is not None
+            or plan.similar_session_id is not None
+            or plan.retrieval_lane in {"semantic", "hybrid"}
+        )
+    )
 
     def read(archive: ArchiveStore) -> list[Session]:
         archive_rows = _archive_summaries(

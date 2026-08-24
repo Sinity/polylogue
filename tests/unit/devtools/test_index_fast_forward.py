@@ -440,7 +440,11 @@ def test_prepared_activation_refuses_generation_metadata_mutation(
     store = IndexGenerationStore.for_archive_root(root)
     assert store.active_pointer.resolve().parent.name == "v36"
     assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "prepared"
-    assert store.load(str(generation_payload["generation_id"])).state == "inactive"
+    if field == "archive_root":
+        with pytest.raises(RuntimeError, match="generation metadata archive root mismatch"):
+            store.load(str(generation_payload["generation_id"]))
+    else:
+        assert store.load(str(generation_payload["generation_id"])).state == "inactive"
 
 
 def test_recovery_completes_only_after_current_strict_acceptance(
@@ -504,7 +508,11 @@ def test_recovery_refuses_generation_metadata_mutation_after_pointer_swap(
     store = IndexGenerationStore.for_archive_root(root)
     assert store.active_pointer.resolve(strict=True) == Path(str(generation_payload["index_path"])).resolve(strict=True)
     assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "activating"
-    assert store.load(str(generation_payload["generation_id"])).state == "promoting"
+    if field == "archive_root":
+        with pytest.raises(RuntimeError, match="generation metadata archive root mismatch"):
+            store.load(str(generation_payload["generation_id"]))
+    else:
+        assert store.load(str(generation_payload["generation_id"])).state == "promoting"
 
 
 def test_recovery_accepts_unchanged_pointer_swap_after_revalidation(

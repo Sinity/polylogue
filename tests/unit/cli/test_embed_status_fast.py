@@ -167,6 +167,7 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
     with sqlite3.connect(embeddings_db) as conn:
         conn.executescript(
             """
+            PRAGMA user_version = 4;
             CREATE TABLE message_embeddings (
                 message_id TEXT PRIMARY KEY
             );

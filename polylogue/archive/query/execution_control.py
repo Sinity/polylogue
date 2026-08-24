@@ -441,6 +441,8 @@ class InterruptibleSQLiteRead:
         *,
         read_timeout: float = 5.0,
         store_factory: Callable[[], ArchiveStore] | None = None,
+        index_path: Path | None = None,
+        opened_main_fd: int | None = None,
     ) -> T:
         """Execute ``work`` against a dedicated read-only store (worker thread)."""
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -456,10 +458,17 @@ class InterruptibleSQLiteRead:
             ctx.record_sqlite_progress(progress_opcodes)
             return 1 if ctx.should_abort() else 0
 
+        if store_factory is not None and (index_path is not None or opened_main_fd is not None):
+            raise ValueError("store_factory cannot be combined with a pinned archive index")
         store = (
             store_factory()
             if store_factory is not None
-            else ArchiveStore.open_existing(archive_root, read_timeout=read_timeout)
+            else ArchiveStore.open_existing(
+                archive_root,
+                read_timeout=read_timeout,
+                index_path=index_path,
+                opened_main_fd=opened_main_fd,
+            )
         )
         with self._store_lock:
             self._store = store

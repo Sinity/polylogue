@@ -902,6 +902,7 @@ def _write_session(
         raw_id=payload.raw_id or "",
         provider_session_id=payload.parsed_session.provider_session_id,
     ):
+        _repair_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count

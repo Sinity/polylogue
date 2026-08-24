@@ -674,7 +674,11 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
     _require_daemon_stopped(archive_root)
     store = IndexGenerationStore.for_archive_root(archive_root)
     generation_payload = cast(dict[str, object], receipt["generation"])
-    generation = store.load(str(generation_payload["generation_id"]))
+    try:
+        generation = store.load(str(generation_payload["generation_id"]))
+    except RuntimeError as exc:
+        detail = str(exc).removeprefix("generation metadata ")
+        raise IndexFastForwardError(f"prepared generation {detail}") from exc
     with RebuildLease(archive_root):
         _require_daemon_stopped(archive_root)
         _require_generation_binding(archive_root, receipt, generation_payload, generation)

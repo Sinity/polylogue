@@ -17,6 +17,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,7 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.archive_canonical_snapshot import (
     CanonicalArchiveSnapshot as ArchiveSnapshot,
 )
@@ -228,7 +229,17 @@ def ingest_convergence_pathology(
     source_paths: list[Path] = []
     session_ids: list[str] = []
     for index in selected:
-        session = _parsed_session(pathology.sessions[index], corpus_index=index)
+        composed_session = pathology.sessions[index]
+        created_corpus_index = next(
+            candidate_index
+            for candidate_index, candidate in enumerate(pathology.sessions)
+            if candidate.id == composed_session.id
+        )
+        session = _parsed_session(
+            composed_session,
+            corpus_index=index,
+            created_corpus_index=created_corpus_index,
+        )
         content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
@@ -265,7 +276,7 @@ def ingest_convergence_pathology(
                 attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
         session = session.model_copy(update={"attachments": preacquired_attachments})
         raw_blob_publisher.flush()
-        with sqlite3.connect(root / "source.db") as source_conn:
+        with closing(sqlite3.connect(root / "source.db")) as source_conn:
             with source_conn:
                 raw_id = write_source_raw_session(
                     source_conn,
@@ -300,28 +311,37 @@ def ingest_convergence_pathology(
         )
         pending_attachment_receipts: list[tuple[str, bytes]] = []
         blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-        with open_connection(root / "index.db") as index_conn, sqlite3.connect(root / "source.db") as source_conn:
-            changed, counts = _write_session(
-                index_conn,
-                payload_model,
-                blob_publisher=blob_publisher,
-                pending_attachment_receipts=pending_attachment_receipts,
-                source_conn=source_conn,
-            )
-            if pending_attachment_receipts:
-                source_conn.execute("BEGIN IMMEDIATE")
-                for publication_id, blob_hash in pending_attachment_receipts:
-                    consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
-                source_conn.commit()
+        with (
+            closing(open_connection(root / "index.db")) as index_conn,
+            closing(sqlite3.connect(root / "source.db")) as source_conn,
+        ):
+            index_conn.row_factory = sqlite3.Row
+            with index_conn, source_conn:
+                changed, counts = _write_session(
+                    index_conn,
+                    payload_model,
+                    blob_publisher=blob_publisher,
+                    pending_attachment_receipts=pending_attachment_receipts,
+                    source_conn=source_conn,
+                )
+                if pending_attachment_receipts:
+                    for publication_id, blob_hash in pending_attachment_receipts:
+                        consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
         if not changed and counts["skipped_sessions"] == 0:
             raise AssertionError(f"production ingest writer did not account for {payload_model.session_id}")
         session_id = payload_model.session_id
         source_paths.append(source_path)
         session_ids.append(session_id)
-        # Some valid provider fixtures contain no text-bearing blocks and
-        # therefore have no FTS rows to corrupt. The corpus builder may skip
-        # that inapplicable mutation; direct corruption tests remain strict.
-        make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
+        # Model the debt caused by a content-changing write. A stale revision
+        # that governance rejects does not mutate FTS in production, so
+        # corrupting it here would manufacture table-level freshness debt with
+        # no downstream insight work available to publish the final exact
+        # snapshot.
+        if changed:
+            # Some valid provider fixtures contain no text-bearing blocks and
+            # therefore have no FTS rows to corrupt. The corpus builder may skip
+            # that inapplicable mutation; direct corruption tests remain strict.
+            make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
         archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
         if converge_after_each:
             converge_convergence_archive(archive)
@@ -510,12 +530,18 @@ def _validate_session_indexes(pathology: ComposedPathology, indexes: Sequence[in
     return selected
 
 
-def _parsed_session(session: object, *, corpus_index: int) -> ParsedSession:
+def _parsed_session(
+    session: object,
+    *,
+    corpus_index: int,
+    created_corpus_index: int | None = None,
+) -> ParsedSession:
     from polylogue.archive.models import Session
 
     if not isinstance(session, Session):
         raise TypeError(f"expected composed Session, got {type(session)!r}")
     timestamp = _corpus_timestamp(corpus_index)
+    created_timestamp = _corpus_timestamp(corpus_index if created_corpus_index is None else created_corpus_index)
     messages: list[ParsedMessage] = []
     dispatch_tool_id = f"dispatch-{session.id}"
     for position, message in enumerate(session.messages):
@@ -549,7 +575,7 @@ def _parsed_session(session: object, *, corpus_index: int) -> ParsedSession:
         source_name=Provider.CODEX,
         provider_session_id=str(session.id),
         title=session.title,
-        created_at=timestamp,
+        created_at=created_timestamp,
         updated_at=timestamp,
         parent_session_provider_id=None if session.parent_id is None else str(session.parent_id),
         parent_tool_use_provider_id=None if session.parent_id is None else f"dispatch-{session.parent_id}",
@@ -620,7 +646,7 @@ def _acquired_at_ms(index: int) -> int:
 
 
 def _analyze_registry_tables(index_db: Path) -> None:
-    with open_connection(index_db) as conn:
+    with closing(open_connection(index_db)) as conn:
         for table in ("blocks", "messages", "action_pairs"):
             conn.execute(f"ANALYZE {table}")
         conn.commit()
@@ -638,7 +664,7 @@ def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partial
     truncate_sparse(target_source, target_size)
     truncate_sparse(unrelated_source, 1_024)
 
-    with open_connection(index_db) as conn:
+    with closing(open_connection(index_db)) as conn:
         target_session_id = _seed_raw_source_session(
             conn,
             session_id="convergence-survivor",
@@ -732,7 +758,7 @@ def set_debt_retry_at(
 
 def make_messages_fts_stale(index_db: Path, *, session_id: str, require_rows: bool = True) -> int:
     """Delete only this session's real FTS rows to create unrelated stage debt."""
-    with open_connection(index_db) as conn:
+    with closing(open_connection(index_db)) as conn:
         block_ids = tuple(
             str(row[0])
             for row in conn.execute("SELECT block_id FROM blocks WHERE session_id = ? ORDER BY rowid", (session_id,))

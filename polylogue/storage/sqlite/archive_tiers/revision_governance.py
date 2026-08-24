@@ -435,6 +435,8 @@ def _write_parsed_precedence_result(
         raw_id=raw_id,
         provider_session_id=session.provider_session_id,
     ):
+        with store._conn if manage_transaction else nullcontext():
+            _repair_stale_session_observations(store._conn, session_id, session)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,

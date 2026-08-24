@@ -198,8 +198,11 @@ class TestDelegatedSettingsReachRealConsumers:
         user = tmp_path / "user.toml"
         user.write_text('[embedding]\nvoyage_api_key = "toml-only-fixture-key"\n', encoding="utf-8")
         monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir(exist_ok=True)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
 
-        provider = create_vector_provider(db_path=tmp_path / "embeddings.db")
+        provider = create_vector_provider(db_path=archive_root / "embeddings.db")
 
         assert provider is not None, "vector provider construction failed even though TOML supplied a voyage key"
         assert getattr(provider, "voyage_key", None) == "toml-only-fixture-key"
@@ -226,7 +229,7 @@ class TestDelegatedSettingsReachRealConsumers:
         )
         config = resolve_runtime_config(config_path=user).as_config()
         archive = Polylogue.open(config=config)
-        provider = create_vector_provider(archive.config, db_path=tmp_path / "embeddings.db")
+        provider = create_vector_provider(archive.config, db_path=archive.archive_root / "embeddings.db")
 
         assert isinstance(provider, SqliteVecProvider)
         assert provider.model == "voyage-4-lite"

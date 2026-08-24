@@ -714,11 +714,12 @@ class TestParseRoundtrip:
         smoke test.
         """
         from polylogue.archive.artifact_taxonomy import classify_artifact
-        from polylogue.schemas.synthetic.core import SyntheticCorpus
 
-        corpus = SyntheticCorpus.for_provider("antigravity")
-        [raw] = corpus.generate(count=1, seed=42)
-        payload = json.loads(raw)
+        payload = {
+            "artifactType": "brain-metadata",
+            "summary": "Synthetic sidecar evidence",
+            "updatedAt": "2026-01-01T00:00:00Z",
+        }
         assert set(payload) >= {"artifactType", "summary", "updatedAt"}, (
             "fixture drifted off the brain-metadata sidecar shape this test targets"
         )
