@@ -1096,7 +1096,7 @@ def _inspect_quarantined_accepted_raw(
         )
     ):
         return _quarantined_raw_item(raw_id, "membership authority is failed, ambiguous, or competitively applied")
-    parsed_logical_source_key = f"{parsed.source_name.value}:{parsed.provider_session_id}"
+    parsed_logical_source_key = f"{origin_from_provider(parsed.source_name).value}:{parsed.provider_session_id}"
     if membership is not None and (
         str(membership["logical_source_key"]) != parsed_logical_source_key
         or str(membership["provider_session_id"]) != parsed.provider_session_id

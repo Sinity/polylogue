@@ -1107,7 +1107,7 @@ def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path
         "raw-replay:tied-validation-component",
         "0" * 64,
         (parsed_raw_id, tied_raw_id),
-        ("codex:tied-validation-component",),
+        ("codex-session:tied-validation-component",),
         json_document({}),
         json_document({}),
         json_document({}),
@@ -1863,7 +1863,7 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 blob_size, acquired_at_ms, logical_source_key, revision_kind,
                 source_revision, acquisition_generation, revision_authority
             ) VALUES (?, 'codex-session', 'session-1', ?, 0, ?, ?, ?,
-                      'codex:session-1', 'full', ?, ?, 'byte_proven')
+                      'codex-session:session-1', 'full', ?, ?, 'byte_proven')
             """,
             (
                 ("raw-old-full", str(source_file), bytes.fromhex("11" * 32), 10, 1, "revision-old", 0),
@@ -1883,7 +1883,7 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 accepted_source_revision, accepted_content_hash,
                 accepted_frontier_kind, accepted_frontier,
                 acquisition_generation, append_end_offset, decided_at_ms
-            ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-new-full',
+            ) VALUES ('codex-session:session-1', 'codex-session:session-1', 'raw-new-full',
                       'revision-new', ?, 'byte', 20, 1, NULL, 1)
             """,
             (bytes(32),),
@@ -1896,7 +1896,7 @@ def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path
                 accepted_raw_id, accepted_source_revision, accepted_content_hash,
                 accepted_frontier_kind, accepted_frontier, detail, decided_at_ms
             ) VALUES ('old-superseded', 'raw-old-full', 'codex-session:session-1',
-                      'codex:session-1', 'revision-old', 1, 'superseded',
+                      'codex-session:session-1', 'revision-old', 1, 'superseded',
                       'raw-new-full', 'revision-new', ?, 'byte', 20,
                       'superseded by accepted full', 1)
             """,
@@ -4041,7 +4041,7 @@ def test_raw_materialization_cas_conflict_outcome_is_typed_durable_and_non_mutat
 
     cas_message = (
         "raw revision CAS rejected a conflicting accepted head: "
-        "logical_source_key='codex:cas-conflict-target' existing(session_id='cas-conflict-target', "
+        "logical_source_key='codex-session:cas-conflict-target' existing(session_id='cas-conflict-target', "
         "accepted_raw_id='other-raw') incoming(session_id='cas-conflict-target', accepted_raw_id='" + raw_id + "')"
     )
 
@@ -5120,7 +5120,7 @@ def test_raw_materialization_converges_component_with_byte_governed_append_fragm
     from polylogue.sources.revision_backfill import uncensused_historical_revision_raw_ids
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    key = "codex:growing-rollout"
+    key = "codex-session:growing-rollout"
     baseline = _codex_conversation_bytes("growing-rollout")
     grown = baseline + (
         b'{"type":"response_item","payload":{"type":"message","id":"m-second",'

@@ -1339,7 +1339,7 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
             (second_raw_id,),
         ).fetchone()
 
-    expected_logical_source_key = f"{Provider.GEMINI.value}:{provider_session_id}"
+    expected_logical_source_key = f"{Origin.AISTUDIO_DRIVE.value}:{provider_session_id}"
     assert first_row["logical_source_key"] == expected_logical_source_key
     assert second_row["logical_source_key"] == expected_logical_source_key
     assert second_row["predecessor_raw_id"] == first_raw_id

@@ -82,7 +82,7 @@ async def test_demo_receipts_resolves_shared_raw_source_material(tmp_path: Path)
             FROM raw_sessions AS r
             JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
             WHERE r.origin = 'codex-session'
-              AND m.logical_source_key = 'codex:demo-receipts'
+                  AND m.logical_source_key = 'codex-session:demo-receipts'
               AND m.provider_session_id = 'demo-receipts'
             """
         ).fetchall()

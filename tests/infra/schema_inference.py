@@ -26,7 +26,7 @@ def seed_schema_inference_archive(root: Path) -> Path:
                 raw_id, origin, native_id, source_path, blob_hash, blob_size,
                 acquired_at_ms, logical_source_key, revision_authority
             ) VALUES ('raw-1', 'codex-session', 'session', ?, ?, ?, 100,
-                      'codex:session', 'byte_proven')
+                      'codex-session:session', 'byte_proven')
             """,
             (str(source_file), bytes.fromhex(blob_hash), blob_size),
         )
@@ -35,7 +35,7 @@ def seed_schema_inference_archive(root: Path) -> Path:
             INSERT INTO raw_session_memberships(
                 raw_id, logical_source_key, provider_session_id, source_revision,
                 normalized_content_hash, message_count, decision, decided_at_ms
-            ) VALUES ('raw-1', 'codex:session', 'session', 'rev-1', ?, 1, 'applied', 100)
+            ) VALUES ('raw-1', 'codex-session:session', 'session', 'rev-1', ?, 1, 'applied', 100)
             """,
             (b"m" * 32,),
         )

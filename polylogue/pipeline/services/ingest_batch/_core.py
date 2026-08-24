@@ -36,6 +36,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -780,7 +781,9 @@ def _bind_drive_revision_lineage(
         return None
     if session_to_write.source_name is not Provider.GEMINI:
         return None
-    logical_source_key = f"{session_to_write.source_name.value}:{session_to_write.provider_session_id}"
+    logical_source_key = (
+        f"{origin_from_provider(session_to_write.source_name).value}:{session_to_write.provider_session_id}"
+    )
     adapter = _DriveRevisionGovernanceAdapter(source_conn, blob_publisher)
     try:
         if raw_membership_raw_ids(adapter, logical_source_key):
@@ -1830,7 +1833,6 @@ def _resolve_codex_sidecar_snapshots(
     if not codex_records:
         return
 
-    from polylogue.core.sources import origin_from_provider
     from polylogue.sources.assembly_codex import CodexAssemblySpec, read_codex_thread_title_hook_events
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         read_earliest_history_sidecar_for_path,

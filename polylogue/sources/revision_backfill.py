@@ -35,6 +35,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
+    canonical_authority_logical_key,
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
@@ -620,21 +621,6 @@ def _require_bounded_provider(provider: Provider, source_path: str) -> None:
         raise ValueError(f"retained UNKNOWN provider remained unresolved after bounded scan: {source_path}")
 
 
-def _canonical_authority_logical_key(logical_key: str) -> str:
-    """Normalize transitional provider and public-origin authority prefixes."""
-    prefix, separator, native_id = logical_key.partition(":")
-    if not separator or not native_id:
-        raise ValueError(f"invalid logical source key: {logical_key!r}")
-    try:
-        origin = Origin(prefix)
-    except ValueError:
-        try:
-            origin = origin_from_provider(Provider(prefix))
-        except ValueError as exc:
-            raise ValueError(f"unknown logical source key prefix: {prefix!r}") from exc
-    return f"{origin.value}:{native_id}"
-
-
 def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
     """Include every predecessor and baseline needed to validate selected APPEND authority."""
     expanded = set(raw_ids)
@@ -915,7 +901,7 @@ class RawParsePrefetchCache:
         cohort BEFORE any shard consumes this cache with ``pop``, using the
         exact same logical-key derivation ``_parse_retained_raws`` uses when
         it writes ``membership_candidates``/``provisional_full_raw_ids``
-        (``f"{session.source_name.value}:{session.provider_session_id}"``),
+        (``f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"``),
         so a byte-growth chain member or an ambiguous-identity pair never
         gets scheduled onto two different shards, each of which would see
         only a partial candidate set and reach a wrong (or crashing)
@@ -932,7 +918,7 @@ class RawParsePrefetchCache:
             for raw_id, entry in self._entries.items():
                 if len(entry.sessions) == 1:
                     session = entry.sessions[0]
-                    keys[raw_id] = f"{session.source_name.value}:{session.provider_session_id}"
+                    keys[raw_id] = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
             return keys
 
     def content_len(self) -> int:
@@ -1382,7 +1368,7 @@ def _census_historical_revision_evidence(
         spill.add(raw_id, sessions, payload_bytes=payload_bytes)
         if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
             session = sessions[0]
-            logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+            logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
             archive.bind_raw_revision(
                 raw_id,
                 RawRevisionEnvelope(
@@ -1406,7 +1392,7 @@ def _census_historical_revision_evidence(
                 manage_transaction=not batched,
             )
             for session in sessions:
-                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
                 state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
             commit_unit()
         else:
@@ -1631,9 +1617,9 @@ def _load_frozen_revision_evidence(
         state.classified += int(len(sessions) == 1)
         if revision_kind is RawRevisionKind.UNKNOWN:
             for session in sessions:
-                # Membership rows intentionally retain their provider-wire
-                # identity until durable authority comparison normalizes it.
-                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                # Persist the same canonical Origin identity used by current
+                # parser census and live ingestion.
+                logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
                 state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
     return state
 
@@ -1864,9 +1850,9 @@ def require_current_parser_source_census(
             append_identity_drift.add(raw_id)
             continue
         try:
-            canonical_append_key = _canonical_authority_logical_key(append_key)
-            canonical_predecessor_key = _canonical_authority_logical_key(predecessor[0] or "")
-            canonical_baseline_key = _canonical_authority_logical_key(baseline[0] or "")
+            canonical_append_key = canonical_authority_logical_key(append_key)
+            canonical_predecessor_key = canonical_authority_logical_key(predecessor[0] or "")
+            canonical_baseline_key = canonical_authority_logical_key(baseline[0] or "")
         except ValueError:
             append_identity_drift.add(raw_id)
             continue
@@ -1893,7 +1879,7 @@ def require_current_parser_source_census(
                 append_identity_drift.add(raw_id)
                 break
             try:
-                if _canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
+                if canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
                     append_identity_drift.add(raw_id)
                     break
             except ValueError:
@@ -2029,7 +2015,9 @@ def validate_frozen_source_authority(
             for raw_id in sorted(candidate_raw_ids):
                 sessions, _payload_bytes = spill.for_raw(archive, raw_id)
                 for session in sessions:
-                    session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                    session_logical_key = (
+                        f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                    )
                     if session_logical_key != logical_key:
                         continue
                     projection = session_revision_projection(session)
@@ -2156,7 +2144,7 @@ def _lineage_aware_replay_order(
                 session = sessions[0]
                 parent_provider_id = session.parent_session_provider_id
                 if parent_provider_id:
-                    parent_key = f"{session.source_name.value}:{parent_provider_id}"
+                    parent_key = f"{origin_from_provider(session.source_name).value}:{parent_provider_id}"
         parent_of[key] = parent_key
 
     children: dict[str, list[str]] = {}
@@ -2498,7 +2486,7 @@ def backfill_historical_revision_evidence(
                         # reproducing the exact fidelity-downgrade defect this
                         # retirement path exists to prevent, one layer down.
                         fresh_session = sessions[0]
-                        fresh_key = f"{fresh_session.source_name.value}:{fresh_session.provider_session_id}"
+                        fresh_key = f"{origin_from_provider(fresh_session.source_name).value}:{fresh_session.provider_session_id}"
                         membership_candidates.setdefault(fresh_key, set()).add(raw_id)
                         membership_keys.add(fresh_key)
                     membership_keys.add(logical_key)
@@ -2617,7 +2605,9 @@ def backfill_historical_revision_evidence(
                         time.perf_counter() - spill_started
                     )
                     for session in sessions:
-                        session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                        session_logical_key = (
+                            f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                        )
                         if session_logical_key != logical_key:
                             continue
                         projection_started = time.perf_counter()
@@ -3907,7 +3897,7 @@ class _ParsedSessionSpill:
                 (
                     (
                         raw_id,
-                        f"{session.source_name.value}:{session.provider_session_id}",
+                        f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
                         payload_bytes,
                         pickle.dumps(session, protocol=pickle.HIGHEST_PROTOCOL),
                     )
