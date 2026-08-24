@@ -120,7 +120,7 @@ def test_daemon_socket_path_stays_under_af_unix_limit_for_long_runtime_dir(tmp_p
 def _short_runtime_dir() -> Iterator[Path]:
     """A short-path runtime dir so the AF_UNIX socket path stays under the OS limit."""
 
-    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-uds-scope-"))
+    runtime_dir = Path(tempfile.mkdtemp(prefix="plg-uds-scope-", dir="/tmp"))
     try:
         yield runtime_dir
     finally:

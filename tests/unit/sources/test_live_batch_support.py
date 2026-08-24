@@ -346,7 +346,7 @@ def test_live_append_acquires_with_unreadable_active_pointer(
             """
         ).fetchone()
     assert append_row is not None
-    assert append_row[:2] == ("codex:degraded-append", "append")
+    assert append_row[:2] == ("codex-session:degraded-append", "append")
     assert append_row[2] is not None
     assert append_row[3] is not None
     assert append_row[4:] == (
@@ -398,7 +398,7 @@ def test_source_only_file_history_append_binds_before_artifact_classification(tm
         ).fetchone()
         artifact_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()
     assert append_row is not None
-    assert append_row[:2] == (f"claude-code:{native_id}", "append")
+    assert append_row[:2] == (f"claude-code-session:{native_id}", "append")
     assert append_row[2] is not None
     assert append_row[3] is not None
     assert append_row[4:] == (
@@ -442,7 +442,7 @@ def test_source_only_quarantined_append_is_deferred(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
             "SELECT logical_source_key, revision_kind, revision_authority FROM raw_sessions"
-        ).fetchone() == ("codex:quarantined-source-only", "append", "quarantined")
+        ).fetchone() == ("codex-session:quarantined-source-only", "append", "quarantined")
 
 
 def test_claude_append_retry_preserves_legacy_null_acquisition_identity(tmp_path: Path) -> None:
@@ -2391,7 +2391,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("SELECT origin FROM raw_sessions").fetchone() == ("chatgpt-export",)
         assert conn.execute("SELECT logical_source_key FROM raw_session_memberships").fetchone() == (
-            "chatgpt:native-large",
+            "chatgpt-export:native-large",
         )
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id, title FROM sessions").fetchone() == (
@@ -2413,7 +2413,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
             == "user:Native user text|assistant:Native answer text"
         )
         assert conn.execute("SELECT logical_source_key, session_id FROM raw_revision_heads").fetchone() == (
-            "chatgpt:native-large",
+            "chatgpt-export:native-large",
             "chatgpt-export:native-large",
         )
 
@@ -3182,7 +3182,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
             assert (
                 index_conn.execute(
-                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:browser-replacement'"
                 ).fetchone()[0]
                 == first_raw_id
             )
@@ -3225,12 +3225,12 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             decisions = source_conn.execute(
                 """
                 SELECT raw_id, decision FROM raw_session_memberships
-                WHERE logical_source_key = 'chatgpt:browser-replacement'
+                WHERE logical_source_key = 'chatgpt-export:browser-replacement'
                 """
             ).fetchall()
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
             accepted_raw_id = index_conn.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:browser-replacement'"
             ).fetchone()[0]
             attachment = index_conn.execute(
                 "SELECT acquisition_status, byte_count, blob_hash FROM attachments WHERE display_name = 'deliverable.bin'"
@@ -3247,7 +3247,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             assert source_conn.execute(
                 """
                 SELECT decision FROM raw_session_memberships
-                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:browser-replacement'
                 """,
                 (foreign_raw_id,),
             ).fetchone() == (None,)
@@ -3271,14 +3271,14 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             reverse_decision = source_conn.execute(
                 """
                 SELECT decision FROM raw_session_memberships
-                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:browser-replacement'
                 """,
                 (reverse_raw_id,),
             ).fetchone()[0]
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
             assert (
                 index_conn.execute(
-                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:browser-replacement'"
                 ).fetchone()[0]
                 == accepted_raw_id
             )
@@ -3304,14 +3304,14 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             divergent_decision = source_conn.execute(
                 """
                 SELECT decision FROM raw_session_memberships
-                WHERE raw_id = ? AND logical_source_key = 'chatgpt:browser-replacement'
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:browser-replacement'
                 """,
                 (divergent_raw_id,),
             ).fetchone()[0]
         with sqlite3.connect(archive.archive_root / "index.db") as index_conn:
             assert (
                 index_conn.execute(
-                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:browser-replacement'"
+                    "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:browser-replacement'"
                 ).fetchone()[0]
                 == accepted_raw_id
             )
@@ -3389,7 +3389,7 @@ async def test_browser_capture_provider_timestamp_advances_reordered_native_snap
             decisions = conn.execute(
                 """
                 SELECT decision FROM raw_session_memberships
-                WHERE logical_source_key = 'chatgpt:provider-ordered-replacement'
+                WHERE logical_source_key = 'chatgpt-export:provider-ordered-replacement'
                 ORDER BY acquisition_generation
                 """
             ).fetchall()
@@ -5784,7 +5784,7 @@ def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retri
     assert retry.succeeded == [plan]
     assert retry.failed == []
     bound = _raw_revision_envelope_row(tmp_path, raw_id)
-    assert bound[0] == "codex:append-admission-retry"
+    assert bound[0] == "codex-session:append-admission-retry"
     assert bound[1] == "append"
     assert bound[2] is not None
     assert bound[3] is not None
@@ -6310,7 +6310,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
             SELECT r.parse_error, m.decision, m.revision_authority
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE r.source_path = ? AND m.logical_source_key = 'chatgpt:shared'
+            WHERE r.source_path = ? AND m.logical_source_key = 'chatgpt-export:shared'
             """,
             (str(second),),
         ).fetchone() == (None, "ambiguous", "quarantined")
@@ -6325,7 +6325,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
             SELECT r.source_path, m.decision, m.revision_authority
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE m.logical_source_key = 'chatgpt:shared'
+            WHERE m.logical_source_key = 'chatgpt-export:shared'
             ORDER BY r.source_path
             """
         ).fetchall() == [
@@ -6341,7 +6341,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
             ("shared",),
         }
         assert conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:shared'"
         ).fetchone() == (accepted_raw_id,)
         assert conn.execute(
             """
@@ -6365,7 +6365,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
                    r.parsed_at_ms IS NOT NULL, r.parse_error
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE m.logical_source_key = 'chatgpt:shared'
+            WHERE m.logical_source_key = 'chatgpt-export:shared'
             ORDER BY r.source_path
             """
         ).fetchall() == [
@@ -6374,7 +6374,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         ]
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:shared'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:shared'"
         ).fetchone() == (accepted_raw_id,)
 
 
@@ -6455,7 +6455,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
         store.bind_raw_revision(
             raw_a,
             RawRevisionEnvelope(
-                "chatgpt:shared", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:shared", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
         raw_b = store.write_raw_payload(
@@ -6467,19 +6467,19 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
         store.bind_raw_revision(
             raw_b,
             RawRevisionEnvelope(
-                "chatgpt:shared", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:shared", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt:shared")
+        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt-export:shared")
         assert plan.accepted_raw_ids == ()
 
         # Mirror backfill_historical_revision_evidence's own retirement step
         # once a full-only cohort is decided ambiguous: move every
         # convertible full raw to membership governance.
-        for raw_id in store.convertible_full_revision_raw_ids("chatgpt:shared"):
+        for raw_id in store.convertible_full_revision_raw_ids("chatgpt-export:shared"):
             sessions = LiveBatchProcessor._parse_retained_raw_sessions(store, raw_id)
             store.replace_raw_membership_census(
                 raw_id,
@@ -6490,7 +6490,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
                 retire_full_revision_governance=True,
             )
         store.commit()
-        retired_siblings = store.raw_membership_retired_full_revision_siblings("chatgpt:shared")
+        retired_siblings = store.raw_membership_retired_full_revision_siblings("chatgpt-export:shared")
     assert set(retired_siblings) == {raw_a, raw_b}
 
     # A THIRD raw for the same logical identity, discovered afterward
@@ -6514,7 +6514,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             SELECT r.source_path, m.decision
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE m.logical_source_key = 'chatgpt:shared'
+            WHERE m.logical_source_key = 'chatgpt-export:shared'
             ORDER BY r.source_path
             """
         ).fetchall()
@@ -6588,7 +6588,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
     to do with the chain conflict.
 
     Fixture: raw_a (baseline) and raw_b (a genuine byte-extension of raw_a's
-    bytes) form a real byte-proven full-revision chain for ``codex:shared``
+    bytes) form a real byte-proven full-revision chain for ``codex-session:shared``
     via ``classify_raw_revision_cohort`` -- raw_b's ``predecessor_raw_id``
     durably points at raw_a, exactly the "active byte-revision chain"
     dependency ``replace_raw_membership_census`` refuses to break. A third,
@@ -6610,7 +6610,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
         archive.bind_raw_revision(
             raw_a,
             RawRevisionEnvelope(
-                "codex:shared", RawRevisionKind.FULL, "rev-a", 0, authority=RawRevisionAuthority.QUARANTINED
+                "codex-session:shared", RawRevisionKind.FULL, "rev-a", 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
         raw_b = archive.write_raw_payload(
@@ -6622,10 +6622,10 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
         archive.bind_raw_revision(
             raw_b,
             RawRevisionEnvelope(
-                "codex:shared", RawRevisionKind.FULL, "rev-b", 0, authority=RawRevisionAuthority.QUARANTINED
+                "codex-session:shared", RawRevisionKind.FULL, "rev-b", 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        archive.classify_raw_revision_cohort_for_live_watch("codex:shared")
+        archive.classify_raw_revision_cohort_for_live_watch("codex-session:shared")
         archive.commit()
         raw_c = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -6640,7 +6640,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
     with sqlite3.connect(tmp_path / "source.db") as conn:
         rows = dict(
             conn.execute(
-                "SELECT raw_id, predecessor_raw_id FROM raw_sessions WHERE logical_source_key = 'codex:shared'"
+                "SELECT raw_id, predecessor_raw_id FROM raw_sessions WHERE logical_source_key = 'codex-session:shared'"
             ).fetchall()
         )
     assert rows[raw_a] is None
@@ -6726,7 +6726,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
         assert conn.execute(
             "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
             (raw_a,),
-        ).fetchone() == ("codex:shared", "byte_proven")
+        ).fetchone() == ("codex-session:shared", "byte_proven")
         # raw_b had no live dependent of its own -- it retired successfully.
         assert conn.execute(
             "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
@@ -6800,7 +6800,7 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
         # e.g. the conveyor found no unique growth chain). This is no longer
         # pending -- it must surface as a failure, not defer forever.
         archive.apply_raw_membership_classification(
-            "codex:pending-vs-ambiguous",
+            "codex-session:pending-vs-ambiguous",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
             {raw_id: projection},
@@ -6870,7 +6870,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
             censused_at_ms=1,
         )
         archive.apply_raw_membership_classification(
-            "chatgpt:parser-drift",
+            "chatgpt-export:parser-drift",
             MembershipClassification((legacy_raw_id,), (), ()),
             {legacy_raw_id: legacy_session},
             {legacy_raw_id: legacy_projection},
@@ -6898,7 +6898,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
         assert stored is not None
         assert stored != (legacy_projection.session_hash,)
         head = conn.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:parser-drift'"
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:parser-drift'"
         ).fetchone()
         assert head == stored
 
@@ -6958,7 +6958,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
         archive.bind_raw_revision(
             rejected_raw_id,
             RawRevisionEnvelope(
-                logical_source_key="codex:shared",
+                logical_source_key="codex-session:shared",
                 kind=RawRevisionKind.FULL,
                 source_revision=sha256(older.read_bytes()).hexdigest(),
                 acquisition_generation=0,
@@ -6978,7 +6978,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
                    r.logical_source_key, r.revision_kind
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE r.source_path = ? AND m.logical_source_key = 'codex:shared'
+            WHERE r.source_path = ? AND m.logical_source_key = 'codex-session:shared'
             """,
             (str(older),),
         ).fetchone() == ("superseded_prefix", 1, None, None, "unknown")
@@ -6986,7 +6986,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
         _unclassified, revision_keys = archive.raw_revision_rebuild_selection([rejected_raw_id])
         _membership_raws, membership_keys = archive.expand_raw_membership_selection([rejected_raw_id])
     assert revision_keys == ()
-    assert "codex:shared" in membership_keys
+    assert "codex-session:shared" in membership_keys
 
 
 @pytest.mark.parametrize(
@@ -7077,7 +7077,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     assert processor._ingest_full_paths_sync([current], source_name="codex").failed == []
     with sqlite3.connect(index_db) as conn:
         row = conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:shared'"
         ).fetchone()
         assert row is not None
         current_raw_id.append(str(row[0]))
@@ -7101,7 +7101,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         archive.bind_raw_revision(
             append_raw_id,
             RawRevisionEnvelope(
-                "codex:shared",
+                "codex-session:shared",
                 RawRevisionKind.APPEND,
                 "append-blocker",
                 0,
@@ -7111,7 +7111,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        assert archive.convertible_full_revision_raw_ids("codex:shared") == ()
+        assert archive.convertible_full_revision_raw_ids("codex-session:shared") == ()
         if census_head:
             archive.replace_raw_membership_census(
                 current_raw_id[0],
@@ -7122,7 +7122,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     with sqlite3.connect(index_db) as conn:
         head_before = conn.execute(
             "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier "
-            "FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+            "FROM raw_revision_heads WHERE logical_source_key = 'codex-session:shared'"
         ).fetchone()
         assert head_before is not None
 
@@ -7177,7 +7177,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
             "SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier "
-            "FROM raw_revision_heads WHERE logical_source_key = 'codex:shared'"
+            "FROM raw_revision_heads WHERE logical_source_key = 'codex-session:shared'"
         ).fetchone()
         assert head_after == ((current_raw_id[0], "semantic", 2) if succeeds else head_before)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -7186,7 +7186,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
             (current_raw_id[0],),
         ).fetchone() == ((1,) if census_head else (0,))
         decisions = conn.execute(
-            "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'codex:shared' AND raw_id != ?",
+            "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'codex-session:shared' AND raw_id != ?",
             (current_raw_id[0],),
         ).fetchall()
         if succeeds:
@@ -7308,7 +7308,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     with sqlite3.connect(index_db) as conn:
         head_row = conn.execute(
             "SELECT accepted_raw_id, session_id FROM raw_revision_heads WHERE logical_source_key = ?",
-            (f"codex:{native_id}",),
+            (f"codex-session:{native_id}",),
         ).fetchone()
         assert head_row is not None
         accepted_raw_id, session_id = head_row
@@ -7343,7 +7343,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
         archive.bind_raw_revision(
             dangling_append_raw_id,
             RawRevisionEnvelope(
-                f"codex:{native_id}",
+                f"codex-session:{native_id}",
                 RawRevisionKind.APPEND,
                 "dangling-append-blocker",
                 0,
@@ -7419,7 +7419,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-            (f"codex:{native_id}",),
+            (f"codex-session:{native_id}",),
         )
         conn.commit()
 
@@ -7534,7 +7534,7 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
             SELECT m.decision, r.parsed_at_ms, r.parse_error
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE r.source_path = ? AND m.logical_source_key = 'codex:shared'
+            WHERE r.source_path = ? AND m.logical_source_key = 'codex-session:shared'
             """,
             (str(divergent),),
         ).fetchone() == ("ambiguous", None, None)
@@ -7667,7 +7667,7 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
             SELECT m.decision, r.logical_source_key, r.revision_kind
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE r.source_path = ? AND m.logical_source_key = 'codex:shared'
+            WHERE r.source_path = ? AND m.logical_source_key = 'codex-session:shared'
             """,
             (str(single),),
         ).fetchone() == ("superseded_prefix", None, "unknown")

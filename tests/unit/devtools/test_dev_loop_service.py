@@ -31,7 +31,7 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
     }
     verify_all = descriptor["operations"]["verify_all"]
     assert verify_all["timeout_seconds"] == 14400
-    assert verify_all["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=16", "devtools", "verify", "--all"]
+    assert verify_all["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=12", "devtools", "verify", "--all"]
     assert {"WAYLAND_DISPLAY", "DISPLAY"} <= set(descriptor["environment"]["inherit"])
     assert all(spec.module != "devtools.dev_loop_service" for spec in COMMAND_SPECS)
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)

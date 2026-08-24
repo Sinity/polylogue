@@ -29,6 +29,9 @@ from polylogue.storage.blob_store import BlobStore
 
 
 def _make_source_db(path: Path) -> None:
+    # The production GC contract requires every reference-bearing tier to be
+    # readable before deletion. Model an available empty index tier here.
+    sqlite3.connect(path.with_name("index.db")).close()
     conn = sqlite3.connect(str(path))
     try:
         conn.execute(

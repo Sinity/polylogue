@@ -279,7 +279,9 @@ def _patch_tool_count_store(
     monkeypatch.setattr(
         ArchiveStore,
         "open_existing",
-        classmethod(lambda cls, archive_root, *, read_only=True, read_timeout=5.0: store),
+        classmethod(
+            lambda cls, archive_root, *, read_only=True, read_timeout=5.0, index_path=None, opened_main_fd=None: store
+        ),
     )
     return store
 

@@ -55,7 +55,7 @@ template = "home.html"
 [[pages]]
 path = "/beads/"
 title = "Roadmap"
-template = "beads.html"
+source = "docs/beads.md"
 
 [[pages]]
 path = "/demos/"
@@ -107,6 +107,7 @@ def synthetic_site(
         encoding="utf-8",
     )
     (docs / "demos.md").write_text("# Demos\n\nRun a proof.\n", encoding="utf-8")
+    (docs / "beads.md").write_text("# Roadmap\n\nTrack the work.\n", encoding="utf-8")
     (docs / "README.md").write_text("# Documentation\n\nChoose a guide.\n", encoding="utf-8")
     config_path = fake_root / "pages.toml"
     config_path.write_text(_MINIMAL_CONFIG, encoding="utf-8")

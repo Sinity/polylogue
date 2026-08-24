@@ -53,6 +53,9 @@ pytestmark = pytest.mark.uses_real_clock(
 
 def _make_gc_db(path: Path) -> sqlite3.Connection:
     """Create the minimum schema needed by ``run_blob_gc``."""
+    # Blob GC fails closed unless the sibling index tier is readable. This
+    # fixture exercises an available-but-empty index, not a missing tier.
+    sqlite3.connect(path.with_name("index.db")).close()
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(

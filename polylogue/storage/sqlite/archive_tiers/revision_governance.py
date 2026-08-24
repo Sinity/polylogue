@@ -1980,7 +1980,9 @@ def replace_raw_membership_census(
         if sessions is not None:
             for session in sessions:
                 projection = session_revision_projection(session)
-                logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                logical_key = canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                )
                 conn.execute(
                     """
                     INSERT INTO raw_session_memberships (

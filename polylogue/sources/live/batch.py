@@ -3155,7 +3155,7 @@ class LiveBatchProcessor:
         session_count = 0
         message_count = 0
         for session in sessions:
-            logical_source_key = f"{session.source_name.value}:{session.provider_session_id}"
+            logical_source_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
             for revision_raw_id in archive.convertible_full_revision_raw_ids(logical_source_key):
                 retained_sessions = (
                     sessions
@@ -3165,7 +3165,8 @@ class LiveBatchProcessor:
                 matches = [
                     item
                     for item in retained_sessions
-                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
+                    if f"{origin_from_provider(item.source_name).value}:{item.provider_session_id}"
+                    == logical_source_key
                 ]
                 if len(retained_sessions) != 1 or len(matches) != 1:
                     raise RuntimeError(
@@ -3224,7 +3225,8 @@ class LiveBatchProcessor:
                 matches = [
                     item
                     for item in retained_sessions
-                    if f"{item.source_name.value}:{item.provider_session_id}" == logical_source_key
+                    if f"{origin_from_provider(item.source_name).value}:{item.provider_session_id}"
+                    == logical_source_key
                 ]
                 if len(matches) != 1:
                     raise RuntimeError(f"membership {member_raw_id}:{logical_source_key} no longer parses uniquely")
