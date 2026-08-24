@@ -649,31 +649,45 @@ def test_run_blob_gc_refuses_when_the_index_tier_cannot_be_read(tmp_path: Path) 
     index_path = tmp_path / "index.db"
 
     attachment_hash, _size = store.write_from_bytes(b"attachment payload")
+    control_hash, _control_size = store.write_from_bytes(b"nothing references me")
     _backdate(store, attachment_hash)
+    _backdate(store, control_hash)
     conn = _make_db(db_path)
     conn.commit()
     conn.close()
 
-    # The only reference to these bytes anywhere in the archive.
+    # The only reference to the attachment bytes anywhere in the archive.
     index_conn = sqlite3.connect(str(index_path))
     index_conn.execute("INSERT INTO attachments (blob_hash) VALUES (?)", (bytes.fromhex(attachment_hash),))
     index_conn.commit()
     index_conn.close()
 
-    assert run_blob_gc(db_path, blob_root, max_batch=10) == 0
+    # The control blob proves this pass reaches the liveness check at all: it
+    # clears the same age gate and the same candidate scan, and it is
+    # collected. Without it, a blob retained for an unrelated reason (age,
+    # an empty candidate walk) would satisfy every assertion below.
+    assert run_blob_gc(db_path, blob_root, max_batch=10) == 1
+    assert not store.exists(control_hash)
     assert store.exists(attachment_hash)
 
     # Now the index tier is gone -- the shape a reset or a swapped generation
-    # leaves behind. Nothing else in the archive names this blob.
+    # leaves behind. Nothing else in the archive names the attachment blob.
+    second_control_hash, _second_size = store.write_from_bytes(b"nothing references me either")
+    _backdate(store, second_control_hash)
     index_path.unlink()
 
     report = run_blob_gc_report(db_path, blob_root, max_batch=10)
 
+    # The data-loss claim first: without the gate this is the assertion that
+    # fails, and it fails because the bytes are gone.
+    assert store.exists(attachment_hash), "unlinked a blob whose only reference tier was unreadable"
     assert report.blocked_reason is not None
     assert "index tier" in report.blocked_reason
     assert report.deleted_count == 0
     assert report.generation_written is False
-    assert store.exists(attachment_hash), "unlinked a blob whose only reference tier was unreadable"
+    # The refusal is total, not selective: even a blob that was provably
+    # collectable a moment ago is left alone while a tier cannot be read.
+    assert store.exists(second_control_hash)
 
 
 @pytest.mark.uses_real_clock(
