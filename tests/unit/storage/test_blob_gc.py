@@ -28,9 +28,29 @@ from polylogue.storage.blob_store import BlobStore
 # ---------------------------------------------------------------------------
 
 
+def _make_index_sibling(db_path: str | Path) -> Path:
+    """Create the minimal index tier GC requires beside a file-based fixture.
+
+    GC refuses to run when a reference tier it must consult cannot be read,
+    so a file-set fixture has to carry one. The table matters: the index tier
+    is where ``attachments.blob_hash`` lives, and it is the only surface that
+    knows about 1,240 of the live archive's attachment payloads.
+    """
+    index_path = Path(db_path).with_name("index.db")
+    conn = sqlite3.connect(str(index_path))
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS attachments (blob_hash BLOB)")
+        conn.commit()
+    finally:
+        conn.close()
+    return index_path
+
+
 def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     """Create an in-memory or file-based SQLite database with GC schema."""
     target = str(path) if path else ":memory:"
+    if path is not None:
+        _make_index_sibling(path)
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
     conn.execute(
@@ -396,7 +416,10 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
 
     assert report.deleted_count == 0
     assert report.skipped_referenced == 1
-    assert stage_calls == 1
+    # One stage per reference tier the planning pass consults (control tier +
+    # index tier), and none from a second destructive pass -- an empty
+    # shortlist must not re-enter the lock. Re-staging would double this.
+    assert stage_calls == 2
 
 
 def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
@@ -605,3 +628,89 @@ def test_read_gc_history_returns_recent_passes(tmp_path: Path) -> None:
     assert len(history) == 3
     assert all(row.reclaimed_count == 1 for row in history)
     assert all(row.generation_id.startswith("gc-") for row in history)
+
+
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call"
+)
+def test_run_blob_gc_refuses_when_the_index_tier_cannot_be_read(tmp_path: Path) -> None:
+    """An unavailable reference tier is a blocker, never proof of non-reference.
+
+    ``attachments.blob_hash`` lives in the index tier and nowhere else -- 1,240
+    distinct attachment payloads (~425 MB) on the live archive are reachable
+    only that way. The tier is rebuildable and reached through a symlink into
+    a generations directory, so a reset or an interrupted generation promotion
+    leaves the path absent. Reading that absence as "unreferenced" unlinks
+    durable bytes that every other surface agrees nothing else holds.
+    """
+    db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+    index_path = tmp_path / "index.db"
+
+    attachment_hash, _size = store.write_from_bytes(b"attachment payload")
+    _backdate(store, attachment_hash)
+    conn = _make_db(db_path)
+    conn.commit()
+    conn.close()
+
+    # The only reference to these bytes anywhere in the archive.
+    index_conn = sqlite3.connect(str(index_path))
+    index_conn.execute("INSERT INTO attachments (blob_hash) VALUES (?)", (bytes.fromhex(attachment_hash),))
+    index_conn.commit()
+    index_conn.close()
+
+    assert run_blob_gc(db_path, blob_root, max_batch=10) == 0
+    assert store.exists(attachment_hash)
+
+    # Now the index tier is gone -- the shape a reset or a swapped generation
+    # leaves behind. Nothing else in the archive names this blob.
+    index_path.unlink()
+
+    report = run_blob_gc_report(db_path, blob_root, max_batch=10)
+
+    assert report.blocked_reason is not None
+    assert "index tier" in report.blocked_reason
+    assert report.deleted_count == 0
+    assert report.generation_written is False
+    assert store.exists(attachment_hash), "unlinked a blob whose only reference tier was unreadable"
+
+
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call"
+)
+def test_run_blob_gc_serializes_the_recheck_against_an_index_tier_writer(tmp_path: Path) -> None:
+    """The recheck+unlink window must exclude writers on every tier it reads.
+
+    Invariant 3 claims the final reference recheck and the unlink are
+    serialized under a write lock. A read-only sibling connection excludes
+    nobody, so a concurrent commit could create the very reference the pass is
+    about to decide does not exist. Holding an index-tier write transaction
+    here must therefore make the destructive pass fail rather than delete.
+    """
+    db_path = tmp_path / "source.db"
+    blob_root = tmp_path / "blobs"
+    store = BlobStore(blob_root)
+
+    orphan_hash, _size = store.write_from_bytes(b"orphan payload")
+    _backdate(store, orphan_hash)
+    conn = _make_db(db_path)
+    conn.commit()
+    conn.close()
+
+    # Stand in for a concurrent process mid-write on the index tier.
+    writer = sqlite3.connect(str(tmp_path / "index.db"), timeout=0.1)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            run_blob_gc(db_path, blob_root, max_batch=10)
+    finally:
+        writer.rollback()
+        writer.close()
+
+    assert store.exists(orphan_hash), "unlinked while an index-tier writer held the reference table"
+
+    # With no competing writer the same pass reclaims the blob, so the
+    # assertion above is about serialization, not a blanket refusal.
+    assert run_blob_gc(db_path, blob_root, max_batch=10) == 1
+    assert not store.exists(orphan_hash)
