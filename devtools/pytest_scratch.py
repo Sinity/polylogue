@@ -149,6 +149,17 @@ def _read_lease(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _remove_owned_tree(path: Path) -> None:
+    """Remove an authenticated lease even when tests hardened its fixtures."""
+    for directory, child_directories, _files in os.walk(path, topdown=True, followlinks=False):
+        os.chmod(directory, stat.S_IRWXU, follow_symlinks=False)
+        for child in child_directories:
+            candidate = Path(directory, child)
+            if not candidate.is_symlink():
+                os.chmod(candidate, stat.S_IRWXU, follow_symlinks=False)
+    shutil.rmtree(path)
+
+
 def _prune_stale_leases(root: Path) -> tuple[str, ...]:
     removed: list[str] = []
     leases_root = root / "runs"
@@ -158,7 +169,7 @@ def _prune_stale_leases(root: Path) -> tuple[str, ...]:
         payload = _read_lease(marker)
         if payload is None or not _owner_is_alive(payload):
             lease_root = marker.parent
-            shutil.rmtree(lease_root, ignore_errors=True)
+            _remove_owned_tree(lease_root)
             removed.append(str(lease_root))
     # A completed lane removes its leaf. Reclaim empty run containers later;
     # active or sibling lanes keep their container non-empty and untouched.
@@ -357,7 +368,7 @@ class PytestScratchLease:
                 artifacts = _capture_failure_artifacts(self.basetemp, self.evidence_dir / "scratch-failure-artifacts")
             cleanup_started = time.monotonic_ns()
             if owns_lease:
-                shutil.rmtree(self.lease_root, ignore_errors=True)
+                _remove_owned_tree(self.lease_root)
                 # A verifier run can own several sequential lanes. Remove only this
                 # run's now-empty container, never the shared ``runs`` namespace or a
                 # sibling lane still in flight.

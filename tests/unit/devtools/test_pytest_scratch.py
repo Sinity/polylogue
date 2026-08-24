@@ -57,6 +57,21 @@ def test_terminal_outcomes_reclaim_only_their_own_lease(tmp_path: Path, outcome:
     sibling.finalize("success")
 
 
+def test_terminal_cleanup_reclaims_mode_hardened_fixture_trees(tmp_path: Path) -> None:
+    lease = PytestScratchLease.acquire(
+        root=tmp_path / "scratch", run_id="hardened", lane="parallel", evidence_dir=tmp_path / "evidence"
+    )
+    hardened = lease.basetemp / "fixture" / "nested"
+    hardened.mkdir(parents=True)
+    hardened.joinpath("payload").write_text("stale", encoding="utf-8")
+    hardened.chmod(0o400)
+
+    receipt = lease.finalize("success")
+
+    assert receipt["cleanup_complete"] is True
+    assert not lease.lease_root.exists()
+
+
 def test_new_lease_reclaims_only_dead_owner_markers(tmp_path: Path) -> None:
     scratch_root = tmp_path / "scratch"
     dead = scratch_root / "runs" / "abandoned" / "parallel"
