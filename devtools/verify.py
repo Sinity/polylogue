@@ -43,6 +43,7 @@ from devtools.verify_runs import (
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
+    prune_successful_verify_runs,
 )
 from polylogue.scenarios import (
     MeasurementScope,
@@ -501,6 +502,7 @@ def _finish_interrupted_verification(
         },
     )
     append_verify_history(payload)
+    prune_successful_verify_runs(root=ROOT)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
 
@@ -645,6 +647,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         ),
     )
     append_verify_history(payload)
+    prune_successful_verify_runs(root=ROOT)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
 

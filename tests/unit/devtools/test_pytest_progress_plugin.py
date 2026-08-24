@@ -34,8 +34,12 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     collection_duration_s = pytest_progress_plugin._COLLECTION_DURATION_S
     controller_collection_payload = pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD
     recorded_report_keys = set(pytest_progress_plugin._RECORDED_REPORT_KEYS)
+    test_scratch_trees = dict(pytest_progress_plugin._TEST_SCRATCH_TREES)
+    test_call_outcomes = dict(pytest_progress_plugin._TEST_CALL_OUTCOMES)
     session_state_stack = list(pytest_progress_plugin._SESSION_STATE_STACK)
     pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
+    pytest_progress_plugin._TEST_SCRATCH_TREES.clear()
+    pytest_progress_plugin._TEST_CALL_OUTCOMES.clear()
     pytest_progress_plugin._SESSION_STATE_STACK.clear()
     yield
     pytest_progress_plugin._SELECTED_COUNT = selected_count
@@ -47,6 +51,10 @@ def _restore_plugin_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     pytest_progress_plugin._CONTROLLER_COLLECTION_PAYLOAD = controller_collection_payload
     pytest_progress_plugin._RECORDED_REPORT_KEYS.clear()
     pytest_progress_plugin._RECORDED_REPORT_KEYS.update(recorded_report_keys)
+    pytest_progress_plugin._TEST_SCRATCH_TREES.clear()
+    pytest_progress_plugin._TEST_SCRATCH_TREES.update(test_scratch_trees)
+    pytest_progress_plugin._TEST_CALL_OUTCOMES.clear()
+    pytest_progress_plugin._TEST_CALL_OUTCOMES.update(test_call_outcomes)
     pytest_progress_plugin._SESSION_STATE_STACK[:] = session_state_stack
 
 
@@ -278,6 +286,41 @@ def test_progress_plugin_write_failures_do_not_escape(monkeypatch: pytest.Monkey
     monkeypatch.setenv("POLYLOGUE_PYTEST_EVENTS_PATH", "/dev/null/events.jsonl")
 
     pytest_progress_plugin.pytest_runtest_logreport(_Report("test_body", "call", "failed", longrepr="boom"))
+
+
+def test_successful_test_tree_is_removed_only_after_passed_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    test_tree = scratch / "test-success"
+    test_tree.mkdir(parents=True)
+    test_tree.joinpath("payload").write_bytes(b"observed before cleanup")
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SCRATCH_ROOT", str(scratch))
+    pytest_progress_plugin.record_test_scratch_usage("test-success", test_tree)
+
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test-success", "call", "passed"))
+    assert test_tree.exists()
+    pytest_progress_plugin.pytest_runtest_logreport(_Report("test-success", "teardown", "passed"))
+
+    assert not test_tree.exists()
+
+
+def test_failed_or_cancelled_test_tree_is_retained_for_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "scratch"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SCRATCH_ROOT", str(scratch))
+    for nodeid, call_outcome, teardown_outcome in (
+        ("test-failed", "failed", "passed"),
+        ("test-cancelled", "failed", "skipped"),
+    ):
+        test_tree = scratch / nodeid
+        test_tree.mkdir(parents=True)
+        test_tree.joinpath("evidence.txt").write_text("retain", encoding="utf-8")
+        pytest_progress_plugin.record_test_scratch_usage(nodeid, test_tree)
+        pytest_progress_plugin.pytest_runtest_logreport(_Report(nodeid, "call", call_outcome))
+        pytest_progress_plugin.pytest_runtest_logreport(_Report(nodeid, "teardown", teardown_outcome))
+        assert test_tree.exists()
 
 
 def test_progress_plugin_records_test_scratch_high_water(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

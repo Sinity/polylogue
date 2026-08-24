@@ -29,6 +29,7 @@ CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
+SUCCESSFUL_VERIFY_DETAIL_LIMIT = 8
 
 
 def utc_now() -> str:
@@ -44,8 +45,19 @@ def make_run_id(*, tier: str) -> str:
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temporary.replace(path)
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _read_only_git_env() -> dict[str, str]:
@@ -372,3 +384,60 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def prune_successful_verify_runs(
+    *,
+    root: Path,
+    history_path: Path | None = None,
+    max_successful: int = SUCCESSFUL_VERIFY_DETAIL_LIMIT,
+) -> dict[str, object]:
+    """Bound only successful detail trees after history is durably appended.
+
+    The history ledger is the authority for pruning: a run whose summary was
+    never captured there is retained, as are every failed/cancelled/crashed
+    run. Malformed or symlinked run directories are also retained for manual
+    inspection. This keeps the compact durable record while reclaiming the
+    large per-step detail trees from successful repetition.
+    """
+    if max_successful < 0:
+        raise ValueError("successful verify detail limit must be non-negative")
+    root = root.resolve()
+    resolved_history = history_path or (root / VERIFY_HISTORY_PATH)
+    if not resolved_history.is_absolute():
+        resolved_history = root / resolved_history
+    durable_successes: set[str] = set()
+    try:
+        lines = resolved_history.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {"retained_run_ids": [], "pruned_run_ids": [], "history_durable": False}
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("status") == "success" and isinstance(payload.get("run_id"), str):
+            durable_successes.add(payload["run_id"])
+    runs_root = root / VERIFY_RUNS_DIR
+    candidates: list[tuple[str, str, Path]] = []
+    if runs_root.is_dir():
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir() or run_dir.is_symlink():
+                continue
+            payload = _read_json(run_dir / "run.json")
+            run_id = payload.get("run_id")
+            if payload.get("status") != "success" or not isinstance(run_id, str) or run_id not in durable_successes:
+                continue
+            candidates.append((str(payload.get("finished_at", "")), run_id, run_dir))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    retained = [run_id for _, run_id, _ in candidates[:max_successful]]
+    pruned: list[str] = []
+    for _, run_id, run_dir in candidates[max_successful:]:
+        try:
+            shutil.rmtree(run_dir)
+        except OSError:
+            continue
+        pruned.append(run_id)
+    return {"retained_run_ids": retained, "pruned_run_ids": pruned, "history_durable": True}
