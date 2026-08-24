@@ -11,12 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from shutil import copytree
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin
@@ -35,12 +33,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, markdown_export_payload
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
-from tests.infra.workload_artifacts import (
-    ImmutableTreeArtifact,
-    build_immutable_tree,
-    clone_immutable_tree,
-    default_cache_root,
-)
+from tests.infra.workload_artifacts import build_immutable_tree, clone_immutable_tree, default_cache_root
 
 CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
@@ -687,14 +680,17 @@ def build_pathology_zoo(
     aggregate verifiers never receive partial evidence by accident.
     """
     selected = _select_members(member_ids)
-    aggregate = build_pathology_zoo_ro(cache_root=cache_root)
-    clone = clone_immutable_tree(
-        ImmutableTreeArtifact(root=aggregate.archive_root, key=_pathology_cache_key(), files=()),
-        archive_root,
+    artifact = build_immutable_tree(
+        cache_root=(cache_root or default_cache_root()) / "pathology-zoo",
+        key=_pathology_cache_key(),
+        builder=lambda root: _build_pathology_zoo_uncached(root),
     )
-    # clone_immutable_tree only needs the source root and manifest identity;
-    # restore the production-derived durable paths against this private root.
-    del clone
+    aggregate = PathologyZoo(
+        archive_root=artifact.root,
+        manifest=_manifest_for_root(artifact.root),
+        selected_member_ids=pathology_zoo_member_ids(),
+    )
+    clone_immutable_tree(artifact, archive_root)
     selected_ids = {member.member_id for member in selected}
     return PathologyZoo(
         archive_root=archive_root,
@@ -716,10 +712,15 @@ def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
 
 
 def clone_pathology_zoo(zoo: PathologyZoo, destination: Path) -> PathologyZoo:
-    """Copy a built zoo archive into a private writable location."""
-    copytree(zoo.archive_root, destination)
-    for path in (destination, *destination.rglob("*")):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    """Reflink the canonical immutable aggregate into a private writable root."""
+    artifact = build_immutable_tree(
+        cache_root=default_cache_root() / "pathology-zoo",
+        key=_pathology_cache_key(),
+        builder=lambda root: _build_pathology_zoo_uncached(root),
+    )
+    if zoo.archive_root.resolve() != artifact.root.resolve():
+        raise ValueError("pathology zoo clones must originate from the canonical immutable aggregate")
+    clone_immutable_tree(artifact, destination)
     return replace(zoo, archive_root=destination)
 
 
