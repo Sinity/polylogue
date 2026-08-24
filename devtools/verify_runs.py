@@ -36,8 +36,18 @@ FAILED_VERIFY_DETAIL_LIMIT = 12
 FAILED_VERIFY_DETAIL_MAX_AGE_S = 7 * 24 * 60 * 60
 FAILED_VERIFY_DETAIL_MAX_BYTES = 64 * 1024 * 1024
 _RETENTION_LOCK_NAME = ".retention.lock"
+_DETAIL_NODE_BUDGET = 100_000
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+@dataclass
+class _NodeBudget:
+    remaining: int
+
+    def consume(self) -> bool:
+        self.remaining -= 1
+        return self.remaining >= 0
 
 
 def utc_now() -> str:
@@ -510,17 +520,22 @@ def _read_history_pinned(path: Path) -> list[dict[str, Any]]:
         raise
 
 
-def _tree_size_without_links(root: Path) -> tuple[int, bool]:
+def _tree_size_without_links(root: Path, *, budget: _NodeBudget | None = None, depth: int = 0) -> tuple[int, bool]:
     """Measure a run tree while treating links and special nodes as corrupt."""
+    budget = budget or _NodeBudget(_DETAIL_NODE_BUDGET)
+    if depth > 256:
+        return 0, False
     total = 0
     try:
         with os.scandir(root) as entries:
             for entry in entries:
+                if not budget.consume():
+                    return total, False
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
                     return total, False
                 if stat.S_ISDIR(info.st_mode):
-                    nested, safe = _tree_size_without_links(Path(entry.path))
+                    nested, safe = _tree_size_without_links(Path(entry.path), budget=budget, depth=depth + 1)
                     total += nested
                     if not safe:
                         return total, False
@@ -533,10 +548,11 @@ def _tree_size_without_links(root: Path) -> tuple[int, bool]:
     return total, True
 
 
-def _remove_tree_at(parent_fd: int, name: str, *, budget: int = 100_000) -> None:
+def _remove_tree_at(parent_fd: int, name: str, *, budget: _NodeBudget | None = None) -> None:
     """Remove one run directory through pinned descriptors only."""
-    if budget <= 0:
-        raise ValueError("verification detail deletion budget must be positive")
+    budget = budget or _NodeBudget(_DETAIL_NODE_BUDGET)
+    if not budget.consume():
+        raise RuntimeError("verification detail deletion exceeded bounded node budget")
     info = os.lstat(name, dir_fd=parent_fd)
     if stat.S_ISLNK(info.st_mode):
         raise OSError("refusing to delete a symlinked verification detail tree")
@@ -544,18 +560,16 @@ def _remove_tree_at(parent_fd: int, name: str, *, budget: int = 100_000) -> None
         os.unlink(name, dir_fd=parent_fd)
         return
     child_fd = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd)
-    inspected = 0
     try:
         with os.scandir(child_fd) as entries:
             for entry in entries:
-                inspected += 1
-                if inspected > budget:
+                if not budget.consume():
                     raise RuntimeError("verification detail deletion exceeded bounded node budget")
                 child_info = entry.stat(follow_symlinks=False)
                 if stat.S_ISLNK(child_info.st_mode):
                     raise OSError("refusing to traverse a symlinked verification detail node")
                 if stat.S_ISDIR(child_info.st_mode):
-                    _remove_tree_at(child_fd, entry.name, budget=budget - inspected)
+                    _remove_tree_at(child_fd, entry.name, budget=budget)
                 elif stat.S_ISREG(child_info.st_mode):
                     os.unlink(entry.name, dir_fd=child_fd)
                 else:

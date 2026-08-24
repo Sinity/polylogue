@@ -185,3 +185,18 @@ def test_pruning_retains_corrupt_detail_and_skips_active_retention_lock(tmp_path
         locked = prune_successful_verify_runs(root=tmp_path, history_path=history, max_failed=0)
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     assert locked["retention_locked"] is True
+
+
+def test_pruning_refuses_detail_tree_over_global_node_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    payload = _finished_run(tmp_path, index=0, exit_code=1)
+    detail = tmp_path / str(payload["artifact_dir"])
+    for index in range(5):
+        (detail / f"diagnostic-{index}.log").write_text("evidence", encoding="utf-8")
+    append_verify_history(payload, path=history)
+    monkeypatch.setattr(verify_runs, "_DETAIL_NODE_BUDGET", 2)
+
+    result = prune_successful_verify_runs(root=tmp_path, history_path=history, max_failed=0)
+
+    assert result["pruned_run_ids"] == []
+    assert detail.exists()

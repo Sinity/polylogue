@@ -487,7 +487,8 @@ def _finish_interrupted_verification(
         diagnosis="verification_interrupted",
         termination_reason=termination_reason,
     )
-    payload = run.finish(
+    payload = _finish_and_record_verification(
+        run=run,
         exit_code=exit_code,
         duration_s=time.monotonic() - started,
         diagnosis="verification_interrupted",
@@ -501,10 +502,34 @@ def _finish_interrupted_verification(
             "termination_reason": termination_reason,
         },
     )
-    append_verify_history(payload)
-    prune_successful_verify_runs(root=ROOT)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
+
+
+def _finish_and_record_verification(
+    *,
+    run: VerifyRun,
+    exit_code: int,
+    duration_s: float,
+    diagnosis: str | None = None,
+    verification_scope: str | None = None,
+    final_git_head: str | None = None,
+    pytest_aggregate: Mapping[str, Any] | None = None,
+    workload_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Finish, durably append, and prune every terminal verification path."""
+    payload = run.finish(
+        exit_code=exit_code,
+        duration_s=duration_s,
+        diagnosis=diagnosis,
+        verification_scope=verification_scope,
+        final_git_head=final_git_head,
+        pytest_aggregate=pytest_aggregate,
+        workload_receipt=workload_receipt,
+    )
+    append_verify_history(payload)
+    prune_successful_verify_runs(root=ROOT)
+    return payload
 
 
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
@@ -555,7 +580,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 pytest_environment=_native_pytest_environment(),
             )
         except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
-            payload = run.finish(
+            payload = _finish_and_record_verification(
+                run=run,
                 exit_code=125,
                 duration_s=time.monotonic() - started,
                 diagnosis="native_testmon_preparation_failed",
@@ -566,7 +592,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             sys.stderr.write(f"verify: {exc}\n")
             return 125
         if preparation.selection_mode == "bootstrap" and not args.all_tests:
-            payload = run.finish(
+            payload = _finish_and_record_verification(
+                run=run,
                 exit_code=2,
                 duration_s=time.monotonic() - started,
                 diagnosis="native_testmon_graph_unavailable",
@@ -632,7 +659,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         "complete_corpus_covered": False,
     }
     diagnosis = next((str(result["diagnosis"]) for result in reversed(results) if result["exit"] != 0), None)
-    payload = run.finish(
+    payload = _finish_and_record_verification(
+        run=run,
         exit_code=exit_code,
         duration_s=time.monotonic() - started,
         diagnosis=diagnosis,
@@ -646,8 +674,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=exit_code,
         ),
     )
-    append_verify_history(payload)
-    prune_successful_verify_runs(root=ROOT)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
 

@@ -6,11 +6,13 @@ import json
 import signal
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from devtools import verify
+from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     VerifyRun,
@@ -129,6 +131,54 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         assert payload["pytest_aggregate"]["termination_reason"] == "sigterm"
         assert payload["steps"][0]["status"] == "failed"
         assert payload["steps"][0]["termination_reason"] == "sigterm"
+
+
+@pytest.mark.parametrize("early_exit", ("preparation", "bootstrap"))
+def test_verify_records_early_native_terminal_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    early_exit: str,
+) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _base, _head: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_args: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    if early_exit == "preparation":
+
+        def fail_preparation(*_args: object, **_kwargs: object) -> object:
+            raise NativeTestmonRepairError("synthetic preparation failure")
+
+        monkeypatch.setattr(verify, "prepare_native_testmon_environment", fail_preparation)
+        expected_code = 125
+    else:
+        monkeypatch.setattr(
+            verify,
+            "prepare_native_testmon_environment",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                selection_mode="bootstrap",
+                environment_name="testmon",
+                local_state=SimpleNamespace(
+                    status="absent",
+                    reason="synthetic bootstrap",
+                    missing_executable_paths=(),
+                ),
+            ),
+        )
+        expected_code = 2
+
+    assert verify._main([]) == expected_code
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["exit_code"] == expected_code
 
 
 def test_verify_emits_shared_workload_receipt_for_step_timing(
