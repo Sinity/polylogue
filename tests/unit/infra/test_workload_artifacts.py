@@ -128,11 +128,26 @@ def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None
     assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
 
 
-def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(tmp_path: Path) -> None:
+def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.pipeline.services.archive_ingest import (
+        parse_sources_archive as real_parse_sources_archive,
+    )
+
+    observed_parse_workers: list[int | None] = []
+
+    async def record_parse_workers(*args: Any, **kwargs: Any) -> Any:
+        observed_parse_workers.append(kwargs.get("parse_workers"))
+        return await real_parse_sources_archive(*args, **kwargs)
+
+    monkeypatch.setattr("tests.infra.workload_artifacts.parse_sources_archive", record_parse_workers)
     cache_root = tmp_path / "cache"
 
     first = build_seeded_archive(cache_root=cache_root)
     second = build_seeded_archive(cache_root=cache_root)
+
+    assert observed_parse_workers == [1]
 
     assert first.root == second.root
     assert first.manifest.manifest_id == second.manifest.manifest_id
