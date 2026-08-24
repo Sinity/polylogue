@@ -24,6 +24,7 @@ from polylogue.product.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
 )
+from tests.infra.archive_templates import clone_archive_template
 
 _TERMINAL_WIRE_BYTES: Final = 90_822_451
 _REVISION_COUNT: Final = 804
@@ -38,6 +39,11 @@ def copy_sqlite_database(source: Path, destination: Path) -> None:
     """Copy live SQLite contents in place so archive identity inodes remain stable."""
     with sqlite3.connect(source) as source_conn, sqlite3.connect(destination) as destination_conn:
         source_conn.backup(destination_conn)
+
+
+def clone_blob_tree(source: Path, destination: Path) -> str:
+    """Clone Codex blob evidence with CoW first and detached-copy fallback."""
+    return clone_archive_template(source, destination, reject_links=True)
 
 
 def assert_planner_append_authority(
@@ -592,6 +598,7 @@ __all__ = [
     "WHALE_FIXTURE_DIMENSIONS",
     "WhaleFixtureDimensions",
     "acquire_codex_revision_chain",
+    "clone_blob_tree",
     "multi_million_codex_stream",
     "write_codex_whale_fixture_pack",
 ]

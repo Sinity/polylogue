@@ -74,9 +74,25 @@ def _remove_partial_clone(destination: Path) -> None:
     shutil.rmtree(destination)
 
 
-def clone_archive_template(template: Path, destination: Path) -> None:
+def _assert_detached_tree(template: Path, destination: Path) -> None:
+    """Reject links and shared inodes after either clone implementation."""
+    for source in template.rglob("*"):
+        relative = source.relative_to(template)
+        target = destination / relative
+        if source.is_symlink() or target.is_symlink():
+            raise RuntimeError(f"archive template clone contains a symlink: {relative}")
+        if (
+            source.is_file()
+            and target.is_file()
+            and (source.stat().st_dev, source.stat().st_ino) == (target.stat().st_dev, target.stat().st_ino)
+        ):
+            raise RuntimeError(f"archive template clone contains a hardlink: {relative}")
+
+
+def clone_archive_template(template: Path, destination: Path, *, reject_links: bool = False) -> str:
     """Clone an immutable archive into a private writable destination."""
     destination.mkdir(parents=True, exist_ok=True)
+    method = "reflink"
     try:
         subprocess.run(
             # ``auto`` silently falls back to a byte-for-byte copy when the
@@ -95,6 +111,9 @@ def clone_archive_template(template: Path, destination: Path) -> None:
         # that partial tree before replacing it on a filesystem without CoW.
         _remove_partial_clone(destination)
         shutil.copytree(template, destination, symlinks=True)
+        method = "copy"
+    if reject_links:
+        _assert_detached_tree(template, destination)
     for path in destination.rglob("*"):
         if path.is_symlink():
             continue
@@ -106,6 +125,7 @@ def clone_archive_template(template: Path, destination: Path) -> None:
 
         bootstrap_marker.unlink()
         _record_fresh_durable_bootstrap(destination)
+    return method
 
 
 __all__ = ["clone_archive_template", "finalize_archive_template", "quiesce_archive_template"]

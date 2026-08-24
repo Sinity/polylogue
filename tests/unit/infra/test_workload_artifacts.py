@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import gc
 import json
 import os
@@ -25,6 +26,7 @@ from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainErro
 from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
     NAMED_WORKLOAD_PROFILES,
+    ArtifactGcDisposition,
     BenchmarkWorkloadTier,
     WorkloadProfile,
     _assert_lock_identity,
@@ -40,6 +42,7 @@ from tests.infra.workload_artifacts import (
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
+    gc_seeded_archive_artifacts,
     named_corpus_specs,
     named_workload_profile,
     seeded_archive_key,
@@ -1493,6 +1496,166 @@ def test_build_does_not_retry_a_non_lock_database_error(tmp_path: Path, monkeypa
         build_seeded_archive(cache_root=tmp_path / "cache")
 
     assert attempts == 1
+
+
+def _age_artifact(root: Path, *, now: float = 10_000.0) -> None:
+    old = now - 10_000
+    os.utime(root, (old, old))
+    os.utime(root / "manifest.json", (old, old))
+
+
+def test_artifact_gc_uses_current_manifest_key_not_build_id_and_respects_grace(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    with pytest.raises(ValueError, match="complete seeded archive keys"):
+        gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("git:" + "0" * 40,),
+        )
+    reachable = build_seeded_archive(cache_root=cache_root)
+    stale = build_seeded_archive(named_corpus_specs("cli-chatgpt"), cache_root=cache_root)
+    _age_artifact(stale.root)
+
+    preview = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=(reachable.manifest.key,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=True,
+    )
+
+    by_name = {entry.name: entry for entry in preview.entries}
+    assert by_name[reachable.root.name].disposition is ArtifactGcDisposition.REACHABLE
+    assert by_name[stale.root.name].disposition is ArtifactGcDisposition.STALE
+    assert by_name[stale.root.name].key == stale.manifest.key
+    assert by_name[stale.root.name].manifest_id == stale.manifest.manifest_id
+    assert stale.root.exists()
+
+
+def test_artifact_gc_preview_and_apply_write_receipts_and_delete_only_stale_final_tree(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    stale = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(stale.root)
+    preview_receipt = tmp_path / "preview.json"
+    preview = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=True,
+        receipt_path=preview_receipt,
+    )
+    assert preview.entries[0].disposition is ArtifactGcDisposition.STALE
+    assert json.loads(preview_receipt.read_text())["dry_run"] is True
+    assert stale.root.exists()
+
+    receipt = tmp_path / "apply.json"
+    applied = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+        receipt_path=receipt,
+    )
+    assert applied.entries[0].disposition is ArtifactGcDisposition.DELETED
+    assert not stale.root.exists()
+    assert json.loads(receipt.read_text())["deleted_bytes"] == applied.deleted_bytes
+
+
+def test_artifact_gc_preserves_active_per_key_lock_and_query_lease(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    artifact = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(artifact.root)
+    lock_path = cache_root / ".locks" / f"{artifact.root.name}.lock"
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locked = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    assert locked.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert artifact.root.exists()
+
+    cache_fd = os.open(cache_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fcntl.flock(cache_fd, fcntl.LOCK_EX)
+        cache_locked = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+    finally:
+        fcntl.flock(cache_fd, fcntl.LOCK_UN)
+        os.close(cache_fd)
+    assert cache_locked.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert cache_locked.entries[0].name == "<cache>"
+
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
+    try:
+        leased = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+    finally:
+        lease.close()
+    assert leased.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LEASE
+    assert artifact.root.exists()
+
+
+def test_artifact_gc_retains_corruption_and_explicit_worktree_protection(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    corrupt = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(corrupt.root)
+    corrupt.root.chmod(corrupt.root.stat().st_mode | stat.S_IWUSR)
+    index = corrupt.root / "index.db"
+    index.chmod(index.stat().st_mode | stat.S_IWUSR)
+    content = index.read_bytes()
+    index.write_bytes(bytes((content[0] ^ 1,)) + content[1:])
+    corrupt.root.chmod(corrupt.root.stat().st_mode & ~stat.S_IWUSR)
+    corrupted = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+    )
+    assert corrupted.entries[0].disposition is ArtifactGcDisposition.CORRUPT
+    assert corrupt.root.exists()
+
+    protected = build_seeded_archive(named_corpus_specs("cli-chatgpt"), cache_root=cache_root)
+    _age_artifact(protected.root)
+    guarded = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+        protected_worktrees=(protected.root,),
+    )
+    protected_entry = next(entry for entry in guarded.entries if entry.name == protected.root.name)
+    assert protected_entry.disposition is ArtifactGcDisposition.ACTIVE_WORKTREE
+    assert protected.root.exists()
 
 
 def test_build_gives_up_on_a_persistent_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
