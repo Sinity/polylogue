@@ -157,7 +157,7 @@ def _seed_live_cursor_authority_case(
         archive.bind_raw_revision(
             raw_id,
             RawRevisionEnvelope(
-                "codex:session-1",
+                "codex-session:session-1",
                 RawRevisionKind.FULL,
                 "revision-0",
                 0,
@@ -165,7 +165,7 @@ def _seed_live_cursor_authority_case(
             ),
         )
         archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex:session-1"),
+            archive.raw_revision_replay_plan("codex-session:session-1"),
             {
                 raw_id: ParsedSession(
                     source_name=Provider.CODEX,
@@ -2392,7 +2392,7 @@ def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str
     return {
         "polylogue_capture_kind": "browser_llm_session",
         "schema_version": 1,
-        "capture_id": f"chatgpt:{provider_session_id}",
+        "capture_id": f"chatgpt-export:{provider_session_id}",
         "provenance": {
             "source_url": f"https://chatgpt.com/c/{provider_session_id}",
             "page_title": "title",
@@ -2531,7 +2531,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
 
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             decisions = conn.execute(
-                "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'chatgpt:conv-emx2' "
+                "SELECT decision FROM raw_session_memberships WHERE logical_source_key = 'chatgpt-export:conv-emx2' "
                 "ORDER BY raw_id"
             ).fetchall()
             assert decisions == [("ambiguous",), ("ambiguous",)]
@@ -2622,7 +2622,7 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 handle.write(json.dumps(record) + "\n")
         append_metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        session = await archive.get_session("claude-code:session-public-read")
+        session = await archive.get_session("claude-code-session:session-public-read")
         assert initial_metrics.full_file_count == 1
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
@@ -2760,8 +2760,8 @@ async def test_live_full_ingest_expands_inbox_zip_members(
         metrics = await processor.ingest_files([zip_path], emit_event=False)
         record = cursor.get_record(zip_path)
 
-        session_a = await archive.get_session("claude-code:zip-session-a")
-        session_b = await archive.get_session("claude-code:zip-session-b")
+        session_a = await archive.get_session("claude-code-session:zip-session-a")
+        session_b = await archive.get_session("claude-code-session:zip-session-b")
 
         assert metrics.succeeded_file_count == 1
         assert metrics.failed_file_count == 0
@@ -2902,7 +2902,7 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
         )
         metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        session = await archive.get_session("claude-code:session-detected-provider")
+        session = await archive.get_session("claude-code-session:session-detected-provider")
         assert metrics.succeeded_file_count == 1
         assert metrics.failed_file_count == 0
         assert session is not None
@@ -3038,8 +3038,8 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
             )
         append_metrics = await processor.ingest_files([source_path], emit_event=False)
 
-        existing = await archive.get_session("codex:codex-real-session")
-        fallback = await archive.get_session("codex:codex-session")
+        existing = await archive.get_session("codex-session:codex-real-session")
+        fallback = await archive.get_session("codex-session:codex-session")
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
         assert {

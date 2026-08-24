@@ -52,7 +52,7 @@ def _candidate(
 ) -> RevisionCandidate:
     return RevisionCandidate(
         raw_id=raw_id,
-        logical_source_key="codex:session",
+        logical_source_key="codex-session:session",
         kind=kind,
         source_revision=f"revision-{raw_id}",
         acquisition_generation=generation,
@@ -150,7 +150,7 @@ def test_live_revision_binding_without_parser_evidence_does_not_issue_receipt(tm
         archive.bind_raw_revision(
             raw_id,
             RawRevisionEnvelope(
-                "codex:live-receipt",
+                "codex-session:live-receipt",
                 RawRevisionKind.FULL,
                 "live-receipt-v1",
                 0,
@@ -202,7 +202,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
         archive.bind_raw_revision(
             raw_id,
             RawRevisionEnvelope(
-                "codex:durable-but-not-parsed",
+                "codex-session:durable-but-not-parsed",
                 RawRevisionKind.FULL,
                 "mismatch-v1",
                 0,
@@ -500,7 +500,7 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         first = classify_membership_revisions(members)
         assert first.accepted_raw_ids == ("equivalent-z",)
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             first,
             {member.raw_id: session for member in members},
             {member.raw_id: projection for member in members},
@@ -511,7 +511,7 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         second = classify_membership_revisions(members)
         assert second.accepted_raw_ids == ("accepted-a",)
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             second,
             {member.raw_id: session for member in members},
             {member.raw_id: projection for member in members},
@@ -519,14 +519,14 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         )
 
         head = archive._conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"
         ).fetchone()
         assert head is not None and tuple(head) == ("accepted-a",)
         application_rows = archive._conn.execute(
             """
             SELECT raw_id, decision, accepted_raw_id
             FROM raw_revision_applications
-            WHERE logical_source_key = 'codex:session'
+            WHERE logical_source_key = 'codex-session:session'
             ORDER BY raw_id, decision, accepted_raw_id
             """
         ).fetchall()
@@ -547,7 +547,7 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
               ON a.logical_source_key = h.logical_source_key
              AND a.accepted_raw_id = h.accepted_raw_id
              AND a.accepted_content_hash = h.accepted_content_hash
-            WHERE h.logical_source_key = 'codex:session'
+            WHERE h.logical_source_key = 'codex-session:session'
               AND a.decision IN ('selected_baseline', 'applied_append')
             """
         ).fetchone()
@@ -611,7 +611,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
 
         session_by_raw = {"branch-a": branch_a, "branch-a-dup": branch_a, "branch-b": branch_b}
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             classification,
             session_by_raw,
             {raw_id: session_revision_projection(session) for raw_id, session in session_by_raw.items()},
@@ -619,7 +619,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
         )
 
         head = archive._conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"
         ).fetchone()
         assert head is None
 
@@ -629,7 +629,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
                 """
             SELECT raw_id, decision, revision_authority
             FROM raw_session_memberships
-            WHERE logical_source_key = 'codex:session'
+            WHERE logical_source_key = 'codex-session:session'
             ORDER BY raw_id
             """
             )
@@ -729,7 +729,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
         archive.bind_raw_revision(
             append_raw_id,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 "revision-append",
                 0,
@@ -748,7 +748,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
         archive.bind_raw_revision(
             baseline_raw_id,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.FULL,
                 "revision-base",
                 0,
@@ -756,7 +756,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
 
     assert {item.raw_id: item.decision for item in plan.applications} == {
         baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
@@ -774,7 +774,7 @@ def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acqui
     )
     archive.bind_raw_revision(
         written_id,
-        RawRevisionEnvelope("codex:session", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+        RawRevisionEnvelope("codex-session:session", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
     )
     return written_id
 
@@ -811,7 +811,7 @@ def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tm
             archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
         )
 
-        archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -853,7 +853,7 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
         )
         assert mid < mid_duplicate  # guards the ordering assumption the collision case depends on
 
-        archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -890,7 +890,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
         duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
 
-        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
 
         # The cohort has a unique byte-proven baseline -- the duplicate no
         # longer manufactures a false "multiple newest baselines" ambiguity.
@@ -938,7 +938,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         archive.bind_raw_revision(
             baseline,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
         append_one = archive.write_raw_payload(
@@ -951,7 +951,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         archive.bind_raw_revision(
             append_one,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
                 1,
@@ -973,7 +973,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         archive.bind_raw_revision(
             append_two,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_source_revision(
                     append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
@@ -988,7 +988,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        append_plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        append_plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         archive.apply_raw_revision_replay(
             append_plan,
             {
@@ -1008,13 +1008,18 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
         archive.bind_raw_revision(
             folded,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "full-folded", 3, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session",
+                RawRevisionKind.FULL,
+                "full-folded",
+                3,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        folded_plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        folded_plan = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         folded_session = parsed(("full-0", "zero"), ("full-1", "one"), ("full-2", "two"))
         before_hash = archive._conn.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?", ("codex:session",)
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("codex-session:session",),
         ).fetchone()
         assert before_hash is not None
         assert bytes(before_hash[0]) != bytes.fromhex(session_content_hash(folded_session))
@@ -1026,7 +1031,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
 
         head = archive._conn.execute(
             "SELECT accepted_raw_id, accepted_frontier FROM raw_revision_heads WHERE logical_source_key = ?",
-            ("codex:session",),
+            ("codex-session:session",),
         ).fetchone()
         assert head is not None
         assert tuple(head) == (folded, 20)
@@ -1078,7 +1083,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
         archive.bind_raw_revision(
             raw_a,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
         raw_b = archive.write_raw_payload(
@@ -1087,11 +1092,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
         archive.bind_raw_revision(
             raw_b,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
+        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Both siblings genuinely disagree (no byte-prefix relation) --
@@ -1118,10 +1123,10 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
         archive.bind_raw_revision(
             raw_c,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
+        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
 
     # The isolated raw must not be promoted alone: this identity has known,
     # unresolved ambiguous siblings that a real classifier must weigh it
@@ -1177,7 +1182,7 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
                     raw_id, logical_source_key, provider_session_id,
                     source_revision, normalized_content_hash, message_count,
                     decision, decided_at_ms
-                ) VALUES (?, 'chatgpt:s1', 's1', ?, ?, 1, 'ambiguous', 1)
+                ) VALUES (?, 'chatgpt-export:s1', 's1', ?, ?, 1, 'ambiguous', 1)
                 """,
                 (raw_id, raw_id, bytes.fromhex(raw_id)),
             )
@@ -1234,7 +1239,7 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
                     raw_id, logical_source_key, provider_session_id,
                     source_revision, normalized_content_hash, message_count,
                     decision, decided_at_ms
-                ) VALUES (?, 'chatgpt:s-ambiguous', 's-ambiguous', ?, ?, 1, 'ambiguous', 1)
+                ) VALUES (?, 'chatgpt-export:s-ambiguous', 's-ambiguous', ?, ?, 1, 'ambiguous', 1)
                 """,
                 (raw_id, raw_id, bytes.fromhex(raw_id)),
             )
@@ -1244,7 +1249,7 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
                     raw_id, logical_source_key, provider_session_id,
                     source_revision, normalized_content_hash, message_count,
                     decision, decided_at_ms
-                ) VALUES (?, 'chatgpt:s-settled', 's-settled', ?, ?, 1, 'applied', 1)
+                ) VALUES (?, 'chatgpt-export:s-settled', 's-settled', ?, ?, 1, 'applied', 1)
                 """,
                 (raw_id, raw_id + "-b", bytes.fromhex(raw_id)),
             )
@@ -1302,7 +1307,7 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
         archive.bind_raw_revision(
             raw_a,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
         raw_b = archive.write_raw_payload(
@@ -1311,11 +1316,11 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
         archive.bind_raw_revision(
             raw_b,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
+        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Retire both siblings under the LEGACY pre-#3234 literal, not the
@@ -1341,10 +1346,10 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
         archive.bind_raw_revision(
             raw_c,
             RawRevisionEnvelope(
-                "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
+        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
 
     # Same assertion as the shared-constant test: the isolated raw must not
     # be promoted alone against siblings retired under the legacy literal.
@@ -1435,7 +1440,7 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         archive.bind_raw_revision(
             baseline,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
         append = archive.write_raw_payload(
@@ -1445,7 +1450,7 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         archive.bind_raw_revision(
             append,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_revision,
                 1,
@@ -1458,7 +1463,7 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             ),
         )
         archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex:session"),
+            archive.raw_revision_replay_plan("codex-session:session"),
             {baseline: baseline_session, append: append_session},
             acquired_at_ms=0,
         )
@@ -1468,18 +1473,19 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         archive.bind_raw_revision(
             folded,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
         before_hash = archive._conn.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?", ("codex:session",)
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("codex-session:session",),
         ).fetchone()
         assert before_hash is not None
         assert bytes(before_hash[0]) != bytes.fromhex(session_content_hash(folded_session))
         archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex:session"), {folded: folded_session}, acquired_at_ms=0
+            archive.raw_revision_replay_plan("codex-session:session"), {folded: folded_session}, acquired_at_ms=0
         )
-        assert archive.raw_revision_head_raw_id("codex:session") == folded
+        assert archive.raw_revision_head_raw_id("codex-session:session") == folded
 
 
 @pytest.mark.parametrize("mutation", ["tail", "gap", "overlap", "predecessor", "baseline", "missing", "divergent"])
@@ -1555,7 +1561,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         archive.bind_raw_revision(
             baseline,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
         append = archive.write_raw_payload(
@@ -1565,7 +1571,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         archive.bind_raw_revision(
             append,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_revision,
                 1,
@@ -1577,7 +1583,7 @@ def test_real_append_fold_proof_mutations_roll_back(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        chain = archive.raw_revision_replay_plan("codex:session")
+        chain = archive.raw_revision_replay_plan("codex-session:session")
         archive.apply_raw_revision_replay(chain, {baseline: baseline_session, append: append_session}, acquired_at_ms=0)
         folded_payload = candidate_payload
         if mutation in {"baseline", "divergent"}:
@@ -1590,7 +1596,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         archive.bind_raw_revision(
             folded,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
         source = archive._ensure_source_conn()
@@ -1629,7 +1635,7 @@ def test_real_append_fold_proof_mutations_roll_back(
         assert before["attachments"]
         assert before["fts_needle"]
         assert not before["fts_candidate"]
-        plan = archive.raw_revision_replay_plan("codex:session")
+        plan = archive.raw_revision_replay_plan("codex-session:session")
         with pytest.raises(RuntimeError, match="conflicting accepted head"):
             archive.apply_raw_revision_replay(plan, {folded: folded_session}, acquired_at_ms=0)
         assert state(archive) == before
@@ -1685,7 +1691,7 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
         archive.bind_raw_revision(
             raw_id,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.FULL,
                 "mtime-revision",
                 1,
@@ -1738,7 +1744,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
         archive.bind_raw_revision(
             raw_id,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.FULL,
                 f"revision-{label}",
                 generation,
@@ -1761,7 +1767,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             archive._conn.execute(
                 """SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
                           accepted_frontier_kind, accepted_frontier
-                   FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"""
+                   FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"""
             ).fetchone(),
             archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone(),
         )
@@ -1770,7 +1776,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
         base_session = parsed(("m0", "zero"), event_timestamp="2026-07-01T00:00:00Z")
         base = write_full(archive, "base", 1)
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             MembershipClassification((base,), (), ()),
             {base: base_session},
             {base: session_revision_projection(base_session)},
@@ -1789,7 +1795,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
 
         semantic_head = archive._conn.execute(
             """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier
-               FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"""
+               FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"""
         ).fetchone()
         assert semantic_head is not None
         assert tuple(semantic_head) == (later, "semantic", 3)
@@ -1855,7 +1861,7 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
     archive.bind_raw_revision(
         raw_id,
         RawRevisionEnvelope(
-            "codex:session",
+            "codex-session:session",
             RawRevisionKind.FULL,
             f"revision-{label}",
             generation,
@@ -1867,7 +1873,7 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
 
 def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSession) -> None:
     archive.apply_raw_membership_classification(
-        "codex:session",
+        "codex-session:session",
         MembershipClassification((raw_id,), (), ()),
         {raw_id: session},
         {raw_id: session_revision_projection(session)},
@@ -1890,7 +1896,7 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
             kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
         )
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             MembershipClassification((raw_id,), (), ()),
             {raw_id: session},
             {raw_id: session_revision_projection(session)},
@@ -1951,7 +1957,7 @@ def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
 def _head_row(archive: ArchiveStore) -> tuple[object, ...] | None:
     row = archive._conn.execute(
         """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier
-           FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"""
+           FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"""
     ).fetchone()
     return None if row is None else tuple(row)
 
@@ -2030,7 +2036,7 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
         result = archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
             {capture: session_revision_projection(capture_session)},
@@ -2041,7 +2047,7 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
         assert _head_row(archive) == (export, "byte", 6)
         receipts = archive._conn.execute(
             """SELECT decision, detail FROM raw_revision_applications
-               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
+               WHERE raw_id = ? AND logical_source_key = 'codex-session:session'""",
             (capture,),
         ).fetchall()
         assert [str(row[0]) for row in receipts] == ["superseded"]
@@ -2076,12 +2082,12 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
         archive._conn.execute(
-            "UPDATE raw_revision_heads SET accepted_raw_id = ?, accepted_frontier_kind = 'semantic', accepted_frontier = 2 WHERE logical_source_key = 'codex:session'",
+            "UPDATE raw_revision_heads SET accepted_raw_id = ?, accepted_frontier_kind = 'semantic', accepted_frontier = 2 WHERE logical_source_key = 'codex-session:session'",
             (capture,),
         )
 
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
             {capture: session_revision_projection(capture_session)},
@@ -2120,7 +2126,7 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         classification = classify_membership_revisions(revisions)
         assert capture2 in classification.accepted_raw_ids
         archive.apply_raw_membership_classification(
-            "codex:session",
+            "codex-session:session",
             classification,
             {capture1: capture1_session, capture2: capture2_session},
             {
@@ -2133,7 +2139,7 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         assert _head_row(archive) == (export, "semantic", 1)
         receipts = archive._conn.execute(
             """SELECT decision, detail FROM raw_revision_applications
-               WHERE raw_id = ? AND logical_source_key = 'codex:session'""",
+               WHERE raw_id = ? AND logical_source_key = 'codex-session:session'""",
             (capture2,),
         ).fetchall()
         assert [str(row[0]) for row in receipts] == ["superseded"]
@@ -2203,10 +2209,10 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         archive.bind_raw_revision(
             baseline,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         archive.apply_raw_revision_replay(
             plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0, skip_already_applied=True
         )
@@ -2223,7 +2229,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         archive.bind_raw_revision(
             append_one,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
                 1,
@@ -2235,7 +2241,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         assert plan1.accepted_raw_ids == (baseline, append_one)
         # The real live-watcher hot path always reparses+passes the FULL
         # accepted chain (see append_ingest.py), not just the new tail.
@@ -2260,7 +2266,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         archive.bind_raw_revision(
             append_two,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_source_revision(
                     append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
@@ -2275,7 +2281,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan2 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan2 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         assert plan2.accepted_raw_ids == (baseline, append_one, append_two)
         archive.apply_raw_revision_replay(
             plan2,
@@ -2303,7 +2309,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         assert any("two" in text for text in texts)
 
         head = archive._conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session'"
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session'"
         ).fetchone()
         assert head is not None
         assert head[0] == append_two
@@ -2357,10 +2363,10 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
         archive.bind_raw_revision(
             baseline,
             RawRevisionEnvelope(
-                "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+                "codex-session:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         archive.apply_raw_revision_replay(plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
         indexed_raw_ids.clear()
 
@@ -2374,7 +2380,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
         archive.bind_raw_revision(
             append_one,
             RawRevisionEnvelope(
-                "codex:session",
+                "codex-session:session",
                 RawRevisionKind.APPEND,
                 append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
                 1,
@@ -2386,7 +2392,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
+        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         archive.apply_raw_revision_replay(
             plan1,
             {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},

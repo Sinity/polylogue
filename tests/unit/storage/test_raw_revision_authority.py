@@ -259,12 +259,12 @@ def test_historical_classifier_proves_chain_up_to_a_downstream_fork() -> None:
 
 def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:
     with pytest.raises(ValueError, match="predecessor revision and offsets"):
-        RawRevisionEnvelope("codex:session", RawRevisionKind.APPEND, "rev-2", 2)
+        RawRevisionEnvelope("codex-session:session", RawRevisionKind.APPEND, "rev-2", 2)
 
 
 def test_quarantined_append_records_observation_without_claiming_raw_parent() -> None:
     envelope = RawRevisionEnvelope(
-        "codex:session",
+        "codex-session:session",
         RawRevisionKind.APPEND,
         "rev-2",
         2,
@@ -281,7 +281,7 @@ def test_quarantined_append_records_observation_without_claiming_raw_parent() ->
 def test_replay_eligible_append_requires_bound_raw_parent() -> None:
     with pytest.raises(ValueError, match="baseline and raw predecessor"):
         RawRevisionEnvelope(
-            "codex:session",
+            "codex-session:session",
             RawRevisionKind.APPEND,
             "rev-2",
             2,
@@ -296,7 +296,7 @@ def test_source_writer_persists_typed_revision_envelope() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(SOURCE_DDL)
     envelope = RawRevisionEnvelope(
-        "codex:session-1",
+        "codex-session:session-1",
         RawRevisionKind.APPEND,
         "sha256:revision-2",
         2,
@@ -323,7 +323,7 @@ def test_source_writer_persists_typed_revision_envelope() -> None:
            FROM raw_sessions WHERE raw_id = ?""",
         (raw_id,),
     ).fetchone() == (
-        "codex:session-1",
+        "codex-session:session-1",
         "append",
         "sha256:revision-2",
         "sha256:revision-1",
@@ -522,7 +522,7 @@ def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
         payload=b"raw",
         acquired_at_ms=10,
     )
-    first = RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 0)
+    first = RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "revision-1", 0)
     bind_source_raw_revision(conn, raw_id, first)
 
     bind_source_raw_revision(conn, raw_id, first)
@@ -530,13 +530,13 @@ def test_revision_binding_is_idempotent_only_for_the_exact_envelope() -> None:
         bind_source_raw_revision(
             conn,
             raw_id,
-            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-1", 99),
+            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "revision-1", 99),
         )
     with pytest.raises(ValueError, match="source_revision: stored='revision-1' proposed='different'"):
         bind_source_raw_revision(
             conn,
             raw_id,
-            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "different", 1),
+            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "different", 1),
         )
     with pytest.raises(ValueError, match="found no raw row"):
         bind_source_raw_revision(conn, "missing", first)
@@ -554,7 +554,7 @@ def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> Non
         acquired_at_ms=10,
     )
     provisional = RawRevisionEnvelope(
-        "codex:session-1",
+        "codex-session:session-1",
         RawRevisionKind.FULL,
         "revision-1",
         0,
@@ -578,7 +578,7 @@ def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> Non
            FROM raw_sessions WHERE raw_id = ?""",
         (raw_id,),
     ).fetchone() == (
-        "codex:session-1",
+        "codex-session:session-1",
         "full",
         "revision-1",
         "older-full",
@@ -591,7 +591,7 @@ def test_provisional_revision_rebind_accepts_only_classifier_refinement() -> Non
             conn,
             raw_id,
             RawRevisionEnvelope(
-                "codex:session-1",
+                "codex-session:session-1",
                 RawRevisionKind.FULL,
                 "different-revision",
                 0,
@@ -608,14 +608,14 @@ def test_reacquiring_same_raw_cannot_reset_its_authoritative_envelope(
     initialize_active_archive_root(tmp_path)
     payload = b'{"type":"session_meta","payload":{"id":"session-1"}}\n'
     first = RawRevisionEnvelope(
-        "codex:session-1",
+        "codex-session:session-1",
         RawRevisionKind.FULL,
         "revision-1",
         0,
         authority=RawRevisionAuthority.BYTE_PROVEN,
     )
     conflicting = RawRevisionEnvelope(
-        "codex:session-1",
+        "codex-session:session-1",
         RawRevisionKind.FULL,
         "revision-2",
         99,
@@ -671,7 +671,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         )
         archive.bind_raw_revision(
             baseline_raw_id,
-            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "full-revision", 1),
+            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "full-revision", 1),
         )
 
     append_payload = (
@@ -731,7 +731,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         ).fetchone()
         assert (
             conn.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex:session-1'"
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:session-1'"
             ).fetchone()
             == append_application
         )
@@ -768,7 +768,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
         )
         archive.bind_raw_revision(
             baseline_raw_id,
-            RawRevisionEnvelope("claude-code:journal", RawRevisionKind.FULL, "full-revision", 1),
+            RawRevisionEnvelope("claude-code-session:journal", RawRevisionKind.FULL, "full-revision", 1),
         )
 
     append_payload = b'{"contentKey":"call-2","agentId":"agent-b"}\n'
@@ -890,13 +890,13 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
         archive.bind_raw_revision(
             baseline_raw_id,
             RawRevisionEnvelope(
-                "codex:session-1",
+                "codex-session:session-1",
                 RawRevisionKind.FULL,
                 "late-full-revision",
                 0,
             ),
         )
-        assert archive.raw_append_revision_parent("codex:session-1", 100, "late-full-revision") == (
+        assert archive.raw_append_revision_parent("codex-session:session-1", 100, "late-full-revision") == (
             baseline_raw_id,
             baseline_raw_id,
             1,
@@ -914,11 +914,11 @@ def test_append_parent_requires_exact_cursor_revision(tmp_path: Path) -> None:
         )
         archive.bind_raw_revision(
             raw_id,
-            RawRevisionEnvelope("codex:session-1", RawRevisionKind.FULL, "revision-a", 0),
+            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "revision-a", 0),
         )
 
-        assert archive.raw_append_revision_parent("codex:session-1", 8, "revision-b") is None
-        assert archive.raw_append_revision_parent("codex:session-1", 8, "revision-a") == (
+        assert archive.raw_append_revision_parent("codex-session:session-1", 8, "revision-b") is None
+        assert archive.raw_append_revision_parent("codex-session:session-1", 8, "revision-a") == (
             raw_id,
             raw_id,
             1,

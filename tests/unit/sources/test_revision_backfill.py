@@ -147,7 +147,7 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
         _seed_historical_revision(
             archive,
             legacy_raw_id,
-            RawRevisionEnvelope("codex:legacy-membership", RawRevisionKind.FULL, "legacy-v1", 0),
+            RawRevisionEnvelope("codex-session:legacy-membership", RawRevisionKind.FULL, "legacy-v1", 0),
         )
         canonical_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -158,7 +158,7 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
         _seed_historical_revision(
             archive,
             canonical_raw_id,
-            RawRevisionEnvelope("codex:canonical-membership", RawRevisionKind.FULL, "canonical-v1", 0),
+            RawRevisionEnvelope("codex-session:canonical-membership", RawRevisionKind.FULL, "canonical-v1", 0),
         )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -2006,8 +2006,8 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
     layer down.
     """
     initialize_active_archive_root(tmp_path)
-    correct_key = "chatgpt:s1"
-    stale_key = "chatgpt:s1-0"
+    correct_key = "chatgpt-export:s1"
+    stale_key = "chatgpt-export:s1-0"
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_correct = archive.write_raw_payload(
@@ -2088,7 +2088,7 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         accepted = conn.execute("SELECT message_count, content_hash FROM sessions WHERE native_id = 's1'").fetchone()
         accepted_head = conn.execute(
-            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:s1'"
+            "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:s1'"
         ).fetchone()
     assert accepted is not None
     assert accepted_head is not None
@@ -2110,7 +2110,7 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
         )
         assert (
             conn.execute(
-                "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt:s1'"
+                "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = 'chatgpt-export:s1'"
             ).fetchone()
             == accepted_head
         )
@@ -3331,7 +3331,7 @@ def _write_append_raw_with_recovered_identity(
         archive,
         raw_id,
         RawRevisionEnvelope(
-            logical_source_key=f"codex:{native_id}",
+            logical_source_key=f"codex-session:{native_id}",
             kind=RawRevisionKind.APPEND,
             source_revision=f"{raw_id}-revision",
             acquisition_generation=0,
@@ -4043,14 +4043,14 @@ def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
             order = _lineage_aware_replay_order(set(logical_keys), archive, spill, root)
 
-    assert order[0] == "codex:zparent"
-    parent_position = order.index("codex:zparent")
+    assert order[0] == "codex-session:zparent"
+    parent_position = order.index("codex-session:zparent")
     for index in range(5):
-        child_key = f"codex:achild{index}"
+        child_key = f"codex-session:achild{index}"
         assert child_key in order
         assert order.index(child_key) > parent_position
     # Lexicographic order would have put every child before the parent.
-    assert sorted(logical_keys)[0] != "codex:zparent"
+    assert sorted(logical_keys)[0] != "codex-session:zparent"
 
 
 def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
@@ -4070,11 +4070,13 @@ def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path:
                 acquired_at_ms=1,
             )
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
-            order = _lineage_aware_replay_order({"codex:zorphan", "codex:aorphan"}, archive, spill, root)
-    assert sorted(order) == ["codex:aorphan", "codex:zorphan"]
+            order = _lineage_aware_replay_order(
+                {"codex-session:zorphan", "codex-session:aorphan"}, archive, spill, root
+            )
+    assert sorted(order) == ["codex-session:aorphan", "codex-session:zorphan"]
     # Neither key's parent is in the set, so both are roots -- fallback
     # degrades to lexicographic order among them.
-    assert order == ["codex:aorphan", "codex:zorphan"]
+    assert order == ["codex-session:aorphan", "codex-session:zorphan"]
 
 
 def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

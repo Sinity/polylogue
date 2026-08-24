@@ -46,7 +46,7 @@ def test_raw_authority_restart_proof_reaches_conserved_two_census_fixed_point(tm
             """
             SELECT raw_id, normalized_content_hash
             FROM raw_session_memberships
-            WHERE logical_source_key = 'chatgpt:reparse-browser'
+                WHERE logical_source_key = 'chatgpt-export:reparse-browser'
             """
         ).fetchone()
     with sqlite3.connect(retained_reparse_root / "index.db") as index_conn:

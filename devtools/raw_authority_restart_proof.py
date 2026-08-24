@@ -517,7 +517,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
                 raw_id, logical_source_key, provider_session_id, source_revision,
                 normalized_content_hash, message_count, acquisition_generation,
                 revision_authority, decision, decided_at_ms
-            ) VALUES (?, 'chatgpt:reparse-browser', ?, ?, ?, ?, 0,
+            ) VALUES (?, 'chatgpt-export:reparse-browser', ?, ?, ?, ?, 0,
                       'quarantined', NULL, NULL)
             """,
             (raw_id, native_id, current_hash.hex(), current_hash, len(current_session.messages)),
@@ -947,7 +947,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
                 """
                 UPDATE raw_session_memberships
                 SET normalized_content_hash = ?
-                WHERE raw_id = ? AND logical_source_key = 'chatgpt:reparse-browser'
+                WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:reparse-browser'
                 """,
                 (bytes(32), raw_id),
             )
@@ -993,7 +993,7 @@ def _exercise_accepted_head_reparse(case_root: Path) -> dict[str, object]:
             """
             SELECT normalized_content_hash
             FROM raw_session_memberships
-            WHERE raw_id = ? AND logical_source_key = 'chatgpt:reparse-browser'
+            WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:reparse-browser'
             """,
             (raw_id,),
         ).fetchone()[0]
@@ -1107,7 +1107,7 @@ def _prepare_case(case_root: Path) -> PreparedTopology:
             """
             SELECT provider_session_id, logical_source_key, source_revision
             FROM raw_session_memberships
-            WHERE raw_id = ? AND logical_source_key = 'chatgpt:deferred-shared'
+            WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:deferred-shared'
             """,
             (deferred_raw_id,),
         ).fetchone()
@@ -1166,7 +1166,7 @@ def _prepare_case(case_root: Path) -> PreparedTopology:
                 """
                 SELECT logical_source_key, COUNT(DISTINCT raw_id)
                 FROM raw_session_memberships
-                WHERE logical_source_key IN ('chatgpt:terminal-shared', 'chatgpt:deferred-shared')
+                WHERE logical_source_key IN ('chatgpt-export:terminal-shared', 'chatgpt-export:deferred-shared')
                 GROUP BY logical_source_key
                 """
             )
@@ -1175,7 +1175,7 @@ def _prepare_case(case_root: Path) -> PreparedTopology:
     _require(membership_row_count == 12, "compact topology did not retain exactly twelve membership rows")
     _require(complete_census_count == 6, "not every synthetic raw has a complete durable membership census")
     _require(
-        sibling_keys == {"chatgpt:deferred-shared": 2, "chatgpt:terminal-shared": 2},
+        sibling_keys == {"chatgpt-export:deferred-shared": 2, "chatgpt-export:terminal-shared": 2},
         "membership sibling edges were not persisted by the production parser census",
     )
 

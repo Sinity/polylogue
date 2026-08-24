@@ -10,6 +10,7 @@ from pathlib import Path
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError
+from polylogue.core.sources import origin_from_provider
 from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
@@ -549,7 +550,7 @@ def inspect_demo_receipts(archive_root: Path) -> DemoReceiptsResult:
                 """,
                 (
                     Origin.CODEX_SESSION.value,
-                    f"{Provider.CODEX.value}:{provider_session_id}",
+                    f"{origin_from_provider(Provider.CODEX).value}:{provider_session_id}",
                     provider_session_id,
                 ),
             ).fetchall()

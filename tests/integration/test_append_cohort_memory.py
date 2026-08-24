@@ -90,7 +90,7 @@ def _seed_cohort_and_append_plan(
                 acquired_at_ms=index + 1,
                 blob_publication_receipt_id=publisher.receipt_id(blob_hash),
                 revision=RawRevisionEnvelope(
-                    f"codex:{session_id}",
+                    f"codex-session:{session_id}",
                     RawRevisionKind.FULL,
                     f"full-{index}",
                     index,
@@ -141,7 +141,7 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
                 acquired_at_ms=index + 1,
                 blob_publication_receipt_id=publisher.receipt_id(blob_hash),
                 revision=RawRevisionEnvelope(
-                    f"codex:{session_id}",
+                    f"codex-session:{session_id}",
                     RawRevisionKind.FULL,
                     f"full-{index}",
                     index,
@@ -306,7 +306,7 @@ def test_watcher_append_reclassifies_when_nonempty_plan_omits_current_append(tmp
         assert (
             index.execute(
                 "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-                ("codex:append-partial-classification-proof",),
+                ("codex-session:append-partial-classification-proof",),
             ).fetchone()
             is None
         )

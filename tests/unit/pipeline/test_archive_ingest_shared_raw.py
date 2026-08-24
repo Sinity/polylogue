@@ -535,8 +535,8 @@ async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, work
     assert len(rows) == 1, f"expected exactly one raw row for child-session.jsonl's bytes, got {rows}"
     assert rows[0][1] is None
     assert _membership_rows(archive_root / "source.db", rows[0][0]) == {
-        ("claude-code:parent-session:child-session", "parent-session:child-session"),
-        ("claude-code:child-session", "child-session"),
+        ("claude-code-session:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code-session:child-session", "child-session"),
     }
 
     # Both split sessions must still have been indexed -- but as of
@@ -748,8 +748,8 @@ async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
 
     assert second_rows == [(first_raw_id, None)]
     assert _membership_rows(archive_root / "source.db", first_raw_id) == {
-        ("claude-code:parent-session:child-session", "parent-session:child-session"),
-        ("claude-code:child-session", "child-session"),
+        ("claude-code-session:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code-session:child-session", "child-session"),
     }
 
 

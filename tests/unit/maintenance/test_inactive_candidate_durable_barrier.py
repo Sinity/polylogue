@@ -700,15 +700,15 @@ def test_candidate_rejects_membership_authority_drift_before_allocation(
             (raw_id,),
         ).fetchall()
         assert decisions == [
-            ("chatgpt:membership-a", "applied"),
-            ("chatgpt:membership-b", "applied"),
+            ("chatgpt-export:membership-a", "applied"),
+            ("chatgpt-export:membership-b", "applied"),
         ]
         source.execute(
             """
             UPDATE raw_session_memberships SET decision = 'superseded_prefix'
             WHERE raw_id = ? AND logical_source_key = ?
             """,
-            (raw_id, "chatgpt:membership-a"),
+            (raw_id, "chatgpt-export:membership-a"),
         )
         source.commit()
     receipt_path = write_valid_rebuild_receipt(root, root.parent / "membership-drift-receipt.json")
