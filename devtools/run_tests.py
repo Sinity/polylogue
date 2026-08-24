@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
+import signal
 import sys
 import time
 from pathlib import Path
@@ -39,7 +39,7 @@ from devtools.pytest_collection_contract import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
-from devtools.pytest_scratch import Outcome, PytestScratchLease, scratch_root_from_environment
+from devtools.pytest_scratch import Outcome, PytestScratchLease, run_managed_pytest, scratch_root_from_environment
 from devtools.verify_runs import (
     VerifyRun,
     append_verify_history,
@@ -90,6 +90,16 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
         "-o",
     }
 )
+
+
+class ManagedTestInterrupted(KeyboardInterrupt):
+    def __init__(self, signum: int) -> None:
+        super().__init__()
+        self.signum = signum
+
+
+def _raise_managed_interruption(_signum: int, _frame: object) -> None:
+    raise ManagedTestInterrupted(_signum)
 
 
 def _verbose_output() -> bool:
@@ -281,7 +291,14 @@ def _run(
     """Run focused pytest directly while preserving its project receipt."""
     del label, run
     started = time.monotonic()
-    completed = subprocess.run(command, cwd=cwd, env=env)
+    handlers = {
+        signum: signal.signal(signum, _raise_managed_interruption) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        completed = run_managed_pytest(command, cwd=Path(cwd), env=env)
+    finally:
+        for signum, previous in handlers.items():
+            signal.signal(signum, previous)
     return (
         completed.returncode,
         time.monotonic() - started,
@@ -350,6 +367,13 @@ def main(argv: list[str] | None = None) -> int:
             env=pytest_env,
             run=run,
         )
+    except ManagedTestInterrupted as exc:
+        rc = 128 + exc.signum
+        elapsed = time.monotonic() - started
+        metadata = {
+            "diagnosis": "pytest_interrupted",
+            "termination_reason": signal.Signals(exc.signum).name.lower(),
+        }
     except KeyboardInterrupt:
         rc = 130
         elapsed = time.monotonic() - started

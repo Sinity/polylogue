@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -118,7 +119,7 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr("devtools.run_tests.subprocess.run", direct_subprocess)
+    monkeypatch.setattr("devtools.run_tests.run_managed_pytest", direct_subprocess)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
     monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
@@ -225,6 +226,28 @@ def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
         assert payload["pytest_aggregate"]["selection_mode"] == "focused"
         assert payload["git_head"] == "head"
         assert payload["final_git_head"] == "head"
+
+
+def test_main_preserves_sigterm_for_managed_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, str]]:
+        raise run_tests.ManagedTestInterrupted(signal.SIGTERM)
+
+    monkeypatch.setattr(run_tests, "_run", interrupt)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 143
+    assert history["exit_code"] == 143
+    assert history["steps"][0]["termination_reason"] == "sigterm"
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(

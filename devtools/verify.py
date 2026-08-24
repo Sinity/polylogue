@@ -25,7 +25,7 @@ from devtools.pytest_collection_contract import (
     SERIAL_MARKER_EXPRESSION,
     STORAGE_SCALE_MARKER_EXPRESSION,
 )
-from devtools.pytest_scratch import PytestScratchLease, scratch_root_from_environment
+from devtools.pytest_scratch import PytestScratchLease, run_managed_pytest, scratch_root_from_environment
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
@@ -333,7 +333,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         )
         managed_command = lease.command(command)
         try:
-            completed = subprocess.run(
+            completed = run_managed_pytest(
                 managed_command, cwd=ROOT, env=lease.environment(env), stdout=sys.stderr, stderr=sys.stderr
             )
         except KeyboardInterrupt:

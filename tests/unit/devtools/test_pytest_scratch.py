@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import signal
 from pathlib import Path
 
 import pytest
 
-from devtools.pytest_scratch import PytestScratchLease, measure_tree
+from devtools import pytest_scratch
+from devtools.pytest_scratch import PytestScratchLease, measure_tree, run_managed_pytest
 
 
 def test_measure_tree_reports_apparent_allocated_and_file_counts(tmp_path: Path) -> None:
@@ -88,3 +90,89 @@ def test_managed_command_rejects_unowned_shared_basetemp(tmp_path: Path) -> None
     assert command[-1] == f"--basetemp={lease.basetemp}"
     assert lease.environment({})["POLYLOGUE_PYTEST_SCRATCH_LANE"] == "parallel"
     lease.finalize("success")
+
+
+def test_failure_artifacts_do_not_follow_a_destination_symlink(tmp_path: Path) -> None:
+    scratch_root = tmp_path / "scratch"
+    evidence = tmp_path / "evidence"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    evidence.mkdir()
+    lease = PytestScratchLease.acquire(root=scratch_root, run_id="run", lane="parallel", evidence_dir=evidence)
+    lease.basetemp.mkdir(parents=True)
+    lease.basetemp.joinpath("diagnostic.txt").write_text("private", encoding="utf-8")
+    evidence.joinpath("scratch-failure-artifacts").symlink_to(outside, target_is_directory=True)
+
+    metrics = lease.finalize("failure")
+
+    assert metrics["failure_artifacts"]["error"] == "destination_not_owned"
+    assert not outside.joinpath("diagnostic.txt").exists()
+
+
+def test_high_water_metrics_use_worker_observations(tmp_path: Path) -> None:
+    scratch_root = tmp_path / "scratch"
+    evidence = tmp_path / "evidence"
+    events = evidence / "events"
+    events.mkdir(parents=True)
+    events.joinpath("gw0-1.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "scratch_worker_high_water",
+                "high_water": {
+                    "apparent_bytes": 999,
+                    "allocated_bytes": 8_192,
+                    "file_count": 40,
+                    "directory_count": 30,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    lease = PytestScratchLease.acquire(root=scratch_root, run_id="run", lane="parallel", evidence_dir=evidence)
+
+    metrics = lease.finalize("success")
+
+    assert metrics["terminal_usage"]["apparent_bytes"] < 999
+    assert metrics["high_water_scope"] == "observed_test_trees_and_terminal_lease"
+    assert metrics["high_water_complete"] is False
+    assert metrics["high_water_usage"] == {
+        "apparent_bytes": 999,
+        "allocated_bytes": 8_192,
+        "file_count": 40,
+        "directory_count": 30,
+    }
+
+
+def test_managed_pytest_kills_its_process_group_before_propagating_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Process:
+        pid = 42
+        returncode = 130
+
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is None:
+                raise KeyboardInterrupt
+            return self.returncode
+
+    process = _Process()
+    killed: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))
+
+    with pytest.raises(KeyboardInterrupt):
+        run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})
+
+    assert killed == [(42, signal.SIGTERM)]
+
+
+def test_workstation_does_not_fallback_to_tmpfs_when_nvme_mount_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(pytest_scratch, "DEFAULT_SCRATCH_ROOT", tmp_path / "missing" / "scratch")
+    monkeypatch.setattr(pytest_scratch, "running_in_cloud_sandbox", lambda: False)
+
+    with pytest.raises(RuntimeError, match="workstation scratch mount"):
+        pytest_scratch.scratch_root_from_environment({})
