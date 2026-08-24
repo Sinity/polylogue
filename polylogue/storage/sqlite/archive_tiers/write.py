@@ -786,7 +786,7 @@ def write_parsed_session_to_archive(
                     producer_created,
                     producer_created,
                     producer_updated,
-                    merge_append,
+                    producer_updated or merge_append,
                 ),
             )
             add_timing("index.session_upsert", t0)

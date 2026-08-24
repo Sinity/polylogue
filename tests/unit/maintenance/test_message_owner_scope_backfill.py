@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -1030,7 +1031,7 @@ def test_daemon_bulk_rebuild_serializes_admission_with_candidate_creation(
     result = asyncio.run(
         bulk_rebuild.run_daemon_bulk_rebuild_pass(
             config=Config(archive_root=root, render_root=root, sources=[]),
-            parse_stage=cast(Any, None),
+            parse_stage=cast(Any, SimpleNamespace(writer_admission_ready=lambda: True)),
             max_payload_bytes=1,
         )
     )

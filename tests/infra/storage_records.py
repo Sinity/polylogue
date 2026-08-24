@@ -1233,6 +1233,8 @@ def make_session(
     **kwargs: object,
 ) -> SessionRecord:
     now = datetime.now(timezone.utc).isoformat()
+    resolved_created_at = created_at if created_at is not None else (updated_at or now)
+    resolved_updated_at = updated_at if updated_at is not None else (created_at or now)
     default_content_hash = uuid4().hex
     payload: RecordPayload = {
         "session_id": _session_id(session_id),
@@ -1242,8 +1244,8 @@ def make_session(
             session_id,
         ),
         "title": title,
-        "created_at": created_at or now,
-        "updated_at": updated_at or now,
+        "created_at": resolved_created_at,
+        "updated_at": resolved_updated_at,
         "content_hash": _coerce_content_hash(kwargs.pop("content_hash", default_content_hash), default_content_hash),
     }
     payload.update(kwargs)

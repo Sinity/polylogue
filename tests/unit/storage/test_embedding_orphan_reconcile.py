@@ -178,8 +178,8 @@ _NOW_MS = 1_800_000_000_000
 def _traced_reconcile_connect(traced_sql: list[str]) -> Callable[..., sqlite3.Connection]:
     real_connect = sqlite3.connect
 
-    def traced_connect(database: str | Path, *, timeout: float) -> sqlite3.Connection:
-        connection = real_connect(database, timeout=timeout)
+    def traced_connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_connect(database, *args, **kwargs)
         connection.set_trace_callback(traced_sql.append)
         return connection
 

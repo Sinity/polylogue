@@ -469,7 +469,7 @@ def _candidate_index(location: object, generation_id: str, *, source_snapshot: s
             if transaction.generation_id == generation_id:
                 transactions.append(transaction)
     except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise LiveProofError("candidate generation metadata is unavailable") from exc
+        raise LiveProofError("candidate generation binding metadata is unavailable") from exc
     if (
         generation.generation_id != generation_id
         or generation.state != "inactive"
