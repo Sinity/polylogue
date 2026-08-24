@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import gc
 import json
 import os
@@ -9,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -25,7 +27,10 @@ from polylogue.storage.sqlite.durable_change_train import DurableChangeTrainErro
 from tests.infra.workload_artifacts import (
     BENCHMARK_WORKLOAD_PROFILES,
     NAMED_WORKLOAD_PROFILES,
+    ArtifactGcDisposition,
+    ArtifactGcReport,
     BenchmarkWorkloadTier,
+    SeededArchiveClone,
     WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
@@ -40,6 +45,7 @@ from tests.infra.workload_artifacts import (
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
+    gc_seeded_archive_artifacts,
     named_corpus_specs,
     named_workload_profile,
     seeded_archive_key,
@@ -1493,6 +1499,297 @@ def test_build_does_not_retry_a_non_lock_database_error(tmp_path: Path, monkeypa
         build_seeded_archive(cache_root=tmp_path / "cache")
 
     assert attempts == 1
+
+
+def _age_artifact(root: Path, *, now: float = 10_000.0) -> None:
+    old = now - 10_000
+    os.utime(root, (old, old))
+    os.utime(root / "manifest.json", (old, old))
+
+
+def test_artifact_gc_uses_current_manifest_key_not_build_id_and_respects_grace(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    with pytest.raises(ValueError, match="complete seeded archive keys"):
+        gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("git:" + "0" * 40,),
+        )
+    reachable = build_seeded_archive(cache_root=cache_root)
+    stale = build_seeded_archive(named_corpus_specs("cli-chatgpt"), cache_root=cache_root)
+    _age_artifact(stale.root)
+
+    preview = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=(reachable.manifest.key,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=True,
+    )
+
+    by_name = {entry.name: entry for entry in preview.entries}
+    assert by_name[reachable.root.name].disposition is ArtifactGcDisposition.REACHABLE
+    assert by_name[stale.root.name].disposition is ArtifactGcDisposition.STALE
+    assert by_name[stale.root.name].key == stale.manifest.key
+    assert by_name[stale.root.name].manifest_id == stale.manifest.manifest_id
+    assert stale.root.exists()
+
+
+def test_artifact_gc_preview_and_apply_write_receipts_and_delete_only_stale_final_tree(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    stale = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(stale.root)
+    preview_receipt = tmp_path / "preview.json"
+    preview = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=True,
+        receipt_path=preview_receipt,
+    )
+    assert preview.entries[0].disposition is ArtifactGcDisposition.STALE
+    assert json.loads(preview_receipt.read_text())["dry_run"] is True
+    assert stale.root.exists()
+
+    receipt = tmp_path / "apply.json"
+    applied = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+        receipt_path=receipt,
+    )
+    assert applied.entries[0].disposition is ArtifactGcDisposition.DELETED
+    assert not stale.root.exists()
+    assert json.loads(receipt.read_text())["deleted_bytes"] == applied.deleted_bytes
+
+
+def test_artifact_gc_preserves_active_per_key_lock_and_query_lease(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    artifact = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(artifact.root)
+    lock_path = cache_root / ".locks" / f"{artifact.root.name}.lock"
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        locked = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    assert locked.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert artifact.root.exists()
+
+    cache_fd = os.open(cache_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        fcntl.flock(cache_fd, fcntl.LOCK_EX)
+        cache_locked = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+    finally:
+        fcntl.flock(cache_fd, fcntl.LOCK_UN)
+        os.close(cache_fd)
+    assert cache_locked.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert cache_locked.entries[0].name == "<cache>"
+
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
+    try:
+        leased = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            now=10_000,
+            dry_run=False,
+        )
+    finally:
+        lease.close()
+    assert leased.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LEASE
+    assert artifact.root.exists()
+
+
+def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clone's shared lease wins the race before its first source read."""
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    artifact = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(artifact.root)
+    copy_started = threading.Event()
+    allow_copy = threading.Event()
+    clone_result: list[object] = []
+    gc_result: list[object] = []
+    original_copy = artifacts._copy_tree
+
+    def blocked_copy(source: Path, destination: Path) -> None:
+        copy_started.set()
+        assert allow_copy.wait(5), "clone did not receive its release signal"
+        original_copy(source, destination)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", blocked_copy)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+
+    def run_clone() -> None:
+        try:
+            clone_result.append(clone_seeded_archive(artifact, tmp_path / "clone"))
+        except BaseException as exc:  # surfaced below with the thread result
+            clone_result.append(exc)
+
+    def collect() -> None:
+        gc_result.append(
+            gc_seeded_archive_artifacts(
+                cache_root=cache_root,
+                reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+                grace_period_s=1,
+                now=10_000,
+                dry_run=False,
+            )
+        )
+
+    clone_thread = threading.Thread(target=run_clone)
+    clone_thread.start()
+    assert copy_started.wait(5), "clone did not reach its source read barrier"
+    gc_thread = threading.Thread(target=collect)
+    gc_thread.start()
+    gc_thread.join(5)
+    allow_copy.set()
+    clone_thread.join(5)
+
+    assert not gc_thread.is_alive()
+    assert not clone_thread.is_alive()
+    assert len(gc_result) == 1
+    gc_report = cast(ArtifactGcReport, gc_result[0])
+    assert gc_report.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
+    assert len(clone_result) == 1 and not isinstance(clone_result[0], BaseException)
+    cloned = cast(SeededArchiveClone, clone_result[0])
+    assert cloned.root.exists()
+    cloned.close()
+    assert artifact.root.exists()
+
+
+def test_rejected_hardlink_clone_cleans_residue_without_mutating_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    source_manifest = (artifact.root / "manifest.json").read_bytes()
+    source_index = artifact.root / "index.db"
+    source_mode = stat.S_IMODE(source_index.stat().st_mode)
+    destination = tmp_path / "hardlink-clone"
+    original_copy = artifacts._copy_tree
+
+    def inject_hardlink(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        target.chmod(target.stat().st_mode | stat.S_IWUSR)
+        target_index = target / "index.db"
+        target_index.unlink()
+        os.link(source / "index.db", target_index)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", inject_hardlink)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="inode was not detached"):
+        clone_seeded_archive(artifact, destination)
+
+    assert not destination.exists()
+    assert source_index.exists()
+    assert stat.S_IMODE(source_index.stat().st_mode) == source_mode
+    assert (artifact.root / "manifest.json").read_bytes() == source_manifest
+
+
+def test_rejected_symlink_clone_cleans_residue_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    source_manifest = (artifact.root / "manifest.json").read_bytes()
+    destination = tmp_path / "symlink-clone"
+    outside = tmp_path / "outside"
+    outside.write_text("must remain", encoding="utf-8")
+    original_copy = artifacts._copy_tree
+
+    def inject_symlink(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        target.chmod(target.stat().st_mode | stat.S_IWUSR)
+        (target / "unsafe-link").symlink_to(outside)
+
+    monkeypatch.setattr(artifacts, "_copy_tree", inject_symlink)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="symlink"):
+        clone_seeded_archive(artifact, destination)
+
+    assert not destination.exists()
+    assert outside.read_text(encoding="utf-8") == "must remain"
+    assert (artifact.root / "manifest.json").read_bytes() == source_manifest
+
+
+def test_artifact_gc_retains_corruption_and_explicit_worktree_protection(tmp_path: Path) -> None:
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    corrupt = build_seeded_archive(cache_root=cache_root)
+    _age_artifact(corrupt.root)
+    corrupt.root.chmod(corrupt.root.stat().st_mode | stat.S_IWUSR)
+    index = corrupt.root / "index.db"
+    index.chmod(index.stat().st_mode | stat.S_IWUSR)
+    content = index.read_bytes()
+    index.write_bytes(bytes((content[0] ^ 1,)) + content[1:])
+    corrupt.root.chmod(corrupt.root.stat().st_mode & ~stat.S_IWUSR)
+    corrupted = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+    )
+    assert corrupted.entries[0].disposition is ArtifactGcDisposition.CORRUPT
+    assert corrupt.root.exists()
+
+    protected = build_seeded_archive(named_corpus_specs("cli-chatgpt"), cache_root=cache_root)
+    _age_artifact(protected.root)
+    guarded = gc_seeded_archive_artifacts(
+        cache_root=cache_root,
+        reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+        grace_period_s=1,
+        now=10_000,
+        dry_run=False,
+        protected_worktrees=(protected.root,),
+    )
+    protected_entry = next(entry for entry in guarded.entries if entry.name == protected.root.name)
+    assert protected_entry.disposition is ArtifactGcDisposition.ACTIVE_WORKTREE
+    assert protected.root.exists()
 
 
 def test_build_gives_up_on_a_persistent_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

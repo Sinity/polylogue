@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
     CodexRevisionChainFixture,
     WhaleFixtureDimensions,
     _write_padding_record,
+    clone_blob_tree,
     multi_million_codex_stream,
     write_codex_whale_fixture_pack,
 )
@@ -105,3 +109,27 @@ def test_fixture_pack_generator_writes_a_complete_manifest(tmp_path: Path) -> No
     changed_manifest = json.loads(changed_manifest_path.read_text(encoding="utf-8"))
     assert changed_manifest["revision_sizes"] == manifest["revision_sizes"]
     assert changed_manifest["revision_sha256"] != manifest["revision_sha256"]
+
+
+def test_codex_blob_clone_is_reflink_first_and_isolated_on_forced_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source-blob"
+    source.mkdir()
+    source.joinpath("payload").write_bytes(b"immutable blob bytes")
+    fast = tmp_path / "fast"
+    fallback = tmp_path / "fallback"
+
+    assert clone_blob_tree(source, fast) in {"reflink", "copy"}
+    source_bytes = source.joinpath("payload").read_bytes()
+    fast.joinpath("payload").write_bytes(b"fast private mutation")
+    assert source.joinpath("payload").read_bytes() == source_bytes
+
+    def reject_reflink(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, ["cp"])
+
+    monkeypatch.setattr(subprocess, "run", reject_reflink)
+    assert clone_blob_tree(source, fallback) == "copy"
+    fallback.joinpath("payload").write_bytes(b"private mutation")
+    assert source.joinpath("payload").read_bytes() == source_bytes
+    assert not source.joinpath("payload").samefile(fallback / "payload")

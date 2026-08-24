@@ -43,7 +43,6 @@ import hashlib
 import json
 import os
 import resource
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -83,6 +82,7 @@ from tests.infra.whale_fixtures import (
     CodexRevisionChainFixture,
     acquire_codex_revision_chain,
     assert_planner_append_authority,
+    clone_blob_tree,
     copy_sqlite_database,
 )
 
@@ -495,7 +495,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     source_ready_root = tmp_path / "codex-804-source-ready"
     initialize_active_archive_root(source_ready_root)
     copy_sqlite_database(root / "source.db", source_ready_root / "source.db")
-    shutil.copytree(root / "blob", source_ready_root / "blob")
+    clone_blob_tree(root / "blob", source_ready_root / "blob")
     with sqlite3.connect(source_ready_root / "source.db") as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
     whale_repair = raw_authority.repair_materialization(

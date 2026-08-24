@@ -184,6 +184,80 @@ class SeededArchiveArtifact:
         return self.manifest.facts
 
 
+class ArtifactGcDisposition(str, Enum):
+    """The fail-closed result for one published seeded-artifact directory."""
+
+    REACHABLE = "reachable"
+    GRACE = "grace"
+    STALE = "stale"
+    ACTIVE_LOCK = "active-lock"
+    ACTIVE_LEASE = "active-lease"
+    ACTIVE_WORKTREE = "active-worktree"
+    CORRUPT = "corrupt"
+    DELETED = "deleted"
+    DELETION_FAILED = "deletion-failed"
+
+
+@dataclass(frozen=True)
+class ArtifactGcEntry:
+    """Receipt row for a final artifact considered by cache GC."""
+
+    name: str
+    path: str
+    key: str | None
+    manifest_id: str | None
+    size_bytes: int
+    age_seconds: float | None
+    disposition: ArtifactGcDisposition
+    detail: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "path": self.path,
+            "key": self.key,
+            "manifest_id": self.manifest_id,
+            "size_bytes": self.size_bytes,
+            "age_seconds": self.age_seconds,
+            "disposition": self.disposition.value,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class ArtifactGcReport:
+    """Bounded, serializable preview/apply receipt for final-artifact GC."""
+
+    cache_root: Path
+    dry_run: bool
+    grace_period_s: float
+    reachable_keys: tuple[str, ...]
+    entries: tuple[ArtifactGcEntry, ...]
+
+    @property
+    def deleted_bytes(self) -> int:
+        return sum(entry.size_bytes for entry in self.entries if entry.disposition is ArtifactGcDisposition.DELETED)
+
+    @property
+    def reclaimable_bytes(self) -> int:
+        return sum(
+            entry.size_bytes
+            for entry in self.entries
+            if entry.disposition in {ArtifactGcDisposition.STALE, ArtifactGcDisposition.DELETED}
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "cache_root": str(self.cache_root),
+            "dry_run": self.dry_run,
+            "grace_period_s": self.grace_period_s,
+            "reachable_keys": list(self.reachable_keys),
+            "reclaimable_bytes": self.reclaimable_bytes,
+            "deleted_bytes": self.deleted_bytes,
+            "entries": [entry.to_payload() for entry in self.entries],
+        }
+
+
 @dataclass
 class SeededArchiveClone:
     root: Path
@@ -1087,7 +1161,7 @@ def _assert_lock_identity(fd: int, path: Path) -> None:
         raise OSError("lock pathname was replaced while lock was held")
 
 
-def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
+def _open_authenticated_lock(path: Path, *, nonblocking: bool = False, shared: bool = False) -> int:
     """Open and flock a lock inode, rejecting pathname replacement.
 
     A flock authenticates an inode, not a pathname.  Comparing the opened
@@ -1097,7 +1171,7 @@ def _open_authenticated_lock(path: Path, *, nonblocking: bool = False) -> int:
     """
     fd = _open_no_follow(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        operation = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+        operation = (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | (fcntl.LOCK_NB if nonblocking else 0)
         fcntl.flock(fd, operation)
         try:
             _assert_lock_identity(fd, path)
@@ -1362,7 +1436,11 @@ def _remove_tree(path: Path, *, budget: int = _MAX_DELETE_NODES) -> None:
             elif not stat.S_ISREG(info.st_mode):
                 os.unlink(name, dir_fd=directory_fd)
             else:
-                _chmod_at(directory_fd, name, info.st_mode | stat.S_IWUSR)
+                # Unlinking needs a writable parent, not a writable file.
+                # Do not chmod regular files here: a rejected reflink/copy
+                # may contain hardlinks to the immutable source tree, and a
+                # chmod would mutate the source inode before removing the
+                # destination name.
                 os.unlink(name, dir_fd=directory_fd)
     finally:
         for entries in iterators:
@@ -1841,6 +1919,358 @@ def _manifest_binds_to_key(manifest: SeededArchiveManifest, root: Path, key: See
         build_id=manifest.build_id,
     ).to_payload()
     return manifest.receipt == dict(expected_receipt)
+
+
+_SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
+_GC_WORKTREE_MARKERS = (".worktree", ".worktree.lock", ".artifact-worktree.lock")
+_GC_LEASE_MARKERS = (".lease", ".artifact.lease", ".query.lease")
+_GC_CONTROL_MARKERS = frozenset((*_GC_WORKTREE_MARKERS, *_GC_LEASE_MARKERS))
+
+
+def _gc_tree_size(root: Path) -> int:
+    """Measure regular files without following a corrupt link node."""
+    total = 0
+    try:
+        for path in _pinned_paths(root):
+            if _is_regular(path):
+                total += _safe_stat(path).st_size
+    except (OSError, RuntimeError, ValueError):
+        return total
+    return total
+
+
+def _gc_manifest_integrity(root: Path) -> tuple[SeededArchiveManifest | None, int, str | None]:
+    """Check only the authenticated final-tree shape needed before GC.
+
+    Full semantic validation remains the build/query authority. GC does not
+    rebuild or reinterpret an artifact; it merely refuses to delete anything
+    whose self-authenticated manifest or content-addressed file set is not
+    intact.
+    """
+    size = _gc_tree_size(root)
+    try:
+        manifest = _read_manifest(root / "manifest.json")
+        match = _SEEDED_KEY.fullmatch(manifest.key)
+        if match is None or root.name != match.group(1):
+            return manifest, size, "manifest key does not match final path"
+        expected = _manifest_file_entries(manifest.files)
+        expected_paths = {relative for relative, _, _ in expected}
+        actual_paths: set[str] = set()
+        for path in _pinned_paths(root):
+            relative = path.relative_to(root)
+            if relative.parts and relative.parts[0] in _GC_CONTROL_MARKERS:
+                continue
+            if _is_symlink_node(path):
+                return manifest, size, f"symlink node: {relative}"
+            if _is_regular(path) and not _is_reserved_root_file(path, root):
+                actual_paths.add(str(relative))
+        if actual_paths != expected_paths:
+            return manifest, size, "manifest file set does not match final tree"
+        for expected_relative, expected_size, expected_digest in expected:
+            path = root / expected_relative
+            if not _is_regular(path) or _safe_stat(path).st_size != expected_size or _sha256(path) != expected_digest:
+                return manifest, size, f"file digest mismatch: {expected_relative}"
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return None, size, f"unreadable or malformed artifact: {type(exc).__name__}"
+    return manifest, size, None
+
+
+def _try_exclusive_path_lock(path: Path) -> tuple[int | None, bool]:
+    """Return ``(fd, True)`` for an acquired lock, ``(None, False)`` if busy."""
+    try:
+        fd = _open_authenticated_lock(path, nonblocking=True)
+    except BlockingIOError:
+        return None, False
+    except OSError as exc:
+        if getattr(exc, "errno", None) in {11, 13}:
+            return None, False
+        raise
+    return fd, True
+
+
+def _gc_active_marker(root: Path, names: tuple[str, ...]) -> bool:
+    for name in names:
+        marker = root / name
+        if not _safe_exists(marker):
+            continue
+        if name == ".worktree":
+            return True
+        if _is_symlink_node(marker):
+            return True
+        try:
+            fd = _open_no_follow(marker, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return True
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        finally:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    return False
+
+
+def _write_gc_receipt(path: Path, report: ArtifactGcReport) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_private_text(path, json.dumps(report.to_payload(), sort_keys=True, indent=2) + "\n")
+
+
+def gc_seeded_archive_artifacts(
+    *,
+    cache_root: Path,
+    reachable_keys: Iterable[SeededArchiveKey | str],
+    grace_period_s: float = 24 * 60 * 60,
+    now: float | None = None,
+    dry_run: bool = True,
+    protected_worktrees: Iterable[Path] = (),
+    receipt_path: Path | None = None,
+) -> ArtifactGcReport:
+    """Preview or delete unreachable, aged final seeded-artifact trees.
+
+    ``reachable_keys`` is mandatory by design. It is the current workload
+    authority, not a build-id heuristic: a different checkout can publish the
+    same bytes and a current checkout can legitimately reuse an older build.
+    Missing, malformed, or corrupt artifacts are retained and reported. Every
+    destructive decision holds the cache, per-key, and final-root locks for
+    the complete inspect/delete interval, so active builders, query leases,
+    clones, and explicitly protected worktrees remain untouched.
+    """
+    if grace_period_s < 0:
+        raise ValueError("artifact GC grace period must be non-negative")
+    reachable_values = {item.value if isinstance(item, SeededArchiveKey) else str(item) for item in reachable_keys}
+    if any(_SEEDED_KEY.fullmatch(value) is None for value in reachable_values):
+        raise ValueError("artifact GC reachability must use complete seeded archive keys")
+    reachable = tuple(sorted(reachable_values))
+    if not reachable:
+        raise ValueError("artifact GC requires explicit current reachable keys")
+    cache_root = cache_root.expanduser()
+    artifacts_root = cache_root / "artifacts"
+    if not artifacts_root.is_dir():
+        report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, ())
+        if receipt_path is not None:
+            _write_gc_receipt(receipt_path, report)
+        return report
+
+    protected = tuple(path.expanduser().resolve(strict=False) for path in protected_worktrees)
+    current_time = time.time() if now is None else now
+    entries: list[ArtifactGcEntry] = []
+    cache_fd = -1
+    try:
+        cache_fd = _open_pinned_dir(cache_root)
+        try:
+            fcntl.flock(cache_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            report = ArtifactGcReport(
+                cache_root,
+                dry_run,
+                grace_period_s,
+                reachable,
+                (
+                    ArtifactGcEntry(
+                        name="<cache>",
+                        path=str(cache_root),
+                        key=None,
+                        manifest_id=None,
+                        size_bytes=0,
+                        age_seconds=None,
+                        disposition=ArtifactGcDisposition.ACTIVE_LOCK,
+                        detail="cache root is owned by an active builder",
+                    ),
+                ),
+            )
+            if receipt_path is not None:
+                _write_gc_receipt(receipt_path, report)
+            return report
+        candidates = sorted(artifacts_root.iterdir(), key=lambda item: item.name)
+        for root in candidates:
+            if root.name.startswith("."):
+                continue
+            if _is_symlink_node(root) or not root.is_dir():
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        None,
+                        None,
+                        _gc_tree_size(root),
+                        None,
+                        ArtifactGcDisposition.CORRUPT,
+                        "final entry is not a directory",
+                    )
+                )
+                continue
+            manifest, size, corruption = _gc_manifest_integrity(root)
+            key = manifest.key if manifest is not None else None
+            manifest_id = manifest.manifest_id if manifest is not None else None
+            try:
+                age = max(0.0, current_time - max(root.stat().st_mtime, (root / "manifest.json").stat().st_mtime))
+            except OSError:
+                age = None
+            if corruption is not None:
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.CORRUPT, corruption
+                    )
+                )
+                continue
+            assert manifest is not None and key is not None
+            if key in reachable:
+                entries.append(
+                    ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.REACHABLE)
+                )
+                continue
+            try:
+                resolved_root = root.resolve(strict=True)
+            except OSError:
+                resolved_root = root
+            if any(
+                resolved_root == protected_root or protected_root in resolved_root.parents
+                for protected_root in protected
+            ):
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        key,
+                        manifest_id,
+                        size,
+                        age,
+                        ArtifactGcDisposition.ACTIVE_WORKTREE,
+                        "explicitly protected worktree",
+                    )
+                )
+                continue
+            if _gc_active_marker(root, _GC_LEASE_MARKERS):
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        key,
+                        manifest_id,
+                        size,
+                        age,
+                        ArtifactGcDisposition.ACTIVE_LEASE,
+                        "active lease marker",
+                    )
+                )
+                continue
+            if _gc_active_marker(root, _GC_WORKTREE_MARKERS):
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        key,
+                        manifest_id,
+                        size,
+                        age,
+                        ArtifactGcDisposition.ACTIVE_WORKTREE,
+                        "active worktree marker",
+                    )
+                )
+                continue
+            lock_path = cache_root / ".locks" / f"{root.name}.lock"
+            if _is_symlink_node(lock_path):
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        key,
+                        manifest_id,
+                        size,
+                        age,
+                        ArtifactGcDisposition.CORRUPT,
+                        "per-key lock path is a symlink",
+                    )
+                )
+                continue
+            lock_fd, acquired = _try_exclusive_path_lock(lock_path)
+            if not acquired:
+                entries.append(
+                    ArtifactGcEntry(
+                        root.name,
+                        str(root),
+                        key,
+                        manifest_id,
+                        size,
+                        age,
+                        ArtifactGcDisposition.ACTIVE_LOCK,
+                        "per-key build lock is held",
+                    )
+                )
+                continue
+            root_fd = -1
+            try:
+                root_fd = _open_pinned_dir(root)
+                try:
+                    fcntl.flock(root_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    entries.append(
+                        ArtifactGcEntry(
+                            root.name,
+                            str(root),
+                            key,
+                            manifest_id,
+                            size,
+                            age,
+                            ArtifactGcDisposition.ACTIVE_LEASE,
+                            "artifact root is leased",
+                        )
+                    )
+                    continue
+                if age is None or age < grace_period_s:
+                    entries.append(
+                        ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.GRACE)
+                    )
+                elif dry_run:
+                    entries.append(
+                        ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.STALE)
+                    )
+                else:
+                    try:
+                        _remove_tree(root)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        entries.append(
+                            ArtifactGcEntry(
+                                root.name,
+                                str(root),
+                                key,
+                                manifest_id,
+                                size,
+                                age,
+                                ArtifactGcDisposition.DELETION_FAILED,
+                                str(exc),
+                            )
+                        )
+                    else:
+                        for memo_key, artifact in tuple(_VALIDATED_ARTIFACTS.items()):
+                            if artifact.root == root:
+                                _VALIDATED_ARTIFACTS.pop(memo_key, None)
+                        entries.append(
+                            ArtifactGcEntry(
+                                root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.DELETED
+                            )
+                        )
+            finally:
+                if root_fd >= 0:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(root_fd, fcntl.LOCK_UN)
+                    os.close(root_fd)
+                if lock_fd is not None:
+                    with contextlib.suppress(OSError):
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+    finally:
+        if cache_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(cache_fd, fcntl.LOCK_UN)
+            os.close(cache_fd)
+    report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, tuple(entries))
+    if receipt_path is not None:
+        _write_gc_receipt(receipt_path, report)
+    return report
 
 
 _VALIDATED_ARTIFACTS: dict[tuple[str, str], SeededArchiveArtifact] = {}
@@ -2475,6 +2905,47 @@ def _authenticate_clone_copy(
             os.close(clone_manifest_fd)
 
 
+@contextlib.contextmanager
+def _shared_seeded_artifact_read_locks(artifact: SeededArchiveArtifact) -> Iterator[None]:
+    """Hold the cache, per-key, and source-root leases during a clone.
+
+    Lock order is cache root, per-key lock, then final artifact root.  GC
+    acquires the same sequence exclusively, so it cannot unlink the source
+    after validation and before the clone has finished reading it.
+    """
+    cache_root = artifact.root.parent.parent
+    cache_fd = _open_pinned_dir(cache_root)
+    key_fd = -1
+    root_fd = -1
+    try:
+        fcntl.flock(cache_fd, fcntl.LOCK_SH)
+        try:
+            key_fd = _open_authenticated_lock(cache_root / ".locks" / f"{artifact.root.name}.lock", shared=True)
+        except FileNotFoundError:
+            # Keep the small generic symlink-rejection fixture usable. Real
+            # seeded artifacts always have the cache lock domain, and GC
+            # safety for those artifacts uses all three locks above.
+            root_fd = _open_pinned_dir(artifact.root)
+            fcntl.flock(root_fd, fcntl.LOCK_SH)
+            yield
+            return
+        root_fd = _open_pinned_dir(artifact.root)
+        fcntl.flock(root_fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        if root_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(root_fd, fcntl.LOCK_UN)
+            os.close(root_fd)
+        if key_fd >= 0:
+            with contextlib.suppress(OSError):
+                fcntl.flock(key_fd, fcntl.LOCK_UN)
+            os.close(key_fd)
+        with contextlib.suppress(OSError):
+            fcntl.flock(cache_fd, fcntl.LOCK_UN)
+        os.close(cache_fd)
+
+
 def acquire_query_only_seeded_archive(
     artifact: SeededArchiveArtifact,
     key: SeededArchiveKey,
@@ -2501,68 +2972,84 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
     directories remain entirely caller-owned, so closing one clone cannot
     restore modes or release locks belonging to a sibling.
     """
-    _assert_no_symlinks(artifact.root)
-    disk_manifest = _read_manifest(artifact.root / "manifest.json")
-    if disk_manifest != artifact.manifest:
-        raise ValueError("published artifact manifest changed before clone")
-    if _is_symlink_node(destination):
-        _safe_unlink(destination)
-    _remove_tree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    method = "reflink"
-    try:
-        subprocess.run(
-            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    with _shared_seeded_artifact_read_locks(artifact):
+        _assert_no_symlinks(artifact.root)
+        disk_manifest = _read_manifest(artifact.root / "manifest.json")
+        if disk_manifest != artifact.manifest:
+            raise ValueError("published artifact manifest changed before clone")
+        if _is_symlink_node(destination):
+            _safe_unlink(destination)
         _remove_tree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        method = "reflink"
         try:
-            _copy_tree(artifact.root, destination)
+            subprocess.run(
+                ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            _remove_tree(destination)
+            try:
+                _copy_tree(artifact.root, destination)
+            except BaseException:
+                with contextlib.suppress(BaseException):
+                    _remove_tree(destination)
+                raise
+            method = "copy"
+        integrity_fd = -1
+        try:
+            _assert_no_symlinks(destination)
+            # Authenticate inode detachment before chmodding the writable
+            # clone. A hostile hardlink would otherwise receive the write bit
+            # through the destination path and mutate the source inode.
+            _authenticate_clone_copy(
+                artifact,
+                destination,
+                disk_manifest,
+                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+            )
+            for path in _pinned_paths(destination):
+                _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
+            _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
+            bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
+            if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
+                from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+                _safe_unlink(bootstrap_marker)
+                _record_fresh_durable_bootstrap(destination)
+            integrity_fd = _open_pinned_dir(destination)
+            fcntl.flock(integrity_fd, fcntl.LOCK_SH)
+            _authenticate_clone_copy(
+                artifact,
+                destination,
+                disk_manifest,
+                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+            )
         except BaseException:
+            if integrity_fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(integrity_fd)
+            # Cleanup is deliberately best-effort, but never touches the
+            # source tree.  _remove_tree unlinks residue without chmodding
+            # regular files, preserving source modes for hardlink failures.
             with contextlib.suppress(BaseException):
                 _remove_tree(destination)
             raise
-        method = "copy"
-    integrity_fd = -1
-    try:
-        _assert_no_symlinks(destination)
-        for path in _pinned_paths(destination):
-            _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
-        _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-        bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-        if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
-            from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-            _safe_unlink(bootstrap_marker)
-            _record_fresh_durable_bootstrap(destination)
-        integrity_fd = _open_pinned_dir(destination)
-        fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-        _authenticate_clone_copy(
-            artifact,
-            destination,
-            disk_manifest,
-            ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+        return SeededArchiveClone(
+            root=destination,
+            source_manifest_id=disk_manifest.manifest_id,
+            clone_method=method,
+            _integrity_fd=integrity_fd,
         )
-    except BaseException:
-        if integrity_fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(integrity_fd)
-        with contextlib.suppress(BaseException):
-            _remove_tree(destination)
-        raise
-    return SeededArchiveClone(
-        root=destination,
-        source_manifest_id=disk_manifest.manifest_id,
-        clone_method=method,
-        _integrity_fd=integrity_fd,
-    )
 
 
 __all__ = [
+    "ArtifactGcDisposition",
+    "ArtifactGcEntry",
+    "ArtifactGcReport",
     "ImmutableTreeArtifact",
     "BENCHMARK_WORKLOAD_PROFILES",
     "BenchmarkWorkloadProfile",
@@ -2587,6 +3074,7 @@ __all__ = [
     "c03_semantic_corpus_spec",
     "clone_seeded_archive",
     "default_cache_root",
+    "gc_seeded_archive_artifacts",
     "named_corpus_specs",
     "named_workload_profile",
     "schema_coverage_corpus_specs",

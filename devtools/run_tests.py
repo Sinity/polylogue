@@ -46,6 +46,7 @@ from devtools.verify_runs import (
     configured_pytest_worker_request,
     env_for_pytest_step,
     git_head,
+    prune_successful_verify_runs,
     pytest_command_worker_request,
 )
 
@@ -412,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
         final_git_head=git_head(ROOT),
     )
     append_verify_history(payload)
+    prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     # The artifact-path footer is reference material, not a result. Printing six

@@ -515,9 +515,12 @@ Adding a devtools command: add a `CommandSpec` to `devtools/command_catalog.py`,
 implement in `devtools/<name>.py`, run `devtools render devtools-reference`.
 
 Local state: `.cache/` (disposable) and `.local/` (untracked outputs). Keep new
-outputs there, not new top-level roots. Verification receipts under
-`.cache/verify/runs` are retained indefinitely as durable local evidence; do
-not prune them automatically or delete them merely for age or count.
+outputs there, not new top-level roots. `.cache/verify/history.jsonl` is the
+append-only authority for terminal verification summaries. Detailed run trees
+under `.cache/verify/runs` are bounded automatically after that summary is
+fsynced: keep the newest eight successes and, for failures, the newest run plus
+up to twelve recent runs within seven days and 64 MiB. Malformed or unsafe
+trees are retained for manual inspection.
 
 ---
 

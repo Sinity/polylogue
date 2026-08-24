@@ -9,10 +9,12 @@ scope.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 import uuid
@@ -29,6 +31,23 @@ CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
+SUCCESSFUL_VERIFY_DETAIL_LIMIT = 8
+FAILED_VERIFY_DETAIL_LIMIT = 12
+FAILED_VERIFY_DETAIL_MAX_AGE_S = 7 * 24 * 60 * 60
+FAILED_VERIFY_DETAIL_MAX_BYTES = 64 * 1024 * 1024
+_RETENTION_LOCK_NAME = ".retention.lock"
+_DETAIL_NODE_BUDGET = 100_000
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+@dataclass
+class _NodeBudget:
+    remaining: int
+
+    def consume(self) -> bool:
+        self.remaining -= 1
+        return self.remaining >= 0
 
 
 def utc_now() -> str:
@@ -41,11 +60,105 @@ def make_run_id(*, tier: str) -> str:
     return f"{stamp}-{safe_tier}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+def _absolute_path(path: Path) -> Path:
+    """Make a lexical absolute path without resolving any symlink."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _open_pinned_dir(path: Path) -> int:
+    """Open every directory component with O_NOFOLLOW."""
+    absolute = _absolute_path(path)
+    parts = tuple(part for part in absolute.parts if part not in ("", os.sep))
+    fd = os.open(os.sep, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+    try:
+        for part in parts:
+            next_fd = os.open(part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _mkdir_pinned(path: Path, mode: int = 0o700) -> None:
+    """Create directory components without following an existing symlink."""
+    absolute = _absolute_path(path)
+    parts = tuple(part for part in absolute.parts if part not in ("", os.sep))
+    fd = os.open(os.sep, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+    try:
+        for part in parts:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, mode, dir_fd=fd)
+            next_fd = os.open(part, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = _open_pinned_dir(path)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _open_retention_lock(verify_dir: Path, *, nonblocking: bool) -> int | None:
+    directory_fd = _open_pinned_dir(verify_dir)
+    try:
+        fd = os.open(
+            _RETENTION_LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | _O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+    except BaseException:
+        os.close(directory_fd)
+        raise
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+    except BlockingIOError:
+        os.close(fd)
+        os.close(directory_fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        os.close(directory_fd)
+        raise
+    try:
+        named = os.stat(_RETENTION_LOCK_NAME, dir_fd=directory_fd, follow_symlinks=False)
+        opened = os.fstat(fd)
+        if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+            raise OSError("verification retention lock pathname was replaced while locked")
+    except BaseException:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        raise
+    finally:
+        os.close(directory_fd)
+    return fd
+
+
+def _close_retention_lock(fd: int) -> None:
+    with contextlib.suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     temporary.replace(path)
+    _fsync_directory(path.parent)
 
 
 def _read_only_git_env() -> dict[str, str]:
@@ -368,7 +481,304 @@ def configured_pytest_worker_request(env: Mapping[str, str]) -> int | None:
         return None
 
 
+def _read_json_pinned(path: Path) -> dict[str, Any]:
+    parent_fd = _open_pinned_dir(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError, TypeError):
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_history_pinned(path: Path) -> list[dict[str, Any]]:
+    parent_fd = _open_pinned_dir(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            rows: list[dict[str, Any]] = []
+            for line in handle:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    rows.append(payload)
+            return rows
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
+
+
+def _tree_size_without_links(root: Path, *, budget: _NodeBudget | None = None, depth: int = 0) -> tuple[int, bool]:
+    """Measure a run tree while treating links and special nodes as corrupt."""
+    budget = budget or _NodeBudget(_DETAIL_NODE_BUDGET)
+    if depth > 256:
+        return 0, False
+    total = 0
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not budget.consume():
+                    return total, False
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    return total, False
+                if stat.S_ISDIR(info.st_mode):
+                    nested, safe = _tree_size_without_links(Path(entry.path), budget=budget, depth=depth + 1)
+                    total += nested
+                    if not safe:
+                        return total, False
+                elif stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                else:
+                    return total, False
+    except OSError:
+        return total, False
+    return total, True
+
+
+def _remove_tree_at(parent_fd: int, name: str, *, budget: _NodeBudget | None = None) -> None:
+    """Remove one run directory through pinned descriptors only."""
+    budget = budget or _NodeBudget(_DETAIL_NODE_BUDGET)
+    if not budget.consume():
+        raise RuntimeError("verification detail deletion exceeded bounded node budget")
+    info = os.lstat(name, dir_fd=parent_fd)
+    if stat.S_ISLNK(info.st_mode):
+        raise OSError("refusing to delete a symlinked verification detail tree")
+    if not stat.S_ISDIR(info.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    child_fd = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        with os.scandir(child_fd) as entries:
+            for entry in entries:
+                if not budget.consume():
+                    raise RuntimeError("verification detail deletion exceeded bounded node budget")
+                child_info = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(child_info.st_mode):
+                    raise OSError("refusing to traverse a symlinked verification detail node")
+                if stat.S_ISDIR(child_info.st_mode):
+                    _remove_tree_at(child_fd, entry.name, budget=budget)
+                elif stat.S_ISREG(child_info.st_mode):
+                    os.unlink(entry.name, dir_fd=child_fd)
+                else:
+                    raise OSError("refusing to delete an unsupported verification detail node")
+        os.fchmod(child_fd, os.fstat(child_fd).st_mode | stat.S_IWUSR)
+    finally:
+        os.close(child_fd)
+    os.fchmod(parent_fd, os.fstat(parent_fd).st_mode | stat.S_IWUSR)
+    os.rmdir(name, dir_fd=parent_fd)
+
+
+def _history_path_for_root(root: Path, history_path: Path | None) -> tuple[Path, Path]:
+    root = _absolute_path(root)
+    history = _absolute_path(
+        history_path
+        if history_path is not None and history_path.is_absolute()
+        else root / (history_path or VERIFY_HISTORY_PATH)
+    )
+    try:
+        history.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("verification history must remain inside the repository root") from exc
+    return root, history
+
+
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+    path = _absolute_path(path)
+    _mkdir_pinned(path.parent)
+    lock_fd = _open_retention_lock(path.parent, nonblocking=False)
+    if lock_fd is None:
+        raise RuntimeError("verification retention lock is busy")
+    parent_fd = _open_pinned_dir(path.parent)
+    try:
+        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        try:
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            # The history record is the authority that permits detail
+            # pruning. Persist its directory entry before returning to the
+            # caller that immediately starts pruning.
+            os.fsync(parent_fd)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+    finally:
+        os.close(parent_fd)
+        _close_retention_lock(lock_fd)
+
+
+def prune_successful_verify_runs(
+    *,
+    root: Path,
+    history_path: Path | None = None,
+    max_successful: int = SUCCESSFUL_VERIFY_DETAIL_LIMIT,
+    max_failed: int = FAILED_VERIFY_DETAIL_LIMIT,
+    max_failed_age_s: float = FAILED_VERIFY_DETAIL_MAX_AGE_S,
+    max_failed_bytes: int = FAILED_VERIFY_DETAIL_MAX_BYTES,
+    now: float | None = None,
+) -> dict[str, object]:
+    """Bound terminal verification detail after history is durably appended.
+
+    Successful details retain the newest ``max_successful`` runs. Failed,
+    cancelled, and crashed details retain the newest run unconditionally, then
+    at most ``max_failed`` recent runs within ``max_failed_age_s`` and
+    ``max_failed_bytes``. The newest failure is the explicit exception to the
+    byte, age, and count caps so a single run cannot erase the only diagnostic
+    evidence. The append-only history remains the compact structured summary.
+    Any symlink, malformed receipt, unsafe path, or active retention lock
+    causes pruning to retain the affected evidence and report the refusal.
+    """
+    if max_successful < 0 or max_failed < 0 or max_failed_age_s < 0 or max_failed_bytes < 0:
+        raise ValueError("successful verify detail limit must be non-negative")
+    try:
+        root, resolved_history = _history_path_for_root(root, history_path)
+        root_fd = _open_pinned_dir(root)
+        verify_dir = root / VERIFY_CACHE
+        verify_fd = _open_pinned_dir(verify_dir)
+        runs_root = root / VERIFY_RUNS_DIR
+        runs_fd = _open_pinned_dir(runs_root)
+    except (OSError, ValueError) as exc:
+        return {
+            "retained_run_ids": [],
+            "retained_failure_run_ids": [],
+            "pruned_run_ids": [],
+            "history_durable": False,
+            "refused": True,
+            "reason": str(exc),
+        }
+    lock_fd = _open_retention_lock(verify_dir, nonblocking=True)
+    if lock_fd is None:
+        for fd in (runs_fd, verify_fd, root_fd):
+            os.close(fd)
+        return {
+            "retained_run_ids": [],
+            "retained_failure_run_ids": [],
+            "pruned_run_ids": [],
+            "history_durable": False,
+            "retention_locked": True,
+        }
+    try:
+        try:
+            history_rows = _read_history_pinned(resolved_history)
+        except (OSError, ValueError):
+            return {
+                "retained_run_ids": [],
+                "retained_failure_run_ids": [],
+                "pruned_run_ids": [],
+                "history_durable": False,
+                "refused": True,
+            }
+        durable: dict[str, dict[str, Any]] = {}
+        for row in history_rows:
+            run_id = row.get("run_id")
+            if isinstance(run_id, str) and row.get("status") != "running":
+                durable[run_id] = row
+
+        candidates: list[dict[str, Any]] = []
+        with os.scandir(runs_fd) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                    continue
+                run_dir = runs_root / entry.name
+                try:
+                    payload = _read_json_pinned(run_dir / "run.json")
+                except (OSError, ValueError):
+                    # A malformed or hostile detail tree is evidence, not a
+                    # pruning candidate.
+                    continue
+                run_id = payload.get("run_id")
+                history = durable.get(run_id) if isinstance(run_id, str) else None
+                if (
+                    not isinstance(run_id, str)
+                    or entry.name != run_id
+                    or history is None
+                    or payload.get("status") != history.get("status")
+                ):
+                    continue
+                finished_at = payload.get("finished_at")
+                try:
+                    finished_epoch = datetime.fromisoformat(str(finished_at).replace("Z", "+00:00")).timestamp()
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                size, safe = _tree_size_without_links(run_dir)
+                if not safe:
+                    continue
+                candidates.append(
+                    {
+                        "run_id": run_id,
+                        "status": payload.get("status"),
+                        "finished_at": str(finished_at),
+                        "finished_epoch": finished_epoch,
+                        "size": size,
+                        "name": entry.name,
+                    }
+                )
+
+        successes = sorted(
+            (candidate for candidate in candidates if candidate["status"] == "success"),
+            key=lambda item: (item["finished_at"], item["run_id"]),
+            reverse=True,
+        )
+        failures = sorted(
+            (candidate for candidate in candidates if candidate["status"] != "success"),
+            key=lambda item: (item["finished_at"], item["run_id"]),
+            reverse=True,
+        )
+        retained = [candidate["run_id"] for candidate in successes[:max_successful]]
+        retained_failures: list[str] = []
+        keep_failure_names: set[str] = set()
+        if failures:
+            newest = failures[0]
+            retained_failures.append(newest["run_id"])
+            keep_failure_names.add(newest["name"])
+            used_bytes = newest["size"]
+            current_time = time.time() if now is None else now
+            for candidate in failures[1:]:
+                if len(retained_failures) >= max_failed:
+                    continue
+                if current_time - candidate["finished_epoch"] > max_failed_age_s:
+                    continue
+                if used_bytes + candidate["size"] > max_failed_bytes:
+                    continue
+                retained_failures.append(candidate["run_id"])
+                keep_failure_names.add(candidate["name"])
+                used_bytes += candidate["size"]
+
+        keep_names = {candidate["name"] for candidate in successes[:max_successful]} | keep_failure_names
+        pruned: list[str] = []
+        for candidate in candidates:
+            if candidate["name"] in keep_names:
+                continue
+            try:
+                _remove_tree_at(runs_fd, candidate["name"])
+            except (OSError, RuntimeError, ValueError):
+                continue
+            pruned.append(candidate["run_id"])
+        if pruned:
+            os.fsync(runs_fd)
+        return {
+            "retained_run_ids": retained,
+            "retained_failure_run_ids": retained_failures,
+            "pruned_run_ids": pruned,
+            "history_durable": True,
+            "retention_locked": False,
+        }
+    finally:
+        _close_retention_lock(lock_fd)
+        for fd in (runs_fd, verify_fd, root_fd):
+            os.close(fd)
