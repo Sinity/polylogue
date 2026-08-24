@@ -74,6 +74,36 @@ class _RawRevisionAuthorityUnavailableError(RawRetentionSafetyError):
     """Raised when source-tier authority cannot be read, not when it is invalid."""
 
 
+# Row surfaces whose own ``blob_hash`` column is a first-class reference to the
+# CAS payload, independent of the ``blob_refs`` ledger. Retention cleanup must
+# consult these directly: on the live archive 399 raw payload hashes carry no
+# ledger row at all, so a ledger-only liveness test would read them as dead.
+_BLOB_HASH_ROW_SURFACES: tuple[str, ...] = ("raw_sessions", "attachments", "raw_hook_events")
+
+
+def _blob_hash_still_referenced(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
+    """Return True if any surviving row still points at this CAS payload.
+
+    Blobs are content-addressed, so two raw snapshots of identical bytes share
+    one file. Deleting one snapshot's row must not unlink bytes another row
+    still names. The ``blob_refs`` ledger is checked first because it is the
+    intended catalog, but it is not treated as complete: each row surface that
+    carries its own ``blob_hash`` column is checked too, so a missing ledger
+    row cannot become evidence of death.
+    """
+    if (
+        _column_exists(conn, "blob_refs", "blob_hash")
+        and conn.execute("SELECT 1 FROM blob_refs WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
+    ):
+        return True
+    for table in _BLOB_HASH_ROW_SURFACES:
+        if not _table_exists(conn, table) or not _column_exists(conn, table, "blob_hash"):
+            continue
+        if conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone():
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class RawSnapshotCleanupCandidate:
     raw_id: str
@@ -2162,7 +2192,7 @@ def cleanup_superseded_raw_snapshots(
             except ValueError as exc:
                 errors.append(str(exc))
                 continue
-            if conn.execute("SELECT 1 FROM blob_refs WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone():
+            if _blob_hash_still_referenced(conn, blob_hash):
                 continue
         else:
             # Without a reference catalog, row cleanup cannot prove that this

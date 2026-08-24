@@ -469,3 +469,53 @@ def test_census_orphaned_blob_refs_counts_by_ref_type(tmp_path: Path) -> None:
             "schema_unavailable_count": 0,
             "deferred_by_ref_type": {},
         }
+
+
+def test_gc_retains_a_raw_payload_named_only_by_the_raw_row_hash(tmp_path: Path) -> None:
+    """A raw payload stays protected when the ledger has no row for it.
+
+    Liveness must not depend on ``blob_refs`` being complete. On the live
+    archive 399 raw payload hashes (~1 GB of irreplaceable acquired bytes)
+    carry no ledger row of any type, so a ledger-only test would read them as
+    collectable. Removing the ``raw_sessions`` branch from
+    ``_archive_reference_surfaces`` makes the retention assertion below fail.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    blob_store = BlobStore(archive_root / "blob")
+    blob_store.write_from_bytes(b"ledgerless raw payload")
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/ledgerless.jsonl",
+            source_index=0,
+            native_id="raw-ledgerless",
+            payload=b"ledgerless raw payload",
+            acquired_at_ms=1,
+        )
+        raw_hash = bytes(
+            conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        ).hex()
+        # Drop the ledger row, leaving raw_sessions.blob_hash as the only
+        # reference -- the shape measured on the live archive.
+        conn.execute("DELETE FROM blob_refs WHERE ref_id = ?", (raw_id,))
+        assert (
+            conn.execute("SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (bytes.fromhex(raw_hash),)).fetchone()[0]
+            == 0
+        )
+
+    _backdate(blob_store, raw_hash)
+
+    assert run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10) == 0
+    assert blob_store.exists(raw_hash)
+
+    # Once the raw row itself is gone, nothing names the payload and GC may
+    # reclaim it -- so the assertion above is about the raw-row surface, not a
+    # blanket refusal to collect.
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+
+    assert run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10) == 1
+    assert not blob_store.exists(raw_hash)
