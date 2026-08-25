@@ -50,9 +50,101 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "The run was interrupted before finishing, so its result is not a verdict on the suite.",
         "Re-run. If it was interrupted mid-bootstrap, the graph is retained and the next run resumes from it.",
     ),
+    "pytest_report_incomplete": Explanation(
+        "Pytest selected tests but did not record a terminal result for each one.",
+        "Re-run the same selection; do not treat this receipt as a test verdict.",
+    ),
+    "pytest_collection_only": Explanation(
+        "Pytest collected tests without running them.",
+        "Re-run without --collect-only to execute the selected tests.",
+    ),
+    "pytest_no_tests_selected": Explanation(
+        "Pytest's selection matched no tests.",
+        "Use a selector that matches at least one test.",
+    ),
+    "gate_missing_executable": Explanation(
+        "A required gate executable was unavailable.",
+        "Install it or make it available on PATH, then re-run the gate.",
+    ),
+    "gate_missing_input": Explanation(
+        "A required gate input was missing.",
+        "Restore the input named in the gate details, then re-run the gate.",
+    ),
+    "gate_unreadable_input": Explanation(
+        "A required gate input could not be read.",
+        "Make the input named in the gate details readable, then re-run the gate.",
+    ),
+    "gate_semantic_violation": Explanation(
+        "An import violates a package boundary declared by the layering policy.",
+        "Read the detailed layering finding and fix the offending import. If the boundary is intentional, have the normal layering-policy owner deliberately update the tracked declaration or baseline through its review process; do not baseline an accidental violation.",
+    ),
+    "not_enforced": Explanation(
+        "This gate was recorded but was not enforced.",
+        "Enable the gate's enforcement option before relying on it as a check.",
+    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
+    ),
+    "render_feeder_failed": Explanation(
+        "A declared documentation feeder returned a nonzero result, so the site was not assembled.",
+        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
+    ),
+    "render_feeder_exception": Explanation(
+        "A declared documentation feeder raised an exception before it completed.",
+        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
+    ),
+    "render_feeder_system_exit": Explanation(
+        "A declared documentation feeder terminated through its command boundary.",
+        "Read the feeder message, then run that feeder and devtools render pages again.",
+    ),
+    "render_feeder_invalid_result": Explanation(
+        "A declared documentation feeder returned a non-integer result, so the site was not assembled.",
+        "Fix the feeder renderer to return an integer status, then run devtools render pages again.",
+    ),
+    "render_pages_build_exception": Explanation(
+        "The documentation site could not be assembled because its page build raised an exception.",
+        "Read the recorded build error, fix the pages builder input or code, then run devtools render pages again.",
+    ),
+    "render_pagefind_failed": Explanation(
+        "The declared Pagefind search-index output was not generated.",
+        "Install or repair Pagefind, then run devtools render pages again.",
+    ),
+    "render_input_missing": Explanation(
+        "A declared render input is missing, so freshness cannot be established.",
+        "Restore the declared input named in the render details, then run devtools render all again.",
+    ),
+    "render_input_unreadable": Explanation(
+        "A declared render input could not be read, so freshness cannot be established.",
+        "Make the declared input readable, then run devtools render all again.",
+    ),
+    "render_input_invalid": Explanation(
+        "A declared render input path or pattern is invalid.",
+        "Fix the declared input path or pattern, then run devtools render all again.",
+    ),
+    "render_surface_exception": Explanation(
+        "A generated surface raised an exception instead of producing its output.",
+        "Read the recorded render details, fix that surface, then run devtools render all again.",
+    ),
+    "render_surface_failed": Explanation(
+        "A generated surface returned a nonzero result, so its output was not accepted.",
+        "Fix the generated surface named in the render output, then run devtools render all again.",
+    ),
+    "render_surface_invalid_result": Explanation(
+        "A generated surface returned a non-integer result, so its output was not accepted.",
+        "Fix the generated surface to return an integer status, then run devtools render all again.",
+    ),
+    "render_surface_system_exit": Explanation(
+        "A generated surface terminated through its command boundary, so its output was not accepted.",
+        "Read the recorded surface message, then run devtools render all again.",
+    ),
+    "render_stamp_write_failed": Explanation(
+        "The generated surface completed but its freshness stamp could not be published.",
+        "Make the cache path writable, then run devtools render all again.",
+    ),
+    "render_stamp_invalidate_failed": Explanation(
+        "An old freshness stamp could not be invalidated before rerendering.",
+        "Make the cache path writable, then run devtools render all again.",
     ),
 }
 
@@ -123,14 +215,6 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):
-        non_green = aggregate.get("non_green_sample") or []
-        count = aggregate.get("non_green_count")
-        if count:
-            print(f"\n{count} non-green test(s):", file=stream)
-            for nodeid in list(non_green)[:15]:
-                print(f"  - {nodeid}", file=stream)
-            if isinstance(count, int) and count > 15:
-                print(f"  ... and {count - 15} more", file=stream)
         selected = aggregate.get("selected_union_count")
         if selected is not None:
             attested = aggregate.get("attested_unchanged_count")

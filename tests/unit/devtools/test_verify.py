@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from devtools import verify
+from devtools import required_gate, verify, verify_runs, why
 from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -27,6 +29,117 @@ def test_quick_steps_are_static_gates() -> None:
     assert "ruff check" in labels
     assert "verify oracle-integrity" in labels
     assert not any(label.startswith("pytest") for label in labels)
+
+
+def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(required_gate.shutil, "which", lambda name, path=None: None if name == "ruff" else "/bin/true")  # type: ignore[attr-defined]
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify._main(["--quick"]) == 127
+    step = history["steps"][0]
+    assert step["diagnosis"] == "gate_missing_executable"
+    assert step["required_gate"]["gate_passed"] is False
+    assert history["diagnosis"] == "gate_missing_executable"
+
+
+def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(required_gate.shutil, "which", lambda *_args, **_kwargs: "/bin/ruff")  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
+    )
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify._main(["--quick"]) == 127
+    assert history["diagnosis"] == "gate_subprocess_launch_failed"
+    assert history["steps"][0]["error"] == "ruff"
+
+
+def test_actual_render_all_diagnosis_reaches_receipt_and_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    checkout = Path(__file__).resolve().parents[3]
+    missing_input = tmp_path / "missing.py"
+    script = f"""
+import sys
+sys.path.insert(0, {str(checkout)!r})
+from devtools import render_all
+
+
+class MissingSurface:
+    name = "cli-reference"
+    inputs = ({str(missing_input)!r},)
+
+    @staticmethod
+    def main(_argv):
+        return 0
+
+
+render_all.GENERATED_SURFACES = (MissingSurface(),)
+raise SystemExit(render_all.main())
+"""
+    command = [
+        sys.executable,
+        "-c",
+        f"exec({script!r})",
+    ]
+
+    exit_code, elapsed, metadata = verify._run("render all", command, run=run)
+
+    assert exit_code == 1
+    assert metadata["diagnosis"] == "render_input_missing"
+    output = (tmp_path / str(metadata["output_path"])).read_text(encoding="utf-8")
+    assert "diagnosis: render_input_missing " in output
+    assert "render_input_missing;" not in output
+
+    payload = run.finish(exit_code=exit_code, duration_s=elapsed, diagnosis=metadata["diagnosis"])
+    assert payload["steps"][0]["diagnosis"] == "render_input_missing"
+    stream = io.StringIO()
+    why._render(payload, stream)
+    rendered = stream.getvalue()
+    assert "diagnosis: render_input_missing" in rendered
+    assert "Restore the declared input" in rendered
+
+
+def test_early_gate_failure_exit_is_authoritative() -> None:
+    result = verify._early_gate_failure_result(0.0, {"exit": 0, "diagnosis": "gate_missing_executable"})
+
+    assert result["exit"] == 127
+
+
+def test_finish_step_does_not_retry_unavailable_pytest_statistics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mutation: retrying the same unavailable evidence reader repeats an input failure."""
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    calls = 0
+
+    def unavailable(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise OSError("synthetic unavailable report")
+
+    monkeypatch.setattr(verify_runs, "aggregate_pytest_statistics", unavailable)
+
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": 1, "duration_s": 0.1})
+
+    assert result is not None
+    assert calls == 1
+    assert "statistics" not in result
 
 
 def test_native_selection_partitions_semantic_lanes() -> None:
@@ -77,6 +190,25 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     assert statistics["selected_count"] == 2
     assert statistics["event_count"] == 1
     assert result["scratch_metrics"]["high_water_usage"]["apparent_bytes"] == 128
+
+
+def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "scratch_root_from_environment", lambda _env: tmp_path / "scratch")
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(
+        verify,
+        "run_managed_pytest",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0),
+    )
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+
+    exit_code, _elapsed, metadata = verify._run("pytest native serial (affected)", ["pytest"], run=run)
+
+    assert exit_code != 0
+    assert metadata["diagnosis"] == "pytest_no_report"
+    assert metadata["statistics"]["ordinary_eligible"] is False
 
 
 def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from typing import Any
 
 import click
 
+from devtools import system_exit
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -256,8 +257,10 @@ def _dispatch(argv: list[str]) -> int:
         cli(args=argv, prog_name="devtools", standalone_mode=True)
         return 0
     except SystemExit as e:
-        code = e.code
-        return code if isinstance(code, int) else 0
+        translation = system_exit.translate_system_exit(e)
+        if translation.message is not None:
+            print(translation.message, file=sys.stderr)
+        return translation.code
 
 
 def main(argv: list[str] | None = None) -> int:

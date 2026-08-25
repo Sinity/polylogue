@@ -6,7 +6,6 @@ import posixpath
 import re
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -449,6 +448,12 @@ def validate_site_links(site_dir: Path) -> list[BrokenSiteLink]:
     return broken
 
 
+class PagefindError(RuntimeError):
+    """The declared search-index output could not be generated."""
+
+    diagnosis = "render_pagefind_failed"
+
+
 def build_site_with_pagefind(config_path: Path | None = None, output_dir: Path | None = None) -> Path:
     site_dir = build_site(config_path=config_path, output_dir=output_dir)
     try:
@@ -457,14 +462,15 @@ def build_site_with_pagefind(config_path: Path | None = None, output_dir: Path |
             capture_output=True,
             check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("Warning: pagefind not available, skipping search index", file=sys.stderr)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise PagefindError(f"diagnosis: {PagefindError.diagnosis}: {exc}") from exc
     return site_dir
 
 
 __all__ = [
     "build_site",
     "build_site_with_pagefind",
+    "PagefindError",
     "load_pages_config",
     "PagesConfig",
     "NavSection",

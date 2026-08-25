@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 import devtools.__main__ as devtools_main
+from devtools import project_motd, system_exit
 from devtools.command_catalog import COMMAND_SPECS, COMMANDS, CommandSpec
+from devtools.generated_surfaces import GeneratedSurface
+
+
+class _UnprintableCode:
+    def __str__(self) -> str:
+        raise RuntimeError("str failed")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
 
 
 def test_list_commands_json_includes_generated_surface(capsys: pytest.CaptureFixture[str]) -> None:
@@ -106,6 +118,128 @@ def test_default_command_group_forwards_verify_flags(monkeypatch: pytest.MonkeyP
 
     assert devtools_main.main(["verify", "--quick"]) == 0
     assert captured == [["--quick"]]
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [(None, 1), (False, 1), (True, 1), (0, 0), (-7, -7), (7, 7)],
+)
+def test_system_exit_codes_keep_python_cli_semantics(
+    monkeypatch: pytest.MonkeyPatch, code: object, expected: int
+) -> None:
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(code)
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == expected
+
+
+@pytest.mark.parametrize("code", ["", "0", 0.0, "command failed", object(), _UnprintableCode()])
+def test_non_integer_system_exit_fails_closed_and_preserves_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], code: object
+) -> None:
+    """Anti-vacuity: removing the dispatch translation makes this return 0 and lose the message."""
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_message_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(code)
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    if isinstance(code, _UnprintableCode):
+        assert captured.err == "<unprintable SystemExit code>\n"
+    else:
+        assert captured.err == f"{code}\n"
+
+
+def test_non_integer_system_exit_message_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = "x" * 5000
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_bounded_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(payload)
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ("x" * 253) + "...\n"
+
+
+def test_click_dispatch_and_project_motd_delegate_to_shared_system_exit_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[SystemExit] = []
+
+    def fake_translate(exc: SystemExit) -> system_exit.SystemExitTranslation:
+        calls.append(exc)
+        return system_exit.SystemExitTranslation(code=1)
+
+    monkeypatch.setattr(system_exit, "translate_system_exit", fake_translate)
+
+    fake_module = ModuleType("_polylogue_devtools_test_shared_system_exit_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit("click route")
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    def surface_main(_argv: list[str] | None) -> int:
+        raise SystemExit("motd route")
+
+    surface = GeneratedSurface("fake", "Fake", "test", (), surface_main)
+    assert devtools_main.main(["status"]) == 1
+    assert project_motd.run_check(tmp_path, surface) == "stale"
+    assert [exc.code for exc in calls] == ["click route", "motd route"]
+
+
+def test_why_unreadable_receipt_fails_through_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools import why
+
+    run_json = tmp_path / "run" / "run.json"
+    run_json.parent.mkdir()
+    run_json.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(why, "VERIFY_RUNS_DIR", tmp_path)
+
+    assert devtools_main.main(["why"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"why: cannot read {run_json}" in captured.err
 
 
 def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:

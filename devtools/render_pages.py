@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools import system_exit
 
 ROOT = _get_root()
 
@@ -65,7 +66,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _run_render_commands(verbose: bool = False) -> None:
+def _run_render_commands(verbose: bool = False) -> int:
     """Run feeder render-* commands to generate reference docs."""
     from devtools import (
         render_cli_reference,
@@ -83,11 +84,29 @@ def _run_render_commands(verbose: bool = False) -> None:
             print(f"  Running: devtools {name}", file=sys.stderr)
         try:
             result = render([])
+        except SystemExit as exc:
+            translation = system_exit.translate_system_exit(exc)
+            if translation.message is not None:
+                print(f"  {translation.message}", file=sys.stderr)
+            print(f"  Error: devtools {name} failed; diagnosis: render_feeder_system_exit", file=sys.stderr)
+            return translation.code or 1
         except Exception as exc:
-            print(f"  Warning: devtools {name} failed: {exc}", file=sys.stderr)
-            continue
+            print(f"  Error: devtools {name} failed; diagnosis: render_feeder_exception: {exc}", file=sys.stderr)
+            return 1
+        if type(result) is not int:
+            print(
+                f"  Error: devtools {name} failed; diagnosis: render_feeder_invalid_result: "
+                f"expected int, received {type(result).__name__}",
+                file=sys.stderr,
+            )
+            return 1
         if result != 0:
-            print(f"  Warning: devtools {name} failed with exit code {result}", file=sys.stderr)
+            print(
+                f"  Error: devtools {name} failed; diagnosis: render_feeder_failed (exit {result})",
+                file=sys.stderr,
+            )
+            return result
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -105,7 +124,11 @@ def main(argv: list[str] | None = None) -> int:
             tmp_dir = Path(tmp) / "_site"
             from devtools.pages_builder import build_site, validate_site_links
 
-            build_site(config_path=config_path, output_dir=tmp_dir)
+            try:
+                build_site(config_path=config_path, output_dir=tmp_dir)
+            except Exception as exc:
+                print(f"Error: render pages failed; diagnosis: render_pages_build_exception: {exc}", file=sys.stderr)
+                return 1
             broken_links = validate_site_links(tmp_dir)
             if broken_links:
                 print("Error: generated site has broken local links:", file=sys.stderr)
@@ -121,17 +144,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.verbose:
         print("  Running feeder render commands...", file=sys.stderr)
-    _run_render_commands(verbose=args.verbose)
+    feeder_result = _run_render_commands(verbose=args.verbose)
+    if feeder_result != 0:
+        return feeder_result
 
     if args.verbose:
         print("  Assembling pages...", file=sys.stderr)
 
     from devtools.pages_builder import build_site, build_site_with_pagefind
 
-    if args.skip_pagefind:
-        build_site(config_path=config_path, output_dir=args.output)
-    else:
-        build_site_with_pagefind(config_path=config_path, output_dir=args.output)
+    try:
+        if args.skip_pagefind:
+            build_site(config_path=config_path, output_dir=args.output)
+        else:
+            build_site_with_pagefind(config_path=config_path, output_dir=args.output)
+    except Exception as exc:
+        diagnosis = getattr(exc, "diagnosis", "render_pages_build_exception")
+        print(f"Error: render pages failed; diagnosis: {diagnosis}: {exc}", file=sys.stderr)
+        return 1
 
     print(f"  Site built: {args.output.resolve()}", file=sys.stderr)
 

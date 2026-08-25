@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import sys
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.manifest_models import validate_layering_manifest
+from devtools.required_gate import evidence_gate_result
 from polylogue.core.json import dumps
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 
@@ -130,8 +132,6 @@ def _load_baseline(baseline_path: Path) -> set[tuple[str, str, str]]:
     """
     if not baseline_path.exists():
         return set()
-    import json
-
     with open(baseline_path, encoding="utf-8") as f:
         raw = json.load(f)
     entries: set[tuple[str, str, str]] = set()
@@ -183,12 +183,20 @@ def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, o
     return violations
 
 
-def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str]]:
+def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, set[str]], tuple[str, ...]]:
     imports: dict[str, set[str]] = {}
-    for py_file in package_dir.rglob("*.py"):
+    unreadable: list[str] = []
+    try:
+        candidates = tuple(package_dir.rglob("*.py"))
+    except OSError as exc:
+        return imports, (f"{package_dir.relative_to(repo_root).as_posix()}: {exc}",)
+    for py_file in candidates:
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
+        except (OSError, UnicodeError) as exc:
+            unreadable.append(f"{py_file.relative_to(repo_root).as_posix()}: {exc}")
+            continue
+        except SyntaxError:
             continue
         rel = py_file.relative_to(repo_root).as_posix()
         imports.setdefault(rel, set())
@@ -198,7 +206,7 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str
                     imports[rel].add(alias.name)
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 imports[rel].add(node.module)
-    return imports
+    return imports, tuple(unreadable)
 
 
 def _package_name(value: str) -> str:
@@ -718,6 +726,9 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
+    if rule in {"declared_root_missing", "declared_root_unreadable"}:
+        detail = f" ({violation['detail']})" if "detail" in violation else ""
+        return f"  {violation['file']}: {rule}{detail}"
     if rule.startswith("package_docstring_"):
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
@@ -741,27 +752,85 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _get_root()
     rules_path = repo_root / "docs" / "plans" / "layering.yaml"
 
-    if not rules_path.exists():
-        print(f"error: {rules_path} not found", file=sys.stderr)
+    if not rules_path.is_file():
+        gate = evidence_gate_result(
+            gate="layering",
+            executable=sys.executable,
+            executable_available=True,
+            required_count=1,
+            inspected_count=0,
+            missing_count=1,
+            details=(str(rules_path),),
+        )
+        if args.json:
+            print(dumps({"ok": False, "required_gate": gate.to_payload()}))
+        else:
+            print(f"error: {rules_path} not found", file=sys.stderr)
         return 1
 
-    manifest = _load_manifest(rules_path)
+    try:
+        manifest = _load_manifest(rules_path)
+    except (OSError, UnicodeError) as exc:
+        gate = evidence_gate_result(
+            gate="layering",
+            executable=sys.executable,
+            executable_available=True,
+            required_count=1,
+            inspected_count=0,
+            unreadable_count=1,
+            details=(f"{rules_path}: {exc}",),
+        )
+        if args.json:
+            print(dumps({"ok": False, "required_gate": gate.to_payload()}))
+        else:
+            print(f"error: cannot read {rules_path}: {exc}", file=sys.stderr)
+        return 1
     schema_errors = validate_layering_manifest(manifest, path=str(rules_path))
     if schema_errors:
         if args.json:
-            print(dumps({"ok": False, "schema_errors": schema_errors}, indent=2))
+            gate = evidence_gate_result(
+                gate="layering",
+                executable=sys.executable,
+                executable_available=True,
+                required_count=1,
+                inspected_count=1,
+                error_count=len(schema_errors),
+                details=schema_errors,
+            )
+            print(dumps({"ok": False, "schema_errors": schema_errors, "required_gate": gate.to_payload()}, indent=2))
         else:
             for error in schema_errors:
                 print(f"  ✗ {error}", file=sys.stderr)
         return 1
     rules = _load_rules(rules_path)
+    declared_roots = {str(rule.get("target")) for rule in rules if isinstance(rule.get("target"), str)}
+    writer_modules = _writer_module_policy(manifest)
+    if writer_modules is not None:
+        declared_roots.update(writer_modules.mutation_roots)
+    inspected_count = missing_count = unreadable_count = 0
+    input_details: list[str] = []
+    imports_by_root: dict[str, dict[str, set[str]]] = {}
     violations: list[dict[str, object]] = []
     baselined: list[dict[str, object]] = []
+    for target in sorted(declared_roots):
+        target_dir = repo_root / target
+        if not target_dir.is_dir():
+            missing_count += 1
+            input_details.append(target)
+            violations.append({"file": target, "rule": "declared_root_missing"})
+            continue
+        inspected_count += 1
+        imports, unreadable = _collect_imports(target_dir, repo_root=repo_root)
+        imports_by_root[target] = imports
+        for detail in unreadable:
+            unreadable_count += 1
+            input_details.append(detail)
+            violations.append({"file": detail.split(":", 1)[0], "rule": "declared_root_unreadable", "detail": detail})
 
     for rule in rules:
         target = str(rule["target"])
         target_dir = repo_root / target
-        if not target_dir.exists():
+        if not target_dir.is_dir():
             continue
 
         allow_block = rule.get("allow") or {}
@@ -781,7 +850,7 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(baseline_ref, str):
                 baseline_entries = _load_baseline(repo_root / baseline_ref)
 
-        imports = _collect_imports(target_dir, repo_root=repo_root)
+        imports = imports_by_root[target]
         for file_rel, file_imports in imports.items():
             for imp in file_imports:
                 if not imp.startswith("polylogue"):
@@ -812,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
                             }
                         )
 
-    violations.extend(_collect_writer_module_violations(repo_root, _writer_module_policy(manifest)))
+    violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
     violations.extend(_top_level_package_docstring_violations(repo_root))
 
     baseline_refs: set[str] = set()
@@ -829,6 +898,18 @@ def main(argv: list[str] | None = None) -> int:
     for baseline_ref in baseline_refs:
         stale_baseline_count += len(_load_baseline(repo_root / baseline_ref) - observed)
 
+    gate = evidence_gate_result(
+        gate="layering",
+        executable=sys.executable,
+        executable_available=True,
+        required_count=len(declared_roots),
+        inspected_count=inspected_count,
+        missing_count=missing_count,
+        unreadable_count=unreadable_count,
+        semantic_violation_count=len(violations),
+        details=(*input_details, *(str(item.get("file")) for item in violations[:8])),
+    )
+
     if args.json:
         print(
             dumps(
@@ -837,6 +918,7 @@ def main(argv: list[str] | None = None) -> int:
                     "count": len(violations),
                     "baselined_count": len(baselined),
                     "stale_baseline_count": stale_baseline_count,
+                    "required_gate": gate.to_payload(),
                 }
             )
         )
@@ -852,8 +934,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {stale_baseline_count} baseline entr(y/ies) no longer reproduce -- prune them from the "
                 "baseline file to ratchet the count down"
             )
-
-    return 1 if violations else 0
+    return 1 if violations or not gate.ok else 0
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from devtools.pytest_evidence import evaluate_pytest_evidence
+
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
@@ -294,13 +296,30 @@ class VerifyRun:
         for step in self._payload["steps"]:
             if step.get("step_id") != step_id:
                 continue
-            step.update(result)
-            step["finished_at"] = utc_now()
-            step["status"] = "success" if result.get("exit") == 0 else "failed"
+            finalized = dict(result)
+            statistics: dict[str, Any] | None = None
             if str(step.get("name", "")).startswith("pytest"):
                 step_dir = self.run_dir / "steps" / step_id
                 with contextlib.suppress(OSError, ValueError):
                     statistics = aggregate_pytest_statistics(step_dir, command=step.get("cmd", []), step_result=result)
+                explicit_terminal = result.get("diagnosis") in {
+                    "focused_test_runner_exception",
+                    "pytest_interrupted",
+                    "verification_interrupted",
+                }
+                if statistics is not None:
+                    raw_exit = result.get("exit")
+                    finalized["process_exit"] = raw_exit
+                    if not explicit_terminal and raw_exit == 0 and not statistics.get("ok"):
+                        finalized["exit"] = 5 if statistics.get("diagnosis") == "pytest_no_tests_selected" else 1
+                    if not explicit_terminal:
+                        finalized["diagnosis"] = str(statistics.get("diagnosis") or "pytest_no_evidence")
+            step.update(finalized)
+            step["finished_at"] = utc_now()
+            step["status"] = "success" if finalized.get("exit") == 0 else "failed"
+            if str(step.get("name", "")).startswith("pytest"):
+                step_dir = self.run_dir / "steps" / step_id
+                if statistics is not None:
                     _write_json(step_dir / "statistics.json", statistics)
                     step["statistics"] = statistics
                     step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
@@ -424,14 +443,29 @@ def aggregate_pytest_statistics(
     step_dir: Path, *, command: Sequence[object] = (), step_result: Mapping[str, object] = {}
 ) -> dict[str, Any]:
     report = _read_json(step_dir / PYTEST_CANONICAL_REPORT_NAME)
-    selection = _read_json(step_dir / "selection.json")
-    summary = _read_json(step_dir / "summary.json")
+    selection = _read_json(step_dir / "selection.json") or {}
+    summary = _read_json(step_dir / "summary.json") or {}
     outcomes: dict[str, int] = {}
-    for test in report.get("tests", []):
+    for test in (report or {}).get("tests", []):
         if isinstance(test, Mapping):
             outcome = str(test.get("outcome", "unknown"))
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
     event_path = step_dir / "events.jsonl"
+    worker_events_dir = step_dir / "events"
+    event_count = (
+        merge_worker_events(worker_events_dir, event_path)
+        if worker_events_dir.is_dir() and any(worker_events_dir.glob("*.jsonl"))
+        else len(event_path.read_text(encoding="utf-8", errors="replace").splitlines())
+        if event_path.exists()
+        else 0
+    )
+    event_rows: list[dict[str, Any]] = []
+    if event_path.exists():
+        for line in event_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    event_rows.append(event)
     if not outcomes and event_path.exists():
         for line in event_path.read_text(encoding="utf-8").splitlines():
             with contextlib.suppress(json.JSONDecodeError):
@@ -439,24 +473,34 @@ def aggregate_pytest_statistics(
                 if isinstance(event, dict) and isinstance(event.get("outcome"), str):
                     outcome = event["outcome"]
                     outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    raw_exit = step_result.get("exit")
+    evidence = evaluate_pytest_evidence(
+        report=report,
+        selection=selection,
+        summary=summary,
+        events=event_rows,
+        exit_code=raw_exit if isinstance(raw_exit, int) and not isinstance(raw_exit, bool) else 125,
+        collection_only=any(str(part) == "--collect-only" for part in command),
+    )
+    evidence["outcomes"] = outcomes
     return {
         "command": [str(part) for part in command],
         "exit": step_result.get("exit"),
-        "report_status": "present" if report else "missing",
-        "canonical_report_status": "present" if report else "missing",
-        "outcomes": outcomes,
+        "report_status": "present" if report is not None else "missing",
+        "canonical_report_status": "present" if report is not None else "missing",
         "selected_count": selection.get("selected_count"),
         "deselected_count": selection.get("deselected_count"),
         "summary_exitstatus": summary.get("exitstatus"),
-        "event_count": merge_worker_events(step_dir / "events", event_path),
+        "event_count": event_count,
+        **evidence,
     }
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return None
     return payload if isinstance(payload, dict) else {}
 
 
