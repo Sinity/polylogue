@@ -105,6 +105,7 @@ def test_import_mismatch_remedy_names_the_retained_contract() -> None:
     assert "imports polylogue" in remedy
 
 
+@pytest.mark.uses_real_clock("builds relative history timestamps for the why report")
 def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The question "where did the last N hours go" kept requiring an ad hoc
     DuckDB query against a substrate that materialises on its own cadence and
