@@ -106,6 +106,48 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
     assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "removed")]
 
 
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_gc_mid_batch_unlink_crash_leaves_durable_intent_for_the_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash during unlink leaves a committed generation and exact pending members."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    first_hash, _ = store.write_from_bytes(b"first crash-window member")
+    second_hash, _ = store.write_from_bytes(b"second crash-window member")
+    _backdate(store, first_hash)
+    _backdate(store, second_hash)
+
+    original_unlink = blob_gc._unlink_observed_gc_member
+    calls = 0
+
+    def crash_on_second_unlink(observed: blob_gc._ObservedBlobObject) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("fault during unlink batch")
+        original_unlink(observed)
+
+    monkeypatch.setattr(blob_gc, "_unlink_observed_gc_member", crash_on_second_unlink)
+    with pytest.raises(RuntimeError, match="during unlink batch"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        generation = conn.execute("SELECT generation_id, completed_at_ms FROM gc_generations").fetchone()
+        members = conn.execute(
+            "SELECT hex(blob_hash), outcome FROM gc_generation_members ORDER BY blob_hash"
+        ).fetchall()
+
+    assert generation is not None
+    assert generation[1] is None
+    expected_hashes = sorted((first_hash.upper(), second_hash.upper()))
+    assert members == [(blob_hash, "pending") for blob_hash in expected_hashes]
+    assert not store.exists(expected_hashes[0].lower())
+    assert store.exists(expected_hashes[1].lower())
+    # Anti-vacuity: moving the generation/member commit after the unlink loop
+    # makes this crash leave no durable generation or exact batch denominator.
+
+
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
 def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
