@@ -49,8 +49,10 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import stat
 import time
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -224,6 +226,110 @@ def _namespace_error(blob_root: Path, exc: OSError) -> _BlobNamespaceUnavailable
     return _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} is unavailable or unreadable: {exc}")
 
 
+_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+@dataclass(frozen=True, slots=True)
+class _ObservedBlobObject:
+    """One object observed through an already-bound namespace directory."""
+
+    blob_hash: str
+    size_bytes: int
+    shard_fd: int
+
+    def unlink(self) -> None:
+        """Unlink this exact pathname relative to its observed shard handle."""
+
+        os.unlink(self.blob_hash[2:], dir_fd=self.shard_fd)
+
+
+@dataclass(frozen=True, slots=True)
+class _OpenBlobNamespace:
+    """A marker-validated root descriptor used for one GC member batch."""
+
+    root_fd: int
+    identity: _BlobNamespaceIdentity
+
+    @contextmanager
+    def observe_object(self, blob_hash: str) -> Iterator[_ObservedBlobObject | None]:
+        """Yield a regular object bound to a no-follow shard descriptor, if present."""
+
+        try:
+            shard_fd = os.open(blob_hash[:2], _DIRECTORY_OPEN_FLAGS, dir_fd=self.root_fd)
+        except FileNotFoundError:
+            yield None
+            return
+        except OSError as exc:
+            raise _BlobNamespaceUnavailableError(
+                f"blob namespace shard {blob_hash[:2]} is unavailable or unreadable: {exc}"
+            ) from exc
+        try:
+            try:
+                metadata = os.stat(blob_hash[2:], dir_fd=shard_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                yield None
+                return
+            except OSError as exc:
+                raise _BlobNamespaceUnavailableError(
+                    f"blob object {blob_hash} could not be inspected in its readable namespace: {exc}"
+                ) from exc
+            if not stat.S_ISREG(metadata.st_mode):
+                raise _BlobNamespaceUnavailableError(
+                    f"blob object {blob_hash} is not a regular file in its readable namespace"
+                )
+            yield _ObservedBlobObject(blob_hash=blob_hash, size_bytes=metadata.st_size, shard_fd=shard_fd)
+        finally:
+            os.close(shard_fd)
+
+
+def _read_namespace_marker_from_fd(root_fd: int, blob_root: Path) -> _BlobNamespaceIdentity:
+    """Read the owned marker relative to a no-follow root descriptor."""
+
+    try:
+        marker_fd = os.open(_BLOB_NAMESPACE_MARKER, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+    except FileNotFoundError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} lacks its Polylogue authority marker"
+        ) from exc
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    try:
+        metadata = os.fstat(marker_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise _BlobNamespaceUnavailableError(
+                f"blob namespace at {blob_root} has an invalid Polylogue authority marker"
+            )
+        marker = os.read(marker_fd, 33).decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} has an invalid Polylogue authority marker"
+        ) from exc
+    finally:
+        os.close(marker_fd)
+    if len(marker) != 32 or any(char not in "0123456789abcdef" for char in marker):
+        raise _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} has an invalid Polylogue authority marker")
+    return _BlobNamespaceIdentity(marker=marker)
+
+
+@contextmanager
+def _open_blob_namespace(
+    blob_root: Path, *, namespace_identity: _BlobNamespaceIdentity
+) -> Iterator[_OpenBlobNamespace]:
+    """Bind marker observation and member effects to stable root/shard handles."""
+
+    try:
+        root_fd = os.open(blob_root, _DIRECTORY_OPEN_FLAGS)
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    try:
+        observed = _read_namespace_marker_from_fd(root_fd, blob_root)
+        if observed != namespace_identity:
+            raise _BlobNamespaceUnavailableError("blob namespace authority changed since GC intent was committed")
+        yield _OpenBlobNamespace(root_fd=root_fd, identity=observed)
+    finally:
+        os.close(root_fd)
+
+
 def _read_blob_object(
     blob_root: Path, blob_hash: str, *, namespace_identity: _BlobNamespaceIdentity
 ) -> tuple[int | None, tuple[str, ...]]:
@@ -235,31 +341,13 @@ def _read_blob_object(
     because it does not identify the namespace that the old plan observed.
     """
     try:
-        observed = _blob_namespace_identity(blob_root)
+        with (
+            _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace,
+            namespace.observe_object(blob_hash) as observed,
+        ):
+            return (None if observed is None else observed.size_bytes), ()
     except _BlobNamespaceUnavailableError as exc:
         return None, (str(exc),)
-    if observed != namespace_identity:
-        return None, ("blob namespace authority changed since GC intent was committed",)
-    try:
-        with os.scandir(blob_root) as entries:
-            shard_entry = next((entry for entry in entries if entry.name == blob_hash[:2]), None)
-    except OSError as exc:
-        return None, (str(_namespace_error(blob_root, exc)),)
-    if shard_entry is None:
-        return None, ()
-    if not shard_entry.is_dir(follow_symlinks=False):
-        return None, (f"blob namespace shard {shard_entry.path} is not a readable directory",)
-    try:
-        with os.scandir(shard_entry.path):
-            pass
-    except OSError as exc:
-        return None, (f"blob namespace shard {shard_entry.path} is unavailable or unreadable: {exc}",)
-    try:
-        return _sharded_blob_path(blob_root, blob_hash).stat().st_size, ()
-    except FileNotFoundError:
-        return None, ()
-    except OSError as exc:
-        return None, (f"blob object {blob_hash} could not be inspected in its readable namespace: {exc}",)
 
 
 def _assert_blob_namespace_readable(blob_root: Path) -> None:
@@ -532,6 +620,12 @@ def _final_gc_member_liveness(
     )
 
 
+def _unlink_observed_gc_member(observed: _ObservedBlobObject) -> None:
+    """Production seam between final object observation and its dirfd unlink."""
+
+    observed.unlink()
+
+
 @dataclass(frozen=True, slots=True)
 class _GCProtection:
     """The one typed liveness/reservation decision consumed by GC paths."""
@@ -631,62 +725,65 @@ def _execute_gc_generation_members(
         except Exception as exc:
             report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
             return deleted_now, reclaimed_bytes_now
-        for blob_hash in members:
-            protection = _inspect_gc_protection(
-                source_conn,
-                recheck_index,
-                blob_hash,
-                legacy_hook_stage=legacy_hook_stage,
-                final_recheck=True,
-            )
-            if protection.blockers:
-                report.blocked_reason = "; ".join(protection.blockers)
-                return deleted_now, reclaimed_bytes_now
-            if protection.is_live:
-                staged_outcomes.append(
-                    (blob_hash, "skipped_still_live", "canonical liveness or publication reservation became live")
-                )
-                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
-                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
-                continue
-            freed_bytes, namespace_blockers = _read_blob_object(
-                blob_root, blob_hash, namespace_identity=namespace_identity
-            )
-            if namespace_blockers:
-                report.blocked_reason = "; ".join(namespace_blockers)
-                return deleted_now, reclaimed_bytes_now
-            if freed_bytes is None:
-                # The root and (where present) shard were freshly readable, so
-                # this is a per-object absence rather than namespace loss.
-                staged_outcomes.append((blob_hash, "reconciled_removed", "blob absent in readable namespace"))
-                evidence.skipped_missing += 1
-                continue
-            target = _sharded_blob_path(blob_root, blob_hash)
-            try:
-                target.unlink()
-            except FileNotFoundError:
-                # Re-establish the namespace before attributing a race as a
-                # legitimate object-only disappearance.
-                replacement_size, namespace_blockers = _read_blob_object(
-                    blob_root, blob_hash, namespace_identity=namespace_identity
-                )
-                if namespace_blockers:
-                    report.blocked_reason = "; ".join(namespace_blockers)
-                    return deleted_now, reclaimed_bytes_now
-                if replacement_size is not None:
-                    staged_outcomes.append((blob_hash, "failed", "blob changed during final unlink"))
-                    evidence.skipped_unlink_error += 1
-                    continue
-                staged_outcomes.append((blob_hash, "reconciled_removed", "blob disappeared in readable namespace"))
-                evidence.skipped_missing += 1
-                continue
-            except OSError as exc:
-                staged_outcomes.append((blob_hash, "failed", str(exc)))
-                evidence.skipped_unlink_error += 1
-                continue
-            staged_outcomes.append((blob_hash, "removed", None))
-            deleted_now += 1
-            reclaimed_bytes_now += freed_bytes
+        try:
+            with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
+                for blob_hash in members:
+                    protection = _inspect_gc_protection(
+                        source_conn,
+                        recheck_index,
+                        blob_hash,
+                        legacy_hook_stage=legacy_hook_stage,
+                        final_recheck=True,
+                    )
+                    if protection.blockers:
+                        report.blocked_reason = "; ".join(protection.blockers)
+                        return deleted_now, reclaimed_bytes_now
+                    if protection.is_live:
+                        staged_outcomes.append(
+                            (
+                                blob_hash,
+                                "skipped_still_live",
+                                "canonical liveness or publication reservation became live",
+                            )
+                        )
+                        evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                        evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
+                        continue
+                    with namespace.observe_object(blob_hash) as observed:
+                        if observed is None:
+                            # The root and (where present) shard were freshly readable, so
+                            # this is a per-object absence rather than namespace loss.
+                            staged_outcomes.append(
+                                (blob_hash, "reconciled_removed", "blob absent in readable namespace")
+                            )
+                            evidence.skipped_missing += 1
+                            continue
+                        try:
+                            _unlink_observed_gc_member(observed)
+                        except FileNotFoundError:
+                            # Re-establish absence through the same root descriptor. A
+                            # pathname re-open could otherwise inspect a replacement
+                            # namespace after its root has been swapped.
+                            with namespace.observe_object(blob_hash) as replacement:
+                                if replacement is not None:
+                                    staged_outcomes.append((blob_hash, "failed", "blob changed during final unlink"))
+                                    evidence.skipped_unlink_error += 1
+                                    continue
+                            staged_outcomes.append(
+                                (blob_hash, "reconciled_removed", "blob disappeared in readable namespace")
+                            )
+                            evidence.skipped_missing += 1
+                            continue
+                        except OSError as exc:
+                            staged_outcomes.append((blob_hash, "failed", str(exc)))
+                            evidence.skipped_unlink_error += 1
+                            continue
+                        staged_outcomes.append((blob_hash, "removed", None))
+                        deleted_now += 1
+                        reclaimed_bytes_now += observed.size_bytes
+        except _BlobNamespaceUnavailableError as exc:
+            report.blocked_reason = str(exc)
+            return deleted_now, reclaimed_bytes_now
         for blob_hash, outcome, detail in staged_outcomes:
             _commit_gc_member_outcome(
                 source_conn,
@@ -1247,6 +1344,37 @@ class GCGenerationAdjudication:
     completed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class GCGenerationAbandonmentState:
+    """Exact durable state that an abandonment preview binds to."""
+
+    generation_id: str
+    namespace_marker: str | None
+    pending_member_count: int
+    completed: bool
+
+
+def inspect_gc_generation_abandonment(control_db_path: str | Path, generation_id: str) -> GCGenerationAbandonmentState:
+    """Read one exact generation for a zero-effect abandonment preview."""
+
+    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT blob_namespace_marker, completed_at_ms, "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
+            "FROM gc_generations AS generation WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"blob GC generation does not exist: {generation_id}")
+    return GCGenerationAbandonmentState(
+        generation_id=generation_id,
+        namespace_marker=str(row[0]) if row[0] is not None else None,
+        completed=row[1] is not None,
+        pending_member_count=int(row[2]),
+    )
+
+
 def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingGCGeneration]:
     """List incomplete GC intents without assigning them any new authority."""
 
@@ -1268,10 +1396,10 @@ def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingG
     ]
 
 
-def abandon_pending_gc_generation(
+def _abandon_pending_gc_generation(
     control_db_path: str | Path, generation_id: str, *, confirmed: bool
 ) -> GCGenerationAdjudication:
-    """Terminally abandon one blocked intent without unlinking or rebinding it.
+    """Executor-only primitive that terminalizes one blocked intent without blob effects.
 
     This is deliberately the only recovery action for a namespace that cannot
     prove continuity. A future GC pass creates a new intent from current
@@ -1289,7 +1417,8 @@ def abandon_pending_gc_generation(
         if row is None:
             raise ValueError(f"blob GC generation does not exist: {generation_id}")
         if row[0] is not None:
-            raise ValueError(f"blob GC generation is already terminal: {generation_id}")
+            conn.rollback()
+            return GCGenerationAdjudication(generation_id, 0, True)
         cursor = conn.execute(
             "UPDATE gc_generation_members SET outcome = 'failed', outcome_at_ms = ?, "
             "outcome_detail = 'operator abandoned blocked namespace-bound intent; no unlink performed' "
@@ -1297,9 +1426,18 @@ def abandon_pending_gc_generation(
             (int(time.time() * 1000), generation_id),
         )
         abandoned = cursor.rowcount
+        reclaimed_count, reclaimed_bytes = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(candidate_size_bytes), 0) "
+            "FROM gc_generation_members WHERE generation_id = ? AND outcome = 'removed'",
+            (generation_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE gc_generations SET completed_at_ms = ?, reclaimed_count = ?, reclaimed_bytes = ? "
+            "WHERE generation_id = ? AND completed_at_ms IS NULL",
+            (int(time.time() * 1000), reclaimed_count, reclaimed_bytes, generation_id),
+        )
         conn.commit()
-    completed = _finalize_gc_generation(path, generation_id)
-    return GCGenerationAdjudication(generation_id, abandoned, completed)
+    return GCGenerationAdjudication(generation_id, abandoned, True)
 
 
 def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRow]:
@@ -1418,12 +1556,13 @@ __all__ = [
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCGenerationAdjudication",
+    "GCGenerationAbandonmentState",
     "PendingGCGeneration",
     "GCRunEvidence",
     "OrphanedBlobRefCensus",
-    "abandon_pending_gc_generation",
     "census_orphaned_blob_refs",
     "inspect_blob_liveness",
+    "inspect_gc_generation_abandonment",
     "inspect_pending_gc_generations",
     "read_gc_history",
     "run_blob_gc",

@@ -965,6 +965,35 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
+        name="mutate-abandon-pending-blob-gc-generation",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Terminalize one exact blocked, namespace-bound blob-GC generation through OperationExecutor. "
+            "The offline route requires the daemon stopped, confirm-flag authorization, and a durable audit receipt; "
+            "it never unlinks blobs or rebinds the namespace marker."
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        affected_tiers=("source", "audit"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="pending-blob-gc-generation",
+                target_kinds=("source",),
+                required_capabilities=("archive.blob_gc.abandon_pending_generation",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
+    ),
+    OperationSpec(
         name="mutate-maintenance-target-run",
         kind=OperationKind.MAINTENANCE,
         description=(

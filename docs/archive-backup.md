@@ -132,6 +132,15 @@ Restore expectations:
   active-index attachment ownership. Verification re-hashes restored bytes
   and checks the independent attachment evidence rather than accepting an
   equal file count.
+- The blob namespace authority marker is deliberately excluded from ordinary
+  archive-file-set backups, including `full_evidence`. Those backups copy the
+  source tier and referenced bytes as independently verified artifacts, not
+  one atomic source-plus-namespace unit. Restoring a pending GC intent with a
+  newly created or separately restored blob root must therefore block on the
+  absent or different marker. An operator may terminalize that exact intent
+  through the authorized offline recovery route; it never rebinds the intent.
+  Preserve a marker only in a restore format that proves source.db and the
+  physical namespace were captured and restored as one bound unit.
 
 ## Blob GC Safety Boundary
 
@@ -142,7 +151,10 @@ Blob garbage collection is dry-run-first work. A safe GC report must prove:
 - the candidate is older than the generation/age defense-in-depth gate
   (`MIN_AGE_S`; see `docs/internals.md` "GC concurrency model");
 - a durable intent bound to the observed namespace exists before unlink, and
-  the final source/index liveness and reservation recheck remains clear;
+  the final source/index liveness and reservation recheck remains clear. The
+  final object observation and unlink are performed through no-follow root
+  and shard directory handles so a root swap cannot redirect the effect into
+  a replacement namespace;
 - the report names exact candidate counts and references before deletion.
 
 Do not delete blobs based only on filesystem age, directory mtime, or one

@@ -81,6 +81,50 @@ def test_backup_archive_copy_can_be_opened_and_queried(
     assert message_count == 1
 
 
+def test_full_evidence_backup_does_not_carry_gc_marker_without_bound_namespace(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    """A restored pending intent blocks rather than claiming a new namespace.
+
+    Anti-vacuity: copying the marker as an ordinary blob artifact lets this
+    source-tier intent resume against a separately recreated blob root.
+    """
+    db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    from polylogue.storage import blob_gc
+
+    blob_root = archive_root / "blob"
+    blob_root.mkdir(exist_ok=True)
+    marker = blob_gc._blob_namespace_identity(blob_root, create_marker=True).marker
+    pending_hash = "a" * 64
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, blob_namespace_marker) "
+            "VALUES ('backup-pending', 1, NULL, 0, 0, ?)",
+            (marker,),
+        )
+        conn.execute(
+            "INSERT INTO gc_generation_members "
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES ('backup-pending', ?, 1, 1, 'pending')",
+            (bytes.fromhex(pending_hash),),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert not (backup_root / "blob" / ".polylogue-blob-namespace").exists()
+    report = blob_gc.run_blob_gc_report(backup_root / "source.db", backup_root / "blob")
+    assert report.blocked_reason is not None
+    with sqlite3.connect(backup_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT outcome FROM gc_generation_members WHERE generation_id = 'backup-pending'"
+        ).fetchone() == ("pending",)
+
+
 @pytest.mark.contract
 def test_backup_archive_includes_archive_files(
     workspace_env: dict[str, Path],

@@ -39,6 +39,7 @@ from polylogue.maintenance.replay import rebuild_index_from_source, state_path_f
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.repair import RepairResult
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -947,6 +948,85 @@ def test_blob_gc_cli_has_no_mutate_flag(
     # contract to assert on.
     assert result.exit_code == 2
     assert "--yes" in result.output
+
+
+def test_gc_recover_cli_requires_authority_and_emits_audited_blob_free_abandonment(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    """The adapter cannot write a pending generation before executor authority exists.
+
+    Anti-vacuity: restoring the former direct ``source.db`` call before the
+    ``--yes`` gate terminalizes this exact member despite the rejected CLI
+    request.
+    """
+    archive_root = cli_workspace["archive_root"]
+    store = BlobStore(archive_root / "blob")
+    blob_hash, _ = store.write_from_bytes(b"pending CLI authority")
+    from polylogue.storage import blob_gc
+
+    marker = blob_gc._blob_namespace_identity(store.root, create_marker=True).marker
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, blob_namespace_marker) "
+            "VALUES ('cli-blocked', 1, NULL, 0, 0, ?)",
+            (marker,),
+        )
+        conn.execute(
+            "INSERT INTO gc_generation_members "
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES ('cli-blocked', ?, 1, 1, 'pending')",
+            (bytes.fromhex(blob_hash),),
+        )
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "gc-recover", "--abandon", "cli-blocked"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code != 0
+    assert "--yes is required" in result.output
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT outcome FROM gc_generation_members WHERE generation_id = 'cli-blocked'"
+        ).fetchone() == ("pending",)
+    assert store.exists(blob_hash)
+
+    confirmed = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "gc-recover",
+            "--abandon",
+            "cli-blocked",
+            "--yes",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert confirmed.exit_code == 0, confirmed.output
+    payload = json.loads(confirmed.stdout)
+    assert payload["receipt_ref"] is not None
+    assert payload["adjudication"]["blob_effect"] == "none"
+    assert payload["adjudication"]["namespace_rebound"] is False
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT outcome FROM gc_generation_members WHERE generation_id = 'cli-blocked'"
+        ).fetchone() == ("failed",)
+    assert store.exists(blob_hash)
+    assert blob_gc._blob_namespace_identity(store.root).marker == marker
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-abandon-pending-blob-gc-generation",),
+        ).fetchone() == (1,)
 
 
 def test_blob_publications_cli_requires_confirmation_to_abandon(

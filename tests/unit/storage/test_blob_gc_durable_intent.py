@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -51,18 +50,18 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
     blob_hash, _ = store.write_from_bytes(b"intent before unlink")
     _backdate(store, blob_hash)
 
-    original_unlink = Path.unlink
+    original_unlink = blob_gc._unlink_observed_gc_member
 
-    def assert_intent_then_unlink(path: Path, missing_ok: bool = False) -> None:
+    def assert_intent_then_unlink(observed: blob_gc._ObservedBlobObject) -> None:
         with sqlite3.connect(tmp_path / "source.db") as conn:
             row = conn.execute(
                 "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?",
                 (bytes.fromhex(blob_hash),),
             ).fetchone()
         assert row == ("pending",), "unlink ran before durable exact member intent"
-        original_unlink(path, missing_ok=missing_ok)
+        original_unlink(observed)
 
-    monkeypatch.setattr(Path, "unlink", assert_intent_then_unlink)
+    monkeypatch.setattr(blob_gc, "_unlink_observed_gc_member", assert_intent_then_unlink)
 
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
@@ -221,10 +220,10 @@ def test_pending_member_recovers_after_device_number_change_with_stable_marker(
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
-def test_member_reconciliation_refuses_namespace_swap_after_batch_check(
+def test_member_reconciliation_keeps_the_observed_namespace_after_batch_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every member read revalidates the intent marker after batch admission."""
+    """A swap after descriptor admission cannot redirect an old intent's effect."""
     initialize_active_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"swap after batch validation")
@@ -255,15 +254,62 @@ def test_member_reconciliation_refuses_namespace_swap_after_batch_check(
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", swap_after_batch)
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
-    assert report.deleted_count == 0
-    assert report.blocked_reason == "blob namespace authority changed since GC intent was committed"
-    assert (original_root / blob_hash[:2] / blob_hash[2:]).exists()
+    assert report.deleted_count == 1
+    assert report.blocked_reason is None
+    assert not (original_root / blob_hash[:2] / blob_hash[2:]).exists()
     assert store.exists(blob_hash)
-    assert _member_rows(tmp_path / "source.db")[0][2] == "pending"
+    assert _member_rows(tmp_path / "source.db")[0][2] == "removed"
 
 
-def test_operator_can_abandon_blocked_generation_without_rebinding_or_unlink(tmp_path: Path) -> None:
-    """Recovery terminalizes the exact pending row as failed and leaves bytes alone."""
+@pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
+def test_member_unlink_stays_in_observed_namespace_after_root_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final effect uses the object handle observed before the swap.
+
+    Anti-vacuity: replacing dirfd-relative unlink with ``Path.unlink`` makes
+    the replacement namespace object disappear after this production-seam
+    swap between final object observation and effect.
+    """
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"observed namespace object")
+    _backdate(store, blob_hash)
+    original_unlink = blob_gc._unlink_observed_gc_member
+    observed_root = tmp_path / "observed-namespace"
+
+    def swap_root_after_observation(observed: blob_gc._ObservedBlobObject) -> None:
+        store.root.rename(observed_root)
+        store.root.mkdir()
+        (store.root / ".polylogue-blob-namespace").write_text("e" * 32, encoding="ascii")
+        replacement = store.blob_path(blob_hash)
+        replacement.parent.mkdir()
+        replacement.write_bytes(b"replacement namespace object")
+        original_unlink(observed)
+
+    monkeypatch.setattr(blob_gc, "_unlink_observed_gc_member", swap_root_after_observation)
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert report.deleted_count == 1
+    assert not (observed_root / blob_hash[:2] / blob_hash[2:]).exists()
+    assert store.blob_path(blob_hash).read_bytes() == b"replacement namespace object"
+    assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "removed")]
+
+
+def test_authorized_abandonment_terminalizes_exact_intent_without_blob_effect(tmp_path: Path) -> None:
+    """The mutation authority writes source/audit only, never blob bytes or marker.
+
+    Anti-vacuity: calling the legacy GC execution path from the actuator, or
+    omitting the executor receipt, either unlinks the candidate or leaves no
+    durable audit operation for this exact generation.
+    """
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_actuators import (
+        PendingBlobGCGenerationAbandonActuator,
+        PendingBlobGCGenerationAbandonArgs,
+    )
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+
     initialize_active_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"operator adjudication")
@@ -282,11 +328,41 @@ def test_operator_can_abandon_blocked_generation_without_rebinding_or_unlink(tmp
     assert blob_gc.inspect_pending_gc_generations(tmp_path / "source.db") == [
         blob_gc.PendingGCGeneration("blocked", 1, 1, marker)
     ]
-    result = blob_gc.abandon_pending_gc_generation(tmp_path / "source.db", "blocked", confirmed=True)
-    assert result.abandoned_members == 1
-    assert result.completed is True
+    actuator = PendingBlobGCGenerationAbandonActuator()
+    args = PendingBlobGCGenerationAbandonArgs(tmp_path, "blocked")
+    executor = OperationExecutor.for_archive_root(tmp_path)
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        "user:test",
+        frozenset({"archive.blob_gc.abandon_pending_generation"}),
+        "cli",
+        "test",
+    )
+    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+    receipt = executor.execute_bound(binding, preview, authorization, args)
+
+    assert receipt.affected_count == 1
+    assert receipt.receipt_ref is not None
+    assert receipt.domain_receipt["blob_effect"] == "none"
+    assert receipt.domain_receipt["namespace_rebound"] is False
     assert store.exists(blob_hash)
+    assert blob_gc._blob_namespace_identity(store.root).marker == marker
     assert _member_rows(tmp_path / "source.db") == [("blocked", blob_hash.upper(), "failed")]
+    retry_preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
+    retry_authorization = executor.authorize_bound(
+        binding, retry_preview, principal, confirmation_strength="confirm_flag"
+    )
+    retry = executor.execute_bound(binding, retry_preview, retry_authorization, args)
+    assert retry.status == "already_satisfied"
+    assert retry.affected_count == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-abandon-pending-blob-gc-generation",),
+        ).fetchone() == (2,)
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -391,14 +467,20 @@ def test_pending_member_blocks_on_unreadable_shard_not_object_absence(
         blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
 
-    original_scandir = os.scandir
+    original_open = os.open
 
-    def deny_required_shard(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
-        if Path(path) == store.root / blob_hash[:2]:
+    def deny_required_shard(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == blob_hash[:2] and dir_fd is not None:
             raise PermissionError("simulated unreadable shard")
-        return original_scandir(path)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(os, "scandir", deny_required_shard)
+    monkeypatch.setattr(os, "open", deny_required_shard)
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
     assert report.blocked_reason is not None
