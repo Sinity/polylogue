@@ -32,6 +32,7 @@ from polylogue.storage.raw_byte_duplicate_supersession import plan_byte_duplicat
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.version import POLYLOGUE_VERSION
+from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 from tests.infra.convergence_harness import (
     debt_ledger_row,
     make_messages_fts_stale,
@@ -102,7 +103,7 @@ def _snapshot(corpus: ReindexCampaignCorpus) -> DerivedModelSnapshot:
 def _clone_campaign_corpus(source: ReindexCampaignCorpus, target_root: Path) -> ReindexCampaignCorpus:
     """Clone one converged archive so differential rows retain source identity."""
 
-    shutil.copytree(source.root, target_root)
+    clone_archive_template(source.root, target_root, reject_links=True)
     with sqlite3.connect(target_root / "source.db") as conn:
         conn.execute(
             """
@@ -116,10 +117,26 @@ def _clone_campaign_corpus(source: ReindexCampaignCorpus, target_root: Path) -> 
     return ReindexCampaignCorpus(root=target_root, manifest=source.manifest)
 
 
-def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> None:
+@pytest.fixture(scope="module")
+def reindex_campaign_template(tmp_path_factory: pytest.TempPathFactory) -> ReindexCampaignCorpus:
+    """Build and seal the production-shaped campaign once per worker."""
+    corpus = build_reindex_campaign_corpus(tmp_path_factory.mktemp("reindex-campaign-template") / "archive")
+    finalize_archive_template(corpus.root)
+    return corpus
+
+
+@pytest.fixture
+def reindex_campaign_corpus(reindex_campaign_template: ReindexCampaignCorpus, tmp_path: Path) -> ReindexCampaignCorpus:
+    """Give each mutating test a cheap, detached writable campaign clone."""
+    return _clone_campaign_corpus(reindex_campaign_template, tmp_path / "campaign")
+
+
+def test_reindex_campaign_manifest_has_positive_denominators(
+    reindex_campaign_corpus: ReindexCampaignCorpus,
+) -> None:
     """Every campaign edge class has a real production-ingested witness."""
 
-    corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
+    corpus = reindex_campaign_corpus
     corpus.manifest.assert_positive()
     assert {
         origin for origin, count in corpus.manifest.origin_session_counts if count > 0
@@ -142,7 +159,9 @@ def test_reindex_campaign_manifest_has_positive_denominators(tmp_path: Path) -> 
 # branch -- verified by running them against master in an isolated worktree
 # -- so none is a regression from the work that marked them.
 def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_duplicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reindex_campaign_corpus: ReindexCampaignCorpus,
 ) -> None:
     """Full replay and the canary use inactive generations and never promote.
 
@@ -152,7 +171,7 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
     a fabricated summary instead of the candidate's real read model.
     """
 
-    corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
+    corpus = reindex_campaign_corpus
     root = corpus.root
     schema_inference_receipt = write_valid_rebuild_receipt(
         root,
@@ -320,14 +339,16 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
     assert canary.selection.selected_session_ids
 
 
-def test_antigravity_raw_replay_refuses_missing_authoritative_trajectory(tmp_path: Path) -> None:
+def test_antigravity_raw_replay_refuses_missing_authoritative_trajectory(
+    reindex_campaign_corpus: ReindexCampaignCorpus,
+) -> None:
     """A protobuf raw is replayed through its original language-server source.
 
     Mutation killed: falling through to generic JSON parsing, which used to
     erase the raw membership census and leave a false-clean candidate index.
     """
 
-    corpus = build_reindex_campaign_corpus(tmp_path / "campaign")
+    corpus = reindex_campaign_corpus
     with sqlite3.connect(corpus.root / "source.db") as source_conn:
         raw_id, source_path = source_conn.execute(
             "SELECT raw_id, source_path FROM raw_sessions WHERE origin = 'antigravity-session'"
@@ -342,10 +363,12 @@ def test_antigravity_raw_replay_refuses_missing_authoritative_trajectory(tmp_pat
 
 
 @pytest.mark.uses_real_clock("the restart differential deliberately controls source mtimes around the quiet window")
-def test_restart_debt_converges_to_uninterrupted_campaign_state(tmp_path: Path) -> None:
+def test_restart_debt_converges_to_uninterrupted_campaign_state(
+    tmp_path: Path, reindex_campaign_template: ReindexCampaignCorpus
+) -> None:
     """A fresh-process debt retry reaches the same state as uninterrupted work."""
 
-    template = build_reindex_campaign_corpus(tmp_path / "template")
+    template = reindex_campaign_template
     uninterrupted = _clone_campaign_corpus(template, tmp_path / "uninterrupted")
     restarted = _clone_campaign_corpus(template, tmp_path / "restarted")
     session_id = uninterrupted.manifest.restart_session_ids[0]
