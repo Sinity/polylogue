@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from io import StringIO
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -136,7 +136,8 @@ def test_blocks_only_scope_excludes_mixed_relation_expansion() -> None:
 
     assert report.blocks_only_ids == frozenset({ROOT_ID, "gate", "a", "b", "c"})
     assert report.mixed_relation_ids >= {"parent-child-only", "discovered-only"}
-    assert "parent-child-only" not in report.counts["closure_ids"]
+    closure_ids = cast(list[str], report.counts["closure_ids"])
+    assert "parent-child-only" not in closure_ids
     assert report.differences["mixed_only_ids"] == ["discovered-only", "parent-child-only"]
 
 
