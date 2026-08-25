@@ -203,11 +203,11 @@ def test_affected_corpus_retains_testmon_selection() -> None:
 def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
     aggregate = verify._aggregate_pytest_results(
         [
-            {"name": "pytest native parallel 1/3 (all)", "outcomes": {"passed": 7, "skipped": 1}},
-            {"name": "pytest native parallel 2/3 (all)", "outcomes": {"passed": 11}},
-            {"name": "pytest native parallel 3/3 (all)", "outcomes": {"passed": 5, "xfailed": 1}},
-            {"name": "pytest native serial (all)", "outcomes": {"passed": 2}},
-            {"name": "pytest native storage-scale (all)", "outcomes": {"passed": 1}},
+            {"name": "pytest native parallel 1/3 (all)", "statistics": {"outcomes": {"passed": 7, "skipped": 1}}},
+            {"name": "pytest native parallel 2/3 (all)", "statistics": {"outcomes": {"passed": 11}}},
+            {"name": "pytest native parallel 3/3 (all)", "statistics": {"outcomes": {"passed": 5, "xfailed": 1}}},
+            {"name": "pytest native serial (all)", "statistics": {"outcomes": {"passed": 2}}},
+            {"name": "pytest native storage-scale (all)", "statistics": {"outcomes": {"passed": 1}}},
         ],
         expected_step_count=5,
         mode="all",
