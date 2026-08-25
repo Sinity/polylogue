@@ -128,7 +128,7 @@ enforced boundary authority.
 - `context/` — context-oriented read views and evidence correlation.
 - `cost/` — typed cost and subscription-plan computation.
 - `readiness/` — consolidated capability and claim-readiness predicates.
-- `product/` — executable product-workflow declarations.
+- `devtools/product_workflows.py` — executable product-workflow declarations.
 - `coordination/` — coordination envelopes projected from archived evidence.
 
 ### Runtime and surfaces
