@@ -50,8 +50,8 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools render all`, `devtools render all --check`.
 - `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
-- `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.
-  Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`.
+- `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest.
+  Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
   Common forms: `devtools bench mutation list`, `devtools bench mutation run filters`.
 
@@ -91,7 +91,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools test` | Run a focused pytest selection through the managed harness. |
+| `devtools test` | Run focused pytest selections or inspect full-run timing outliers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
