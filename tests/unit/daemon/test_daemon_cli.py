@@ -666,7 +666,7 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
         (archive / "writer-mutated").write_text("unsafe", encoding="utf-8")
         return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
 
-    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
     monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
@@ -729,7 +729,7 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
             outcome_refs=(raw_authority_detail_query_handle("apply-census-1", "safe-1"),),
         )
 
-    monkeypatch.setattr("polylogue.product.raw_authority.inspect_frontier", lambda _config: census)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.inspect_frontier", lambda _config: census)
     monkeypatch.setattr("polylogue.storage.raw_reconciler.apply_raw_authority_frontier", fake_apply)
 
     async def run_under_daemon_coordinator() -> int:
@@ -753,7 +753,7 @@ def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest
     predicate's comparisons (e.g. hardcoding it to always return True) makes
     this test fail because the journal would then log unconditionally."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
     counts = RawMaterializationCounts(
@@ -776,7 +776,7 @@ def test_maybe_recommend_bulk_rebuild_fires_on_candidate_count_threshold(
     `_bulk_scale_raw_materialization_backlog` against production constants;
     deleting either comparison in the predicate makes this test fail."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
     monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
@@ -799,7 +799,7 @@ def test_maybe_recommend_bulk_rebuild_fires_on_byte_threshold(monkeypatch: pytes
     threshold) must also trigger the recommendation -- the two thresholds
     are independent tripwires, not a combined one."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
     monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
@@ -820,7 +820,7 @@ def test_maybe_recommend_bulk_rebuild_is_rate_limited_to_once_per_hour(
     recommendation more than once per hour; the third call, past the
     interval, must log again."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
     clock = iter(
@@ -849,7 +849,7 @@ def test_periodic_raw_materialization_convergence_recommends_bulk_rebuild_for_bu
     """The periodic conveyor loop must actually invoke the bulk-rebuild
     recommendation check per pass, not merely define it unreachably."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
         return RawMaterializationCounts(
@@ -1153,10 +1153,11 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
         lease_events.append("stale")
         return 0
 
-    monkeypatch.setattr("polylogue.product.raw_authority.recover_interrupted_frontier", recover_frontier)
-    monkeypatch.setattr("polylogue.product.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
-    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
-    monkeypatch.setattr("polylogue.product.raw_authority.materialization_generation_lease", fake_generation_lease)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_interrupted_frontier", recover_frontier)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.materialization_generation_lease", fake_generation_lease)
+
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
     def converge_frontier(_config: Config, **_kwargs: object) -> int:
@@ -1221,14 +1222,14 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
         reject_restore,
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.recover_interrupted_frontier",
+        "polylogue.maintenance.raw_authority.recover_interrupted_frontier",
         lambda _config: pytest.fail("frontier recovery requires an acquired generation pin"),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.auto_resolve_stale_plan_blockers",
+        "polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers",
         lambda _config: pytest.fail("stale-plan recovery requires an acquired generation pin"),
     )
-    monkeypatch.setattr("polylogue.product.raw_authority.repair_materialization", reject_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", reject_repair)
     monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
     monkeypatch.setattr(
@@ -1504,7 +1505,7 @@ def test_periodic_raw_materialization_bursts_through_backlog(
     recovery scans run on the first pass only, and quiescence returns the
     loop to the plain interval sleep."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     remaining_schedule = [40, 24, 8, 0]
     recover_flags: list[bool] = []
@@ -1560,7 +1561,7 @@ def test_periodic_raw_materialization_burst_continues_through_census_passes(
     for the flag-on case that actually widens it).
     """
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     schedule = [
         RawMaterializationCounts(
@@ -1644,7 +1645,7 @@ def test_periodic_raw_materialization_burst_stops_without_progress(
 ) -> None:
     """Blocked candidates must not hot-loop the burst: no progress ends it."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     drains = 0
 
@@ -1704,7 +1705,7 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
     ``run_sync``, would flip one of these two assertions."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, daemon_write_lease_active
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     order: list[str] = []
     lease_during_warm: list[bool] = []
@@ -1793,7 +1794,7 @@ def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_w
     reordering it."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     warm_delay_seconds = 0.2
     released_hold_seconds: list[float] = []
@@ -2589,7 +2590,7 @@ def test_live_watcher_stop_failure_still_retains_undrained_rebuild_exclusion(
 ) -> None:
     """A watcher stop exception cannot bypass coordinator drain authority."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product import raw_authority
+    from polylogue.maintenance import raw_authority
     from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 
     archive_root_path = tmp_path / "archive"
@@ -3924,7 +3925,7 @@ def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
 ) -> None:
     """Cleanup errors before coordinator shutdown must never reopen rebuilds."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product import raw_authority
+    from polylogue.maintenance import raw_authority
     from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 
     async def noop() -> None:
@@ -4374,7 +4375,7 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
 
 def test_rebuild_exclusion_survives_an_undrained_writer_timeout(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
+    from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 
     archive_root_path = tmp_path / "archive"
@@ -5010,7 +5011,7 @@ def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
     """A small, steady-state backlog with no bulk-rebuild already in flight
     must never start one -- bulk routing is for bulk-scale backlogs only."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     def fail_run_pass(**_kwargs: object) -> object:
         pytest.fail("must not drive a pass when below threshold and nothing is resumable")
@@ -5034,7 +5035,7 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
     bulk-scale threshold -- abandoning a partially-built generation would
     waste every page already replayed into it."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     class FakeResolved:
         daemon_parse_stage_workers = None
@@ -5072,7 +5073,7 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
     """A failed bulk-rebuild pass must not crash the periodic convergence
     loop it is called from -- the next tick simply tries again."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     async def fail_run_pass(**_kwargs: object) -> object:
         raise RuntimeError("simulated bulk-rebuild pass failure")
@@ -5136,7 +5137,7 @@ def test_periodic_raw_materialization_convergence_suppresses_trickle_while_bulk_
     every tick (double parse/replay work + needless writer-hold contention).
     """
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     async def fake_in_flight() -> bool:
         return True
@@ -5207,7 +5208,7 @@ def test_periodic_raw_materialization_convergence_resumes_trickle_once_bulk_rebu
     trickle census/drain pass automatically -- no operator action, no wait
     for the outer interval."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     in_flight_sequence = iter([True, False])
 
@@ -5265,7 +5266,7 @@ def test_periodic_raw_materialization_convergence_schedules_whale_pass_on_quiesc
     during implementation.
     """
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     whale_calls: list[int] = []
 
@@ -5300,7 +5301,7 @@ def test_periodic_raw_materialization_convergence_skips_whale_pass_mid_burst(
     quiescent), the whale pass must not be attempted -- it only runs once
     the ordinary backlog settles for the tick."""
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
     whale_calls: list[int] = []
 
@@ -5368,7 +5369,7 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
         ),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: "whale-seed-raw-id",
     )
 
@@ -5603,7 +5604,7 @@ def test_whale_worker_timeout_fences_before_coordinator_acquisition(
         ),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: "blocked-seed",
     )
 
@@ -5656,7 +5657,7 @@ def test_whale_completion_accounts_for_census_pending_debt(monkeypatch: pytest.M
         lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None, daemon_parse_stage_warm_timeout_seconds=1.0),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: "census-seed",
     )
     monkeypatch.setattr(
@@ -5721,7 +5722,7 @@ def test_whale_cancellation_after_admission_records_continuation_then_real_compl
         ),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: "cancelled-seed",
     )
     monkeypatch.setattr(
@@ -5916,7 +5917,7 @@ def test_maybe_run_raw_materialization_whale_pass_interruption_is_pre_hold(
         ),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: "whale-seed-raw-id",
     )
 
@@ -5970,7 +5971,7 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
         ),
     )
     monkeypatch.setattr(
-        "polylogue.product.raw_authority.whale_pass_candidate",
+        "polylogue.maintenance.raw_authority.whale_pass_candidate",
         lambda _config, **_kwargs: None,
     )
 

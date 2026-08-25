@@ -47,9 +47,9 @@ if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entr
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from devtools.continuity_replay import replay_archive
+from devtools.continuity_scenarios import CONTINUITY_SCENARIOS, ContinuityScenarioSpec, continuity_scenario
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
-from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS, ContinuityScenarioSpec, continuity_scenario
 from tests.infra.continuity import load_continuity_catalog, seed_continuity_archive
 
 # ── Discovery-coverage lane ───────────────────────────────────────────

@@ -7,7 +7,7 @@ import json
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.product import raw_authority
+from polylogue.maintenance import raw_authority
 
 
 @click.command("raw-authority-frontier")

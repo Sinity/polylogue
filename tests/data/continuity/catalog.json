@@ -283,6 +283,6 @@
   "source_evidence": {
     "authority": "Synthetic constants and incident-attempt features below are planted before any MCP route executes.",
     "construction": "tests/infra/continuity.py",
-    "declarations": "polylogue/product/continuity_scenarios.py"
+    "declarations": "devtools/continuity_scenarios.py"
   }
 }

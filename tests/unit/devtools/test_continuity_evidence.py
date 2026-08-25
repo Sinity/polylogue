@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 from devtools import continuity_evidence as mcr
+from devtools.continuity_scenarios import CONTINUITY_SCENARIOS
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.core.json import JSONDocument
-from polylogue.product.continuity_scenarios import CONTINUITY_SCENARIOS
 
 # ── Discovery-coverage lane ────────────────────────────────────────────
 
