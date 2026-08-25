@@ -421,23 +421,23 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
 
     from polylogue.storage import blob_gc
 
-    recheck_connections = 0
-    original_open_recheck = blob_gc._open_recheck_connection
+    final_member_checks = 0
+    original_final_member_liveness = blob_gc._final_gc_member_liveness
 
-    def count_recheck_connection(*args, **kwargs):  # type: ignore[no-untyped-def]
-        nonlocal recheck_connections
-        recheck_connections += 1
-        return original_open_recheck(*args, **kwargs)
+    def count_final_member_checks(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal final_member_checks
+        final_member_checks += 1
+        return original_final_member_liveness(*args, **kwargs)
 
-    monkeypatch.setattr(blob_gc, "_open_recheck_connection", count_recheck_connection)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", count_final_member_checks)
 
     report = run_blob_gc_report(db_path, blob_root, max_batch=10)
 
     assert report.deleted_count == 0
     assert report.skipped_referenced == 1
-    # An empty shortlist records one generation but must not open the final
-    # recheck work seam (a second staging/locking pass would increment this).
-    assert recheck_connections == 0
+    # An empty deletion plan records one generation but must not enter the
+    # per-member final recheck route.
+    assert final_member_checks == 0
     assert report.generation_written is True
 
 

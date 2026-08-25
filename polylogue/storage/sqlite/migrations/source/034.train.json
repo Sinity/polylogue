@@ -1,0 +1,65 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v34",
+  "tier": "source",
+  "current_version": 33,
+  "target_version": 34,
+  "slot": 34,
+  "owner_ref": "polylogue-piyqz",
+  "migration": {
+    "tier": "source",
+    "target_version": 34,
+    "slot": 34,
+    "path": "034_gc_generation_member_intent.sql",
+    "owner_ref": "polylogue-piyqz",
+    "sql_sha256": "24dcf24ea896a4760528d63d21c75365d53d1693ed26a29ddbbceb347e3c50b8",
+    "requires_backup": false
+  },
+  "riders": [
+    {
+      "rider_id": "rider:gc-generation-member-intent",
+      "owner_ref": "polylogue-piyqz",
+      "schema_objects": [
+        "table:gc_generation_members",
+        "index:idx_gc_generation_members_pending"
+      ],
+      "runtime_consumers": [
+        {
+          "consumer_id": "blob-gc-durable-intent",
+          "production_ref": "polylogue.storage.blob_gc:run_blob_gc_report",
+          "behavior_proof_ref": "proof:source-v34:intent-before-unlink",
+          "roles": ["read", "write"]
+        },
+        {
+          "consumer_id": "raw-retention-gc-unlink",
+          "production_ref": "polylogue.storage.blob_gc:unlink_unreferenced_blob_hashes_under_exclusion",
+          "behavior_proof_ref": "proof:source-v34:intent-before-unlink",
+          "roles": ["read", "write"]
+        }
+      ],
+      "behavior_proof_refs": ["proof:source-v34:intent-before-unlink"],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": null,
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "548a718abea69fdc55339b46115141aea293251d508dfc2a5d3a1ab152bc32e8"
+}
