@@ -28,8 +28,8 @@ def pathology_zoo_archive(tmp_path_factory: pytest.TempPathFactory) -> Pathology
     needs to mutate the zoo's own root in place should depend on
     :func:`pathology_zoo_writable` instead.
     """
-    del tmp_path_factory
-    return build_pathology_zoo_ro()
+    canonical = build_pathology_zoo_ro()
+    return clone_pathology_zoo(canonical, tmp_path_factory.mktemp("pathology-zoo-session"))
 
 
 @pytest.fixture
