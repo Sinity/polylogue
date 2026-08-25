@@ -12,6 +12,11 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
+from polylogue.storage.hook_payload_ref_reconciliation import (
+    HookPayloadRefMatchStage,
+    ensure_current_match_stage,
+    prepare_match_stage,
+)
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -82,10 +87,6 @@ def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
         seen.add(owner.ref_type)
         joins.append((owner.ref_type, owner.table, owner.referent_column))
     return tuple(joins)
-
-
-# Non-destructive compatibility projection for existing census callers.
-BLOB_REF_LIVENESS_JOIN = validated_blob_ref_liveness_joins()
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +239,13 @@ def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, pref
     return surfaces
 
 
-def _rekeyable_legacy_hook_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, prefix: str) -> list[str]:
+def _rekeyable_legacy_hook_surfaces(
+    source_conn: sqlite3.Connection,
+    blob_bytes: bytes,
+    *,
+    prefix: str,
+    stage: HookPayloadRefMatchStage | None = None,
+) -> list[str]:
     """Return legacy hook refs whose deterministic rekey proof is current.
 
     The matcher is the same all-or-nothing stage consumed by blob-ref
@@ -248,10 +255,15 @@ def _rekeyable_legacy_hook_surfaces(source_conn: sqlite3.Connection, blob_bytes:
 
     if not any(owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)):
         return []
-    from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
-
     try:
-        _create_match_stage(source_conn)
+        # A caller holding source/index writer exclusion passes one token for
+        # its whole candidate batch.  The cheap generation marker refreshes
+        # after local writes, external commits, or schema drift; it never
+        # lets a stale match stage decide deletion.
+        if stage is None:
+            prepare_match_stage(source_conn)
+        else:
+            ensure_current_match_stage(source_conn, stage)
         row = source_conn.execute(
             """SELECT 1 FROM (
                 SELECT blob_hash FROM temp.hook_payload_ref_reconciliation_matches
@@ -285,6 +297,7 @@ def inspect_blob_liveness(
     *,
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
+    legacy_hook_stage: HookPayloadRefMatchStage | None = None,
 ) -> BlobLiveness:
     """Return ``live``, ``unreferenced``, or typed ``blocked`` for one hash."""
     blockers = _source_global_blockers(source_conn)
@@ -301,7 +314,14 @@ def inspect_blob_liveness(
     try:
         surfaces = _direct_surfaces(source_conn, blob_bytes, tier="source", prefix="source.db")
         surfaces.extend(_ledger_surfaces(source_conn, blob_bytes, prefix="source.db"))
-        surfaces.extend(_rekeyable_legacy_hook_surfaces(source_conn, blob_bytes, prefix="source.db"))
+        surfaces.extend(
+            _rekeyable_legacy_hook_surfaces(
+                source_conn,
+                blob_bytes,
+                prefix="source.db",
+                stage=legacy_hook_stage,
+            )
+        )
         if index_conn is not None:
             surfaces.extend(_direct_surfaces(index_conn, blob_bytes, tier="index", prefix="index.db"))
     except (sqlite3.Error, RuntimeError, ValueError) as exc:
@@ -415,7 +435,6 @@ def project_live_blob_hashes(
 
 __all__ = [
     "BLOB_OWNERS",
-    "BLOB_REF_LIVENESS_JOIN",
     "BlobLiveness",
     "BlobLivenessProjection",
     "LivenessState",

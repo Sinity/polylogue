@@ -34,7 +34,12 @@ from polylogue.storage.backup_attestation import (
     archive_tier_paths,
     sign_verification_receipt,
 )
-from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes
+from polylogue.storage.blob_integrity import (
+    BlobLivenessProjection,
+    BlobReferenceDebtReport,
+    blob_reference_debt_from_projection,
+    project_source_blob_liveness,
+)
 from polylogue.storage.blob_store import BlobStore
 
 logger = get_logger(__name__)
@@ -440,39 +445,41 @@ def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
         conn.close()
 
 
-def _source_blob_inventory(source_db: Path, *, index_db: Path | None = None) -> dict[str, set[str]]:
-    """Read canonical blob inventory from backup copies, with index evidence when included."""
+def _source_blob_liveness_projection(
+    source_db: Path, *, index_db: Path | None = None
+) -> tuple[BlobLivenessProjection, set[str]]:
+    """Read complete source evidence or refuse the backup before copying blobs."""
 
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
-        inventory = {
-            blob_hash: {"referenced"}
-            for blob_hash in referenced_blob_hashes(
-                source_db,
-                immutable=True,
-                require_index=index_db is not None,
-                index_db=index_db,
-            )
-        }
-        has_reservations = conn.execute(
+    projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as source_conn:
+        has_reservations = source_conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
         ).fetchone()
-        if has_reservations is not None:
-            for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
-                inventory.setdefault(bytes(blob_hash).hex(), {"referenced"}).add("reserved")
+        if has_reservations is None:
+            return projection, set()
+        columns = {str(row[1]) for row in source_conn.execute("PRAGMA table_info(blob_publication_reservations)")}
+        if "blob_hash" not in columns:
+            raise RuntimeError("source.blob_publication_reservations is missing columns: blob_hash")
+        reservations: set[str] = set()
+        for (blob_hash,) in source_conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
+            if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
+                raise RuntimeError("source.blob_publication_reservations has invalid blob_hash evidence")
+            reservations.add(blob_hash.hex())
+        return projection, reservations
+
+
+def _inventory_from_liveness(projection: BlobLivenessProjection, reservations: set[str]) -> dict[str, set[str]]:
+    inventory = {blob_hash: {"committed"} for blob_hash in projection.live_hashes}
+    for blob_hash in reservations:
+        inventory.setdefault(blob_hash, set()).add("reserved")
     return inventory
 
 
-def _source_blob_reference_debt(inventory: dict[str, set[str]], store: BlobStore) -> BlobReferenceDebtReport:
-    """Report missing source-canonical blobs without reopening an index tier."""
+def _source_blob_inventory(source_db: Path, *, index_db: Path | None = None) -> dict[str, set[str]]:
+    """Read committed references and pending publication reservations distinctly."""
 
-    referenced = sorted(blob_hash for blob_hash, protection in inventory.items() if "referenced" in protection)
-    missing = [blob_hash for blob_hash in referenced if not store.exists(blob_hash)]
-    return BlobReferenceDebtReport(
-        total_references_seen=len(referenced),
-        missing_referenced_blobs=len(missing),
-        sample=tuple(missing[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT]),
-        reference_sources={"source.db.canonical_liveness": len(referenced)},
-    )
+    projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
+    return _inventory_from_liveness(projection, reservations)
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -489,10 +496,15 @@ def _copy_referenced_blobs(
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    inventory = _source_blob_inventory(source_db, index_db=index_db)
+    projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
+    inventory = _inventory_from_liveness(projection, reservations)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
-    debt_report = _source_blob_reference_debt(inventory, store)
+    debt_report = blob_reference_debt_from_projection(
+        projection,
+        store=store,
+        sample_size=_MISSING_BLOB_WARNING_SAMPLE_LIMIT,
+    )
     if not hashes:
         return 0, 0, debt_report
 
@@ -504,7 +516,7 @@ def _copy_referenced_blobs(
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
-            if "reserved" in inventory[hash_hex]:
+            if inventory[hash_hex] == {"reserved"}:
                 missing_reserved.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
@@ -526,7 +538,7 @@ def _copy_referenced_blobs(
     )
     if missing_reserved:
         warnings.append(
-            "source-tier publication receipts missing blob bytes: "
+            "source-tier publication reservations missing blob bytes: "
             f"{len(missing_reserved)} total"
             + (
                 f" (sample: {', '.join(missing_reserved[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"

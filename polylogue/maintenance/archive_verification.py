@@ -54,7 +54,7 @@ from polylogue.maintenance.corpus_fidelity import (
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
-from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -1212,7 +1212,8 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
 #: intends), so a ref_type this check doesn't recognize is itself a gap the
 #: check surfaces via `_error_check`, not a silent skip.
 _BLOB_REF_REFERENT_TABLES: dict[str, tuple[str, str]] = {
-    ref_type: (referent_table, referent_column) for ref_type, referent_table, referent_column in BLOB_REF_LIVENESS_JOIN
+    ref_type: (referent_table, referent_column)
+    for ref_type, referent_table, referent_column in validated_blob_ref_liveness_joins()
 }
 
 

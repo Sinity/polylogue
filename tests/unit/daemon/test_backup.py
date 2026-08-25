@@ -419,7 +419,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         {
             "blob_hash": blob_hash,
             "path": f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
-            "protection": ["referenced"],
+            "protection": ["committed"],
             "sha256": blob_hash,
             "size_bytes": len(payload),
         }
@@ -509,7 +509,7 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
     inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
     item = next(row for row in inventory if row["blob_hash"] == blob_hash)
-    assert item["protection"] == ["referenced"]
+    assert item["protection"] == ["committed"]
 
 
 def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
@@ -700,7 +700,7 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     assert inventory == [
         {
             "blob_hash": blob_hash,
-            "protection": ["referenced", "reserved"],
+            "protection": ["reserved"],
             "size_bytes": len(payload),
         }
     ]
@@ -759,6 +759,56 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
     assert result.verification["canonical_blobs_resolved"] is False
     assert result.verification["missing_canonical_blob_count"] == 2
     assert result.verification["blob_inventory_exact"] is True
+
+
+def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    reserved_hash = hashlib.sha256(b"receipt only").digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO blob_publication_reservations
+            (publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms)
+            VALUES ('receipt', ?, 1, 'publisher', 1)""",
+            (reserved_hash,),
+        )
+    backup_root = tmp_path / "backup"
+    backup_root.mkdir()
+    warnings: list[str] = []
+
+    count, size, debt = backup_mod._copy_referenced_blobs(
+        source_db=archive_root / "source.db",
+        source_blob_root=archive_root / "blob",
+        index_db=None,
+        backup_root=backup_root,
+        warnings=warnings,
+    )
+
+    assert (count, size) == (0, 0)
+    assert debt.total_references_seen == 0
+    assert debt.missing_referenced_blobs == 0
+    assert debt.reference_sources == {}
+    assert len(warnings) == 1
+    assert "reservations missing blob bytes" in warnings[0]
+    assert "referenced blobs missing" not in warnings[0]
+
+
+def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("ALTER TABLE raw_hook_events DROP COLUMN native_id")
+    backup_root = tmp_path / "backup"
+    backup_root.mkdir()
+
+    with pytest.raises(RuntimeError, match="raw_hook_events is missing columns: native_id"):
+        backup_mod._copy_referenced_blobs(
+            source_db=archive_root / "source.db",
+            source_blob_root=archive_root / "blob",
+            index_db=None,
+            backup_root=backup_root,
+            warnings=[],
+        )
 
 
 def test_backup_archive_requires_precious_tiers(workspace_env: dict[str, Path], tmp_path: Path) -> None:

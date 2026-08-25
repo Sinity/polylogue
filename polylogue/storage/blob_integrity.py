@@ -35,7 +35,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
-from polylogue.storage.blob_liveness import project_live_blob_hashes
+from polylogue.storage.blob_liveness import BlobLivenessProjection, project_live_blob_hashes
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -493,6 +493,26 @@ def _legacy_source_hashes(conn: sqlite3.Connection) -> list[str]:
 
 def _current_source_schema(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "blob_publication_reservations")
+
+
+def project_source_blob_liveness(
+    source_db: Path,
+    *,
+    index_db: Path | None = None,
+    immutable: bool = False,
+) -> BlobLivenessProjection:
+    """Return a complete canonical source projection or refuse incomplete evidence."""
+
+    immutable_query = "&immutable=1" if immutable else ""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as source_conn:
+        if index_db is None:
+            projection = project_live_blob_hashes(source_conn)
+        else:
+            with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
+                projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
+    if projection.blockers:
+        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+    return projection
 
 
 def _referenced_blob_hashes(
@@ -1993,6 +2013,28 @@ def _blob_size(store: BlobStore, blob_hash: str) -> int:
         return 0
 
 
+def blob_reference_debt_from_projection(
+    projection: BlobLivenessProjection,
+    *,
+    store: BlobStore,
+    sample_size: int = _MAX_FINDING_SAMPLE,
+) -> BlobReferenceDebtReport:
+    """Report missing bytes from one already-validated canonical projection."""
+
+    if projection.blockers:
+        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+    missing: list[str] = []
+    for blob_hash in sorted(projection.live_hashes):
+        if not store.exists(blob_hash):
+            missing.append(blob_hash)
+    return BlobReferenceDebtReport(
+        total_references_seen=len(projection.live_hashes),
+        missing_referenced_blobs=len(missing),
+        sample=tuple(missing[: max(0, sample_size)]),
+        reference_sources={owner: len(hashes) for owner, hashes in projection.owner_hashes},
+    )
+
+
 def scan_blob_reference_debt(
     db_path: str | Path,
     *,
@@ -2276,8 +2318,11 @@ __all__ = [
     "BlobReferenceDebtRestoreReport",
     "BlobReferenceDebtRestoreSample",
     "BlobReferenceDebtSample",
+    "BlobLivenessProjection",
+    "blob_reference_debt_from_projection",
     "classify_blob_reference_debt",
     "plan_raw_backed_blob_reference_recovery",
+    "project_source_blob_liveness",
     "prune_orphan_blob_reference_debt",
     "referenced_blob_hashes",
     "replace_raw_backed_blob_reference_debt_from_source",

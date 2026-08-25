@@ -22,6 +22,8 @@ from polylogue.storage.blob_gc import (
 )
 from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,122 +31,30 @@ from polylogue.storage.blob_store import BlobStore
 
 
 def _make_index_sibling(db_path: str | Path) -> Path:
-    """Create the minimal index tier GC requires beside a file-based fixture.
-
-    GC refuses to run when a reference tier it must consult cannot be read,
-    so a file-set fixture has to carry one. The table matters: the index tier
-    is where ``attachments.blob_hash`` lives, and it is the only surface that
-    knows about 1,240 of the live archive's attachment payloads.
-    """
+    """Bootstrap the production index tier GC requires beside a fixture."""
     index_path = Path(db_path).with_name("index.db")
-    conn = sqlite3.connect(str(index_path))
-    try:
-        conn.execute("CREATE TABLE IF NOT EXISTS attachments (blob_hash BLOB)")
-        conn.commit()
-    finally:
-        conn.close()
+    initialize_archive_database(index_path, ArchiveTier.INDEX)
     return index_path
 
 
 def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
-    """Create an in-memory or file-based SQLite database with GC schema."""
+    """Create an in-memory or file-based production source-tier fixture."""
     target = str(path) if path else ":memory:"
+    if path is not None and Path(path).name == "index.db":
+        initialize_archive_database(Path(path), ArchiveTier.INDEX)
+        conn = sqlite3.connect(target)
+        conn.row_factory = sqlite3.Row
+        return conn
     if path is not None:
         _make_index_sibling(path)
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            source_name TEXT NOT NULL DEFAULT '',
-            source_path TEXT NOT NULL DEFAULT '',
-            blob_hash BLOB,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL DEFAULT ''
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE raw_hook_events (
-            hook_event_id TEXT PRIMARY KEY,
-            origin TEXT,
-            native_id TEXT,
-            source_path TEXT,
-            blob_hash BLOB
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE history_sidecars (
-            sidecar_id TEXT PRIMARY KEY,
-            blob_hash BLOB
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE blob_publication_reservations (
-            publication_id TEXT PRIMARY KEY,
-            blob_hash BLOB NOT NULL
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            ref_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
-            source_path TEXT,
-            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
-            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (blob_hash, ref_type, ref_id)
-        )"""
-    )
-    # gc_generations carries the typed reclaim counters that production
-    # ``run_blob_gc`` writes and ``read_gc_history`` reads — matching the
-    # split-file source.db DDL (#1743).
-    conn.execute(
-        """CREATE TABLE gc_generations (
-            generation_id   TEXT PRIMARY KEY,
-            started_at_ms   INTEGER NOT NULL,
-            completed_at_ms INTEGER,
-            reclaimed_count INTEGER NOT NULL DEFAULT 0,
-            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
-        )"""
-    )
-    conn.commit()
+    initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
 
 
 def _make_source_db(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            blob_hash BLOB NOT NULL,
-            blob_size INTEGER NOT NULL DEFAULT 0
-        ) STRICT"""
-    )
-    conn.execute(
-        """CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL,
-            ref_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL,
-            source_path TEXT,
-            size_bytes INTEGER NOT NULL DEFAULT 0,
-            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (blob_hash, ref_id, ref_type)
-        ) STRICT"""
-    )
-    conn.execute(
-        """CREATE TABLE raw_hook_events (
-            hook_event_id TEXT PRIMARY KEY,
-            origin TEXT,
-            native_id TEXT,
-            source_path TEXT,
-            blob_hash BLOB
-        ) STRICT"""
-    )
-    conn.execute("CREATE TABLE history_sidecars (sidecar_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
-    conn.execute("CREATE TABLE blob_publication_reservations (publication_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
-    conn.commit()
-    return conn
+    return _make_db(path)
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +66,9 @@ def test_still_referenced_does_not_treat_raw_id_as_blob_reference() -> None:
     """A raw observation ID that happens to look like a hash cannot pin bytes."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('abc123def456', 'codex-session', 'test.json', ?, 42, 1)""",
+        (b"x" * 32,),
     )
     conn.commit()
     assert inspect_blob_liveness(conn, "abc123def456").state is LivenessState.UNREFERENCED
@@ -168,8 +79,9 @@ def test_still_referenced_rejects_unknown_hash() -> None:
     """A blob not in raw_sessions is not referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('known-hash-1', 'codex-session', 'test.json', ?, 10, 1)""",
+        (b"y" * 32,),
     )
     conn.commit()
     assert inspect_blob_liveness(conn, "unknown-dead-hash").state is LivenessState.UNREFERENCED
@@ -188,7 +100,8 @@ def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None
     blob_hash = "a" * 64
     source_conn = _make_source_db(tmp_path / "source.db")
     source_conn.execute(
-        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES (?, 'codex-session', '/fixture', ?, ?, 1)""",
         ("raw-1", bytes.fromhex(blob_hash), 42),
     )
     source_conn.commit()
@@ -217,6 +130,53 @@ def test_final_gc_recheck_uses_one_connection_when_source_and_index_alias(tmp_pa
     assert any("index.attachments is missing" in error for error in errors)
     assert not any("database is locked" in error for error in errors)
     assert store.exists(blob_hash)
+
+
+def test_final_gc_stage_build_is_constant_for_10k_candidates_and_large_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final writer lock builds the legacy anti-join once, never per hash."""
+    import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
+
+    source_db = tmp_path / "source.db"
+    conn = _make_source_db(source_db)
+    candidates = {f"{index:064x}" for index in range(10_000)}
+    conn.executemany(
+        """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, 'raw_payload', '/ledger', 1, 1)""",
+        ((bytes.fromhex(blob_hash), f"dangling-{index}") for index, blob_hash in enumerate(sorted(candidates))),
+    )
+    conn.commit()
+    conn.close()
+
+    stage_builds = 0
+    readiness_checks = 0
+    original_build = reconciliation._build_match_stage
+    original_readiness = reconciliation._match_stage_readiness
+
+    def count_stage_builds(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal stage_builds
+        stage_builds += 1
+        return original_build(*args, **kwargs)
+
+    def count_readiness_checks(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal readiness_checks
+        readiness_checks += 1
+        return original_readiness(*args, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "_build_match_stage", count_stage_builds)
+    monkeypatch.setattr(reconciliation, "_match_stage_readiness", count_readiness_checks)
+    deleted, deleted_bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(
+        source_db, source_db.with_name("index.db"), tmp_path / "blobs", candidates
+    )
+
+    assert (deleted, deleted_bytes, errors) == (0, 0, ())
+    # This is an operation-count contract, rather than a timing threshold:
+    # restoring per-hash readiness/stage construction makes it 10,000.
+    assert stage_builds == 1
+    # The initial absent-stage check and post-build attestation are the only
+    # full readiness passes. A per-hash anti-join validation is 10,002 here.
+    assert readiness_checks == 2
 
 
 # ---------------------------------------------------------------------------
@@ -326,8 +286,8 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
-        "VALUES ('raw', 'claude', 'test.json', ?, ?, '2024-01-01')",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'test.json', ?, ?, 1)""",
         (bytes.fromhex(h), len(b"referenced content")),
     )
     conn.commit()
@@ -357,7 +317,8 @@ def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -
 
     source_conn = _make_source_db(source_db_path)
     source_conn.execute(
-        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES (?, 'codex-session', '/fixture', ?, ?, 1)""",
         ("raw-v1", bytes.fromhex(blob_hash), len(b"archive referenced content")),
     )
     source_conn.commit()
@@ -410,8 +371,8 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
         blob_hash, size = store.write_from_bytes(f"referenced-{index}".encode())
         _backdate(store, blob_hash)
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
-            "VALUES (?, 'codex', ?, ?, ?, '2026-01-01')",
+            """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES (?, 'codex-session', ?, ?, ?, 1)""",
             (f"raw-{index}", f"{index}.json", bytes.fromhex(blob_hash), size),
         )
     orphan_hash, _ = store.write_from_bytes(b"bounded orphan")
@@ -451,8 +412,8 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     blob_hash, size = store.write_from_bytes(b"referenced")
     _backdate(store, blob_hash)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
-        "VALUES ('raw', 'codex', 'referenced.json', ?, ?, '2026-01-01')",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'referenced.json', ?, ?, 1)""",
         (bytes.fromhex(blob_hash), size),
     )
     conn.commit()
@@ -644,8 +605,8 @@ def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
-        "VALUES ('raw', 'claude', 'x.json', ?, 1, '2025-01-01')",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'x.json', ?, 1, 1)""",
         (bytes.fromhex(referenced_hash),),
     )
     conn.commit()
@@ -716,7 +677,10 @@ def test_run_blob_gc_refuses_when_the_index_tier_cannot_be_read(tmp_path: Path) 
 
     # The only reference to the attachment bytes anywhere in the archive.
     index_conn = sqlite3.connect(str(index_path))
-    index_conn.execute("INSERT INTO attachments (blob_hash) VALUES (?)", (bytes.fromhex(attachment_hash),))
+    index_conn.execute(
+        "INSERT INTO attachments (attachment_id, blob_hash, acquisition_status) VALUES ('attachment', ?, 'acquired')",
+        (bytes.fromhex(attachment_hash),),
+    )
     index_conn.commit()
     index_conn.close()
 

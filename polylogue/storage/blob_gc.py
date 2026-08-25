@@ -56,14 +56,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from polylogue.storage.blob_liveness import (
-    BLOB_REF_LIVENESS_JOIN,
     LivenessState,
     inspect_blob_liveness,
     inspect_blob_reservation,
+    validated_blob_ref_liveness_joins,
 )
 from polylogue.storage.blob_liveness import (
     blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column,
 )
+from polylogue.storage.hook_payload_ref_reconciliation import prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -173,11 +174,6 @@ def _database_has_table(path: Path, table: str) -> bool:
         return _table_exists(conn, table)
     finally:
         conn.close()
-
-
-# Canonical closed reference-kind map now lives in ``blob_liveness``; kept
-# here as a private alias for this module's existing local naming.
-_BLOB_REF_LIVENESS_JOIN = BLOB_REF_LIVENESS_JOIN
 
 
 def _open_recheck_connection(path: Path, *, dry_run: bool) -> sqlite3.Connection:
@@ -301,11 +297,24 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             else:
                 index_conn = sqlite3.connect(index_db_path)
                 index_conn.execute("BEGIN IMMEDIATE")
-            preflight = inspect_blob_liveness(source_conn, "0" * 64, index_conn=index_conn, require_index=True)
+            preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
             if preflight.state is LivenessState.BLOCKED:
                 return 0, 0, preflight.blockers
+            # This transaction excludes source and index writers.  Reuse one
+            # fully-attested legacy hook stage through the bounded candidate
+            # pass; per-hash inspection only checks its cheap generation.
+            try:
+                legacy_hook_stage = prepare_match_stage(source_conn)
+            except Exception as exc:
+                return 0, 0, (f"legacy hook rekey matcher failed: {exc}",)
             for blob_hash in sorted(blob_hashes):
-                decision = inspect_blob_liveness(source_conn, blob_hash, index_conn=index_conn, require_index=True)
+                decision = inspect_blob_liveness(
+                    source_conn,
+                    blob_hash,
+                    index_conn=index_conn,
+                    require_index=True,
+                    legacy_hook_stage=legacy_hook_stage,
+                )
                 if decision.state is LivenessState.BLOCKED:
                     return deleted, deleted_bytes, decision.blockers
                 if decision.state is LivenessState.LIVE:
@@ -486,7 +495,7 @@ def run_blob_gc_report(
         planning_index = planning_index_conn or (planning_conn if control_db_path == sibling_index_db else None)
         preflight = inspect_blob_liveness(
             planning_source,
-            "0" * 64,
+            "",
             index_conn=planning_index,
             require_index=True,
         )
@@ -494,11 +503,23 @@ def run_blob_gc_report(
             report.blocked_reason = "; ".join(preflight.blockers)
             logger.error("Blob GC refused to run: %s", report.blocked_reason)
             return report
+        try:
+            planning_legacy_hook_stage = prepare_match_stage(planning_source)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
                 break
             evidence.inspected += 1
-            decision = inspect_blob_liveness(planning_source, blob_hash, index_conn=planning_index, require_index=True)
+            decision = inspect_blob_liveness(
+                planning_source,
+                blob_hash,
+                index_conn=planning_index,
+                require_index=True,
+                legacy_hook_stage=planning_legacy_hook_stage,
+            )
             if decision.state is LivenessState.BLOCKED:
                 report.blocked_reason = "; ".join(decision.blockers)
                 logger.error("Blob GC refused to run: %s", report.blocked_reason)
@@ -570,16 +591,26 @@ def run_blob_gc_report(
             index_conn = _open_recheck_connection(sibling_index_db, dry_run=dry_run)
         recheck_source = source_conn or conn
         recheck_index = index_conn or (conn if control_db_path == sibling_index_db else None)
-        recheck_preflight = inspect_blob_liveness(
-            recheck_source, "0" * 64, index_conn=recheck_index, require_index=True
-        )
+        recheck_preflight = inspect_blob_liveness(recheck_source, "", index_conn=recheck_index, require_index=True)
         if recheck_preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(recheck_preflight.blockers)
             logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
             return report
+        try:
+            recheck_legacy_hook_stage = prepare_match_stage(recheck_source)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            return report
 
         for blob_hash, _mtime in shortlist:
-            decision = inspect_blob_liveness(recheck_source, blob_hash, index_conn=recheck_index, require_index=True)
+            decision = inspect_blob_liveness(
+                recheck_source,
+                blob_hash,
+                index_conn=recheck_index,
+                require_index=True,
+                legacy_hook_stage=recheck_legacy_hook_stage,
+            )
             if decision.state is LivenessState.BLOCKED:
                 report.blocked_reason = "; ".join(decision.blockers)
                 logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
@@ -746,7 +777,7 @@ class OrphanedBlobRefCensus:
     def to_privacy_safe_dict(self) -> dict[str, object]:
         """Serialize aggregate counts without exposing database-derived names."""
         payload = self.to_dict()
-        known_ref_types = {ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN}
+        known_ref_types = {ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()}
         ref_type_counts = self.ref_type_counts or {}
         payload["ref_type_counts"] = {
             ref_type: count for ref_type, count in ref_type_counts.items() if ref_type in known_ref_types
@@ -789,7 +820,6 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
 
 __all__ = [
     "BlobGCResult",
-    "BLOB_REF_LIVENESS_JOIN",
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCRunEvidence",
