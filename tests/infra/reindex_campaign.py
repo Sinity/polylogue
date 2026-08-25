@@ -26,7 +26,7 @@ from polylogue.sources.revision_backfill import backfill_historical_revision_evi
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
-from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS
 
 REINDEX_CAMPAIGN_REQUIRED_ORIGINS = frozenset(
@@ -391,7 +391,10 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
         written = SyntheticCorpus.write_spec_artifacts(spec, wire_root / spec.provider, prefix=f"campaign-{index:02d}")
         if spec.provider == "codex":
             first_payload = written.files[0].read_bytes()
-        sources.extend(Source(name=spec.provider, path=path) for path in written.files)
+        source_paths = (written.files[0].parent.parent,) if spec.provider == "antigravity" else written.files
+        sources.extend(
+            provider_source_package(spec.provider, written.files, source_paths=source_paths).admitted_sources()
+        )
 
     native_dir = wire_root / "native"
     sources.extend(
