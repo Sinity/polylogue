@@ -60,6 +60,9 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Data Model](data-model.md) | Archive entities, storage shape, and metadata rules. |
 | [Schema](schema.md) | Index and durable tier schema, FTS, vectors, and versioning. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
+| [Atlas: Storage](atlas/storage.md) | Agent-orientation sheet: six-tier substrate, blob store, identity model, anchored invariants. |
+| [Atlas: Daemon](atlas/daemon.md) | Agent-orientation sheet: runtime ownership, convergence stages, current operational state. |
+| [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
