@@ -297,13 +297,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "test",
         "verification",
-        "Run a focused pytest selection through the managed harness.",
+        "Run focused pytest selections or inspect full-run timing outliers.",
         "devtools.run_tests",
-        use_when="Run a specific test file, directory, or -k/-m selection in the inner loop without invoking raw pytest.",
+        use_when=(
+            "Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest "
+            "full-run timing receipts, without invoking raw pytest."
+        ),
         examples=(
             "devtools test tests/unit/pipeline",
             "devtools test -k hybrid",
             "devtools test tests/unit/storage -x",
+            "devtools test --outliers 20",
         ),
         featured=True,
     ),
@@ -701,17 +705,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when="Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.",
         examples=("devtools bench mutation list", "devtools bench mutation run filters"),
         featured=True,
-    ),
-    CommandSpec(
-        "bench nightly-compare",
-        "benchmarking",
-        "Compare nightly pytest-benchmark output with the committed baseline.",
-        "devtools.benchmark_compare_nightly",
-        use_when="Check the nightly scale benchmark result against its committed regression threshold.",
-        examples=(
-            "devtools bench nightly-compare tests/benchmarks/baselines/nightly-baseline.json nightly-results.json",
-            "devtools bench nightly-compare baseline.json candidate.json --fail-pct 20",
-        ),
     ),
     CommandSpec(
         "workspace continuity-evidence",
