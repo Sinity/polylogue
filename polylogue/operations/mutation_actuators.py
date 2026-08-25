@@ -126,7 +126,7 @@ class SessionDeleteActuator:
         resumed by an exact retry over the original typed target identity.
         """
 
-        if not operation.target_evidence_complete:
+        if not operation.target_evidence_complete or not operation.targets:
             return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
         if any(target.kind != "session" or not target.ref.startswith("session:") for target in operation.targets):
             return RecoveryDisposition("unknown", "operator-blocking", "delete recovery target identity is invalid")

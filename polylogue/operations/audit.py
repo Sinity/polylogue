@@ -53,6 +53,15 @@ _F = TypeVar("_F", bound=Callable[..., object])
 _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
 
 
+#: Terminal reasons that deliberately keep a finished run open to bounded
+#: operator adjudication.  ``recovery_unknown`` is the wedge a blocked
+#: classification installs; ``recovered_applied`` is the duplicate-effect
+#: barrier a confirmed-applied classification installs.  Neither may become
+#: unrecoverable: without an adjudication route a single misclassification
+#: would permanently refuse every later attempt on the same targets.
+_ADJUDICABLE_TERMINAL_REASONS = frozenset({"recovery_unknown", "recovered_applied"})
+
+
 def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
     """Derive the parent lifecycle state from the complete target set."""
 
@@ -528,6 +537,7 @@ class AuditRepository:
                 "kind": disposition.kind,
                 "action": disposition.action,
                 "detail": disposition.detail,
+                "evidence_ref": disposition.evidence_ref,
                 "now_ms": int(time.time() * 1000),
             }
         if kind == "adjudicate_recovery":
@@ -599,6 +609,7 @@ class AuditRepository:
                         kind=cast(Any, payload["kind"]),
                         action=cast(Any, payload["action"]),
                         detail=cast(str | None, payload.get("detail")),
+                        evidence_ref=cast(str | None, payload.get("evidence_ref")),
                     ),
                 )
             if mutation.kind == "adjudicate_recovery":
@@ -1233,7 +1244,8 @@ class AuditRepository:
                        r.plan_hash, r.target_digest
                 FROM operation_runs AS r
                 JOIN operation_targets AS t ON t.operation_id = r.operation_id
-                WHERE r.status IN ('running', 'interrupted') AND t.target_ref IN ({placeholders})
+                WHERE (r.status IN ('running', 'interrupted') OR r.terminal_reason = 'recovery_unknown')
+                  AND t.target_ref IN ({placeholders})
                 ORDER BY r.started_at_ms, r.operation_id
                 """,
                 target_refs,
@@ -1330,8 +1342,10 @@ class AuditRepository:
             """,
             (operation_id,),
         ).fetchall()
-        complete = len(target_rows) == expected and all(
-            target[4] is not None and target[5] is not None for target in target_rows
+        complete = (
+            expected > 0
+            and len(target_rows) == expected
+            and all(target[4] is not None and target[5] is not None for target in target_rows)
         )
         targets = (
             tuple(
@@ -1379,65 +1393,52 @@ class AuditRepository:
                 "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'", (operation_id,)
             ).fetchall()
             owner_liveness = {_attempt_owner_liveness(cast(str | None, row[0])) for row in live_owner}
-            # A live or unverifiable owner cannot be terminalized, but the
-            # refusal itself is durable recovery evidence.  Without this
-            # event a permanent wedge is invisible to the authorized
-            # adjudication route.
+            # A live or unverifiable owner may still be mutating its targets,
+            # so it cannot be terminalized.  Refuse silently: the run stays
+            # nonterminal, so it remains visible to overlap detection and to
+            # ``recovery_status``/``adjudicate_recovery``.  Appending an event
+            # here instead would grow the durable log on every restart and
+            # every overlapping request without changing any state.
             if owner_liveness & {"live", "unknown"}:
-                self._append_event(
-                    conn,
-                    operation_id=operation_id,
-                    event_type="recovery_classified",
-                    from_state=str(run[1]),
-                    to_state=str(run[1]),
-                    actor_ref=str(run[0]),
-                    occurred_at_ms=now_ms,
-                    detail={
-                        "kind": "unknown",
-                        "action": "operator-blocking",
-                        "detail": (disposition.detail or "owner liveness blocks recovery")[:512],
-                        "owner_liveness": sorted(owner_liveness),
-                    },
-                )
                 return
-            if disposition.kind == "confirmed-applied":
-                target_state, run_state, reason = "applied", "completed", "recovered_applied"
-            elif disposition.kind == "confirmed-not-applied":
-                target_state, run_state, reason = "failed", "failed", "recovered_not_applied"
-            elif disposition.kind == "confirmed-partial":
-                target_state, run_state, reason = "failed", "failed", f"recovered_partial:{disposition.action}"
-            else:
-                target_state, run_state, reason = "unknown", "interrupted", "unknown_effect"
+            target_rows = conn.execute(
+                "SELECT target_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
+            ).fetchall()
+            expected_refs = {str(row[0]) for row in target_rows}
+            per_target = {item.target_ref: item for item in disposition.target_dispositions}
+            if disposition.kind != "unknown" and (
+                not per_target
+                or len(per_target) != len(disposition.target_dispositions)
+                or set(per_target) != expected_refs
+            ):
+                raise ValueError("confirmed recovery disposition must classify every durable target exactly once")
             conn.execute(
                 """
-                UPDATE operation_attempts
-                SET state = CASE WHEN ? = 'unknown' THEN 'unknown' ELSE 'reconciled' END,
-                    finished_at_ms = ?, unknown_reason = ?
+                UPDATE operation_attempts SET state = ?, finished_at_ms = ?, unknown_reason = ?
                 WHERE operation_id = ? AND state IN ('running', 'unknown')
                 """,
-                (target_state, now_ms, disposition.detail, operation_id),
+                (
+                    "unknown" if disposition.kind == "unknown" else "reconciled",
+                    now_ms,
+                    disposition.detail,
+                    operation_id,
+                ),
             )
-            per_target = {item.target_ref: item for item in disposition.target_dispositions}
-            if disposition.kind == "confirmed-partial":
-                expected_refs = {
-                    str(row[0])
-                    for row in conn.execute(
-                        "SELECT target_ref FROM operation_targets WHERE operation_id = ?", (operation_id,)
-                    )
-                }
-                if set(per_target) != expected_refs:
-                    raise ValueError("partial recovery disposition must classify every durable target exactly once")
+            if disposition.kind != "unknown":
                 for target in per_target.values():
                     state = {"applied": "applied", "not-applied": "failed", "unknown": "unknown"}[target.state]
                     conn.execute(
                         """
-                        UPDATE operation_targets SET state = ?, completed_at_ms = ?, unknown_reason = ?
+                        UPDATE operation_targets
+                        SET state = ?, completed_at_ms = ?, unknown_reason = ?, domain_receipt_ref = ?, domain_receipt_kind = ?
                         WHERE operation_id = ? AND target_ref = ? AND state IN ('pending', 'running', 'unknown')
                         """,
                         (
                             state,
                             now_ms if state != "unknown" else None,
                             target.detail or disposition.detail,
+                            disposition.evidence_ref,
+                            "recovery-evidence" if disposition.evidence_ref else None,
                             operation_id,
                             target.target_ref,
                         ),
@@ -1448,8 +1449,20 @@ class AuditRepository:
                     UPDATE operation_targets SET state = ?, completed_at_ms = ?, unknown_reason = ?
                     WHERE operation_id = ? AND state IN ('pending', 'running', 'unknown')
                     """,
-                    (target_state, now_ms, disposition.detail, operation_id),
+                    ("unknown", None, disposition.detail, operation_id),
                 )
+            states = [
+                str(row[0])
+                for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
+            ]
+            if disposition.kind == "unknown" or "unknown" in states:
+                run_state, reason = "failed", "recovery_unknown"
+            elif disposition.kind == "confirmed-applied":
+                run_state, reason = "completed", "recovered_applied"
+            elif disposition.kind == "confirmed-not-applied":
+                run_state, reason = "failed", "recovered_not_applied"
+            else:
+                run_state, reason = "failed", f"recovered_partial:{disposition.action}"
             conn.execute(
                 """
                 UPDATE operation_runs
@@ -1484,6 +1497,7 @@ class AuditRepository:
                     "kind": disposition.kind,
                     "action": disposition.action,
                     "detail": (disposition.detail or "")[:512],
+                    "evidence_ref": disposition.evidence_ref,
                     "targets": [
                         {"target_ref": item.target_ref, "state": item.state, "action": item.action}
                         for item in disposition.target_dispositions
@@ -1501,6 +1515,7 @@ class AuditRepository:
                 WHERE operation_name = ? AND operation_version = ?
                   AND archive_instance_id = ? AND archive_identity_digest = ?
                   AND parameter_digest = ? AND target_digest = ?
+                  AND target_count > 0
                   AND terminal_reason = 'recovered_applied'
                 ORDER BY completed_at_ms, operation_id LIMIT 1
                 """,
@@ -1531,9 +1546,15 @@ class AuditRepository:
         with self._connection() as conn:
             self._begin(conn)
             run = conn.execute(
-                "SELECT actor_ref, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+                "SELECT actor_ref, status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone()
-            if run is None or str(run[1]) not in {"running", "interrupted"}:
+            if run is None:
+                raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
+            status = str(run[1])
+            adjudicable = status in {"running", "interrupted"} or (
+                status in {"failed", "completed"} and str(run[2] or "") in _ADJUDICABLE_TERMINAL_REASONS
+            )
+            if not adjudicable:
                 raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
             targets = conn.execute(
                 "SELECT ordinal, target_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
@@ -1546,6 +1567,8 @@ class AuditRepository:
                 raise ValueError("recovery adjudication must name every durable target exactly once")
             for ordinal, target_ref in targets:
                 outcome = target_outcomes[str(target_ref)]
+                if outcome not in {"applied", "not-applied", "unknown"}:
+                    raise ValueError("recovery adjudication outcomes must be applied, not-applied, or unknown")
                 state = {"applied": "applied", "not-applied": "failed", "unknown": "unknown"}[outcome]
                 conn.execute(
                     "UPDATE operation_targets SET state = ?, completed_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND ordinal = ?",
@@ -1556,13 +1579,17 @@ class AuditRepository:
                 for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
             ]
             run_state, terminal_reason = _run_state_for_targets(states)
+            if "unknown" in states:
+                # An adjudicated unknown is still unknown: keep the run
+                # terminal-but-adjudicable rather than reopening it as
+                # interrupted, which a later startup would reclassify.
+                run_state, terminal_reason = "failed", "recovery_unknown"
             conn.execute(
                 """
-                UPDATE operation_attempts SET state = CASE WHEN ? = 'interrupted' THEN 'unknown' ELSE 'reconciled' END,
-                    finished_at_ms = ?, unknown_reason = ?
+                UPDATE operation_attempts SET state = ?, finished_at_ms = ?, unknown_reason = ?
                 WHERE operation_id = ? AND state IN ('running', 'unknown')
                 """,
-                (run_state, now_ms, reason[:512], operation_id),
+                ("unknown" if "unknown" in states else "reconciled", now_ms, reason[:512], operation_id),
             )
             conn.execute(
                 """
@@ -1638,6 +1665,37 @@ class AuditRepository:
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
             return dict(row) if row is not None else None
+
+    def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
+        """Return one dead audit attempt bound to an exact recovery plan."""
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT operation_id FROM operation_runs
+                WHERE operation_name = ? AND parameter_digest = ? AND status = 'interrupted'
+                ORDER BY started_at_ms, operation_id
+                """,
+                (operation_name, parameter_digest),
+            ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError("multiple interrupted operations share the same durable parameter digest")
+        return None if not rows else str(rows[0][0])
+
+    def recovery_operation(self, operation_id: str) -> RecoveryOperation:
+        """Load one interrupted operation with its durable target evidence."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, operation_name, operation_version, plan_hash, target_digest
+                FROM operation_runs WHERE operation_id = ? AND status = 'interrupted'
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"operation {operation_id!r} is not interrupted")
+            return self._recovery_operation(conn, row)
 
     def list_events(self, operation_id: str) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
