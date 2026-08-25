@@ -38,10 +38,10 @@ per-edit gate.
 
 **Out of scope:** this lint is keyed entirely to ``INDEX_SCHEMA_VERSION``.
 Parser and lowering drift use the production fingerprints declared by
-``polylogue.sources.origin_specs`` instead: archive rows, candidate metadata,
-and live-proof receipts carry those fingerprints, and archive verification
-rejects stale or mixed values. A green run of *this* lint alone is therefore
-not evidence that no reparse is needed.
+``polylogue.sources.origin_specs`` instead: archive rows and candidate
+operation results carry those fingerprints, and archive verification rejects
+stale or mixed values. A green run of *this* lint alone is therefore not
+evidence that no reparse is needed.
 """
 
 from __future__ import annotations

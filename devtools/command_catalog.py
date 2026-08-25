@@ -226,6 +226,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify ci-commands", "devtools verify ci-commands --json"),
     ),
     CommandSpec(
+        "verify reindex-packets",
+        "verification",
+        "Validate the current reindex execution packets from the external Beads blocks graph.",
+        "devtools.reindex_packets",
+        use_when=(
+            "Before dispatching reindex work, recompute blocks-only closure, packet topology, conflicts, "
+            "capability carriers, and launch readiness from current Beads. The report is read-only."
+        ),
+        examples=("devtools verify reindex-packets", "devtools verify reindex-packets --json"),
+    ),
+    CommandSpec(
         "verify doc-commands",
         "verification",
         "Validate executable documentation examples against live command inventories.",

@@ -105,6 +105,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
 | `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
+| `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
 | `devtools verify scenario` | Run a named archive verification scenario. |
 | `devtools verify schema-audit` | Run committed provider schema package quality checks. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
