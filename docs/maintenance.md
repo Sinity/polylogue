@@ -892,11 +892,11 @@ it refuses to run beside a live `polylogued`:
 ```bash
 # Inspect only.
 polylogue ops maintenance operation-recovery \
-  --operation-id mutation-operation:... --output-format json
+  --operation-id operation:... --output-format json
 
 # Adjudicate, naming every durable target exactly once.
 polylogue ops maintenance operation-recovery \
-  --operation-id mutation-operation:... \
+  --operation-id operation:... \
   --target-outcome session:claude:abc=not-applied \
   --reason "verified against source export; the delete never committed" \
   --confirm
