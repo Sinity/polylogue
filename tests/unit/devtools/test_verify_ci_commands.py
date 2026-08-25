@@ -59,3 +59,17 @@ def test_invalid_workflow_yaml_fails_closed(tmp_path: Path) -> None:
 
     (error,) = validate_ci_commands(tmp_path)
     assert error.startswith(".github/workflows/bad.yml: invalid YAML:")
+
+
+def test_empty_workflow_population_fails_closed(tmp_path: Path) -> None:
+    assert validate_ci_commands(tmp_path) == ("no required CI workflow inputs",)
+
+
+def test_unreadable_workflow_fails_closed(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/workflows/bad.yml", "name: valid\njobs: {}\n")
+    workflow = tmp_path / ".github" / "workflows" / "bad.yml"
+    workflow.write_bytes(b"\xff\xfe")
+
+    errors = validate_ci_commands(tmp_path)
+
+    assert errors and "invalid YAML" in errors[0]

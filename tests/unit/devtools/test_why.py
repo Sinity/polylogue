@@ -70,6 +70,39 @@ def test_failing_steps_and_non_green_tests_are_surfaced() -> None:
     assert "01-ok" not in output, "passing steps are noise in a failure explanation"
 
 
+def test_required_gate_diagnostics_are_rendered_from_receipt() -> None:
+    stream = io.StringIO()
+
+    _render(
+        {
+            "tier": "quick",
+            "status": "failed",
+            "steps": [
+                {
+                    "step_id": "01-ruff-check",
+                    "exit": 127,
+                    "diagnosis": "gate_missing_executable",
+                    "required_gate": {
+                        "gate": "ruff check",
+                        "gate_passed": False,
+                        "diagnosis": "gate_missing_executable",
+                        "inspected_count": 0,
+                        "missing_count": 1,
+                        "unreadable_count": 0,
+                        "error_count": 0,
+                        "details": ["ruff"],
+                    },
+                }
+            ],
+        },
+        stream,
+    )
+
+    output = stream.getvalue()
+    assert "gate_missing_executable" in output
+    assert "ruff" in output
+
+
 def test_import_mismatch_remedy_names_the_retained_contract() -> None:
     remedy = _EXPLANATIONS["checkout_import_mismatch"].remedy
 

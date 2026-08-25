@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from devtools import run_tests
+from devtools import pytest_scratch, run_tests
 from devtools.pytest_collection_contract import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
@@ -23,6 +23,23 @@ from devtools.verify_runs import (
     git_head,
     pytest_command_worker_request,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fake_runner_evidence_for_unit_seams(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep argv/lifecycle seams independent of the real child artifact writer."""
+    monkeypatch.setattr(
+        run_tests,
+        "_focused_pytest_evidence",
+        lambda *_args, **_kwargs: {
+            "diagnosis": "pytest_passed",
+            "ordinary_eligible": True,
+            "ok": True,
+            "selected_count": 1,
+            "terminal_count": 1,
+            "outcomes": {"passed": 1},
+        },
+    )
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -248,6 +265,27 @@ def test_main_preserves_sigterm_for_managed_cancellation(
     assert run_tests.main(["tests/unit/example.py"]) == 143
     assert history["exit_code"] == 143
     assert history["steps"][0]["termination_reason"] == "sigterm"
+
+
+def test_managed_pytest_kills_process_group_for_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Process:
+        pid = 77
+
+        def wait(self, timeout: float | None = None) -> int:
+            if timeout is None:
+                raise run_tests.ManagedTestInterrupted(signal.SIGTERM)
+            return 143
+
+    killed: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *_args, **_kwargs: _Process())  # type: ignore[attr-defined]
+    monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))  # type: ignore[attr-defined]
+
+    with pytest.raises(run_tests.ManagedTestInterrupted):
+        run_tests.run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})  # type: ignore[attr-defined]
+
+    assert killed == [(77, signal.SIGTERM)]
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(

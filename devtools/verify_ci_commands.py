@@ -13,6 +13,7 @@ import yaml
 
 from devtools import repo_root
 from devtools.command_catalog import COMMAND_SPECS, command_name_from_tokens
+from devtools.required_gate import evidence_gate_result
 
 
 def _run_scripts(value: object) -> Iterator[str]:
@@ -72,26 +73,37 @@ def _unknown_command(argv: Sequence[str]) -> str | None:
     return None
 
 
-def validate_ci_commands(root: Path) -> tuple[str, ...]:
-    """Return parse and command errors from GitHub Actions and CircleCI YAML."""
+def _validation(root: Path) -> tuple[tuple[str, ...], int, int, tuple[Path, ...]]:
+    """Return errors and the inspected workflow population."""
     paths = sorted((root / ".github" / "workflows").glob("*.yml"))
     circle = root / ".circleci" / "config.yml"
     if circle.exists():
         paths.append(circle)
     errors: list[str] = []
+    inspected = unreadable = 0
     for path in paths:
         relative = path.relative_to(root)
         try:
             document: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as exc:
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
             errors.append(f"{relative}: invalid YAML: {exc}")
+            unreadable += 1
             continue
+        inspected += 1
         for script in _run_scripts(document):
             for argv in _invocations(script):
                 unknown = _unknown_command(argv)
                 if unknown is not None:
                     errors.append(f"{relative}: unknown devtools command {unknown!r}")
-    return tuple(errors)
+    return tuple(errors), inspected, unreadable, tuple(paths)
+
+
+def validate_ci_commands(root: Path) -> tuple[str, ...]:
+    """Return parse and command errors from GitHub Actions and CircleCI YAML."""
+    errors, _inspected, _unreadable, paths = _validation(root)
+    if not paths:
+        return ("no required CI workflow inputs",)
+    return errors
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -99,15 +111,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = repo_root()
-    errors = validate_ci_commands(root)
+    errors, inspected, unreadable, paths = _validation(root)
+    gate = evidence_gate_result(
+        gate="ci-commands",
+        executable="yaml-parser",
+        executable_available=True,
+        required_count=len(paths),
+        inspected_count=inspected,
+        unreadable_count=unreadable,
+        error_count=len(errors),
+        details=errors,
+    )
     if args.json:
-        print(json.dumps({"blocking": bool(errors), "errors": list(errors)}, indent=2))
+        print(
+            json.dumps({"blocking": not gate.ok, "errors": list(errors), "required_gate": gate.to_payload()}, indent=2)
+        )
     elif errors:
         for error in errors:
             print(f"[BLOCK] {error}")
     else:
         print("CI devtools commands match the live command catalog")
-    return 1 if errors else 0
+    return 1 if not gate.ok else 0
 
 
 if __name__ == "__main__":

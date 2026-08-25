@@ -25,7 +25,9 @@ from devtools.pytest_collection_contract import (
     SERIAL_MARKER_EXPRESSION,
     STORAGE_SCALE_MARKER_EXPRESSION,
 )
+from devtools.pytest_evidence import TERMINATION_REASON_ENV, evaluate_pytest_evidence
 from devtools.pytest_scratch import PytestScratchLease, run_managed_pytest, scratch_root_from_environment
+from devtools.required_gate import evidence_gate_result, executable_gate_result
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
     NativeTestmonDeadlineError,
@@ -43,6 +45,7 @@ from devtools.verify_runs import (
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
+    merge_worker_events,
     prune_successful_verify_runs,
 )
 from polylogue.scenarios import (
@@ -215,8 +218,8 @@ def build_verify_steps(
     if not commit:
         steps += [
             ("render all", _devtools_cmd("render all", "--check")),
-            ("verify layering", _devtools_cmd("verify layering")),
-            ("verify ci-commands", _devtools_cmd("verify ci-commands")),
+            ("verify layering", _devtools_cmd("verify layering", "--json")),
+            ("verify ci-commands", _devtools_cmd("verify ci-commands", "--json")),
             ("verify doc-commands", _devtools_cmd("verify doc-commands")),
             ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),
             ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
@@ -294,7 +297,9 @@ def _pytest_report_path(command: Sequence[str]) -> Path:
     )
 
 
-def _pytest_metadata(command: Sequence[str], artifacts: Any) -> dict[str, Any]:
+def _pytest_metadata(
+    command: Sequence[str], artifacts: Any, *, exit_code: int, termination_reason: str | None = None
+) -> dict[str, Any]:
     report = _read_json(_pytest_report_path(command))
     metadata: dict[str, Any] = {"report_status": "missing", "selected_count": None, "deselected_count": None}
     if report is not None:
@@ -309,6 +314,27 @@ def _pytest_metadata(command: Sequence[str], artifacts: Any) -> dict[str, Any]:
     if selection is not None:
         metadata["selected_count"] = selection.get("selected_count")
         metadata["deselected_count"] = selection.get("deselected_count")
+    events: list[dict[str, Any]] = []
+    events_path = artifacts.events_merged_path
+    if not events_path.exists():
+        merge_worker_events(artifacts.events_dir, events_path)
+    with contextlib.suppress(OSError):
+        for line in events_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(json.JSONDecodeError):
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    events.append(event)
+    metadata.update(
+        evaluate_pytest_evidence(
+            report=report,
+            selection=selection,
+            summary=_read_json(artifacts.summary_path),
+            events=events,
+            exit_code=exit_code,
+            termination_reason=termination_reason,
+            collection_only="--collect-only" in command,
+        )
+    )
     return metadata
 
 
@@ -348,19 +374,54 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
                 "success" if completed.returncode == 0 else "worker_crash" if completed.returncode == 3 else "failure"
             )
     else:
-        completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+        executable_result = executable_gate_result(command, gate=label, env=env)
+        if not executable_result.ok:
+            early_metadata: dict[str, Any] = {
+                "diagnosis": executable_result.diagnosis,
+                "required_gate": executable_result.to_payload(),
+            }
+            run.finish_step(
+                step_id=artifacts.step_id,
+                result={"duration_s": round(time.monotonic() - started, 2), "exit": 127, **early_metadata},
+            )
+            sys.stderr.write("FAILED (missing executable)\n")
+            return 127, time.monotonic() - started, early_metadata
+        try:
+            completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+        except OSError as exc:
+            gate_result = evidence_gate_result(
+                gate=label,
+                executable=executable_result.executable,
+                executable_available=True,
+                required_count=1,
+                inspected_count=0,
+                error_count=1,
+                details=(str(exc),),
+            )
+            early_metadata = {"diagnosis": "gate_subprocess_launch_failed", "required_gate": gate_result.to_payload()}
+            run.finish_step(
+                step_id=artifacts.step_id,
+                result={"duration_s": round(time.monotonic() - started, 2), "exit": 127, **early_metadata},
+            )
+            sys.stderr.write("FAILED (subprocess launch)\n")
+            return 127, time.monotonic() - started, early_metadata
     elapsed = time.monotonic() - started
     metadata: dict[str, Any] = {
-        "diagnosis": "pytest_passed"
-        if pytest_step and completed.returncode == 0
-        else "pytest_failed"
-        if pytest_step
-        else "gate_passed"
-        if completed.returncode == 0
-        else "gate_failed"
+        "diagnosis": "pytest_failed" if pytest_step else "gate_passed" if completed.returncode == 0 else "gate_failed"
     }
     if pytest_step:
-        metadata.update(_pytest_metadata(command, artifacts))
+        metadata.update(
+            _pytest_metadata(
+                command,
+                artifacts,
+                exit_code=completed.returncode,
+                termination_reason=env.get(TERMINATION_REASON_ENV),
+            )
+        )
+        if not metadata.get("ordinary_eligible"):
+            metadata["diagnosis"] = str(metadata.get("diagnosis") or "pytest_no_evidence")
+        else:
+            metadata["diagnosis"] = "pytest_passed"
         copy_current_pytest_artifacts(
             ROOT,
             artifacts,
@@ -378,15 +439,54 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         if output:
             artifacts.output_path.write_text(output, encoding="utf-8")
             metadata["output_path"] = str(artifacts.output_path.relative_to(ROOT))
+        gate_result = evidence_gate_result(
+            gate=label,
+            executable=command[0] if command else None,
+            executable_available=True,
+            required_count=1,
+            inspected_count=1 if completed.returncode == 0 else 0,
+            error_count=0 if completed.returncode == 0 else 1,
+            details=() if completed.returncode == 0 else (output[-160:],),
+        )
+        metadata["required_gate"] = gate_result.to_payload()
+        if "--json" in command:
+            decoded: object = None
+            with contextlib.suppress(json.JSONDecodeError):
+                decoded = json.loads(output)
+            if not isinstance(decoded, dict):
+                for candidate in reversed(output.splitlines()):
+                    with contextlib.suppress(json.JSONDecodeError):
+                        possible = json.loads(candidate)
+                        if isinstance(possible, dict):
+                            decoded = possible
+                            break
+            if isinstance(decoded, dict):
+                required_gate = decoded.get("required_gate")
+                if isinstance(required_gate, dict):
+                    metadata["required_gate"] = required_gate
+                    if required_gate.get("gate_passed") is False:
+                        metadata["diagnosis"] = str(required_gate.get("diagnosis") or "gate_failed")
+        gate_payload = metadata.get("required_gate")
+        if completed.returncode == 0 and (
+            not isinstance(gate_payload, Mapping) or gate_payload.get("gate_passed", True)
+        ):
+            metadata["diagnosis"] = "gate_passed"
+    effective_exit = completed.returncode
+    if not pytest_step:
+        required_gate = metadata.get("required_gate")
+        if isinstance(required_gate, Mapping) and required_gate.get("gate_passed") is False and effective_exit == 0:
+            effective_exit = 1
+    if pytest_step and not metadata.get("ordinary_eligible") and effective_exit == 0:
+        effective_exit = 5 if metadata.get("diagnosis") == "pytest_no_tests_selected" else 1
     run.finish_step(
-        step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": completed.returncode, **metadata}
+        step_id=artifacts.step_id, result={"duration_s": round(elapsed, 2), "exit": effective_exit, **metadata}
     )
-    sys.stderr.write(f"{'ok' if completed.returncode == 0 else 'FAILED'} ({elapsed:.1f}s)\n")
-    if not pytest_step and completed.returncode and isinstance(completed.stdout, str):
+    sys.stderr.write(f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)\n")
+    if not pytest_step and effective_exit and isinstance(completed.stdout, str):
         sys.stderr.write(completed.stdout)
     if not pytest_step and completed.returncode and isinstance(completed.stderr, str):
         sys.stderr.write(completed.stderr)
-    return completed.returncode, elapsed, metadata
+    return effective_exit, elapsed, metadata
 
 
 def _changed_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:

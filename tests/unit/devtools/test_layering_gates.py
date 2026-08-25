@@ -311,6 +311,49 @@ def test_layering_main_fails_closed_on_missing_package_docstring(
     assert "polylogue/example/__init__.py: package_docstring_missing" in capsys.readouterr().out
 
 
+def test_layering_main_fails_closed_on_missing_declared_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "layering.yaml").write_text(
+        "rules:\n  - target: polylogue/renamed\n    description: renamed root\n    disallow:\n      from: [polylogue/cli]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "polylogue").mkdir()
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required_gate"]["diagnosis"] == "gate_missing_input"
+    assert payload["required_gate"]["missing_count"] == 1
+
+
+def test_layering_main_fails_closed_on_unreadable_declared_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "layering.yaml").write_text(
+        "rules:\n  - target: polylogue/example\n    disallow: {}\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "polylogue" / "example"
+    root.mkdir(parents=True)
+    (root / "module.py").write_text('"""module"""\n', encoding="utf-8")
+    original = Path.read_text
+
+    def unreadable(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path == root / "module.py":
+            raise OSError("synthetic unreadable input")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main(["--json"]) == 1
+
+
 def test_mutation_scanner_distinguishes_replace_projection_from_replace_into() -> None:
     tree = ast.parse(
         '''

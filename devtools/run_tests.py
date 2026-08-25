@@ -29,6 +29,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -39,13 +40,16 @@ from devtools.pytest_collection_contract import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.pytest_evidence import TERMINATION_REASON_ENV
 from devtools.pytest_scratch import Outcome, PytestScratchLease, run_managed_pytest, scratch_root_from_environment
 from devtools.verify_runs import (
     VerifyRun,
+    aggregate_pytest_statistics,
     append_verify_history,
     configured_pytest_worker_request,
     env_for_pytest_step,
     git_head,
+    merge_worker_events,
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
@@ -314,6 +318,25 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
 
+def _focused_pytest_evidence(
+    command: list[str], artifacts: Any, *, exit_code: int, termination_reason: str | None = None
+) -> dict[str, Any]:
+    report_path = ROOT / PYTEST_REPORT_PATH
+    if report_path.is_file():
+        try:
+            json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+        else:
+            shutil.copyfile(report_path, artifacts.step_dir / "pytest-report.json")
+    merge_worker_events(artifacts.events_dir, artifacts.events_merged_path)
+    return aggregate_pytest_statistics(
+        artifacts.step_dir,
+        command=command,
+        step_result={"exit": exit_code, "termination_reason": termination_reason},
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
@@ -368,6 +391,13 @@ def main(argv: list[str] | None = None) -> int:
             env=pytest_env,
             run=run,
         )
+        pytest_evidence = _focused_pytest_evidence(
+            cmd, artifacts, exit_code=rc, termination_reason=pytest_env.get(TERMINATION_REASON_ENV)
+        )
+        metadata.update(pytest_evidence)
+        if not metadata.get("ordinary_eligible") and rc == 0:
+            rc = 5 if metadata.get("diagnosis") == "pytest_no_tests_selected" else 1
+        metadata["diagnosis"] = str(metadata.get("diagnosis") or "pytest_no_evidence")
     except ManagedTestInterrupted as exc:
         rc = 128 + exc.signum
         elapsed = time.monotonic() - started
@@ -411,6 +441,13 @@ def main(argv: list[str] | None = None) -> int:
         diagnosis=metadata.get("diagnosis"),
         verification_scope="affected",
         final_git_head=git_head(ROOT),
+        pytest_aggregate={
+            "selection_mode": "focused",
+            "selected_union_count": metadata.get("selected_count"),
+            "terminal_union_count": metadata.get("terminal_count"),
+            "terminal_green": metadata.get("ordinary_eligible", False),
+            "outcomes": metadata.get("outcomes", {}),
+        },
     )
     append_verify_history(payload)
     prune_successful_verify_runs(root=ROOT)
