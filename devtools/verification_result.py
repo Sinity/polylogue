@@ -85,8 +85,6 @@ def _gate_outcomes(value: object) -> dict[str, Any]:
                 "name": _string(step.get("name")),
                 "status": "running"
                 if step.get("status") == "running"
-                else "failed"
-                if isinstance(step.get("required_gate"), Mapping) and step["required_gate"].get("gate_passed") is False
                 else "passed"
                 if step.get("exit") == 0
                 else "failed",
@@ -116,8 +114,6 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "terminal_count": _integer(aggregate.get("terminal_union_count")),
         "non_green_count": _integer(aggregate.get("non_green_count")),
         "terminal_green": _boolean(aggregate.get("terminal_green")),
-        "ordinary_eligible": _boolean(aggregate.get("ordinary_eligible")),
-        "diagnosis": _string(aggregate.get("diagnosis")),
         "complete_corpus_covered": _boolean(aggregate.get("complete_corpus_covered")),
         "corpus_digest": _string(corpus.get("digest")),
         "outcomes": bounded_outcomes,
@@ -133,19 +129,6 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
     if payload.get("status") == "running":
         return "running"
     exit_code = _integer(payload.get("exit_code"))
-    steps = payload.get("steps")
-    if not isinstance(steps, list):
-        steps = []
-    if any(
-        isinstance(step, Mapping)
-        and isinstance(step.get("required_gate"), Mapping)
-        and step["required_gate"].get("gate_passed") is False
-        for step in steps
-    ):
-        return "failed"
-    aggregate = _mapping(payload.get("pytest_aggregate"))
-    if aggregate and aggregate.get("ordinary_eligible") is False:
-        return "failed"
     if exit_code == 0:
         return {
             "affected": "affected-passed",

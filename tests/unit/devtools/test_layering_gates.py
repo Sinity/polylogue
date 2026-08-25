@@ -23,7 +23,8 @@ def test_layering_no_violations_passes(tmp_path: Path) -> None:
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "module.py").write_text("import os\nfrom polylogue.core import json\n", encoding="utf-8")
 
-    imports = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    imports, unreadable = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    assert unreadable == ()
     assert "polylogue.cli" not in imports.get("polylogue/storage/module.py", set())
 
 
@@ -36,7 +37,8 @@ def test_layering_disallow_violation_detected(tmp_path: Path) -> None:
     cli.mkdir(parents=True, exist_ok=True)
     (cli / "click_app.py").write_text("", encoding="utf-8")
 
-    imports = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    imports, unreadable = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    assert unreadable == ()
     # from polylogue.cli import click_app -> module = "polylogue.cli"
     assert "polylogue.cli" in imports.get("polylogue/storage/bad_importer.py", set()), "storage imports cli module"
 
@@ -55,7 +57,8 @@ def test_layering_disallow_violation_detected(tmp_path: Path) -> None:
         target = str(rule["target"])
         target_dir = tmp_path / target
         disallow_from = list(rule.get("disallow", {}).get("from", []))
-        file_imports = verify_layering._collect_imports(target_dir, repo_root=tmp_path)
+        file_imports, unreadable = verify_layering._collect_imports(target_dir, repo_root=tmp_path)
+        assert unreadable == ()
         for file_rel, file_imports_set in file_imports.items():
             for imp in file_imports_set:
                 if not imp.startswith("polylogue"):
@@ -157,7 +160,8 @@ def test_layering_cli_imports_storage_is_detected(tmp_path: Path) -> None:
     cli_dir.mkdir(parents=True, exist_ok=True)
     (cli_dir / "commands.py").write_text("from polylogue.storage import something\n", encoding="utf-8")
 
-    imports = verify_layering._collect_imports(cli_dir, repo_root=tmp_path)
+    imports, unreadable = verify_layering._collect_imports(cli_dir, repo_root=tmp_path)
+    assert unreadable == ()
     # from polylogue.storage import something -> module = "polylogue.storage"
     assert "polylogue.storage" in imports.get("polylogue/cli/commands.py", set())
 
@@ -323,6 +327,10 @@ def test_layering_main_fails_closed_on_missing_declared_root(
     (tmp_path / "polylogue").mkdir()
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
 
+    assert verify_layering.main([]) == 1
+    output = capsys.readouterr().out
+    assert "polylogue/renamed: declared_root_missing" in output
+    assert '"required_gate"' not in output
     assert verify_layering.main(["--json"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["required_gate"]["diagnosis"] == "gate_missing_input"
@@ -330,12 +338,12 @@ def test_layering_main_fails_closed_on_missing_declared_root(
 
 
 def test_layering_main_fails_closed_on_unreadable_declared_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     plans = tmp_path / "docs" / "plans"
     plans.mkdir(parents=True)
     (plans / "layering.yaml").write_text(
-        "rules:\n  - target: polylogue/example\n    disallow: {}\n",
+        "rules:\n  - target: polylogue/example\n    description: example root\n    disallow: {}\n",
         encoding="utf-8",
     )
     root = tmp_path / "polylogue" / "example"
@@ -351,7 +359,12 @@ def test_layering_main_fails_closed_on_unreadable_declared_root(
     monkeypatch.setattr(Path, "read_text", unreadable)
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
 
+    assert verify_layering.main([]) == 1
+    assert "declared_root_unreadable" in capsys.readouterr().out
     assert verify_layering.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required_gate"]["diagnosis"] == "gate_unreadable_input"
+    assert payload["required_gate"]["unreadable_count"] == 1
 
 
 def test_mutation_scanner_distinguishes_replace_projection_from_replace_into() -> None:

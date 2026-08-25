@@ -132,8 +132,6 @@ def _load_baseline(baseline_path: Path) -> set[tuple[str, str, str]]:
     """
     if not baseline_path.exists():
         return set()
-    import json
-
     with open(baseline_path, encoding="utf-8") as f:
         raw = json.load(f)
     entries: set[tuple[str, str, str]] = set()
@@ -185,12 +183,20 @@ def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, o
     return violations
 
 
-def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str]]:
+def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, set[str]], tuple[str, ...]]:
     imports: dict[str, set[str]] = {}
-    for py_file in package_dir.rglob("*.py"):
+    unreadable: list[str] = []
+    try:
+        candidates = tuple(package_dir.rglob("*.py"))
+    except OSError as exc:
+        return imports, (f"{package_dir.relative_to(repo_root).as_posix()}: {exc}",)
+    for py_file in candidates:
         try:
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
+        except (OSError, UnicodeError) as exc:
+            unreadable.append(f"{py_file.relative_to(repo_root).as_posix()}: {exc}")
+            continue
+        except SyntaxError:
             continue
         rel = py_file.relative_to(repo_root).as_posix()
         imports.setdefault(rel, set())
@@ -200,7 +206,7 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str
                     imports[rel].add(alias.name)
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 imports[rel].add(node.module)
-    return imports
+    return imports, tuple(unreadable)
 
 
 def _package_name(value: str) -> str:
@@ -720,6 +726,9 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
+    if rule in {"declared_root_missing", "declared_root_unreadable"}:
+        detail = f" ({violation['detail']})" if "detail" in violation else ""
+        return f"  {violation['file']}: {rule}{detail}"
     if rule.startswith("package_docstring_"):
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
@@ -734,34 +743,6 @@ def _format_violation(violation: dict[str, object]) -> str:
         line = f":{violation['line']}" if "line" in violation else ""
         return f"  {violation['file']}{line}: {rule}{detail}"
     return f"  {violation['file']}: imports {violation['import']} ({violation['rule']})"
-
-
-def _inspect_declared_roots(repo_root: Path, paths: set[str]) -> tuple[int, int, int, list[str]]:
-    """Inspect declared roots and Python inputs without skipping errors."""
-    inspected = missing = unreadable = 0
-    details: list[str] = []
-    for relative in sorted(paths):
-        path = repo_root / relative
-        if not path.is_dir():
-            missing += 1
-            details.append(relative)
-            continue
-        inspected += 1
-        try:
-            candidates = tuple(sorted(path.rglob("*.py")))
-        except OSError:
-            unreadable += 1
-            details.append(relative)
-            continue
-        for candidate in candidates:
-            try:
-                candidate.read_text(encoding="utf-8")
-            except (OSError, UnicodeError):
-                unreadable += 1
-                details.append(candidate.relative_to(repo_root).as_posix())
-            else:
-                inspected += 1
-    return inspected, missing, unreadable, details
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -826,15 +807,30 @@ def main(argv: list[str] | None = None) -> int:
     writer_modules = _writer_module_policy(manifest)
     if writer_modules is not None:
         declared_roots.update(writer_modules.mutation_roots)
-    inspected_count, missing_count, unreadable_count, input_details = _inspect_declared_roots(repo_root, declared_roots)
+    inspected_count = missing_count = unreadable_count = 0
+    input_details: list[str] = []
+    imports_by_root: dict[str, dict[str, set[str]]] = {}
     violations: list[dict[str, object]] = []
     baselined: list[dict[str, object]] = []
+    for target in sorted(declared_roots):
+        target_dir = repo_root / target
+        if not target_dir.is_dir():
+            missing_count += 1
+            input_details.append(target)
+            violations.append({"file": target, "rule": "declared_root_missing"})
+            continue
+        inspected_count += 1
+        imports, unreadable = _collect_imports(target_dir, repo_root=repo_root)
+        imports_by_root[target] = imports
+        for detail in unreadable:
+            unreadable_count += 1
+            input_details.append(detail)
+            violations.append({"file": detail.split(":", 1)[0], "rule": "declared_root_unreadable", "detail": detail})
 
     for rule in rules:
         target = str(rule["target"])
         target_dir = repo_root / target
-        if not target_dir.exists():
-            violations.append({"file": target, "rule": "declared_root_missing"})
+        if not target_dir.is_dir():
             continue
 
         allow_block = rule.get("allow") or {}
@@ -854,7 +850,7 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(baseline_ref, str):
                 baseline_entries = _load_baseline(repo_root / baseline_ref)
 
-        imports = _collect_imports(target_dir, repo_root=repo_root)
+        imports = imports_by_root[target]
         for file_rel, file_imports in imports.items():
             for imp in file_imports:
                 if not imp.startswith("polylogue"):
@@ -938,8 +934,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {stale_baseline_count} baseline entr(y/ies) no longer reproduce -- prune them from the "
                 "baseline file to ratchet the count down"
             )
-        print(json.dumps({"required_gate": gate.to_payload()}, sort_keys=True))
-
     return 1 if violations or not gate.ok else 0
 
 

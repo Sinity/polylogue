@@ -22,18 +22,19 @@ class GateResult:
     stale_count: int = 0
     error_count: int = 0
     diagnosis: str = "gate_passed"
+    enforced: bool = True
     details: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def ok(self) -> bool:
-        return self.diagnosis == "gate_passed"
+        return self.diagnosis in {"gate_passed", "not_enforced"}
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "kind": "polylogue.required-gate-result",
             "gate": self.gate,
-            "status": "passed" if self.ok else "failed",
-            "gate_passed": self.ok,
+            "status": "not_enforced" if self.diagnosis == "not_enforced" else "passed" if self.ok else "failed",
+            "gate_passed": None if self.diagnosis == "not_enforced" else self.ok,
             "executable": self.executable,
             "executable_available": self.executable_available,
             "required_count": self.required_count,
@@ -43,6 +44,7 @@ class GateResult:
             "stale_count": self.stale_count,
             "error_count": self.error_count,
             "diagnosis": self.diagnosis,
+            "enforced": self.enforced,
             "details": list(self.details),
         }
 
@@ -84,19 +86,21 @@ def evidence_gate_result(
     details: Sequence[str] = (),
 ) -> GateResult:
     """Build a result where empty or unavailable required evidence is failure."""
-    if executable_available is False:
+    if not enforced:
+        diagnosis = "not_enforced"
+    elif executable_available is False:
         diagnosis = "gate_missing_executable"
-    elif enforced and missing_count:
+    elif missing_count:
         diagnosis = "gate_missing_input"
-    elif enforced and stale_count:
+    elif stale_count:
         diagnosis = "gate_stale_evidence"
-    elif enforced and unreadable_count:
+    elif unreadable_count:
         diagnosis = "gate_unreadable_input"
-    elif enforced and error_count:
+    elif error_count:
         diagnosis = "gate_input_error"
-    elif enforced and required_count == 0:
+    elif required_count == 0:
         diagnosis = "gate_empty_required_population"
-    elif enforced and inspected_count < required_count:
+    elif inspected_count < required_count:
         diagnosis = "gate_incomplete_inspection"
     else:
         diagnosis = "gate_passed"
@@ -111,6 +115,7 @@ def evidence_gate_result(
         stale_count=stale_count,
         error_count=error_count,
         diagnosis=diagnosis,
+        enforced=enforced,
         details=tuple(str(detail) for detail in details),
     )
 

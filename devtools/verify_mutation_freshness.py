@@ -320,8 +320,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    ... and {len(fresh) - 5} more")
         print()
         print(f"blocking={blocking} (strict={args.strict})")
-        print(json.dumps({"required_gate": gate.to_payload()}, sort_keys=True))
-
     return 1 if blocking else 0
 
 

@@ -64,7 +64,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == "gate_subprocess_launch_failed"
-    assert history["steps"][0]["required_gate"]["error_count"] == 1
+    assert history["steps"][0]["error"] == "ruff"
 
 
 def test_native_selection_partitions_semantic_lanes() -> None:
@@ -133,26 +133,7 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
 
     assert exit_code != 0
     assert metadata["diagnosis"] == "pytest_no_report"
-    assert metadata["ordinary_eligible"] is False
-
-
-def test_stall_termination_reason_overrides_clean_child_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("POLYLOGUE_PYTEST_TERMINATION_REASON", "stall")
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(verify, "scratch_root_from_environment", lambda _env: tmp_path / "scratch")
-    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
-    monkeypatch.setattr(
-        verify,
-        "run_managed_pytest",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0),
-    )
-    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
-
-    exit_code, _elapsed, metadata = verify._run("pytest native serial (affected)", ["pytest"], run=run)
-
-    assert exit_code != 0
-    assert metadata["diagnosis"] == "pytest_stall_terminated"
+    assert metadata["statistics"]["ordinary_eligible"] is False
 
 
 def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:

@@ -98,20 +98,13 @@ def _validation(root: Path) -> tuple[tuple[str, ...], int, int, tuple[Path, ...]
     return tuple(errors), inspected, unreadable, tuple(paths)
 
 
-def validate_ci_commands(root: Path) -> tuple[str, ...]:
-    """Return parse and command errors from GitHub Actions and CircleCI YAML."""
-    errors, _inspected, _unreadable, paths = _validation(root)
-    if not paths:
-        return ("no required CI workflow inputs",)
-    return errors
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     root = repo_root()
     errors, inspected, unreadable, paths = _validation(root)
+    details = errors or (("no required CI workflow inputs",) if not paths else ())
     gate = evidence_gate_result(
         gate="ci-commands",
         executable="yaml-parser",
@@ -120,14 +113,14 @@ def main(argv: list[str] | None = None) -> int:
         inspected_count=inspected,
         unreadable_count=unreadable,
         error_count=len(errors),
-        details=errors,
+        details=details,
     )
     if args.json:
         print(
             json.dumps({"blocking": not gate.ok, "errors": list(errors), "required_gate": gate.to_payload()}, indent=2)
         )
-    elif errors:
-        for error in errors:
+    elif not gate.ok:
+        for error in details:
             print(f"[BLOCK] {error}")
     else:
         print("CI devtools commands match the live command catalog")

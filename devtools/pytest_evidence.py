@@ -6,7 +6,6 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 _TERMINAL_OUTCOMES = frozenset({"passed", "failed", "skipped", "xfailed", "xpassed", "error", "rerun"})
-TERMINATION_REASON_ENV = "POLYLOGUE_PYTEST_TERMINATION_REASON"
 
 
 def _int(value: object) -> int | None:
@@ -29,7 +28,6 @@ def evaluate_pytest_evidence(
     summary: Mapping[str, Any] | None,
     events: Iterable[Mapping[str, Any]],
     exit_code: int,
-    termination_reason: str | None = None,
     collection_only: bool = False,
 ) -> dict[str, Any]:
     """Return the one ordinary pytest success predicate and its diagnosis.
@@ -58,11 +56,7 @@ def evaluate_pytest_evidence(
     collection_finished = any(event.get("event") == "collection_finished" for event in event_rows)
     terminal_count = len(terminal_tests)
     diagnosis = "pytest_passed"
-    if termination_reason == "stall":
-        diagnosis = "pytest_stall_terminated"
-    elif termination_reason in {"sigterm", "operator_interrupt", "sigint"}:
-        diagnosis = "pytest_interrupted"
-    elif exit_code == 3:
+    if exit_code == 3:
         diagnosis = "pytest_worker_loss"
     elif report is None:
         diagnosis = "pytest_no_report"
@@ -72,16 +66,16 @@ def evaluate_pytest_evidence(
         diagnosis = "pytest_no_tests_selected"
     elif not collection_finished:
         diagnosis = "pytest_collection_incomplete"
-    elif terminal_count != selected_count:
-        diagnosis = "pytest_report_incomplete"
-    elif summary.get("exitstatus") not in (None, exit_code):
-        diagnosis = "pytest_summary_inconsistent"
     elif exit_code != 0:
         diagnosis = "pytest_failed"
+    elif summary.get("exitstatus") not in (None, exit_code):
+        diagnosis = "pytest_summary_inconsistent"
+    elif collection_only:
+        diagnosis = "pytest_collection_only"
+    elif terminal_count != selected_count:
+        diagnosis = "pytest_report_incomplete"
 
     ordinary_eligible = diagnosis == "pytest_passed" and not collection_only
-    if collection_only and diagnosis == "pytest_passed":
-        diagnosis = "pytest_collection_only"
     return {
         "ok": diagnosis in {"pytest_passed", "pytest_collection_only"},
         "ordinary_eligible": ordinary_eligible,
@@ -92,8 +86,7 @@ def evaluate_pytest_evidence(
         "terminal_count": terminal_count,
         "outcomes": outcomes,
         "exit_code": exit_code,
-        "termination_reason": termination_reason,
     }
 
 
-__all__ = ["TERMINATION_REASON_ENV", "evaluate_pytest_evidence"]
+__all__ = ["evaluate_pytest_evidence"]

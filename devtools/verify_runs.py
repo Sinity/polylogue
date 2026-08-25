@@ -296,13 +296,35 @@ class VerifyRun:
         for step in self._payload["steps"]:
             if step.get("step_id") != step_id:
                 continue
-            step.update(result)
-            step["finished_at"] = utc_now()
-            step["status"] = "success" if result.get("exit") == 0 else "failed"
+            finalized = dict(result)
+            statistics: dict[str, Any] | None = None
             if str(step.get("name", "")).startswith("pytest"):
                 step_dir = self.run_dir / "steps" / step_id
                 with contextlib.suppress(OSError, ValueError):
                     statistics = aggregate_pytest_statistics(step_dir, command=step.get("cmd", []), step_result=result)
+                explicit_terminal = result.get("diagnosis") in {
+                    "focused_test_runner_exception",
+                    "pytest_interrupted",
+                    "verification_interrupted",
+                }
+                if statistics is not None:
+                    raw_exit = result.get("exit")
+                    finalized["process_exit"] = raw_exit
+                    if not explicit_terminal and raw_exit == 0 and not statistics.get("ok"):
+                        finalized["exit"] = 5 if statistics.get("diagnosis") == "pytest_no_tests_selected" else 1
+                    if not explicit_terminal:
+                        finalized["diagnosis"] = str(statistics.get("diagnosis") or "pytest_no_evidence")
+            step.update(finalized)
+            step["finished_at"] = utc_now()
+            step["status"] = "success" if finalized.get("exit") == 0 else "failed"
+            if str(step.get("name", "")).startswith("pytest"):
+                step_dir = self.run_dir / "steps" / step_id
+                if statistics is None:
+                    with contextlib.suppress(OSError, ValueError):
+                        statistics = aggregate_pytest_statistics(
+                            step_dir, command=step.get("cmd", []), step_result=finalized
+                        )
+                if statistics is not None:
                     _write_json(step_dir / "statistics.json", statistics)
                     step["statistics"] = statistics
                     step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
@@ -463,9 +485,6 @@ def aggregate_pytest_statistics(
         summary=summary,
         events=event_rows,
         exit_code=raw_exit if isinstance(raw_exit, int) and not isinstance(raw_exit, bool) else 125,
-        termination_reason=(
-            str(step_result["termination_reason"]) if step_result.get("termination_reason") is not None else None
-        ),
         collection_only=any(str(part) == "--collect-only" for part in command),
     )
     evidence["outcomes"] = outcomes

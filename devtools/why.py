@@ -50,59 +50,6 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "The run was interrupted before finishing, so its result is not a verdict on the suite.",
         "Re-run. If it was interrupted mid-bootstrap, the graph is retained and the next run resumes from it.",
     ),
-    "pytest_no_report": Explanation(
-        "Pytest exited without a readable canonical report.",
-        "Re-run the selected tests and inspect the step artifacts.",
-    ),
-    "pytest_report_unreadable": Explanation(
-        "The canonical pytest report could not be decoded.", "Inspect the report artifact and rerun the selection."
-    ),
-    "pytest_collection_incomplete": Explanation(
-        "Collection did not reach its durable completion event.",
-        "Re-run the selection; a zero-exit process is not evidence of execution.",
-    ),
-    "pytest_no_tests_selected": Explanation(
-        "The selector collected no tests.", "Correct the selector and rerun a positive selection."
-    ),
-    "pytest_report_incomplete": Explanation(
-        "The report does not contain terminal outcomes for every selected test.",
-        "Inspect the interrupted or partial pytest artifacts and rerun.",
-    ),
-    "pytest_worker_loss": Explanation(
-        "A pytest worker was lost before a complete terminal set was recorded.",
-        "Re-run after inspecting the worker failure artifacts.",
-    ),
-    "pytest_stall_terminated": Explanation(
-        "The owned pytest process was terminated for lack of productive progress.",
-        "Inspect the progress ledger, then rerun the selection.",
-    ),
-    "pytest_summary_inconsistent": Explanation(
-        "The pytest summary disagrees with the process result.", "Inspect the canonical report and rerun the selection."
-    ),
-    "gate_missing_executable": Explanation(
-        "A required gate executable was unavailable.", "Install or expose the named executable, then rerun the gate."
-    ),
-    "gate_subprocess_launch_failed": Explanation(
-        "A required gate subprocess could not be launched.", "Inspect the launch error and rerun the gate."
-    ),
-    "gate_missing_input": Explanation(
-        "A required gate input was absent.", "Restore the named input and rerun the gate."
-    ),
-    "gate_stale_evidence": Explanation(
-        "Required enforcement evidence was stale.", "Regenerate the required evidence and rerun the gate."
-    ),
-    "gate_unreadable_input": Explanation(
-        "A required gate input could not be read.", "Repair permissions or encoding and rerun the gate."
-    ),
-    "gate_empty_required_population": Explanation(
-        "The required gate inspected no declared inputs.", "Restore the declared input population and rerun the gate."
-    ),
-    "gate_incomplete_inspection": Explanation(
-        "The gate did not inspect every declared input.", "Inspect the named inputs and rerun the gate."
-    ),
-    "gate_input_error": Explanation(
-        "A required gate input produced an error.", "Inspect the named gate diagnostics and rerun."
-    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
@@ -195,25 +142,6 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
                 f"{aggregate.get('complete_corpus_covered')}{attested_text}",
                 file=stream,
             )
-
-    gate_steps = [
-        step
-        for step in (payload.get("steps") or [])
-        if isinstance(step, dict) and isinstance(step.get("required_gate"), dict)
-    ]
-    if gate_steps:
-        print("\nrequired gates:", file=stream)
-        for step in gate_steps:
-            gate = step["required_gate"]
-            print(
-                f"  - {gate.get('gate')} {'passed' if gate.get('gate_passed') else 'FAILED'} "
-                f"diagnosis={gate.get('diagnosis')} inspected={gate.get('inspected_count')} "
-                f"missing={gate.get('missing_count')} unreadable={gate.get('unreadable_count')} "
-                f"errors={gate.get('error_count')}",
-                file=stream,
-            )
-            for detail in list(gate.get("details") or [])[:8]:
-                print(f"      {detail}", file=stream)
 
     failing_steps = [
         step for step in (payload.get("steps") or []) if isinstance(step, dict) and step.get("exit") not in (0, None)

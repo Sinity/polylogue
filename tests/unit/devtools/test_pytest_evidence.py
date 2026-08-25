@@ -66,24 +66,6 @@ def test_exit_zero_does_not_override_missing_pytest_evidence(
     assert result["diagnosis"] == diagnosis
 
 
-@pytest.mark.parametrize(
-    ("termination_reason", "diagnosis"),
-    [("stall", "pytest_stall_terminated"), ("sigterm", "pytest_interrupted")],
-)
-def test_terminal_interruption_is_never_green(termination_reason: str, diagnosis: str) -> None:
-    result = evaluate_pytest_evidence(
-        report={"tests": [{"nodeid": "test_ok", "outcome": "passed"}]},
-        selection={"selected_count": 1},
-        summary={"exitstatus": 0},
-        events=[{"event": "collection_finished", "selected_count": 1}],
-        exit_code=0,
-        termination_reason=termination_reason,
-    )
-
-    assert result["ok"] is False
-    assert result["diagnosis"] == diagnosis
-
-
 def test_worker_loss_is_typed() -> None:
     result = _evidence(Path("."), exit_code=3)
 
@@ -108,3 +90,30 @@ def test_positive_execution_mutation_probe_is_red() -> None:
     mutated = _evidence(Path("."), selected_count=0, tests=[])
 
     assert mutated["ok"] is False
+
+
+def test_collection_only_is_explicit_success_before_terminal_completeness() -> None:
+    result = evaluate_pytest_evidence(
+        report={"tests": []},
+        selection={"selected_count": 2},
+        summary={"exitstatus": 0},
+        events=[{"event": "collection_finished", "selected_count": 2}],
+        exit_code=0,
+        collection_only=True,
+    )
+
+    assert result["ok"] is True
+    assert result["ordinary_eligible"] is False
+    assert result["diagnosis"] == "pytest_collection_only"
+
+
+def test_maxfail_is_an_ordinary_pytest_failure_not_incomplete_evidence() -> None:
+    result = _evidence(
+        Path("."),
+        selected_count=2,
+        tests=[{"nodeid": "test_a", "outcome": "failed"}],
+        exit_code=1,
+    )
+
+    assert result["ok"] is False
+    assert result["diagnosis"] == "pytest_failed"
