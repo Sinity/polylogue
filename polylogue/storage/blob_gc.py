@@ -330,6 +330,20 @@ def _open_blob_namespace(
         os.close(root_fd)
 
 
+def _is_lowercase_hex(value: str) -> bool:
+    """Return whether ``value`` is composed only of lowercase hex digits."""
+    return all(char in "0123456789abcdef" for char in value)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Fsync a directory's inode so a prior entry write survives a crash."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _read_blob_object(
     blob_root: Path, blob_hash: str, *, namespace_identity: _BlobNamespaceIdentity
 ) -> tuple[int | None, tuple[str, ...]]:
@@ -368,6 +382,14 @@ def _blob_namespace_identity(blob_root: Path, *, create_marker: bool = False) ->
         try:
             with marker_path.open("x", encoding="ascii", errors="strict") as marker_file:
                 marker_file.write(uuid4().hex)
+                marker_file.flush()
+                os.fsync(marker_file.fileno())
+            # Closing the file makes neither its contents nor its directory
+            # entry durable. A new marker's identity is about to be recorded
+            # in `gc_generations` (a durable commit); fsync the containing
+            # directory too so a power loss cannot leave that durable intent
+            # pointing at a marker that never reached disk.
+            _fsync_directory(blob_root)
         except FileExistsError:
             pass
         except OSError as exc:
@@ -402,7 +424,7 @@ def _candidate_blobs(
         for prefix_dir in os.scandir(str(blob_dir)):
             if not prefix_dir.is_dir(follow_symlinks=False):
                 continue
-            if not prefix_dir.name or len(prefix_dir.name) != 2:
+            if not prefix_dir.name or len(prefix_dir.name) != 2 or not _is_lowercase_hex(prefix_dir.name):
                 continue
             try:
                 for entry in os.scandir(prefix_dir.path):
@@ -412,6 +434,16 @@ def _candidate_blobs(
                         and now - entry.stat().st_mtime >= older_than
                     ):
                         blob_hash = prefix_dir.name + entry.name
+                        # A shard directory can contain an aged file that is
+                        # not a valid blob member -- e.g. a foreign or
+                        # partially-written entry whose combined name is not
+                        # exactly 64 lowercase hex characters. `iter_namespace`
+                        # already classifies those as invalid namespace
+                        # entries; GC must leave them for the integrity
+                        # workflow rather than shortlist them into a member
+                        # intent that would violate the 32-byte hash CHECK.
+                        if len(blob_hash) != 64 or not _is_lowercase_hex(blob_hash):
+                            continue
                         candidates.append((blob_hash, entry.stat().st_mtime))
             except OSError as exc:
                 raise _namespace_error(Path(prefix_dir.path), exc) from exc
@@ -1093,12 +1125,20 @@ def run_blob_gc_report(
             logger.error("Blob GC refused to run: %s", report.blocked_reason)
             return report
 
-    try:
-        namespace_identity = _blob_namespace_identity(blob_path, create_marker=True)
-    except _BlobNamespaceUnavailableError as exc:
-        report.blocked_reason = str(exc)
-        logger.error("Blob GC refused to run: %s", report.blocked_reason)
-        return report
+    # A dry run never reaches the namespace-bound unlink path below (its
+    # final recheck resolves candidate paths directly), so it must not bind
+    # -- let alone create -- a namespace marker.  Doing so would turn a
+    # read-only preview into a mutation of the archive and would fail
+    # against read-only backup media that a preview is explicitly meant to
+    # support.
+    namespace_identity: _BlobNamespaceIdentity | None = None
+    if not dry_run:
+        try:
+            namespace_identity = _blob_namespace_identity(blob_path, create_marker=True)
+        except _BlobNamespaceUnavailableError as exc:
+            report.blocked_reason = str(exc)
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
 
     if not dry_run and _resume_pending_gc_generation(
         control_db_path=control_db_path,
@@ -1199,6 +1239,7 @@ def run_blob_gc_report(
         planning_conn.close()
 
     if not dry_run:
+        assert namespace_identity is not None  # bound above whenever not dry_run
         members: list[_GCMemberIntent] = []
         for blob_hash, _mtime in shortlist:
             size_bytes, namespace_blockers = _read_blob_object(

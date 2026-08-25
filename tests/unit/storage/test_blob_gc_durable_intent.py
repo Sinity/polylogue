@@ -31,6 +31,43 @@ def _backdate(store: BlobStore, blob_hash: str) -> None:
     os.utime(path, (old, old))
 
 
+def test_marker_creation_fsyncs_file_and_containing_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a new namespace marker must fsync both the marker and its directory.
+
+    Regression for a review finding: closing the marker file makes neither
+    its contents nor its directory entry durable, so a power loss between
+    marker creation and the (already-fsynced) ``gc_generations`` commit
+    could leave a durable pending generation whose marker never reached
+    disk. Anti-vacuity: if the fsync calls in
+    ``blob_gc._blob_namespace_identity``'s marker-creation branch are
+    removed, ``os.fsync`` is called zero times here instead of at least
+    once for the marker fd and once for the directory fd, and this test
+    goes red.
+    """
+    blob_root = tmp_path / "blob"
+    blob_root.mkdir()
+
+    fsynced_fds: list[int] = []
+    real_fsync = os.fsync
+
+    def _recording_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _recording_fsync)
+
+    marker_path = blob_root / ".polylogue-blob-namespace"
+    assert not marker_path.exists()
+
+    identity = blob_gc._blob_namespace_identity(blob_root, create_marker=True)
+
+    assert marker_path.exists()
+    assert identity.marker == marker_path.read_text(encoding="ascii")
+    # At least two fsync calls: one for the marker file's own fd, one for
+    # the containing directory's fd (durability of the new directory entry).
+    assert len(fsynced_fds) >= 2
+
+
 def _member_rows(source_db: Path) -> list[tuple[object, ...]]:
     with sqlite3.connect(source_db) as conn:
         return conn.execute(

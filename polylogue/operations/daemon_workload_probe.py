@@ -1968,7 +1968,12 @@ def _blob_reference_debt_state(db: Path, *, enabled: bool) -> dict[str, Any]:
         }
     try:
         report = scan_blob_reference_debt(target)
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        # `scan_blob_reference_debt` raises RuntimeError (not just OSError/
+        # sqlite3.Error) when the canonical blob liveness projection itself
+        # is blocked -- a missing index tier or a source schema that cannot
+        # satisfy the projection. That is a probe-reportable blocked state,
+        # not an unhandled crash of the whole workload probe.
         return {
             "checked": False,
             "ok": False,

@@ -277,12 +277,13 @@ def test_candidate_blobs_skips_dotfiles(tmp_path: Path) -> None:
     prefix_dir.mkdir()
     # Create a temp file that should be skipped
     (prefix_dir / ".blob.temp").write_bytes(b"temp")
-    # Create a real blob manually
-    (prefix_dir / "bbccddeeff0011223344556677889900aabbccdd").write_bytes(b"real")
+    # Create a real blob manually — a valid 64-char lowercase-hex hash.
+    remainder = "bb" * 31
+    (prefix_dir / remainder).write_bytes(b"real")
 
     candidates = _candidate_blobs(blob_root, older_than=0)
     found = {h for h, _ in candidates}
-    assert "aabbccddeeff0011223344556677889900aabbccdd" in found
+    assert "aa" + remainder in found
     assert "aa.blob.temp" not in found
 
 
@@ -290,16 +291,47 @@ def test_candidate_blobs_skips_non_two_char_prefix_dirs(tmp_path: Path) -> None:
     """Directories not matching the two-char prefix pattern should be skipped."""
     blob_root = tmp_path / "blobs"
     blob_root.mkdir(parents=True)
-    # Valid prefix dir
+    # Valid prefix dir with a valid 64-char lowercase-hex blob hash.
     (blob_root / "ab").mkdir()
-    (blob_root / "ab" / "cdef1234").write_bytes(b"real")
+    remainder = "cd" * 31
+    (blob_root / "ab" / remainder).write_bytes(b"real")
     # Non-prefix dir
     (blob_root / "not-a-prefix").mkdir()
 
     candidates = _candidate_blobs(blob_root, older_than=0)
     found = {h for h, _ in candidates}
-    assert "abcdef1234" in found
+    assert "ab" + remainder in found
     assert not any(h.startswith("not") for h in found)
+
+
+def test_candidate_blobs_filters_invalid_namespace_entries(tmp_path: Path) -> None:
+    """A shard file whose combined name is not exactly 64 lowercase-hex chars
+    must never be shortlisted.
+
+    Regression for a review finding: ``_candidate_blobs`` used to shortlist
+    any aged regular file regardless of name shape, so a foreign or
+    partially-written entry in a valid-looking shard directory would reach
+    ``_commit_gc_generation_intent`` and violate the 32-byte ``blob_hash``
+    CHECK constraint (or raise ``ValueError`` from ``bytes.fromhex``).
+    ``BlobStore.iter_namespace`` already classifies these as invalid
+    namespace entries; GC must leave them alone. If the length/hex guard in
+    ``_candidate_blobs`` is removed, this test goes red because the
+    short/uppercase/non-hex entries would reappear in the candidate set.
+    """
+    blob_root = tmp_path / "blobs"
+    blob_root.mkdir(parents=True)
+    prefix_dir = blob_root / "aa"
+    prefix_dir.mkdir()
+
+    valid_remainder = "11" * 31  # 62 chars + "aa" prefix = 64
+    (prefix_dir / valid_remainder).write_bytes(b"real")
+    (prefix_dir / "tooshort").write_bytes(b"short")  # not 64 chars total
+    (prefix_dir / ("zz" * 31)).write_bytes(b"nonhex")  # not lowercase hex
+    (prefix_dir / (valid_remainder.upper())).write_bytes(b"uppercase")  # not lowercase hex
+
+    candidates = _candidate_blobs(blob_root, older_than=0)
+    found = {h for h, _ in candidates}
+    assert found == {"aa" + valid_remainder}
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +660,36 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
     finally:
         conn.close()
     assert row[0] == 0, "dry-run must not consume a generation slot"
+
+
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
+def test_run_blob_gc_dry_run_does_not_create_namespace_marker(tmp_path: Path) -> None:
+    """A dry-run preview must not write the namespace marker.
+
+    Regression for a review finding: every ``dry_run=True`` call used to
+    reach the unconditional ``create_marker=True`` path, mutating an archive
+    that had no marker yet and failing against read-only backup media. If
+    ``run_blob_gc_report`` is changed back to bind (and create) a namespace
+    marker unconditionally, this test goes red because the marker file would
+    exist after a dry run against a marker-less archive.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    h, _ = blob_store.write_from_bytes(b"dry-run orphan")
+    _backdate(blob_store, h)
+    _make_db(db_path).close()
+
+    marker_path = blob_root / ".polylogue-blob-namespace"
+    assert not marker_path.exists()
+
+    would_delete = run_blob_gc(str(db_path), str(blob_root), max_batch=10, dry_run=True)
+
+    assert would_delete == 1
+    assert not marker_path.exists(), "a read-only preview must not create the namespace marker"
 
 
 @pytest.mark.uses_real_clock(
