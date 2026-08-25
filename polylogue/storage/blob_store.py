@@ -233,6 +233,7 @@ class BlobStore:
                     if heartbeat is not None:
                         with suppress(Exception):
                             heartbeat()
+            os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -269,6 +270,7 @@ class BlobStore:
                 if heartbeat is not None:
                     with suppress(Exception):
                         heartbeat()
+            os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -289,6 +291,7 @@ class BlobStore:
             fd, temporary_name = tempfile.mkstemp(dir=staging_root, prefix=".blob.")
             temporary_path = Path(temporary_name)
             _write_all(fd, data)
+            os.fsync(fd)
             os.close(fd)
             fd = None
             os.chmod(temporary_path, 0o600)
@@ -308,6 +311,11 @@ class BlobStore:
             return prepared.hash_hex, prepared.size_bytes
         dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(prepared.temporary_path, dest)
+        directory_fd = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         return prepared.hash_hex, prepared.size_bytes
 
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
