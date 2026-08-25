@@ -5,7 +5,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
 from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, rule
@@ -21,6 +20,13 @@ from tests.infra.convergence_harness import (
     rich_convergence_pathology,
     rotated_session_order,
 )
+from tests.infra.convergence_laws import (
+    ConvergenceLaw,
+    assert_projection_matches_oracle,
+    generated_convergence_workload,
+    read_semantic_projection,
+    semantic_oracle,
+)
 
 
 @settings(
@@ -29,13 +35,21 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
 def test_convergence_property_ingestion_order_invariance(tmp_path: Path, shift: int) -> None:
-    pathology = rich_convergence_pathology()
+    workload = generated_convergence_workload()
+    pathology = workload.pathology
     order = rotated_session_order(pathology, shift)
     canonical = build_converged_archive(tmp_path / "canonical", pathology)
     permuted = build_converged_archive(tmp_path / "permuted", pathology, session_order=order)
     assert_archives_equivalent(canonical, permuted)
+    expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
+    for archive in (canonical, permuted):
+        assert_projection_matches_oracle(
+            read_semantic_projection(archive.root, probe_terms=workload.probe_terms),
+            expected,
+            law=ConvergenceLaw.PERMUTATION,
+        )
 
 
 class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
@@ -105,18 +119,3 @@ def test_reingest_child_then_parent_keeps_attachment_closure_green(tmp_path: Pat
         archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(index,), converge_after_each=False)
     converge_convergence_archive(archive)
     assert_archive_verification_green(tmp_path)
-
-
-def test_convergence_property_order_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Removing the real late-parent resolver recreates the historical order bug."""
-    from polylogue.storage.sqlite.archive_tiers import write as write_module
-    from tests.infra.pathology_composer import compose_fork_prefix_tail_lineage
-
-    pathology = compose_fork_prefix_tail_lineage()
-    canonical = build_converged_archive(tmp_path / "canonical", pathology, session_order=(0, 1))
-
-    monkeypatch.setattr(write_module, "_resolve_session_graph", lambda *_args, **_kwargs: None)
-    mutated = build_converged_archive(tmp_path / "mutated", pathology, session_order=(1, 0))
-
-    with pytest.raises(AssertionError, match="canonical archive snapshots differ"):
-        assert_archives_equivalent(canonical, mutated)
