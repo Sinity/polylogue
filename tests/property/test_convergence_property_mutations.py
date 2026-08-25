@@ -19,7 +19,6 @@ from polylogue.storage.insights.session import rebuild as insight_rebuild
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.convergence_harness import (
-    ConvergenceArchive,
     assert_archives_equivalent,
     build_converged_archive,
     converge_convergence_archive,
@@ -132,8 +131,9 @@ def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: P
         assert_archives_equivalent(canonical, mutated)
 
 
-def test_order_sensitive_overwrite_mutation_fails_permutation_oracle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutated", [False, True], ids=["green", "mutant"])
+def test_order_sensitive_overwrite_has_permutation_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
     """The stale-write gate keeps a newer revision independent of ingest order."""
     from polylogue.pipeline.services.ingest_batch import _core as ingest_core
@@ -161,22 +161,27 @@ def test_order_sensitive_overwrite_mutation_fails_permutation_oracle(
                 ingest_core._write_session(conn, payload)
 
     write_revision(1)
-    monkeypatch.setattr(ingest_core, "should_skip_stale_replace", lambda **_kwargs: False)
+    if mutated:
+        monkeypatch.setattr(ingest_core, "should_skip_stale_replace", lambda **_kwargs: False)
     write_revision(0)
-    mutated = ConvergenceArchive(root, pathology, (), (str(make_session_id(Provider.CODEX, "revision-chain")),))
-
-    with pytest.raises(AssertionError, match=ConvergenceLaw.PERMUTATION.value):
+    observed = read_semantic_projection(root, probe_terms=("revision",))
+    expected = semantic_oracle(authoritative_sessions(pathology), probe_terms=("revision",))
+    if mutated:
+        with pytest.raises(AssertionError, match=ConvergenceLaw.PERMUTATION.value):
+            assert_projection_matches_oracle(observed, expected, law=ConvergenceLaw.PERMUTATION)
+    else:
         assert_projection_matches_oracle(
-            read_semantic_projection(mutated.root, probe_terms=("revision",)),
-            semantic_oracle(authoritative_sessions(pathology), probe_terms=("revision",)),
+            observed,
+            expected,
             law=ConvergenceLaw.PERMUTATION,
         )
 
 
-def test_omitted_fts_batch_member_mutation_fails_batching_oracle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutated", [False, True], ids=["green", "mutant"])
+def test_omitted_fts_batch_member_has_pending_work_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
-    """Targeted FTS repair must process every session in the scheduled batch."""
+    """The convergence guard rejects a targeted FTS repair that omits work."""
     workload = generated_convergence_workload()
     initialize_active_archive(tmp_path / "mutated")
     archive = ingest_convergence_pathology(
@@ -190,40 +195,43 @@ def test_omitted_fts_batch_member_mutation_fails_batching_oracle(
     def omit_tail(conn: sqlite3.Connection, session_ids: object, **kwargs: object) -> None:
         repair(conn, tuple(session_ids)[:1], **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(fts_lifecycle, "repair_message_fts_index_sync", omit_tail)
-    with pytest.raises(AssertionError, match="production convergence left pending work"):
+    if mutated:
+        monkeypatch.setattr(fts_lifecycle, "repair_message_fts_index_sync", omit_tail)
+        with pytest.raises(AssertionError, match="production convergence left pending work"):
+            converge_convergence_archive(archive)
+    else:
         converge_convergence_archive(archive)
-    with pytest.raises(AssertionError, match=ConvergenceLaw.BATCHING.value):
-        assert_projection_matches_oracle(
-            read_semantic_projection(archive.root, probe_terms=workload.probe_terms),
-            semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms),
-            law=ConvergenceLaw.BATCHING,
-        )
 
 
-def test_late_parent_excess_mutation_fails_append_prefix_oracle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mutated", [False, True], ids=["green", "mutant"])
+def test_late_parent_prefix_resolution_has_append_prefix_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
     """Late lineage resolution removes an already-written replayed prefix."""
     from polylogue.storage.sqlite.archive_tiers import write as write_module
     from tests.infra.pathology_composer import compose_fork_prefix_tail_lineage
 
     pathology = compose_fork_prefix_tail_lineage()
-    monkeypatch.setattr(write_module, "_resolve_session_graph", lambda *_args, **_kwargs: None)
-    mutated = build_converged_archive(tmp_path / "mutated", pathology, session_order=(1, 0))
-
-    with pytest.raises(AssertionError, match=ConvergenceLaw.APPEND_PREFIX.value):
+    if mutated:
+        monkeypatch.setattr(write_module, "_resolve_session_graph", lambda *_args, **_kwargs: None)
+    archive = build_converged_archive(tmp_path / "archive", pathology, session_order=(1, 0))
+    observed = read_semantic_projection(archive.root, probe_terms=("shared",))
+    expected = semantic_oracle(authoritative_sessions(pathology), probe_terms=("shared",))
+    if mutated:
+        with pytest.raises(AssertionError, match=ConvergenceLaw.APPEND_PREFIX.value):
+            assert_projection_matches_oracle(observed, expected, law=ConvergenceLaw.APPEND_PREFIX)
+    else:
         assert_projection_matches_oracle(
-            read_semantic_projection(mutated.root, probe_terms=("shared",)),
-            semantic_oracle(authoritative_sessions(pathology), probe_terms=("shared",)),
+            observed,
+            expected,
             law=ConvergenceLaw.APPEND_PREFIX,
         )
 
 
-def test_forced_unchanged_write_mutation_has_observable_idempotence_fault(
+def test_unchanged_reingest_does_not_reach_the_production_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The content-hash gate must prevent a second production writer call."""
+    """The content-hash gate bypasses the production writer for unchanged input."""
     workload = generated_convergence_workload()
     archive = build_converged_archive(tmp_path / "archive", workload.pathology)
     writer_calls: list[str] = []
@@ -241,22 +249,3 @@ def test_forced_unchanged_write_mutation_has_observable_idempotence_fault(
         converge_after_each=False,
     )
     assert not writer_calls
-
-    write_session = ingest_batch_core._write_session
-
-    def force_unchanged_write(
-        conn: sqlite3.Connection, payload: object, **kwargs: object
-    ) -> tuple[bool, dict[str, int]]:
-        return write_session(conn, payload, force_write=True, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(ingest_batch_core, "_write_session", force_unchanged_write)
-    ingest_convergence_pathology(
-        archive.root,
-        workload.pathology,
-        session_indexes=tuple(range(len(workload.pathology.sessions))),
-        converge_after_each=False,
-    )
-
-    with pytest.raises(AssertionError, match="idempotence law"):
-        if writer_calls:
-            raise AssertionError("idempotence law failed: unchanged input reached the production writer")

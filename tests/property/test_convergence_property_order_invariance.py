@@ -23,9 +23,9 @@ from tests.infra.convergence_harness import (
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
-    expected_projection,
     generated_convergence_workload,
     read_semantic_projection,
+    semantic_oracle,
 )
 
 
@@ -35,7 +35,7 @@ from tests.infra.convergence_laws import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
 def test_convergence_property_ingestion_order_invariance(tmp_path: Path, shift: int) -> None:
     workload = generated_convergence_workload()
     pathology = workload.pathology
@@ -43,7 +43,7 @@ def test_convergence_property_ingestion_order_invariance(tmp_path: Path, shift: 
     canonical = build_converged_archive(tmp_path / "canonical", pathology)
     permuted = build_converged_archive(tmp_path / "permuted", pathology, session_order=order)
     assert_archives_equivalent(canonical, permuted)
-    expected = expected_projection(workload)
+    expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive in (canonical, permuted):
         assert_projection_matches_oracle(
             read_semantic_projection(archive.root, probe_terms=workload.probe_terms),

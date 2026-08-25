@@ -13,15 +13,14 @@ from tests.infra.convergence_harness import (
     converge_convergence_archive,
     ingest_convergence_pathology,
     initialize_active_archive,
-    rich_convergence_pathology,
     rotated_session_order,
 )
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
-    expected_projection,
     generated_convergence_workload,
     read_semantic_projection,
+    semantic_oracle,
 )
 
 
@@ -32,8 +31,8 @@ from tests.infra.convergence_laws import (
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
-    st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1),
-    st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1),
+    st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1),
+    st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1),
 )
 def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: int, split: int) -> None:
     workload = generated_convergence_workload()
@@ -60,7 +59,7 @@ def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: 
     )
     converge_convergence_archive(combined)
     assert_archives_equivalent(full, combined)
-    expected = expected_projection(workload)
+    expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive in (full, combined):
         assert_projection_matches_oracle(
             read_semantic_projection(archive.root, probe_terms=workload.probe_terms),

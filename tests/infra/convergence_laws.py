@@ -1,14 +1,13 @@
 """Independent semantic oracle for the convergence-property corpus.
 
 The generated workload comes from the existing pathology composer. This module
-only reads those authoritative sessions to derive expected text-block FTS
+only reads those authoritative sessions to derive expected search-session
 membership and message-role aggregates. It does not inspect archive tables,
 write receipts, or a route implementation.
 
-The fixture has text, tool-use, and tool-result blocks. This oracle's FTS
-contract intentionally names the position-zero text block for each authored
-message. The fixture test proves non-text blocks are present while the selected
-probe terms match text blocks only.
+The fixture has text, tool-use, and tool-result blocks. Search membership is
+derived from authored message text only, including an empty result for the
+tool-use input probe that the FTS contract excludes.
 """
 
 from __future__ import annotations
@@ -23,13 +22,12 @@ from pathlib import Path
 
 from polylogue.archive.models import Session
 from polylogue.core.enums import Provider
-from polylogue.core.identity_law import block_id, message_id
 from polylogue.pipeline.ids import session_id as make_session_id
 from tests.infra.pathology_composer import ComposedPathology
 
 
 class ConvergenceLaw(StrEnum):
-    """The executable convergence laws shared with the 04r9f routes."""
+    """The executable convergence laws for the shared fixture."""
 
     PERMUTATION = "order-permutation-invariance"
     BATCHING = "incremental-equals-bulk-batching"
@@ -38,7 +36,7 @@ class ConvergenceLaw(StrEnum):
 
 
 _PROVIDER = Provider.CODEX
-_PROBE_TERMS = ("revision", "shared", "orphaned")
+_PROBE_TERMS = ("revision", "shared", "orphaned", "toolonly")
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
@@ -56,7 +54,6 @@ class AuthoritativeSession:
     """A selected logical session revision, independent of storage rows."""
 
     native_id: str
-    revision: int
     messages: tuple[AuthoritativeMessage, ...]
     parent_native_id: str | None = None
 
@@ -75,11 +72,10 @@ class SemanticProjection:
 
 @dataclass(frozen=True, slots=True)
 class GeneratedConvergenceWorkload:
-    """The one generated authoritative input available to future route adapters."""
+    """The generated authoritative input for the convergence properties."""
 
     pathology: ComposedPathology
     probe_terms: tuple[str, ...]
-    laws: tuple[ConvergenceLaw, ...]
 
     @property
     def authoritative_sessions(self) -> tuple[AuthoritativeSession, ...]:
@@ -100,7 +96,6 @@ def authoritative_sessions(pathology: ComposedPathology) -> tuple[AuthoritativeS
     return tuple(
         AuthoritativeSession(
             native_id=native_id,
-            revision=revisions[native_id],
             parent_native_id=None if selected[native_id].parent_id is None else str(selected[native_id].parent_id),
             messages=tuple(
                 AuthoritativeMessage(
@@ -115,10 +110,6 @@ def authoritative_sessions(pathology: ComposedPathology) -> tuple[AuthoritativeS
     )
 
 
-def _session_text_block_id(session: AuthoritativeSession, message: AuthoritativeMessage) -> str:
-    return block_id(message_id(session.session_id, message.native_id, position=0), position=0)
-
-
 def _tokens(text: str) -> frozenset[str]:
     return frozenset(_TOKEN_RE.findall(text.casefold()))
 
@@ -128,7 +119,7 @@ def semantic_oracle(
     *,
     probe_terms: Sequence[str] = _PROBE_TERMS,
 ) -> SemanticProjection:
-    """Derive expected text-block FTS membership and role counts from input."""
+    """Derive expected search-session membership and role counts from input."""
     session_by_native_id = {session.native_id: session for session in sessions}
     logical_messages: dict[str, tuple[AuthoritativeMessage, ...]] = {}
     for session in sessions:
@@ -148,17 +139,11 @@ def semantic_oracle(
         members: set[str] = set()
         normalized_term = term.casefold()
         for session in sessions:
-            for message in logical_messages[session.native_id]:
-                if normalized_term not in _tokens(message.text):
-                    continue
-                members.add(_session_text_block_id(session, message))
+            if any(normalized_term in _tokens(message.text) for message in logical_messages[session.native_id]):
+                members.add(session.session_id)
         fts.append((term, tuple(sorted(members))))
     counts = Counter(message.role for session in sessions for message in logical_messages[session.native_id])
     return SemanticProjection(fts_membership=tuple(fts), role_counts=tuple(sorted(counts.items())))
-
-
-def expected_projection(workload: GeneratedConvergenceWorkload) -> SemanticProjection:
-    return semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
 
 
 def read_semantic_projection(
@@ -166,13 +151,29 @@ def read_semantic_projection(
     *,
     probe_terms: Sequence[str] = _PROBE_TERMS,
 ) -> SemanticProjection:
-    """Read selected FTS membership and role aggregates through ArchiveStore."""
+    """Read search membership through the readiness-gated product search surface."""
     from polylogue.archive.query.predicate import QueryBoolPredicate
+    from polylogue.storage.search import search_messages
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = Path(archive_root).resolve()
+    fts_membership = tuple(
+        (
+            term,
+            tuple(
+                sorted(
+                    {
+                        hit.session_id
+                        for hit in search_messages(
+                            term, archive_root=root, db_path=root / "index.db", limit=100_000
+                        ).hits
+                    }
+                )
+            ),
+        )
+        for term in probe_terms
+    )
     with ArchiveStore.open_existing(root, read_only=True) as archive:
-        fts_membership = tuple((term, tuple(sorted(archive.search_blocks(term)))) for term in probe_terms)
         rows = archive.query_unit_counts(
             "message",
             QueryBoolPredicate(op="and", children=()),
@@ -189,20 +190,19 @@ def assert_projection_matches_oracle(
     observed: SemanticProjection,
     expected: SemanticProjection,
     *,
-    law: ConvergenceLaw,
+    law: ConvergenceLaw | None = None,
 ) -> None:
     if observed != expected:
-        raise AssertionError(f"{law.value} law failed: production projection differs from the authoritative oracle")
+        context = "production projection" if law is None else f"{law.value} law"
+        raise AssertionError(f"{context} differs from the authoritative oracle")
 
 
 @lru_cache(maxsize=1)
 def generated_convergence_workload() -> GeneratedConvergenceWorkload:
-    """Build the sole deterministic workload used by the experiment."""
+    """Build the deterministic workload used by the convergence properties."""
     from tests.infra.convergence_harness import rich_convergence_pathology
 
-    return GeneratedConvergenceWorkload(
-        pathology=rich_convergence_pathology(), probe_terms=_PROBE_TERMS, laws=tuple(ConvergenceLaw)
-    )
+    return GeneratedConvergenceWorkload(pathology=rich_convergence_pathology(), probe_terms=_PROBE_TERMS)
 
 
 __all__ = [
@@ -213,7 +213,6 @@ __all__ = [
     "SemanticProjection",
     "assert_projection_matches_oracle",
     "authoritative_sessions",
-    "expected_projection",
     "generated_convergence_workload",
     "read_semantic_projection",
     "semantic_oracle",

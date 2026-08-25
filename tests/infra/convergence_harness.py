@@ -552,7 +552,7 @@ def _parsed_session(
                     type=BlockType.TOOL_USE,
                     tool_name="Task",
                     tool_id=dispatch_tool_id,
-                    tool_input={"prompt": message.text, "model": "gpt-4.1-mini"},
+                    tool_input={"prompt": f"{message.text} toolonly", "model": "gpt-4.1-mini"},
                 )
             )
             blocks.append(
