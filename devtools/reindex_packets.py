@@ -9,6 +9,7 @@ import subprocess
 import sys
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -199,6 +200,11 @@ def _task_revision(bead: Mapping[str, Any]) -> str:
 
 def _value(bead: Mapping[str, Any], name: str) -> object:
     return bead["metadata"].get(name)
+
+
+def _trimmed_string(bead: Mapping[str, Any], name: str) -> str:
+    value = _value(bead, name)
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _present(value: object) -> bool:
@@ -565,24 +571,6 @@ def _operation_apply_failures(
     return failures
 
 
-def _operation_evidence_binding(evidence: object | None) -> object:
-    if evidence is None:
-        return {"state": "missing"}
-    try:
-        parsed = _parse_operation_evidence(evidence)
-    except ValueError as exc:
-        return {"state": "invalid", "reason": str(exc)}
-    return {
-        "operation_id": parsed.operation_id,
-        "integration_head": parsed.integration_head,
-        "packet_context_digest": parsed.packet_context_digest,
-        "plan_digest": parsed.plan_digest,
-        "rehearsal": asdict(parsed.rehearsal) if parsed.rehearsal else None,
-        "authorization": asdict(parsed.authorization) if parsed.authorization else None,
-        "review": asdict(parsed.review) if parsed.review else None,
-    }
-
-
 def _projection(
     group: tuple[str, str, str],
     members: list[str],
@@ -616,7 +604,11 @@ def _projection(
         authority = {
             "mode": "ordinary-launch",
             "allowed_actions": ["packet-execution"],
-            "live_authority": "none" if _is_prep_operation_access(live_data_access) else live_data_access,
+            "live_authority": (
+                "none"
+                if _is_prep_operation_access(live_data_access) or not isinstance(live_data_access, str)
+                else live_data_access
+            ),
             "may_apply": False,
         }
     projection: dict[str, Any] = {
@@ -708,6 +700,12 @@ def validate(
             "open campaign closure records have no valid execution shape: " + ", ".join(sorted(open_without_shape))
         )
     leaves: list[Mapping[str, Any]] = []
+    leaf_structural_failures: dict[str, list[dict[str, str]]] = defaultdict(list)
+
+    def leaf_failure(bead: Mapping[str, Any], kind: str, reason: str, **details: str) -> None:
+        errors.append(reason)
+        leaf_structural_failures[bead["id"]].append(_failure(kind, reason, bead_id=bead["id"], **details))
+
     for bead_id in sorted(selected):
         bead = beads[bead_id]
         shape = _value(bead, "execution_shape") or _label(bead, "execution-shape:")
@@ -722,32 +720,64 @@ def validate(
             if not any(_present(_value(bead, field)) for field in ("review_model_class", "review_capability")):
                 missing.append("reviewer capability")
             if missing:
-                errors.append(f"{bead_id}: missing leaf carrier(s): {', '.join(missing)}")
+                leaf_failure(
+                    bead,
+                    "missing-leaf-carrier",
+                    f"{bead_id}: missing leaf carrier(s): {', '.join(missing)}",
+                    field=",".join(missing),
+                )
             if _present(_value(bead, "model_policy")) and "provider-neutral" not in str(_value(bead, "model_policy")):
-                errors.append(f"{bead_id}: model policy is not provider-neutral")
+                leaf_failure(bead, "model-policy", f"{bead_id}: model policy is not provider-neutral")
+            access = _value(bead, "live_data_access")
+            if not isinstance(access, str):
+                leaf_failure(bead, "authority-shape", f"{bead_id}: live_data_access must be a string")
+            elif not access:
+                leaf_failure(bead, "missing-live-data-authority", f"{bead_id}: missing live_data_access")
             leaves.append(bead)
     assignments: dict[str, tuple[str, str, str, int]] = {}
     packet_structural_failures: dict[str, list[dict[str, str]]] = defaultdict(list)
+    groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    unassigned_structural_failures: list[dict[str, str]] = []
     for bead in leaves:
-        wave, lane, packet, order_text = (str(_value(bead, field) or "").strip() for field in CORE[:4])
-        try:
-            assignment = (wave, lane, packet, int(order_text))
-        except ValueError:
-            errors.append(f"{bead['id']}: lane order is not numeric")
-            continue
-        if not all((wave, lane, packet)) or assignment[3] < 1:
-            errors.append(f"{bead['id']}: invalid packet assignment")
-            continue
-        assignments[bead["id"]] = assignment
+        wave, lane, packet, order_text = (_trimmed_string(bead, field) for field in CORE[:4])
+        group = (wave, lane, packet)
+        declared_packet = all(group)
+        if declared_packet:
+            groups[group].append(bead["id"])
         for serialization_error in _serialization_errors(bead, wave):
             errors.append(serialization_error)
             packet_structural_failures[bead["id"]].append(_failure("serialization", serialization_error))
-        for execution_error in _execution_kind_errors(bead, wave):
-            errors.append(execution_error)
-            packet_structural_failures[bead["id"]].append(_failure("execution-kind", execution_error))
-    groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
-    for bead_id, assignment in assignments.items():
-        groups[assignment[:3]].append(bead_id)
+        if wave:
+            for execution_error in _execution_kind_errors(bead, wave):
+                errors.append(execution_error)
+                packet_structural_failures[bead["id"]].append(_failure("execution-kind", execution_error))
+        for phase_error in _operation_phase_errors(bead):
+            errors.append(phase_error)
+            packet_structural_failures[bead["id"]].append(_failure("operation-phase", phase_error, bead_id=bead["id"]))
+        try:
+            assignment = (wave, lane, packet, int(order_text))
+        except ValueError:
+            reason = f"{bead['id']}: lane order is not numeric"
+            leaf_failure(bead, "packet-assignment", reason)
+            continue
+        if not all((wave, lane, packet)) or assignment[3] < 1:
+            reason = f"{bead['id']}: invalid packet assignment"
+            leaf_failure(bead, "packet-assignment", reason)
+            continue
+        assignments[bead["id"]] = assignment
+    assigned_to_declared_packet = {bead_id for members in groups.values() for bead_id in members}
+    for bead in leaves:
+        if bead["id"] in assigned_to_declared_packet:
+            continue
+        unassigned_structural_failures.extend(leaf_structural_failures[bead["id"]])
+        unassigned_structural_failures.extend(packet_structural_failures[bead["id"]])
+        unassigned_structural_failures.append(
+            _failure(
+                "unassigned-structural",
+                f"{bead['id']}: cannot identify declared packet for structural failure",
+                bead_id=bead["id"],
+            )
+        )
     graph = {bead_id: _deps(bead, "blocks") for bead_id, bead in beads.items()}
     conflict_failures: dict[str, list[dict[str, str]]] = defaultdict(list)
     for left_id, left in assignments.items():
@@ -767,13 +797,20 @@ def validate(
                     conflict_failures[bead_id].append(_failure("conflict-serialization", error, bead_id=bead_id))
     packets = []
     for group, members in sorted(groups.items()):
-        members.sort(key=lambda bead_id: (assignments[bead_id][3], bead_id))
+        members.sort(
+            key=lambda bead_id: (assignments[bead_id][3], bead_id) if bead_id in assignments else (sys.maxsize, bead_id)
+        )
         leader = members[0]
         launch_failures = [
             failure
             for bead_id in members
-            for failure in (*packet_structural_failures[bead_id], *conflict_failures[bead_id])
+            for failure in (
+                *leaf_structural_failures[bead_id],
+                *packet_structural_failures[bead_id],
+                *conflict_failures[bead_id],
+            )
         ]
+        launch_failures.extend(unassigned_structural_failures)
         if (
             not any(_present(_value(beads[bead_id], "packet_size_exception")) for bead_id in members)
             and not 3 <= len(members) <= 5
@@ -781,7 +818,10 @@ def validate(
             error = f"{'/'.join(group)}: ordinary packet has {len(members)} leaves"
             errors.append(error)
             launch_failures.append(_failure("packet-shape", error))
-        if len({assignments[bead_id][3] for bead_id in members}) != len(members):
+        assigned_members = [bead_id for bead_id in members if bead_id in assignments]
+        if len(assigned_members) == len(members) and (
+            len({assignments[bead_id][3] for bead_id in members}) != len(members)
+        ):
             error = f"{'/'.join(group)}: duplicate packet order"
             errors.append(error)
             launch_failures.append(_failure("packet-order", error))
@@ -791,7 +831,7 @@ def validate(
                 if target not in members:
                     if target in beads and beads[target].get("status") != "closed":
                         external_blockers.append(target)
-                    if target in assignments:
+                    if bead_id in assignments and target in assignments:
                         current, predecessor = assignments[bead_id], assignments[target]
                         if current[:2] == predecessor[:2] and int(current[2]) < int(predecessor[2]):
                             error = f"{bead_id}: packet blocker is in a later packet"
@@ -806,6 +846,8 @@ def validate(
                             errors.append(error)
                             launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
                     continue
+                if bead_id not in assignments or target not in assignments:
+                    continue
                 current, predecessor = assignments[bead_id], assignments[target]
                 if current[3] <= predecessor[3]:
                     error = f"{bead_id}: internal blocker is not earlier"
@@ -815,10 +857,6 @@ def validate(
             if not _present(_value(beads[leader], field)):
                 reason = f"missing {field}"
                 launch_failures.append(_failure("missing-launch-field", reason, field=field))
-        for bead_id in members:
-            for phase_error in _operation_phase_errors(beads[bead_id]):
-                errors.append(phase_error)
-                launch_failures.append(_failure("operation-phase", phase_error, bead_id=bead_id))
         for bead_id in members[1:]:
             for field in LAUNCH:
                 if _present(_value(beads[bead_id], field)):
@@ -862,14 +900,14 @@ def validate(
                         packet_context_digest=packet_context_digest,
                     )
                 )
-            evidence_binding = (
-                {
-                    bead_id: _operation_evidence_binding(evidence_by_operation.get(bead_id))
-                    for bead_id in operation_members
-                }
-                if phase == "apply"
-                else None
-            )
+            evidence_binding = None
+            if phase == "apply":
+                evidence_binding = {}
+                for bead_id in operation_members:
+                    with suppress(ValueError):
+                        evidence_binding[bead_id] = asdict(
+                            _parse_operation_evidence(evidence_by_operation.get(bead_id))
+                        )
             launches.append(
                 _projection(
                     group,
@@ -936,6 +974,7 @@ def validate(
             "noncampaign_blocks_ids": sorted(closure - labelled),
         },
         "packets": packets,
+        "global_launch_failures": unassigned_structural_failures,
         "legacy_readiness_census": legacy_readiness_census,
         "structural_errors": errors,
         "warnings": warnings,

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 
+import devtools.reindex_packets as reindex_packets
 from devtools.reindex_packets import (
     APPLY_AUTHORITY_MODE,
     ROOT_ID,
@@ -320,6 +321,22 @@ def test_every_reserved_apply_access_token_requires_the_prep_operation_regime(ac
 
 
 @pytest.mark.parametrize(
+    "access",
+    [
+        ["synthetic", "explicit-operator-authorized-source-apply"],
+        {"access": "explicit-operator-authorized-source-apply"},
+    ],
+)
+def test_non_string_live_authority_is_a_typed_packet_failure(access: object) -> None:
+    beads = graph()
+    beads[2]["metadata"]["live_data_access"] = access
+    ordinary = launch(validate(FakeReader(beads), integration_head=HEAD), "ordinary")
+    assert not ordinary["ready"]
+    assert ordinary["effective_authority"]["live_authority"] == "none"
+    assert {failure["kind"] for failure in ordinary["launch_failures"]} >= {"authority-shape"}
+
+
+@pytest.mark.parametrize(
     ("membership", "structural_error", "reason"),
     [
         (
@@ -409,6 +426,75 @@ def test_integration_head_is_exact_current_checkout_head_and_is_typed(tmp_path: 
 
     with pytest.raises(ReindexPacketValidationError, match="40-character lowercase"):
         validate(FakeReader(graph()), integration_head="not-a-head")
+
+
+class _GitResult:
+    def __init__(self, stdout: str = "") -> None:
+        self.stdout = stdout
+
+
+def test_integration_head_rejects_descendant_and_divergent_heads(monkeypatch: pytest.MonkeyPatch) -> None:
+    candidate = "a" * 40
+
+    def descendant(command: list[str], **_: object) -> _GitResult:
+        if "rev-parse" in command and command[-1] == "HEAD":
+            return _GitResult(HEAD + "\n")
+        if "rev-parse" in command and command[-1] == f"{candidate}^{{commit}}":
+            return _GitResult(candidate + "\n")
+        if command[-2:] == [candidate, "HEAD"]:
+            raise subprocess.CalledProcessError(1, command)
+        assert command[-2:] == ["HEAD", candidate]
+        return _GitResult()
+
+    monkeypatch.setattr(subprocess, "run", descendant)
+    with pytest.raises(ReindexPacketValidationError, match="is a descendant"):
+        reindex_packets._validate_integration_head(candidate)
+
+    def divergent(command: list[str], **_: object) -> _GitResult:
+        if "rev-parse" in command and command[-1] == "HEAD":
+            return _GitResult(HEAD + "\n")
+        if "rev-parse" in command and command[-1] == f"{candidate}^{{commit}}":
+            return _GitResult(candidate + "\n")
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(subprocess, "run", divergent)
+    with pytest.raises(ReindexPacketValidationError, match="does not equal exact checkout HEAD"):
+        reindex_packets._validate_integration_head(candidate)
+
+
+def test_integration_head_checkout_and_merge_base_failures_are_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    candidate = "a" * 40
+
+    def checkout_failure(command: list[str], **_: object) -> _GitResult:
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(subprocess, "run", checkout_failure)
+    with pytest.raises(ReindexPacketValidationError, match="unable to resolve exact checkout HEAD"):
+        reindex_packets._validate_integration_head(candidate)
+
+    def merge_base_timeout(command: list[str], **_: object) -> _GitResult:
+        if "rev-parse" in command and command[-1] == "HEAD":
+            return _GitResult(HEAD + "\n")
+        if "rev-parse" in command and command[-1] == f"{candidate}^{{commit}}":
+            return _GitResult(candidate + "\n")
+        raise subprocess.TimeoutExpired(command, 5)
+
+    monkeypatch.setattr(subprocess, "run", merge_base_timeout)
+    with pytest.raises(ReindexPacketValidationError, match="unable to classify integration head"):
+        reindex_packets._validate_integration_head(candidate)
+
+    def descendant_classification_failure(command: list[str], **_: object) -> _GitResult:
+        if "rev-parse" in command and command[-1] == "HEAD":
+            return _GitResult(HEAD + "\n")
+        if "rev-parse" in command and command[-1] == f"{candidate}^{{commit}}":
+            return _GitResult(candidate + "\n")
+        if command[-2:] == [candidate, "HEAD"]:
+            raise subprocess.CalledProcessError(1, command)
+        raise OSError("merge-base unavailable")
+
+    monkeypatch.setattr(subprocess, "run", descendant_classification_failure)
+    with pytest.raises(ReindexPacketValidationError, match="unable to classify integration head"):
+        reindex_packets._validate_integration_head(candidate)
 
 
 def test_wave_order_accepts_post_reindex_only_after_live_window_and_unknown_is_not_earliest() -> None:
@@ -747,6 +833,55 @@ def test_open_closure_shape_and_leaf_carriers_cannot_be_skipped() -> None:
         "a: missing leaf carrier(s)" in error
         for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
     )
+
+
+def test_declared_packet_keeps_invalid_order_member_in_its_digest_and_readiness() -> None:
+    beads = graph()
+    for item in beads[3:]:
+        item["metadata"]["packet_size_exception"] = "reviewed-test-shape"
+    beads[2]["metadata"]["lane_order"] = "not-a-number"
+    for field in ("packet_execution_contract", "deadline_policy"):
+        beads[2]["metadata"].pop(field)
+        beads[3]["metadata"][field] = "packet-v1" if field == "packet_execution_contract" else "bounded"
+    beads[3]["dependencies"] = []
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    ordinary = launch(report, "ordinary")
+    assert packet(report)["member_ids"] == ["b", "c", "a"]
+    assert [identity["bead_id"] for identity in ordinary["task_identities"]] == ["b", "c", "a"]
+    assert not packet(report)["ready"] and not ordinary["ready"]
+    assert {failure["kind"] for failure in ordinary["launch_failures"]} >= {"packet-assignment"}
+
+
+@pytest.mark.parametrize(
+    ("change", "failure_kind"),
+    [
+        ({"tdd_mode": ""}, "missing-leaf-carrier"),
+        ({"live_data_access": ""}, "missing-live-data-authority"),
+        ({"model_policy": "provider-pinned-v1"}, "model-policy"),
+    ],
+)
+def test_leaf_structural_contract_failures_are_consumed_by_packet_launchers(
+    change: dict[str, object], failure_kind: str
+) -> None:
+    beads = graph()
+    beads[2]["metadata"].update(change)
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    ordinary = launch(report, "ordinary")
+    assert not report["ok"] and not packet(report)["ready"] and not ordinary["ready"]
+    assert failure_kind in {failure["kind"] for failure in ordinary["launch_failures"]}
+
+
+def test_incomplete_packet_metadata_blocks_every_remaining_packet_with_typed_failure() -> None:
+    beads = graph()
+    beads[2]["metadata"]["execution_lane"] = ""
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    ordinary = launch(report, "ordinary")
+    assert not ordinary["ready"]
+    assert {failure["kind"] for failure in ordinary["launch_failures"]} >= {
+        "packet-assignment",
+        "unassigned-structural",
+    }
+    assert report["global_launch_failures"]
 
 
 def test_closed_noncampaign_closure_is_warning_and_non_task_records_are_filtered() -> None:
