@@ -13,6 +13,8 @@ import hmac
 import json
 import sqlite3
 import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -102,6 +104,7 @@ class CaptureJobRegistry:
         connection = sqlite3.connect(path, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
@@ -133,6 +136,15 @@ class CaptureJobRegistry:
             ) STRICT"""
         )
         return connection
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _validate_scope(self, provider: object, account_scope: object, protocol: object) -> tuple[str, str]:
         if not isinstance(provider, str) or not provider or provider != provider.lower():
@@ -254,11 +266,19 @@ class CaptureJobRegistry:
 
     def _census_legacy_orphans(self, connection: sqlite3.Connection) -> list[dict[str, object]]:
         root = backfill_checkpoint_root(self.spool_path)
+        unreadable: list[dict[str, object]] = []
         if root.is_dir():
             for path in sorted(root.glob("*.json")):
                 try:
                     raw = path.read_bytes()
-                except OSError:
+                except OSError as exc:
+                    unreadable.append(
+                        {
+                            "orphan_kind": "unreadable_legacy_checkpoint",
+                            "path": str(path),
+                            "errno_class": type(exc).__name__,
+                        }
+                    )
                     continue
                 digest = "sha256:" + hashlib.sha256(raw).hexdigest()
                 try:
@@ -269,13 +289,16 @@ class CaptureJobRegistry:
                 kind = "legacy_backfill_checkpoint" if valid else "malformed_legacy_checkpoint"
                 diagnostic = "account scope unavailable; explicit migration or abandonment required"
                 connection.execute(
-                    "INSERT OR IGNORE INTO capture_job_orphans VALUES (?, ?, ?, ?)",
+                    """INSERT INTO capture_job_orphans VALUES (?, ?, ?, ?)
+                    ON CONFLICT(source_digest) DO UPDATE SET
+                        orphan_kind=excluded.orphan_kind,
+                        diagnostic=excluded.diagnostic""",
                     (digest, kind, diagnostic, _stamp()),
                 )
         rows = connection.execute(
             "SELECT source_digest, orphan_kind, diagnostic, created_at FROM capture_job_orphans ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [*map(dict, rows), *unreadable]
 
     def _require_scoped(
         self, connection: sqlite3.Connection, job_id: str, provider: object, account_scope: object, protocol: object
@@ -296,7 +319,7 @@ class CaptureJobRegistry:
         )
         intent = self._intent(body.get("intent"))
         now = _stamp()
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             found = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=? AND intent_key=?",
@@ -330,7 +353,7 @@ class CaptureJobRegistry:
         intent_key = body.get("intent_key")
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
                 + (" AND intent_key=?" if intent_key else "")
@@ -342,11 +365,12 @@ class CaptureJobRegistry:
     def list_orphans(self, protocol: object) -> dict[str, object]:
         """Return the global legacy census only on its explicit operator route."""
         self._validate_protocol(protocol)
-        with self._connect() as connection:
+        with self._connection() as connection:
             return {"orphans": self._census_legacy_orphans(connection)}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
-        with self._connect() as connection:
+        with self._connection() as connection:
+            connection.execute("BEGIN")
             row = self._require_scoped(
                 connection,
                 job_id,
@@ -394,7 +418,7 @@ class CaptureJobRegistry:
         request_id, session_id = body.get("request_id"), body.get("session_id")
         if not isinstance(request_id, str) or not isinstance(session_id, str):
             raise CaptureJobError(400, "invalid_lease_request")
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
@@ -440,7 +464,7 @@ class CaptureJobRegistry:
         if retry is None and ttl is None:
             raise CaptureJobError(400, "empty_capture_job_update")
         request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl})
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
@@ -513,7 +537,7 @@ class CaptureJobRegistry:
         request_id = body.get("request_id")
         if not isinstance(request_id, str):
             raise CaptureJobError(400, "invalid_request_id")
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
