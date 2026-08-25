@@ -1049,17 +1049,24 @@ def _write_immutable_json(path: Path, payload: dict[str, object]) -> None:
     """Create a sidecar exactly once; replacing a seal would rewrite authority."""
 
     encoded = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    descriptor: int | None = None
+    descriptor = -1
+    temporary_path: Path | None = None
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        view = memoryview(encoded)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fsync(descriptor)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, path)
+        temporary_path.unlink()
+        temporary_path = None
     finally:
-        if descriptor is not None:
+        if descriptor != -1:
             os.close(descriptor)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     _fsync_directory(path.parent)
 
 
