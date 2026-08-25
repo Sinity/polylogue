@@ -454,7 +454,7 @@ def workspace_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     empty_archive_template: Path,
-) -> dict[str, Path]:
+) -> Iterator[dict[str, Path]]:
     from tests.infra.archive_templates import clone_archive_template
 
     data_dir = tmp_path / "data"
@@ -470,11 +470,14 @@ def workspace_env(
 
     clone_archive_template(empty_archive_template, archive_root)
 
-    return {
-        "archive_root": archive_root,
-        "data_root": data_dir,
-        "state_dir": state_dir,
-    }
+    try:
+        yield {
+            "archive_root": archive_root,
+            "data_root": data_dir,
+            "state_dir": state_dir,
+        }
+    finally:
+        shutil.rmtree(archive_root, ignore_errors=True)
 
 
 @pytest.fixture
@@ -516,7 +519,7 @@ def cli_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     empty_archive_template: Path,
-) -> dict[str, Path]:
+) -> Iterator[dict[str, Path]]:
     """
     Isolated CLI workspace with archive roots and database.
 
@@ -554,14 +557,17 @@ def cli_workspace(
 
     clone_archive_template(empty_archive_template, archive_root)
 
-    return {
-        "archive_root": archive_root,
-        "data_root": data_dir,
-        "state_dir": state_dir,
-        "inbox_dir": inbox_dir,
-        "render_root": render_root,
-        "db_path": db_path,
-    }
+    try:
+        yield {
+            "archive_root": archive_root,
+            "data_root": data_dir,
+            "state_dir": state_dir,
+            "inbox_dir": inbox_dir,
+            "render_root": render_root,
+            "db_path": db_path,
+        }
+    finally:
+        shutil.rmtree(archive_root, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
