@@ -1,0 +1,11 @@
+id: sqlite-error-default
+language: Python
+severity: warning
+message: "bare sqlite3.Error handler returns a measurement/read default; owner fesmz"
+rule:
+  all:
+    - pattern: return $VALUE
+    - inside:
+        kind: except_clause
+        regex: '^except sqlite3\.Error:'
+        stopBy: end

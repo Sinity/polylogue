@@ -1,0 +1,10 @@
+polylogue/assets.py:53
+polylogue/browser_capture/pairing.py:141
+polylogue/browser_capture/receiver.py:153
+polylogue/browser_capture/receiver.py:187
+polylogue/daemon/api_auth.py:103
+polylogue/sources/sqlite_snapshot.py:178
+polylogue/sources/sqlite_snapshot.py:179
+polylogue/sources/token_store.py:87
+polylogue/storage/blob_integrity.py:1083
+polylogue/storage/blob_integrity.py:1192

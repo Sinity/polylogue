@@ -243,6 +243,7 @@ def build_verify_steps(
         steps += [
             ("render all", _devtools_cmd("render all", "--check")),
             ("verify layering", _devtools_cmd("verify layering", "--json")),
+            ("verify patterns", _devtools_cmd("verify patterns", "--json")),
             ("verify ci-commands", _devtools_cmd("verify ci-commands", "--json")),
             ("verify doc-commands", _devtools_cmd("verify doc-commands")),
             ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),

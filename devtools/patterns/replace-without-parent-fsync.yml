@@ -1,0 +1,18 @@
+id: replace-without-parent-fsync
+language: Python
+severity: warning
+message: "os.replace path lacks a recognized parent-directory fsync; owner fhikb"
+rule:
+  all:
+    - pattern: os.replace($$$)
+    - inside:
+        kind: function_definition
+        not:
+          has:
+            any:
+              - pattern: os.fsync($$$)
+              - pattern: $OBJECT.fsync($$$)
+              - pattern: _fsync_directory($$$)
+              - pattern: _fsync_dir($$$)
+            stopBy: end
+        stopBy: end

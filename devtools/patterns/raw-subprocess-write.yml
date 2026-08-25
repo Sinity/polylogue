@@ -1,0 +1,6 @@
+id: raw-subprocess-write
+language: Python
+severity: hint
+message: "pending: raw write primitive bypasses the sanctioned receipt/temp protocol; owners 0oyqi/ok65v/fhikb"
+rule:
+  pattern: subprocess.run($$$)

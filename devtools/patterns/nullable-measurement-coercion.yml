@@ -1,0 +1,6 @@
+id: nullable-measurement-coercion
+language: Python
+severity: hint
+message: "pending: provider-omitted nullable measurement is coerced to a default; owner trmhh"
+rule:
+  pattern: $FIELD = $VALUE or 0
