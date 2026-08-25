@@ -4414,6 +4414,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
 
+    def fake_operation_recovery(_archive_root_path: Path) -> None:
+        events.append("operation-recovery")
+
     async def fake_loop(name: str) -> None:
         events.append(name)
         await asyncio.Event().wait()
@@ -4462,6 +4465,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
+        stack.enter_context(
+            patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", fake_operation_recovery)
+        )
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
         stack.enter_context(
@@ -4531,6 +4537,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert "watcher" in events
     assert events.index("embedding-lifecycle") < events.index("api-bind")
     assert events.index("embedding-lifecycle") < events.index("fts") < events.index("watcher")
+    assert events.index("operation-recovery") < events.index("watcher")
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")

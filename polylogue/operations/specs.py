@@ -9,12 +9,7 @@ from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 from polylogue.core.user_state_targets import TARGET_KIND_NAMES
-from polylogue.operations.mutation_transaction import (
-    IdempotencyPolicy,
-    RecoveryDeclaration,
-    Surface,
-    TargetAuthorityPolicy,
-)
+from polylogue.operations.mutation_transaction import IdempotencyPolicy, Surface, TargetAuthorityPolicy
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.
@@ -77,7 +72,6 @@ class OperationSpec:
     resumable: bool = False
     receipt_schema: str = "polylogue.mutation-receipt/v1"
     reconstructible: bool = False
-    recovery: RecoveryDeclaration | None = None
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -112,17 +106,6 @@ class OperationSpec:
                 "resumable": self.resumable,
                 "receipt_schema": self.receipt_schema,
                 "reconstructible": self.reconstructible,
-                "recovery": None
-                if self.recovery is None
-                else {
-                    "target_identity": self.recovery.target_identity,
-                    "plan_binding": self.recovery.plan_binding,
-                    "precondition_inspection": self.recovery.precondition_inspection,
-                    "postcondition_inspection": self.recovery.postcondition_inspection,
-                    "exact_retry": self.recovery.exact_retry,
-                    "partial_actions": list(self.recovery.partial_actions),
-                    "capability": self.recovery.capability,
-                },
             }
         )
 
@@ -1265,32 +1248,6 @@ def _declare_executor_authority(specs: tuple[OperationSpec, ...]) -> tuple[Opera
 
 
 RUNTIME_OPERATION_SPECS = _declare_executor_authority(RUNTIME_OPERATION_SPECS)
-
-
-def _declare_executor_recovery(specs: tuple[OperationSpec, ...]) -> tuple[OperationSpec, ...]:
-    """Attach one closed recovery declaration to every routed mutation family.
-
-    The declaration is registry evidence, not a target-state mirror.  A family
-    with no safe automatic continuation remains explicitly operator-blocking.
-    """
-
-    from polylogue.operations.recovery_catalog import recovery_declaration_for
-
-    declared: list[OperationSpec] = []
-    for spec in specs:
-        if spec.executor_status != "executor-routed" or spec.recovery is not None:
-            declared.append(spec)
-            continue
-        declared.append(
-            replace(
-                spec,
-                recovery=recovery_declaration_for(spec.name),
-            )
-        )
-    return tuple(declared)
-
-
-RUNTIME_OPERATION_SPECS = _declare_executor_recovery(RUNTIME_OPERATION_SPECS)
 DECLARED_OPERATION_SPECS = (
     *RUNTIME_OPERATION_SPECS,
     *DECLARED_CONTROL_PLANE_OPERATION_SPECS,

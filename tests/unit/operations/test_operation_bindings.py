@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import pytest
 
@@ -15,12 +15,10 @@ from polylogue.operations.mutation_transaction import (
     DestructiveClass,
     MutationPlan,
     MutationReceipt,
-    RecoveryDeclaration,
     RecoveryDisposition,
     TargetAuthorityPolicy,
     build_plan,
 )
-from polylogue.operations.recovery_catalog import build_recovery_catalog, recovery_declaration_for
 from polylogue.operations.specs import OperationKind, OperationSpec, build_runtime_operation_catalog
 
 
@@ -80,15 +78,6 @@ def _spec(*, policies: tuple[TargetAuthorityPolicy, ...] | None = None) -> Opera
                 ),
             )
         ),
-        recovery=RecoveryDeclaration(
-            target_identity="typed-targets-v1",
-            plan_binding="plan-hash-and-target-digest-v1",
-            precondition_inspection="domain-owned",
-            postcondition_inspection="domain-owned",
-            exact_retry=True,
-            partial_actions=("retry-exact",),
-            capability="inspect-and-retry",
-        ),
     )
 
 
@@ -113,8 +102,6 @@ def test_binding_rejects_unregistered_capability_and_missing_policy() -> None:
         ).validate()
     with pytest.raises(BindingValidationError, match="no target authority"):
         OperationBinding(_spec(policies=()), actuator).validate()
-    with pytest.raises(BindingValidationError, match="no recovery declaration"):
-        OperationBinding(replace(_spec(), recovery=None), actuator).validate()
 
 
 def test_binding_rejects_version_mismatch_and_duplicate_catalog_entries() -> None:
@@ -144,7 +131,6 @@ def test_runtime_executor_routes_have_specific_capabilities_and_surfaces() -> No
 
     assert routed
     assert all(spec.target_authority for spec in routed)
-    assert all(spec.recovery is not None for spec in routed)
     assert all(spec.allowed_surfaces for spec in routed)
     assert all(
         capability != "archive.legacy_runtime"
@@ -152,15 +138,3 @@ def test_runtime_executor_routes_have_specific_capabilities_and_surfaces() -> No
         for policy in spec.target_authority
         for capability in policy.required_capabilities
     )
-
-
-def test_new_executor_family_cannot_inherit_a_recovery_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The production catalog rejects an unclassified routed family at registration."""
-
-    from polylogue.operations import recovery_catalog
-
-    monkeypatch.delitem(recovery_catalog._DECLARATIONS, "mutate-delete-session")
-    with pytest.raises(ValueError, match="no explicit recovery declaration"):
-        build_recovery_catalog()
-    with pytest.raises(ValueError, match="no explicit recovery declaration"):
-        recovery_declaration_for("mutate-new-destructive-family")

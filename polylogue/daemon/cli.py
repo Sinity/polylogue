@@ -2947,13 +2947,12 @@ async def _run_daemon_services_under_active_writer_lease(
             DaemonLifecycle.start,
             details={"archive_root": str(archive_root_path)},
         )
-        # Recovery is a bounded, writer-owned startup obligation. It cannot
-        # wait for a later mutation request because an interrupted operation
-        # must remain inspectable even on a quiet archive.
-        from polylogue.operations.recovery_catalog import recover_archive_operations
+        # Interrupted effects are classified once under the real daemon writer
+        # lease. Executor construction is request-local and must never recover.
+        from polylogue.operations.mutation_transaction import recover_interrupted_operations
 
         await write_coordinator.run_sync(
-            "daemon.operation_recovery.startup", recover_archive_operations, archive_root_path
+            "daemon.operation_recovery.startup", recover_interrupted_operations, archive_root_path
         )
         previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
     except BaseException:

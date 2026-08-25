@@ -113,7 +113,6 @@ RecoveryDispositionKind = Literal[
     "unknown",
 ]
 RecoveryAction = Literal["retry-exact", "rollback", "forward", "operator-blocking"]
-RecoveryCapability = Literal["inspect-and-retry", "inspect-and-finalize", "operator-blocking"]
 
 
 class MutationTransactionError(RuntimeError):
@@ -561,6 +560,7 @@ class RecoveryDisposition:
     action: RecoveryAction
     detail: str | None = None
     target_dispositions: tuple[RecoveryTargetDisposition, ...] = ()
+    evidence_ref: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind == "unknown" and self.action != "operator-blocking":
@@ -569,6 +569,12 @@ class RecoveryDisposition:
             raise ValueError("partial recovery requires a declared continuation action")
         if self.kind in {"confirmed-not-applied", "confirmed-applied"} and self.action == "operator-blocking":
             raise ValueError("confirmed recovery cannot use an operator-blocking action")
+        if self.kind == "confirmed-applied" and any(item.state != "applied" for item in self.target_dispositions):
+            raise ValueError("confirmed-applied recovery requires applied outcomes only")
+        if self.kind == "confirmed-not-applied" and any(
+            item.state != "not-applied" for item in self.target_dispositions
+        ):
+            raise ValueError("confirmed-not-applied recovery requires not-applied outcomes only")
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,25 +612,6 @@ class RecoveryOperation:
         return (
             f"reconstructed {self.reconstructed_target_count} of {self.expected_target_count} durable recovery targets"
         )
-
-
-@dataclass(frozen=True, slots=True)
-class RecoveryDeclaration:
-    """Immutable recovery contract carried by every registered mutation family."""
-
-    target_identity: Literal["typed-targets-v1"]
-    plan_binding: Literal["plan-hash-and-target-digest-v1"]
-    precondition_inspection: Literal["domain-owned"]
-    postcondition_inspection: Literal["domain-owned"]
-    exact_retry: bool
-    partial_actions: tuple[RecoveryAction, ...]
-    capability: RecoveryCapability
-
-    def __post_init__(self) -> None:
-        if self.capability == "operator-blocking" and self.partial_actions:
-            raise ValueError("operator-blocking recovery cannot claim a partial continuation")
-        if self.capability != "operator-blocking" and not self.partial_actions:
-            raise ValueError("inspectable recovery must declare its partial continuation actions")
 
 
 #: Both ``prepare`` and ``apply`` take the *same* argument shape in every
@@ -706,50 +693,7 @@ class OperationExecutor:
             attempt_owner_id=AuditRepository.current_process_attempt_owner(),
         )
         audit.reconcile_continuity()
-        # Validate the complete production catalog at the archive composition
-        # boundary. Startup must fail before the daemon can mutate if a newly
-        # routed family lacks an explicit recovery declaration.
-        from polylogue.operations.recovery_catalog import build_recovery_catalog
-
-        build_recovery_catalog()
-        executor = cls(audit=audit, now_ms=now_ms, token_factory=token_factory, archive_root=archive_root)
-        executor.recover_startup()
-        return executor
-
-    def recover_startup(self) -> None:
-        """Run registered domain inspection for conclusively orphaned work.
-
-        This is intentionally a small closed registry, not a repair dispatcher:
-        operation names select their own domain inspector, and everything not
-        registered as inspectable is recorded as unknown and remains blocking.
-        """
-
-        if self._audit is None or self._archive_root is None:
-            return
-        from polylogue.operations.recovery_catalog import resolve_recovery_binding
-
-        for operation in self._audit.orphaned_operations():
-            binding = resolve_recovery_binding(operation.operation, operation.operation_version)
-            if binding is None:
-                disposition = RecoveryDisposition(
-                    "unknown", "operator-blocking", "operation/version has no registered recovery binding"
-                )
-            elif binding.inspector is None:
-                disposition = RecoveryDisposition(
-                    "unknown", "operator-blocking", "operation declaration requires authorized adjudication"
-                )
-            else:
-                try:
-                    disposition = binding.inspector(operation, self._archive_root)
-                except Exception as exc:
-                    disposition = RecoveryDisposition(
-                        "unknown", "operator-blocking", f"startup target inspection failed: {exc}"
-                    )
-            self._audit.record_recovery_disposition(operation.operation_id, disposition)
-        # Existing operations without a registered inspector are deliberately
-        # terminalized only as unknown.  They can neither be replayed nor
-        # overlapped until an operator supplies domain evidence.
-        self._audit.recover_abandoned_attempts()
+        return cls(audit=audit, now_ms=now_ms, token_factory=token_factory, archive_root=archive_root)
 
     def prepare(self, actuator: MutationActuator[ArgsT], args: ArgsT) -> MutationPlan:
         """PREPARE: resolve exact targets from live state. Never mutates."""
@@ -1155,6 +1099,80 @@ class OperationExecutor:
         return actuator.apply(plan, args)
 
 
+def recover_interrupted_operations(archive_root: Path) -> None:
+    """Classify dead operations at the daemon's single-writer startup seam.
+
+    This is deliberately not executor composition.  Request handlers construct
+    executors frequently; only daemon startup owns the writer lease that makes
+    classifying an interrupted effect safe.
+
+    The work is bounded and one-pass: abandoned attempts are terminalized
+    first, then every remaining orphan is classified exactly once and leaves
+    ``operation_runs`` terminal, so a restart over an already-recovered
+    archive appends no further durable events.
+
+    Only ``mutate-delete-session`` can be classified from committed target
+    state -- a session either exists or does not.  Every other family, and any
+    version this build no longer recognizes, is durably terminalized as an
+    operator-blocking unknown for bounded adjudication, never guessed or
+    silently retried.
+    """
+
+    if not (archive_root / "audit.db").is_file():
+        return
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    audit = AuditRepository.for_archive_root(
+        archive_root,
+        attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+    )
+    audit.reconcile_continuity()
+    # Terminalize dead attempts *before* discovering orphans so one startup
+    # converges: otherwise a run this call marks interrupted would only be
+    # classified by the next restart.
+    audit.recover_abandoned_attempts()
+    orphans = audit.orphaned_operations()
+    if not orphans:
+        return
+    delete = SessionDeleteActuator()
+    inspectable = (delete.operation, runtime_operation_binding(delete).spec.operation_version)
+    blocked = RecoveryDisposition(
+        "unknown", "operator-blocking", "operation family/version requires bounded operator adjudication"
+    )
+    if not any((operation.operation, operation.operation_version) == inspectable for operation in orphans):
+        for operation in orphans:
+            audit.record_recovery_disposition(operation.operation_id, blocked)
+        return
+    classified: set[str] = set()
+    try:
+        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+            args = SessionDeleteArgs(archive=archive, session_ids=())
+            for operation in orphans:
+                if (operation.operation, operation.operation_version) != inspectable:
+                    disposition = blocked
+                else:
+                    try:
+                        disposition = delete.inspect_recovery(operation, args)
+                    except Exception as exc:
+                        disposition = RecoveryDisposition(
+                            "unknown", "operator-blocking", f"startup target inspection failed: {exc}"
+                        )
+                audit.record_recovery_disposition(operation.operation_id, disposition)
+                classified.add(operation.operation_id)
+    except Exception as exc:
+        # The archive itself became unreadable: block the orphans this call
+        # never reached, rather than leaving nonterminal runs no later restart
+        # revisits.  Already-classified ids are skipped so the durable event
+        # log stays one event per classification.
+        unreadable = RecoveryDisposition("unknown", "operator-blocking", f"startup archive is unreadable: {exc}")
+        for operation in orphans:
+            if operation.operation_id not in classified:
+                audit.record_recovery_disposition(operation.operation_id, unreadable)
+
+
 def make_target_ref(kind: Literal["session", "message", "block", "source", "index"], value: object) -> str:
     """Return a stable ``kind:value`` target ref, the shared vocabulary for plans/receipts."""
 
@@ -1184,8 +1202,6 @@ __all__ = [
     "RecoveryBlockedError",
     "RecoveryDisposition",
     "RecoveryDispositionKind",
-    "RecoveryCapability",
-    "RecoveryDeclaration",
     "RecoveryOperation",
     "RecoveryTargetDisposition",
     "RecoveryPolicy",
@@ -1202,5 +1218,6 @@ __all__ = [
     "compute_target_digest",
     "compute_typed_plan_hash",
     "make_target_ref",
+    "recover_interrupted_operations",
     "validate_mutation_plan_integrity",
 ]
