@@ -2089,15 +2089,26 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
                 )
             if block_reason := offline_maintenance_block_reason(config, active=True, dry_run=False):
                 return hooks.error_json(block_reason, code="offline_required")
+            adjudicator = kwargs.get("adjudicator")
+            if not isinstance(adjudicator, str) or not adjudicator:
+                adjudicator = "user:mcp"
             try:
-                audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason)
+                audit.adjudicate_recovery(
+                    operation_id, target_outcomes=outcomes, reason=reason, adjudicator=adjudicator
+                )
             except ValueError as exc:
                 return hooks.error_json(str(exc), code="invalid_argument")
         recovery_record = audit.get_operation(operation_id)
         if recovery_record is None:
             return hooks.error_json(f"operation not found: {operation_id}", code="not_found")
         return hooks.json_payload(
-            MCPRootPayload(root={"operation": recovery_record, "events": audit.list_events(operation_id)})
+            MCPRootPayload(
+                root={
+                    "operation": recovery_record,
+                    "events": audit.list_events(operation_id),
+                    "targets": audit.list_targets(operation_id),
+                }
+            )
         )
 
     if operation == "rebuild_insights":
