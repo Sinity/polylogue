@@ -4,6 +4,7 @@ import dataclasses
 import io
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,67 @@ def test_route_preview_apply_and_repeat_apply_use_generated_keys(tmp_path: Path)
     assert current.root.exists()
 
 
+def test_route_explicitly_deletes_only_unreachable_aged_corrupt_artifacts(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    current = build_seeded_archive(cache_root=cache_root)
+    stale_specs = (dataclasses.replace(c03_semantic_corpus_spec(), seed=999),)
+    stale = build_seeded_archive(stale_specs, cache_root=cache_root)
+    for artifact in (current, stale):
+        manifest = artifact.root / "manifest.json"
+        artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
+        manifest.chmod(manifest.stat().st_mode | stat.S_IWUSR)
+        manifest.write_text("not-json", encoding="utf-8")
+        manifest.chmod(manifest.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        artifact.root.chmod(artifact.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+    _age_artifact(current.root)
+    _age_artifact(stale.root)
+
+    preview_output = io.StringIO()
+    assert (
+        command.main(
+            [
+                "--cache-root",
+                str(cache_root),
+                "--grace-period-s",
+                "1",
+                "--delete-corrupt",
+                "--json",
+            ],
+            stdout=preview_output,
+        )
+        == 0
+    )
+    preview = json.loads(preview_output.getvalue())
+    current_entry = next(entry for entry in preview["entries"] if entry["name"] == current.root.name)
+    stale_entry = next(entry for entry in preview["entries"] if entry["name"] == stale.root.name)
+    assert current_entry["disposition"] == ArtifactGcDisposition.CORRUPT.value
+    assert current_entry["detail"].startswith("reachable artifact is corrupt")
+    assert stale_entry["disposition"] == ArtifactGcDisposition.STALE.value
+    assert stale_entry["detail"].startswith("unreachable corrupt artifact")
+    assert current.root.exists() and stale.root.exists()
+
+    applied_output = io.StringIO()
+    assert (
+        command.main(
+            [
+                "--cache-root",
+                str(cache_root),
+                "--grace-period-s",
+                "1",
+                "--delete-corrupt",
+                "--apply",
+                "--json",
+            ],
+            stdout=applied_output,
+        )
+        == 0
+    )
+    applied = json.loads(applied_output.getvalue())
+    assert applied["delete_corrupt"] is True
+    assert current.root.exists()
+    assert not stale.root.exists()
+
+
 def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     import tomllib
 
@@ -118,3 +180,4 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     assert operation["exclusive_keys"] == ["polylogue:seeded-archive-cache-gc"]
     assert operation["timeout_seconds"] == 900
     assert operation["parameters"]["apply"]["flag"] == "--apply"
+    assert operation["parameters"]["delete_corrupt"]["flag"] == "--delete-corrupt"

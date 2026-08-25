@@ -58,6 +58,10 @@ scratch = "nvme"
 type = "bool"
 flag = "--apply"
 
+[operations.seeded_archive_cache_gc.parameters.delete_corrupt]
+type = "bool"
+flag = "--delete-corrupt"
+
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=12", "devtools", "verify", "--all"]

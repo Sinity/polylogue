@@ -84,6 +84,14 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         action="store_true",
         help="Actually delete eligible aged artifacts. Without this flag, preview only.",
     )
+    parser.add_argument(
+        "--delete-corrupt",
+        action="store_true",
+        help=(
+            "Treat aged corrupt directories with unreachable path identities as eligible; "
+            "actual deletion still requires --apply."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="Emit the complete report as JSON.")
     args = parser.parse_args(argv)
     output = stdout or sys.stdout
@@ -98,6 +106,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             reachable_keys=inventory.keys,
             grace_period_s=args.grace_period_s,
             dry_run=not args.apply,
+            delete_corrupt=args.delete_corrupt,
             protected_worktrees=args.protected_worktree,
             receipt_path=receipt,
         )
