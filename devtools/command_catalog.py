@@ -232,7 +232,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.reindex_packets",
         use_when=(
             "Before dispatching reindex work, recompute blocks-only closure, packet topology, conflicts, "
-            "capability carriers, and launch readiness from current Beads. The report is read-only."
+            "capability carriers, and launch readiness from current Beads. The report is read-only; apply "
+            "authority remains unsupported until a coordinator evidence adapter exists."
         ),
         examples=(
             "devtools verify reindex-packets --enforce-readiness",

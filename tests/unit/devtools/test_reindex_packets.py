@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 
-from devtools.reindex_packets import ROOT_ID, _record, _task_revision, main, validate
+from devtools.reindex_packets import APPLY_AUTHORITY_MODE, ROOT_ID, _record, _task_revision, main, validate
 
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
@@ -109,7 +109,9 @@ def operation_evidence(
     expires_at: str = "2026-08-25T07:00:00+00:00",
 ) -> dict[str, Any]:
     return {
-        "observed_at": "2026-08-25T06:00:00+00:00",
+        "operation_id": "a",
+        "integration_head": HEAD,
+        "packet_context_digest": "sha256:unbound",
         "plan_digest": plan_digest,
         "rehearsal": {
             "evidence_id": "rehearsal-1",
@@ -126,9 +128,24 @@ def operation_evidence(
     }
 
 
+def bound_operation_evidence(beads: list[dict[str, Any]], **changes: Any) -> dict[str, Any]:
+    evidence = operation_evidence(**changes)
+    return bind_diagnostic_evidence(beads, evidence)
+
+
+def bind_diagnostic_evidence(beads: list[dict[str, Any]], evidence: dict[str, Any]) -> dict[str, Any]:
+    evidence = json.loads(json.dumps(evidence))
+    baseline = validate(FakeReader(beads), integration_head=HEAD)
+    evidence["packet_context_digest"] = packet(baseline)["packet_context_digest"]
+    return evidence
+
+
 def graph(*, operation: bool = False) -> list[dict[str, Any]]:
+    member_ids = "a" if operation else "abc"
     root = bead(ROOT_ID, {"campaign_id": "reindex-2026", "execution_shape": "gate"}, (dep("gate"),))
-    gate = bead("gate", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, tuple(dep(item) for item in "abc"))
+    gate = bead(
+        "gate", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, tuple(dep(item) for item in member_ids)
+    )
     members = [
         bead(
             "a",
@@ -139,6 +156,13 @@ def graph(*, operation: bool = False) -> list[dict[str, Any]]:
         bead("b", meta(lane_order="2"), (dep("a"),)),
         bead("c", meta(lane_order="3"), (dep("b"),)),
     ]
+    if operation:
+        members = [
+            bead(
+                "a",
+                operation_metadata(packet_size_exception="authorized-operation-singleton"),
+            )
+        ]
     return [root, gate, *members]
 
 
@@ -219,7 +243,8 @@ def test_candidate_and_final_window_authority_keep_their_existing_serialization_
         execution_kind="authorized-prep-operation", live_data_access="active-authorized", lane_mode="parallel"
     )
     report = validate(FakeReader(beads), integration_head=HEAD)
-    assert not any("requires operator-authorized live_data_access" in error for error in report["structural_errors"])
+    assert any("requires operator-authorized live_data_access" in error for error in report["structural_errors"])
+    assert any("requires a declared prep execution_wave" in error for error in report["structural_errors"])
     assert any("operator-authorized writer is not serialized" in error for error in report["structural_errors"])
 
 
@@ -244,7 +269,12 @@ def test_operation_initial_launch_breaks_the_static_evidence_catch_22() -> None:
         "may_apply": False,
     }
     assert not apply["ready"]
-    assert apply["launch_failures"] == [{"kind": "operation-evidence", "reason": "missing", "bead_id": "a"}]
+    assert {(failure["kind"], failure["reason"]) for failure in apply["launch_failures"]} == {
+        ("rehearsal", "missing"),
+        ("operator-authorization", "missing"),
+        ("independent-review", "missing"),
+        ("apply-authority", "unsupported-evidence-adapter"),
+    }
 
 
 def test_initial_phase_token_cannot_authorize_apply() -> None:
@@ -259,29 +289,37 @@ def test_initial_phase_token_cannot_authorize_apply() -> None:
 
 def test_apply_phase_token_binds_the_runtime_plan_digest() -> None:
     beads = graph(operation=True)
+    first_evidence = bound_operation_evidence(beads)
+    second_evidence = bound_operation_evidence(beads, plan_digest="sha256:plan-2")
     first = validate(
-        FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": operation_evidence()}
+        FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": first_evidence}
     )
     second = validate(
         FakeReader(beads),
         integration_head=HEAD,
         selected_phase="apply",
-        operation_evidence={"a": operation_evidence(plan_digest="sha256:plan-2")},
+        operation_evidence={"a": second_evidence},
     )
     assert launch(first, "apply")["context_digest"] != launch(second, "apply")["context_digest"]
     assert launch(first, "apply")["operation_evidence"]["a"]["plan_digest"] == "sha256:plan-1"
 
 
-def test_apply_requires_accepted_same_digest_rehearsal_authorization_and_review() -> None:
+def test_diagnostic_evidence_cannot_authorize_apply() -> None:
     beads = graph(operation=True)
     missing = validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply")
     assert packet(missing)["ready"] is False
     report = validate(
-        FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": operation_evidence()}
+        FakeReader(beads),
+        integration_head=HEAD,
+        selected_phase="apply",
+        operation_evidence={"a": bound_operation_evidence(beads)},
     )
     assert packet(report)["selected_phase"] == "apply"
-    assert packet(report)["ready"] and launch(report, "apply")["ready"]
-    assert launch(report, "apply")["effective_authority"]["may_apply"] is True
+    assert not packet(report)["ready"] and not launch(report, "apply")["ready"]
+    assert launch(report, "apply")["effective_authority"]["may_apply"] is False
+    assert {failure["reason"] for failure in launch(report, "apply")["launch_failures"]} == {
+        "unsupported-evidence-adapter"
+    }
 
 
 @pytest.mark.parametrize(
@@ -292,15 +330,14 @@ def test_apply_requires_accepted_same_digest_rehearsal_authorization_and_review(
         (operation_evidence(review_digest="sha256:other"), "mismatched-plan-digest"),
         (operation_evidence(rehearsal_state="stale"), "stale"),
         (operation_evidence(authorization_state="revoked"), "revoked"),
-        (operation_evidence(expires_at="2026-08-25T05:00:00+00:00"), "expired"),
     ],
 )
-def test_apply_mismatched_or_stale_runtime_evidence_fails_closed(evidence: dict[str, Any], reason: str) -> None:
+def test_apply_mismatched_or_stale_diagnostic_evidence_fails_closed(evidence: dict[str, Any], reason: str) -> None:
     report = validate(
         FakeReader(graph(operation=True)),
         integration_head=HEAD,
         selected_phase="apply",
-        operation_evidence={"a": evidence},
+        operation_evidence={"a": bind_diagnostic_evidence(graph(operation=True), evidence)},
     )
     apply = launch(report, "apply")
     assert not packet(report)["ready"]
@@ -313,9 +350,12 @@ def test_shape_declares_when_apply_needs_independent_review() -> None:
     evidence = operation_evidence()
     evidence["review"] = None
     report = validate(
-        FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}
+        FakeReader(beads),
+        integration_head=HEAD,
+        selected_phase="apply",
+        operation_evidence={"a": bind_diagnostic_evidence(beads, evidence)},
     )
-    assert packet(report)["ready"]
+    assert not any(failure["kind"] == "independent-review" for failure in launch(report, "apply")["launch_failures"])
 
 
 @pytest.mark.parametrize(
@@ -466,3 +506,213 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
         ("bd", "--readonly", "export", "--all"),
     ]
     assert json.loads(output.getvalue())["read_only"] is True
+
+
+def test_open_closure_shape_and_leaf_carriers_cannot_be_skipped() -> None:
+    beads = graph()
+    hidden = bead("hidden", {}, status="open")
+    hidden["labels"] = []
+    beads.append(hidden)
+    beads[1]["dependencies"].append(dep("hidden"))
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert "open blocks-closure records have no campaign carrier: hidden" in report["structural_errors"]
+
+    hidden["metadata"] = {"campaign_id": "reindex-2026", "execution_shape": "mystery"}
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert "open campaign closure records have no valid execution shape: hidden" in report["structural_errors"]
+
+    beads = graph()
+    beads[2]["metadata"].pop("tdd_mode")
+    assert any(
+        "a: missing leaf carrier(s)" in error
+        for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
+    )
+
+
+def test_closed_noncampaign_closure_is_warning_and_non_task_records_are_filtered() -> None:
+    beads = graph()
+    history = bead("history", {}, status="closed")
+    history["labels"] = []
+    beads.append(history)
+    beads[1]["dependencies"].append(dep("history"))
+    beads.append({"_type": "memory", "content": "not a task"})
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert report["ok"]
+    assert report["warnings"] == ["1 closed blocks-closure records have no campaign carrier"]
+    assert "" not in report["blocks_only_closure"]
+
+
+def test_packet_shape_order_leader_and_blocker_invariants_remain_enforced() -> None:
+    beads = graph()
+    beads[2]["metadata"]["lane_order"] = "2"
+    beads[3]["metadata"].update(lane_order="2", packet_execution_contract="packet-v1")
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any("duplicate packet order" in error for error in report["structural_errors"])
+    assert any("internal blocker is not earlier" in error for error in report["structural_errors"])
+    assert any("non-leader carries packet_execution_contract" in error for error in report["structural_errors"])
+
+    beads = graph()
+    beads[2]["metadata"].update(packet_size_exception="bounded", lane_packet="1")
+    beads[3]["metadata"].update(packet_size_exception="bounded", lane_packet="2", lane_order="1")
+    beads[3]["dependencies"] = []
+    assert any(
+        "packet blocker is in a later packet" in error
+        for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
+    )
+
+    beads = graph()
+    beads[2]["metadata"]["execution_wave"] = "not-a-wave"
+    assert any(
+        "unknown execution_wave" in error
+        for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
+    )
+
+    beads = graph()
+    beads[1]["dependencies"] = [dep("a")]
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any("ordinary packet has 1 leaves" in error for error in report["structural_errors"])
+
+    beads = graph()
+    beads[2]["metadata"]["lane_order"] = "zero"
+    assert any(
+        "lane order is not numeric" in error
+        for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
+    )
+
+    beads = graph()
+    beads[2]["metadata"]["lane_packet"] = ""
+    assert any(
+        "invalid packet assignment" in error
+        for error in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
+    )
+
+
+def test_operation_policy_is_wave_independent_and_cannot_be_bypassed_by_wave_edit() -> None:
+    beads = graph(operation=True)
+    beads[2]["metadata"].update(execution_wave="reindex-window", plan_id="forbidden")
+    for field in ("operation_phase_contract", "initial_job_authority", "apply_authority"):
+        beads[2]["metadata"].pop(field)
+    report = validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply")
+    apply = launch(report, "apply")
+    assert any("requires a declared prep execution_wave" in error for error in report["structural_errors"])
+    assert any("missing operation_phase_contract" in error for error in report["structural_errors"])
+    assert any("invalid initial_job_authority" in error for error in report["structural_errors"])
+    assert any("invalid apply_authority" in error for error in report["structural_errors"])
+    assert any("stores runtime policy field" in error for error in report["structural_errors"])
+    assert not apply["ready"] and apply["effective_authority"]["may_apply"] is False
+
+
+def test_operation_packet_membership_is_unambiguous_and_never_uses_an_ordinary_leader() -> None:
+    beads = graph()
+    beads[3]["metadata"] = operation_metadata(lane_order="2")
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    initial = launch(report, "initial")
+    assert any(
+        "mixes an authorized-prep-operation with ordinary members" in error for error in report["structural_errors"]
+    )
+    assert initial["operation_member_id"] is None
+    assert initial["effective_authority"]["mode"] == "invalid"
+    assert not initial["ready"]
+
+    beads = graph()
+    beads[2]["metadata"] = operation_metadata(packet_size_exception="authorized-operation-singleton")
+    beads[3]["metadata"] = operation_metadata(lane_order="2", packet_size_exception="authorized-operation-singleton")
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any("multiple authorized-prep-operation members" in error for error in report["structural_errors"])
+    assert not launch(report, "initial")["ready"]
+
+
+def test_invalid_initial_policy_is_never_ready_even_without_blockers() -> None:
+    beads = graph(operation=True)
+    beads[2]["metadata"]["initial_job_authority"] = {"mode": APPLY_AUTHORITY_MODE}
+    initial = launch(validate(FakeReader(beads), integration_head=HEAD), "initial")
+    assert initial["effective_authority"]["mode"] == "invalid"
+    assert not initial["ready"]
+
+
+def test_diagnostic_evidence_contract_binds_packet_head_and_distinct_records() -> None:
+    beads = graph(operation=True)
+    evidence = bound_operation_evidence(beads)
+    evidence["review"]["evidence_id"] = evidence["rehearsal"]["evidence_id"]
+    evidence["packet_context_digest"] = "sha256:other"
+    evidence["extra"] = "must fail"
+    apply = launch(
+        validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}),
+        "apply",
+    )
+    assert any(
+        "diagnostic operation evidence fields must be" in failure["reason"] for failure in apply["launch_failures"]
+    )
+    assert apply["effective_authority"]["may_apply"] is False
+
+    evidence = bound_operation_evidence(beads)
+    evidence["review"]["evidence_id"] = evidence["rehearsal"]["evidence_id"]
+    apply = launch(
+        validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}),
+        "apply",
+    )
+    assert "non-distinct-evidence-id" in {failure["reason"] for failure in apply["launch_failures"]}
+
+
+def test_diagnostic_evidence_rejects_naive_expiry_and_mismatched_bindings() -> None:
+    beads = graph(operation=True)
+    evidence = bound_operation_evidence(beads)
+    evidence["authorization"]["expires_at"] = "2026-08-25T07:00:00"
+    apply = launch(
+        validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}),
+        "apply",
+    )
+    assert any("timezone-aware" in failure["reason"] for failure in apply["launch_failures"])
+
+    evidence = bound_operation_evidence(beads)
+    evidence["integration_head"] = "f" * 40
+    evidence["operation_id"] = "other"
+    apply = launch(
+        validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}),
+        "apply",
+    )
+    assert {failure["reason"] for failure in apply["launch_failures"]} >= {
+        "mismatched-integration-head",
+        "mismatched-operation-id",
+        "unsupported-evidence-adapter",
+    }
+
+    evidence = bound_operation_evidence(beads)
+    evidence["packet_context_digest"] = "sha256:other"
+    apply = launch(
+        validate(FakeReader(beads), integration_head=HEAD, selected_phase="apply", operation_evidence={"a": evidence}),
+        "apply",
+    )
+    assert "mismatched-packet-context" in {failure["reason"] for failure in apply["launch_failures"]}
+
+
+def test_task_revision_binds_top_level_semantics_and_has_no_self_oracle() -> None:
+    record = _record(graph()[2])
+    baseline = _task_revision(record)
+    for field, value in (
+        ("description", "materially changed"),
+        ("status", "closed"),
+        ("dependencies", ({"depends_on_id": "other", "type": "blocks"},)),
+        ("new_future_semantic_field", {"meaning": "new"}),
+    ):
+        changed = dict(record)
+        changed[field] = value
+        assert _task_revision(changed) != baseline
+    changed = dict(record)
+    changed["updated_at"] = "2026-09-01T00:00:00Z"
+    assert _task_revision(changed) == baseline
+
+
+def test_invalid_integration_head_and_phase_explicit_text_report_fail_closed() -> None:
+    with pytest.raises(Exception, match="40-character lowercase"):
+        validate(FakeReader(graph()), integration_head="not-a-head")
+    output = StringIO()
+    assert (
+        main(
+            ["--diagnostic", "--phase", "apply", "--integration-head", HEAD],
+            reader=FakeReader(graph(operation=True)),
+            stdout=output,
+        )
+        == 0
+    )
+    assert "NOT READY [apply]" in output.getvalue()

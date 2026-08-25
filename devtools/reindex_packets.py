@@ -18,25 +18,10 @@ CAMPAIGN_ID = "reindex-2026"
 CORE = "execution_wave execution_lane lane_packet lane_order affected_paths conflict_keys write_scope verification_commands model_policy live_data_access decision_closure necessity_class judgment_class tdd_mode tdd_packet packet_intent integration_intent".split()  # noqa: SIM905
 LAUNCH = "packet_execution_contract deadline_policy".split()  # noqa: SIM905
 WAVES = {"reindex-prep-a": 1, "reindex-prep-b": 2, "reindex-prep-c": 3, "reindex-window": 4}
-TASK_REVISION_FIELDS = (
-    "_type",
-    "id",
-    "issue_type",
-    "status",
-    "priority",
-    "title",
-    "description",
-    "design",
-    "acceptance_criteria",
-    "notes",
-    "owner",
-    "assignee",
-    "external_ref",
-    "labels",
-    "metadata",
-    "dependencies",
-)
 TASK_REVISION_PREFIX = "sha256:"
+TASK_REVISION_BOOKKEEPING_FIELDS = frozenset(
+    {"created_at", "updated_at", "created_by", "comment_count", "dependency_count", "dependent_count"}
+)
 OPERATION_PHASE_VERSION = "prep-operation-phase-v2"
 PREP_OPERATION_ACCESS = frozenset(
     {"explicit-operator-authorized-source-apply", "explicit-operator-authorized-blob-apply"}
@@ -44,6 +29,7 @@ PREP_OPERATION_ACCESS = frozenset(
 FINAL_CANDIDATE_ACCESS = frozenset({"candidate-only"})
 EXECUTION_KINDS = frozenset({"implementation", "evidence", "authorized-prep-operation"})
 PHASES = frozenset({"initial", "apply"})
+PREP_OPERATION_WAVES = frozenset(wave for wave in WAVES if wave.startswith("reindex-prep-"))
 INITIAL_AUTHORITY_MODES = frozenset({"read-only-plan-rehearsal", "accepted-plan-rehearsal"})
 APPLY_AUTHORITY_MODE = "explicit-operator-authorized-apply"
 OPERATION_SHAPES = frozenset(
@@ -62,7 +48,9 @@ RUNTIME_BOOKKEEPING_METADATA_FIELDS = frozenset(
         "readiness_contract",
     }
 )
-RUNTIME_EVIDENCE_FIELDS = frozenset({"observed_at", "plan_digest", "rehearsal", "authorization", "review"})
+DIAGNOSTIC_EVIDENCE_FIELDS = frozenset(
+    {"operation_id", "integration_head", "packet_context_digest", "plan_digest", "rehearsal", "authorization", "review"}
+)
 REHEARSAL_EVIDENCE_FIELDS = frozenset({"evidence_id", "state", "plan_digest"})
 AUTHORIZATION_EVIDENCE_FIELDS = frozenset({"evidence_id", "state", "plan_digest", "expires_at"})
 REVIEW_EVIDENCE_FIELDS = frozenset({"evidence_id", "state", "plan_digest"})
@@ -88,7 +76,9 @@ class PhaseEvidence:
 
 @dataclass(frozen=True)
 class OperationEvidence:
-    observed_at: str
+    operation_id: str
+    integration_head: str
+    packet_context_digest: str
     plan_digest: str
     rehearsal: PhaseEvidence | None
     authorization: PhaseEvidence | None
@@ -103,7 +93,11 @@ class BdExportReader:
         result = subprocess.run(
             [self.executable, "--readonly", "export", "--all"], check=True, capture_output=True, text=True
         )
-        return tuple(_record(json.loads(line)) for line in result.stdout.splitlines() if line.strip())
+        return tuple(
+            _record(record)
+            for line in result.stdout.splitlines()
+            if line.strip() and _is_task(record := json.loads(line))
+        )
 
 
 def _metadata(value: object) -> dict[str, Any]:
@@ -128,6 +122,10 @@ def _record(value: Mapping[str, Any]) -> dict[str, Any]:
     record["metadata"] = _metadata(record.get("metadata"))
     record["dependencies"] = tuple(dep for dep in dependencies if isinstance(dep, Mapping))
     return record
+
+
+def _is_task(value: object) -> bool:
+    return isinstance(value, Mapping) and value.get("_type", "issue") == "issue" and bool(value.get("id"))
 
 
 def _canonical_value(value: object) -> object:
@@ -160,17 +158,24 @@ def _task_revision(bead: Mapping[str, Any]) -> str:
         if isinstance(dependency, Mapping)
     )
     payload = {
-        field: {
-            "labels": sorted(map(str, bead.get("labels", ()) or ())),
-            "metadata": semantic_metadata,
-            "dependencies": sorted(
-                dependencies,
-                key=lambda dependency: json.dumps(_canonical_value(dependency), sort_keys=True, separators=(",", ":")),
-            ),
-        }.get(field, bead.get(field))
-        for field in TASK_REVISION_FIELDS
+        key: value
+        for key, value in bead.items()
+        if key not in TASK_REVISION_BOOKKEEPING_FIELDS and key not in {"labels", "metadata", "dependencies"}
     }
-    encoded = json.dumps(_canonical_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    payload.update(
+        labels=sorted(map(str, bead.get("labels", ()) or ())),
+        metadata=semantic_metadata,
+        dependencies=sorted(
+            dependencies,
+            key=lambda dependency: json.dumps(_canonical_value(dependency), sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    encoded = json.dumps(
+        _canonical_value({"domain": "polylogue.reindex.task-revision.v1", "task": payload}),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
     return f"{TASK_REVISION_PREFIX}{hashlib.sha256(encoded).hexdigest()}"
 
 
@@ -300,15 +305,25 @@ def _parse_phase_evidence(value: object, fields: frozenset[str], *, name: str) -
 
 
 def _parse_operation_evidence(value: object) -> OperationEvidence:
-    if not isinstance(value, Mapping) or set(value) != RUNTIME_EVIDENCE_FIELDS:
-        raise ValueError(f"operation evidence fields must be {sorted(RUNTIME_EVIDENCE_FIELDS)}")
-    observed_at, plan_digest = value.get("observed_at"), value.get("plan_digest")
-    if not isinstance(observed_at, str) or _parse_datetime(observed_at) is None:
-        raise ValueError("operation evidence observed_at must be timezone-aware ISO-8601")
+    """Parse untrusted diagnostic evidence without granting authority from it."""
+    if not isinstance(value, Mapping) or set(value) != DIAGNOSTIC_EVIDENCE_FIELDS:
+        raise ValueError(f"diagnostic operation evidence fields must be {sorted(DIAGNOSTIC_EVIDENCE_FIELDS)}")
+    operation_id = value.get("operation_id")
+    integration_head = value.get("integration_head")
+    packet_context_digest = value.get("packet_context_digest")
+    plan_digest = value.get("plan_digest")
+    if not isinstance(operation_id, str) or not operation_id:
+        raise ValueError("diagnostic operation evidence missing operation_id")
+    if not isinstance(integration_head, str) or not INTEGRATION_HEAD_PATTERN.fullmatch(integration_head):
+        raise ValueError("diagnostic operation evidence has invalid integration_head")
+    if not isinstance(packet_context_digest, str) or not packet_context_digest.startswith(TASK_REVISION_PREFIX):
+        raise ValueError("diagnostic operation evidence has invalid packet_context_digest")
     if not isinstance(plan_digest, str) or not plan_digest:
-        raise ValueError("operation evidence missing plan_digest")
+        raise ValueError("diagnostic operation evidence missing plan_digest")
     return OperationEvidence(
-        observed_at,
+        operation_id,
+        integration_head,
+        packet_context_digest,
         plan_digest,
         _parse_phase_evidence(value.get("rehearsal"), REHEARSAL_EVIDENCE_FIELDS, name="rehearsal"),
         _parse_phase_evidence(value.get("authorization"), AUTHORIZATION_EVIDENCE_FIELDS, name="authorization"),
@@ -317,16 +332,19 @@ def _parse_operation_evidence(value: object) -> OperationEvidence:
 
 
 def _execution_kind_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
-    if not wave.startswith("reindex-prep-"):
-        return []
     bead_id, access, kind = bead["id"], str(_value(bead, "live_data_access") or ""), _value(bead, "execution_kind")
     errors = []
+    if wave not in WAVES:
+        errors.append(f"{bead_id}: unknown execution_wave {wave!r}")
     if kind is not None and kind not in EXECUTION_KINDS:
         errors.append(f"{bead_id}: unknown execution_kind {kind!r}")
-    if access in PREP_OPERATION_ACCESS and kind != "authorized-prep-operation":
+    if wave in PREP_OPERATION_WAVES and access in PREP_OPERATION_ACCESS and kind != "authorized-prep-operation":
         errors.append(f"{bead_id}: {wave}/{access} requires execution_kind authorized-prep-operation")
-    if kind == "authorized-prep-operation" and access not in PREP_OPERATION_ACCESS:
-        errors.append(f"{bead_id}: authorized prep operation requires operator-authorized live_data_access")
+    if kind == "authorized-prep-operation":
+        if wave not in PREP_OPERATION_WAVES:
+            errors.append(f"{bead_id}: authorized prep operation requires a declared prep execution_wave")
+        if access not in PREP_OPERATION_ACCESS:
+            errors.append(f"{bead_id}: authorized prep operation requires operator-authorized live_data_access")
     return errors
 
 
@@ -334,15 +352,16 @@ def _operation_phase_errors(bead: Mapping[str, Any]) -> list[str]:
     if _value(bead, "execution_kind") != "authorized-prep-operation":
         return []
     bead_id, phase = bead["id"], _value(bead, "operation_phase_contract")
-    if not isinstance(phase, Mapping):
-        return [f"{bead_id}: authorized prep operation missing operation_phase_contract"]
-    fields = {"version", "shape"}
-    if set(phase) != fields or phase.get("version") != OPERATION_PHASE_VERSION:
-        return [f"{bead_id}: authorized prep operation has invalid operation_phase_contract"]
-    if phase.get("shape") not in OPERATION_SHAPES:
-        return [f"{bead_id}: authorized prep operation has invalid phase shape"]
-    initial, apply = _value(bead, "initial_job_authority"), _value(bead, "apply_authority")
     errors = []
+    if not isinstance(phase, Mapping):
+        errors.append(f"{bead_id}: authorized prep operation missing operation_phase_contract")
+    else:
+        fields = {"version", "shape"}
+        if set(phase) != fields or phase.get("version") != OPERATION_PHASE_VERSION:
+            errors.append(f"{bead_id}: authorized prep operation has invalid operation_phase_contract")
+        elif phase.get("shape") not in OPERATION_SHAPES:
+            errors.append(f"{bead_id}: authorized prep operation has invalid phase shape")
+    initial, apply = _value(bead, "initial_job_authority"), _value(bead, "apply_authority")
     if (
         not isinstance(initial, Mapping)
         or set(initial) != {"mode"}
@@ -363,16 +382,49 @@ def _failure(kind: str, reason: str, **details: str) -> dict[str, str]:
     return {"kind": kind, "reason": reason, **details}
 
 
-def _operation_apply_failures(bead: Mapping[str, Any], evidence: object | None) -> list[dict[str, str]]:
+def _packet_context_digest(
+    group: tuple[str, str, str], members: Sequence[str], beads: Mapping[str, Mapping[str, Any]], integration_head: str
+) -> str:
+    payload = {
+        "domain": "polylogue.reindex.packet-context.v1",
+        "wave": group[0],
+        "lane": group[1],
+        "packet": group[2],
+        "member_ids": list(members),
+        "integration_head": integration_head,
+        "task_identities": [asdict(TaskIdentity(bead_id, _task_revision(beads[bead_id]))) for bead_id in members],
+    }
+    encoded = json.dumps(_canonical_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return f"{TASK_REVISION_PREFIX}{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _operation_apply_failures(
+    bead: Mapping[str, Any], evidence: object | None, *, integration_head: str, packet_context_digest: str
+) -> list[dict[str, str]]:
     bead_id, phase = bead["id"], _value(bead, "operation_phase_contract")
+    evidence_by_kind: list[tuple[str, PhaseEvidence | None, str]] = []
     if evidence is None:
-        return [_failure("operation-evidence", "missing", bead_id=bead_id)]
+        evidence_by_kind = [("rehearsal", None, "accepted"), ("operator-authorization", None, "authorized")]
+        if isinstance(phase, Mapping) and phase.get("shape") == "plan-rehearse-review-authorize-apply-verify":
+            evidence_by_kind.append(("independent-review", None, "accepted"))
+        return [_failure(kind, "missing", bead_id=bead_id) for kind, _, _ in evidence_by_kind] + [
+            _failure("apply-authority", "unsupported-evidence-adapter", bead_id=bead_id)
+        ]
     try:
         parsed = _parse_operation_evidence(evidence)
     except ValueError as exc:
-        return [_failure("operation-evidence", str(exc), bead_id=bead_id)]
+        return [
+            _failure("diagnostic-operation-evidence", str(exc), bead_id=bead_id),
+            _failure("apply-authority", "unsupported-evidence-adapter", bead_id=bead_id),
+        ]
     failures: list[dict[str, str]] = []
-    evidence_by_kind: list[tuple[str, PhaseEvidence | None, str]] = [
+    if parsed.operation_id != bead_id:
+        failures.append(_failure("diagnostic-operation-evidence", "mismatched-operation-id", bead_id=bead_id))
+    if parsed.integration_head != integration_head:
+        failures.append(_failure("diagnostic-operation-evidence", "mismatched-integration-head", bead_id=bead_id))
+    if parsed.packet_context_digest != packet_context_digest:
+        failures.append(_failure("diagnostic-operation-evidence", "mismatched-packet-context", bead_id=bead_id))
+    evidence_by_kind = [
         ("rehearsal", parsed.rehearsal, "accepted"),
         ("operator-authorization", parsed.authorization, "authorized"),
     ]
@@ -386,14 +438,12 @@ def _operation_apply_failures(bead: Mapping[str, Any], evidence: object | None) 
             failures.append(_failure(kind, item.state, bead_id=bead_id, evidence_id=item.evidence_id))
         elif item.plan_digest != parsed.plan_digest:
             failures.append(_failure(kind, "mismatched-plan-digest", bead_id=bead_id, evidence_id=item.evidence_id))
-    if parsed.authorization is not None:
-        expires_at, observed_at = _parse_datetime(parsed.authorization.expires_at), _parse_datetime(parsed.observed_at)
-        if expires_at is not None and observed_at is not None and expires_at <= observed_at:
-            failures.append(
-                _failure(
-                    "operator-authorization", "expired", bead_id=bead_id, evidence_id=parsed.authorization.evidence_id
-                )
-            )
+    evidence_ids = [item.evidence_id for _, item, _ in evidence_by_kind if item is not None]
+    if len(evidence_ids) != len(set(evidence_ids)):
+        failures.append(_failure("diagnostic-operation-evidence", "non-distinct-evidence-id", bead_id=bead_id))
+    # Caller JSON has no trusted clock or attestation. It can diagnose malformed
+    # evidence, but it cannot make an apply projection ready or grant authority.
+    failures.append(_failure("apply-authority", "unsupported-evidence-adapter", bead_id=bead_id))
     return failures
 
 
@@ -405,7 +455,9 @@ def _operation_evidence_binding(evidence: object | None) -> object:
     except ValueError as exc:
         return {"state": "invalid", "reason": str(exc)}
     return {
-        "observed_at": parsed.observed_at,
+        "operation_id": parsed.operation_id,
+        "integration_head": parsed.integration_head,
+        "packet_context_digest": parsed.packet_context_digest,
         "plan_digest": parsed.plan_digest,
         "rehearsal": asdict(parsed.rehearsal) if parsed.rehearsal else None,
         "authorization": asdict(parsed.authorization) if parsed.authorization else None,
@@ -421,15 +473,16 @@ def _projection(
     phase: str,
     launch_failures: Sequence[dict[str, str]],
     operation_evidence: Mapping[str, object] | None = None,
+    operation_member: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     leader = beads[members[0]]
     operation = phase in PHASES
     if phase == "initial":
-        initial_authority = _value(leader, "initial_job_authority")
+        initial_authority = _value(operation_member, "initial_job_authority") if operation_member else None
+        initial_mode = initial_authority.get("mode") if isinstance(initial_authority, Mapping) else None
+        initial_valid = initial_mode in INITIAL_AUTHORITY_MODES
         authority = {
-            "mode": initial_authority.get("mode")
-            if operation and isinstance(initial_authority, Mapping)
-            else "invalid",
+            "mode": initial_mode if operation and initial_valid else "invalid",
             "allowed_actions": ["read-only-plan", "isolated-rehearsal"] if operation else ["packet-execution"],
             "live_authority": "none" if operation else _value(leader, "live_data_access"),
             "may_apply": False,
@@ -437,9 +490,9 @@ def _projection(
     elif phase == "apply":
         authority = {
             "mode": APPLY_AUTHORITY_MODE,
-            "allowed_actions": ["apply"] if not launch_failures else [],
-            "live_authority": _value(leader, "live_data_access") if not launch_failures else "none",
-            "may_apply": not launch_failures,
+            "allowed_actions": [],
+            "live_authority": "none",
+            "may_apply": False,
         }
     else:
         authority = {
@@ -454,6 +507,7 @@ def _projection(
         "lane": group[1],
         "packet": group[2],
         "selected_phase": phase,
+        "operation_member_id": operation_member["id"] if operation_member else None,
         "effective_authority": authority,
         "member_ids": list(members),
         "integration_head": integration_head,
@@ -468,8 +522,13 @@ def _projection(
         "operation_evidence": dict(operation_evidence or {}),
         "launch_failures": list(launch_failures),
     }
-    projection["ready"] = not projection["launch_failures"]
-    payload = json.dumps(projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    projection["ready"] = not projection["launch_failures"] and authority["mode"] != "invalid"
+    payload = json.dumps(
+        {"domain": "polylogue.reindex.launch-projection.v3", "projection": projection},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
     projection["context_digest"] = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     projection["phase_token"] = f"{projection['version']}:{phase}:{projection['context_digest']}"
     return projection
@@ -495,9 +554,9 @@ def validate(
 ) -> dict[str, Any]:
     if selected_phase not in PHASES:
         raise ValueError(f"selected phase must be one of {sorted(PHASES)}")
-    effective_head = integration_head or _checkout_integration_head()
+    effective_head = _integration_head_argument(integration_head or _checkout_integration_head())
     evidence_by_operation = dict(operation_evidence or {})
-    beads = {bead["id"]: bead for bead in reader.read()}
+    beads = {bead["id"]: bead for bead in reader.read() if _is_task(bead)}
     if root_id not in beads:
         raise ValueError(f"missing campaign root {root_id}")
     closure, mixed = _walk(beads, root_id, True), _walk(beads, root_id, False)
@@ -634,11 +693,10 @@ def validate(
             if not _present(_value(beads[leader], field)):
                 reason = f"missing {field}"
                 launch_failures.append(_failure("missing-launch-field", reason, field=field))
-        if group[0].startswith("reindex-prep-"):
-            for bead_id in members:
-                for phase_error in _operation_phase_errors(beads[bead_id]):
-                    errors.append(phase_error)
-                    launch_failures.append(_failure("operation-phase", phase_error, bead_id=bead_id))
+        for bead_id in members:
+            for phase_error in _operation_phase_errors(beads[bead_id]):
+                errors.append(phase_error)
+                launch_failures.append(_failure("operation-phase", phase_error, bead_id=bead_id))
         for bead_id in members[1:]:
             for field in LAUNCH:
                 if _present(_value(beads[bead_id], field)):
@@ -652,7 +710,24 @@ def validate(
         operation_members = [
             bead_id for bead_id in members if _value(beads[bead_id], "execution_kind") == "authorized-prep-operation"
         ]
+        operation_member: Mapping[str, Any] | None = None
+        if operation_members:
+            if len(operation_members) != 1:
+                error = f"{'/'.join(group)}: operation packet has multiple authorized-prep-operation members"
+                errors.append(error)
+                launch_failures.append(_failure("operation-membership", error))
+            elif len(members) != 1:
+                error = f"{'/'.join(group)}: operation packet mixes an authorized-prep-operation with ordinary members"
+                errors.append(error)
+                launch_failures.append(_failure("operation-membership", error))
+            elif operation_members[0] != leader:
+                error = f"{'/'.join(group)}: operation member must be packet leader"
+                errors.append(error)
+                launch_failures.append(_failure("operation-membership", error, bead_id=operation_members[0]))
+            else:
+                operation_member = beads[operation_members[0]]
         phases = ("initial", "apply") if operation_members else ("ordinary",)
+        packet_context_digest = _packet_context_digest(group, members, beads, effective_head)
         launches = []
         for phase in phases:
             phase_failures = list(ordinary_failures)
@@ -660,7 +735,12 @@ def validate(
                 phase_failures.extend(
                     failure
                     for bead_id in operation_members
-                    for failure in _operation_apply_failures(beads[bead_id], evidence_by_operation.get(bead_id))
+                    for failure in _operation_apply_failures(
+                        beads[bead_id],
+                        evidence_by_operation.get(bead_id),
+                        integration_head=effective_head,
+                        packet_context_digest=packet_context_digest,
+                    )
                 )
             evidence_binding = (
                 {
@@ -670,7 +750,18 @@ def validate(
                 if phase == "apply"
                 else None
             )
-            launches.append(_projection(group, members, beads, effective_head, phase, phase_failures, evidence_binding))
+            launches.append(
+                _projection(
+                    group,
+                    members,
+                    beads,
+                    effective_head,
+                    phase,
+                    phase_failures,
+                    evidence_binding,
+                    operation_member,
+                )
+            )
         selected_launch = next(
             (launch for launch in launches if launch["selected_phase"] == selected_phase), launches[0]
         )
@@ -681,9 +772,12 @@ def validate(
                 "packet": group[2],
                 "member_ids": members,
                 "leader_id": leader,
+                "packet_context_digest": packet_context_digest,
                 "selected_phase": selected_launch["selected_phase"],
                 "ready": selected_launch["ready"],
-                "non_ready_reasons": list(dict.fromkeys(item["reason"] for item in selected_launch["launch_failures"])),
+                "non_ready_reasons": list(
+                    dict.fromkeys(f"{item['kind']}:{item['reason']}" for item in selected_launch["launch_failures"])
+                ),
                 "launches": launches,
             }
         )
@@ -736,7 +830,10 @@ def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = Non
     parser.add_argument(
         "--operation-evidence-json",
         type=_operation_evidence_argument,
-        help="typed runtime evidence keyed by operation Bead ID; it is never read from or written to Beads",
+        help=(
+            "untrusted diagnostic evidence keyed by operation Bead ID; it is never read from or written to Beads "
+            "and cannot grant apply authority"
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -780,7 +877,8 @@ def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = Non
         for packet in report["packets"]:
             if not packet["ready"]:
                 print(
-                    f"NOT READY {packet['wave']}/{packet['lane']}/{packet['packet']}: {'; '.join(packet['non_ready_reasons'])}",
+                    f"NOT READY [{packet['selected_phase']}] "
+                    f"{packet['wave']}/{packet['lane']}/{packet['packet']}: {'; '.join(packet['non_ready_reasons'])}",
                     file=output,
                 )
         for error in report["structural_errors"]:
