@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -477,6 +478,11 @@ def workspace_env(
             "state_dir": state_dir,
         }
     finally:
+        # A bare ``with sqlite3.connect(...)`` commits or rolls back but does
+        # not close the connection.  Collect unreachable connection/cursor
+        # cycles before unlinking the archive so tmpfs does not retain large
+        # deleted-but-open fixture databases until the xdist worker exits.
+        gc.collect()
         shutil.rmtree(archive_root, ignore_errors=True)
 
 
@@ -567,6 +573,7 @@ def cli_workspace(
             "db_path": db_path,
         }
     finally:
+        gc.collect()
         shutil.rmtree(archive_root, ignore_errors=True)
 
 
