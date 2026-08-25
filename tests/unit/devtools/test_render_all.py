@@ -133,8 +133,12 @@ def test_render_all_surface_exception_is_nonzero_and_typed(
     assert "renderer launch failed" in captured.err
 
 
+@pytest.mark.parametrize("check", [False, True])
 def test_render_all_unreadable_input_fails_before_renderer_and_is_not_suppressed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    check: bool,
 ) -> None:
     source = tmp_path / "source.py"
     source.write_text("value = 1\n", encoding="utf-8")
@@ -160,15 +164,16 @@ def test_render_all_unreadable_input_fails_before_renderer_and_is_not_suppressed
     monkeypatch.setattr(render_all, "CACHE_DIR", tmp_path / ".cache")
     monkeypatch.setattr(Path, "read_bytes", unreadable)
 
-    assert render_all.main([]) == 1
+    assert render_all.main(["--check"] if check else []) == 1
     assert calls == []
     captured = capsys.readouterr()
     assert "diagnosis: render_input_unreadable" in captured.err
     assert "unreadable=1" in captured.err
 
 
+@pytest.mark.parametrize("check", [False, True])
 def test_render_all_vanished_input_fails_instead_of_matching_old_stamp(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], check: bool
 ) -> None:
     source = tmp_path / "source.py"
     source.write_text("value = 1\n", encoding="utf-8")
@@ -186,10 +191,11 @@ def test_render_all_vanished_input_fails_instead_of_matching_old_stamp(
 
     monkeypatch.setattr(render_all, "GENERATED_SURFACES", (FakeSurface(),))
     monkeypatch.setattr(render_all, "CACHE_DIR", tmp_path / ".cache")
-    assert render_all.main([]) == 0
+    args = ["--check"] if check else []
+    assert render_all.main(args) == 0
     source.unlink()
 
-    assert render_all.main([]) == 1
+    assert render_all.main(args) == 1
     assert calls == 1
     assert "diagnosis: render_input_missing" in capsys.readouterr().err
 
@@ -307,3 +313,68 @@ def test_render_all_stale_stamp_renders_and_recovery_publishes_once(
     assert stamp.exists()
     assert render_all.main([]) == 0
     assert calls == 2
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected_code"),
+    [(0, 1), (None, 1), (7, 7)],
+)
+def test_render_all_surface_system_exit_fails_closed_without_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    exit_code: int | None,
+    expected_code: int,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    cache_dir = tmp_path / ".cache"
+    stamp = cache_dir / ".render-cli-reference-stamp"
+    stamp.parent.mkdir()
+    stamp.write_text("old\n", encoding="utf-8")
+
+    class FakeSurface:
+        name = "cli-reference"
+        inputs = (str(source),)
+
+        @staticmethod
+        def main(_argv: list[str] | None) -> int:
+            raise SystemExit(exit_code)
+
+    monkeypatch.setattr(render_all, "GENERATED_SURFACES", (FakeSurface(),))
+    monkeypatch.setattr(render_all, "CACHE_DIR", cache_dir)
+
+    assert render_all.main([]) == expected_code
+    assert not stamp.exists()
+    captured = capsys.readouterr()
+    assert "diagnosis: render_surface_system_exit" in captured.err
+    if exit_code is None:
+        assert "None" in captured.err
+
+
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("result", [None, "0"])
+def test_render_all_non_integer_surface_result_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    check: bool,
+    result: object,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    class FakeSurface:
+        name = "cli-reference"
+        inputs = (str(source),)
+
+        @staticmethod
+        def main(_argv: list[str] | None) -> object:
+            return result
+
+    monkeypatch.setattr(render_all, "GENERATED_SURFACES", (FakeSurface(),))
+    monkeypatch.setattr(render_all, "CACHE_DIR", tmp_path / ".cache")
+
+    assert render_all.main(["--check"] if check else []) == 1
+    captured = capsys.readouterr()
+    assert "diagnosis: render_surface_invalid_result" in captured.err

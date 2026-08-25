@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -91,6 +92,7 @@ _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cleanup_reclaimed_bytes",
     "sqlite_vm_steps",
 )
+_RENDER_DIAGNOSIS_RE = re.compile(r"^render all:.*diagnosis: (?P<token>[a-z][a-z0-9_]*)\b")
 
 
 class VerificationInterrupted(KeyboardInterrupt):
@@ -388,11 +390,10 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             metadata["output_path"] = str(artifacts.output_path.relative_to(ROOT))
         if label == "render all" and completed.returncode != 0:
             for line in output.splitlines():
-                if line.startswith("render all:") and "diagnosis: " in line:
-                    token = line.split("diagnosis: ", 1)[1].split(":", 1)[0].split(" ", 1)[0]
-                    if token:
-                        metadata["diagnosis"] = token
-                        break
+                match = _RENDER_DIAGNOSIS_RE.match(line)
+                if match is not None:
+                    metadata["diagnosis"] = match.group("token")
+                    break
         if "--json" in command:
             decoded: object = None
             with contextlib.suppress(json.JSONDecodeError):

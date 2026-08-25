@@ -49,6 +49,21 @@ def test_render_pages_stops_before_assembly_on_nonzero_feeder(
     assert render_pages.main(["--output", str(tmp_path / "site")]) == 7
 
 
+@pytest.mark.parametrize("result", [None, "0"])
+def test_render_pages_non_integer_feeder_result_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_pages: Path,
+    capsys: pytest.CaptureFixture[str],
+    result: object,
+) -> None:
+    del configured_pages
+    _patch_feeders(monkeypatch, result=result)
+
+    assert render_pages.main(["--skip-pagefind"]) == 1
+    captured = capsys.readouterr()
+    assert "diagnosis: render_feeder_invalid_result" in captured.err
+
+
 def test_render_pages_feeder_exception_is_nonzero_and_actionable(
     monkeypatch: pytest.MonkeyPatch, configured_pages: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

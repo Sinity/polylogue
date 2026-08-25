@@ -98,6 +98,14 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "A declared documentation feeder terminated through its command boundary.",
         "Read the feeder message, then run that feeder and devtools render pages again.",
     ),
+    "render_feeder_invalid_result": Explanation(
+        "A declared documentation feeder returned a non-integer result, so the site was not assembled.",
+        "Fix the feeder renderer to return an integer status, then run devtools render pages again.",
+    ),
+    "render_pages_build_exception": Explanation(
+        "The documentation site could not be assembled because its page build raised an exception.",
+        "Read the recorded build error, fix the pages builder input or code, then run devtools render pages again.",
+    ),
     "render_pagefind_failed": Explanation(
         "The declared Pagefind search-index output was not generated.",
         "Install or repair Pagefind, then run devtools render pages again.",
@@ -117,6 +125,18 @@ _EXPLANATIONS: dict[str, Explanation] = {
     "render_surface_exception": Explanation(
         "A generated surface raised an exception instead of producing its output.",
         "Read the recorded render details, fix that surface, then run devtools render all again.",
+    ),
+    "render_surface_failed": Explanation(
+        "A generated surface returned a nonzero result, so its output was not accepted.",
+        "Fix the generated surface named in the render output, then run devtools render all again.",
+    ),
+    "render_surface_invalid_result": Explanation(
+        "A generated surface returned a non-integer result, so its output was not accepted.",
+        "Fix the generated surface to return an integer status, then run devtools render all again.",
+    ),
+    "render_surface_system_exit": Explanation(
+        "A generated surface terminated through its command boundary, so its output was not accepted.",
+        "Read the recorded surface message, then run devtools render all again.",
     ),
     "render_stamp_write_failed": Explanation(
         "The generated surface completed but its freshness stamp could not be published.",

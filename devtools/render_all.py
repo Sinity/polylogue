@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from devtools import system_exit
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
 
 CACHE_DIR = Path(".cache")
@@ -173,14 +174,6 @@ def _surface_input_inventory(surface: GeneratedSurface) -> _InputInventory:
     )
 
 
-def _surface_input_hash(surface: GeneratedSurface) -> str:
-    """Return the current content-and-path digest for a complete inventory."""
-    inventory = _surface_input_inventory(surface)
-    if not inventory.complete or inventory.digest is None:
-        raise OSError("declared render input inventory is incomplete")
-    return inventory.digest
-
-
 def _stamp_path(name: str) -> Path:
     return CACHE_DIR / f".render-{name}-stamp"
 
@@ -222,7 +215,7 @@ def _inventory_failure(surface: GeneratedSurface, inventory: _InputInventory) ->
     else:
         diagnosis = "render_input_missing"
     print(
-        f"render all: {surface.name} failed; diagnosis: {diagnosis}; "
+        f"render all: {surface.name} failed; diagnosis: {diagnosis} "
         f"read={inventory.read_count} missing={inventory.missing_count} "
         f"unreadable={inventory.unreadable_count} invalid={inventory.invalid_count}",
         file=sys.stderr,
@@ -254,6 +247,16 @@ def _render_one(surface: GeneratedSurface, check: bool) -> int:
             return 1
     try:
         result = surface.main(["--check"] if check else [])
+    except SystemExit as exc:
+        translation = system_exit.translate_system_exit(exc)
+        if translation.message is not None:
+            print(f"render all: {surface.name}: {translation.message}", file=sys.stderr)
+        failure_code = translation.code or 1
+        print(
+            f"render all: {surface.name} failed; diagnosis: render_surface_system_exit (exit {failure_code})",
+            file=sys.stderr,
+        )
+        return failure_code
     except Exception as exc:
         print(f"render all: {surface.name} failed; diagnosis: render_surface_exception: {exc}", file=sys.stderr)
         return 1

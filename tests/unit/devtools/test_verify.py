@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import signal
 import subprocess
@@ -12,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from devtools import required_gate, verify, verify_runs
+from devtools import required_gate, verify, verify_runs, why
 from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -67,21 +68,50 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     assert history["steps"][0]["error"] == "ruff"
 
 
-def test_render_all_diagnosis_is_carried_into_existing_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_actual_render_all_diagnosis_reaches_receipt_and_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    checkout = Path(__file__).resolve().parents[3]
+    missing_input = tmp_path / "missing.py"
+    script = f"""
+import sys
+sys.path.insert(0, {str(checkout)!r})
+from devtools import render_all
+
+
+class MissingSurface:
+    name = "cli-reference"
+    inputs = ({str(missing_input)!r},)
+
+    @staticmethod
+    def main(_argv):
+        return 0
+
+
+render_all.GENERATED_SURFACES = (MissingSurface(),)
+raise SystemExit(render_all.main())
+"""
     command = [
         sys.executable,
         "-c",
-        "import sys; print('render all: cli-reference failed; diagnosis: render_input_missing', file=sys.stderr); sys.exit(1)",
+        f"exec({script!r})",
     ]
 
-    exit_code, _elapsed, metadata = verify._run("render all", command, run=run)
+    exit_code, elapsed, metadata = verify._run("render all", command, run=run)
 
     assert exit_code == 1
     assert metadata["diagnosis"] == "render_input_missing"
-    payload = json.loads((tmp_path / str(run.relative_run_dir) / "run.json").read_text(encoding="utf-8"))
+    output = (tmp_path / str(metadata["output_path"])).read_text(encoding="utf-8")
+    assert "diagnosis: render_input_missing " in output
+    assert "render_input_missing;" not in output
+
+    payload = run.finish(exit_code=exit_code, duration_s=elapsed, diagnosis=metadata["diagnosis"])
     assert payload["steps"][0]["diagnosis"] == "render_input_missing"
+    stream = io.StringIO()
+    why._render(payload, stream)
+    rendered = stream.getvalue()
+    assert "diagnosis: render_input_missing" in rendered
+    assert "Restore the declared input" in rendered
 
 
 def test_early_gate_failure_exit_is_authoritative() -> None:
