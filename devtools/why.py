@@ -50,6 +50,34 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "The run was interrupted before finishing, so its result is not a verdict on the suite.",
         "Re-run. If it was interrupted mid-bootstrap, the graph is retained and the next run resumes from it.",
     ),
+    "pytest_report_incomplete": Explanation(
+        "Pytest selected tests but did not record a terminal result for each one.",
+        "Re-run the same selection; do not treat this receipt as a test verdict.",
+    ),
+    "pytest_collection_only": Explanation(
+        "Pytest collected tests without running them.",
+        "Re-run without --collect-only to execute the selected tests.",
+    ),
+    "pytest_no_tests_selected": Explanation(
+        "Pytest's selection matched no tests.",
+        "Use a selector that matches at least one test.",
+    ),
+    "gate_missing_executable": Explanation(
+        "A required gate executable was unavailable.",
+        "Install it or make it available on PATH, then re-run the gate.",
+    ),
+    "gate_missing_input": Explanation(
+        "A required gate input was missing.",
+        "Restore the input named in the gate details, then re-run the gate.",
+    ),
+    "gate_unreadable_input": Explanation(
+        "A required gate input could not be read.",
+        "Make the input named in the gate details readable, then re-run the gate.",
+    ),
+    "not_enforced": Explanation(
+        "This gate was recorded but was not enforced.",
+        "Enable the gate's enforcement option before relying on it as a check.",
+    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
@@ -123,14 +151,6 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):
-        non_green = aggregate.get("non_green_sample") or []
-        count = aggregate.get("non_green_count")
-        if count:
-            print(f"\n{count} non-green test(s):", file=stream)
-            for nodeid in list(non_green)[:15]:
-                print(f"  - {nodeid}", file=stream)
-            if isinstance(count, int) and count > 15:
-                print(f"  ... and {count - 15} more", file=stream)
         selected = aggregate.get("selected_union_count")
         if selected is not None:
             attested = aggregate.get("attested_unchanged_count")

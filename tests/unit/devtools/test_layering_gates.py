@@ -126,10 +126,18 @@ def test_layering_ratchet_exempts_baselined_violation(tmp_path: Path, monkeypatc
     assert verify_layering.main([]) == 0
 
 
-def test_layering_ratchet_fails_on_violation_not_in_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_layering_ratchet_reports_semantic_violation_in_human_and_json_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     _write_ratchet_fixture(tmp_path, baseline_entries=[])
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
     assert verify_layering.main([]) == 1
+    assert "imports polylogue.storage (disallow)" in capsys.readouterr().out
+    assert verify_layering.main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required_gate"]["diagnosis"] == "gate_semantic_violation"
+    assert payload["required_gate"]["semantic_violation_count"] == 1
+    assert payload["required_gate"]["error_count"] == 0
 
 
 def test_layering_ratchet_reports_stale_baseline_entry(

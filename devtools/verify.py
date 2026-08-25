@@ -349,7 +349,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             }
             run.finish_step(
                 step_id=artifacts.step_id,
-                result={"duration_s": round(time.monotonic() - started, 2), "exit": 127, **early_metadata},
+                result=_early_gate_failure_result(started, early_metadata),
             )
             sys.stderr.write("FAILED (missing executable)\n")
             return 127, time.monotonic() - started, early_metadata
@@ -359,7 +359,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             early_metadata = {"diagnosis": "gate_subprocess_launch_failed", "error": str(exc)}
             run.finish_step(
                 step_id=artifacts.step_id,
-                result={"duration_s": round(time.monotonic() - started, 2), "exit": 127, **early_metadata},
+                result=_early_gate_failure_result(started, early_metadata),
             )
             sys.stderr.write("FAILED (subprocess launch)\n")
             return 127, time.monotonic() - started, early_metadata
@@ -420,6 +420,11 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     if not pytest_step and completed.returncode and isinstance(completed.stderr, str):
         sys.stderr.write(completed.stderr)
     return effective_exit, elapsed, metadata
+
+
+def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Finalize an early required-gate failure with its authoritative exit."""
+    return {**metadata, "duration_s": round(time.monotonic() - started, 2), "exit": 127}
 
 
 def _changed_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:

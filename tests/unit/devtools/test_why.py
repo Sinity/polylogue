@@ -47,7 +47,7 @@ def test_unknown_diagnosis_is_reported_verbatim_without_invented_advice() -> Non
     assert "do    :" not in output, "an unmapped diagnosis must not be given a remedy"
 
 
-def test_failing_steps_and_non_green_tests_are_surfaced() -> None:
+def test_failing_steps_are_surfaced() -> None:
     stream = io.StringIO()
 
     _render(
@@ -55,7 +55,6 @@ def test_failing_steps_and_non_green_tests_are_surfaced() -> None:
             "tier": "testmon",
             "status": "failed",
             "exit_code": 1,
-            "pytest_aggregate": {"non_green_count": 2, "non_green_sample": ["tests/unit/a.py::test_x"]},
             "steps": [
                 {"step_id": "01-ok", "exit": 0},
                 {"step_id": "11-pytest-native-parallel", "exit": 1, "diagnosis": "pytest_failed"},
@@ -65,9 +64,28 @@ def test_failing_steps_and_non_green_tests_are_surfaced() -> None:
     )
 
     output = stream.getvalue()
-    assert "tests/unit/a.py::test_x" in output
     assert "11-pytest-native-parallel" in output
     assert "01-ok" not in output, "passing steps are noise in a failure explanation"
+
+
+@pytest.mark.parametrize(
+    ("diagnosis", "remedy"),
+    [
+        ("pytest_report_incomplete", "Re-run the same selection"),
+        ("pytest_collection_only", "Re-run without --collect-only"),
+        ("pytest_no_tests_selected", "Use a selector"),
+        ("gate_missing_executable", "make it available on PATH"),
+        ("gate_missing_input", "Restore the input"),
+        ("gate_unreadable_input", "Make the input"),
+        ("not_enforced", "Enable the gate's enforcement option"),
+    ],
+)
+def test_new_typed_diagnoses_have_recorded_remedies(diagnosis: str, remedy: str) -> None:
+    stream = io.StringIO()
+
+    _render({"tier": "quick", "status": "failed", "diagnosis": diagnosis}, stream)
+
+    assert remedy in stream.getvalue()
 
 
 def test_import_mismatch_remedy_names_the_retained_contract() -> None:

@@ -906,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
         inspected_count=inspected_count,
         missing_count=missing_count,
         unreadable_count=unreadable_count,
-        error_count=len(violations),
+        semantic_violation_count=len(violations),
         details=(*input_details, *(str(item.get("file")) for item in violations[:8])),
     )
 

@@ -319,11 +319,6 @@ class VerifyRun:
             step["status"] = "success" if finalized.get("exit") == 0 else "failed"
             if str(step.get("name", "")).startswith("pytest"):
                 step_dir = self.run_dir / "steps" / step_id
-                if statistics is None:
-                    with contextlib.suppress(OSError, ValueError):
-                        statistics = aggregate_pytest_statistics(
-                            step_dir, command=step.get("cmd", []), step_result=finalized
-                        )
                 if statistics is not None:
                     _write_json(step_dir / "statistics.json", statistics)
                     step["statistics"] = statistics

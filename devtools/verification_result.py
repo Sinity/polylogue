@@ -112,7 +112,6 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "selection_mode": _string(aggregate.get("selection_mode")),
         "selected_count": _integer(aggregate.get("selected_union_count")),
         "terminal_count": _integer(aggregate.get("terminal_union_count")),
-        "non_green_count": _integer(aggregate.get("non_green_count")),
         "terminal_green": _boolean(aggregate.get("terminal_green")),
         "complete_corpus_covered": _boolean(aggregate.get("complete_corpus_covered")),
         "corpus_digest": _string(corpus.get("digest")),

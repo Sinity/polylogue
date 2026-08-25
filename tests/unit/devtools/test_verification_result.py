@@ -36,7 +36,6 @@ def test_projection_uses_the_finalized_step_and_aggregate_counts() -> None:
         "selection_mode": "focused",
         "selected_count": 3,
         "terminal_count": 2,
-        "non_green_count": None,
         "terminal_green": False,
         "complete_corpus_covered": None,
         "corpus_digest": None,

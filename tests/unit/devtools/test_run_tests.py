@@ -282,6 +282,9 @@ def test_main_preserves_sigterm_for_managed_cancellation(
 def test_managed_pytest_kills_process_group_for_sigterm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class SyntheticBaseException(BaseException):
+        pass
+
     class _Process:
         pid = 77
         waits = 0
@@ -289,7 +292,7 @@ def test_managed_pytest_kills_process_group_for_sigterm(
         def wait(self, timeout: float | None = None) -> int:
             self.waits += 1
             if timeout is None:
-                raise run_tests.ManagedTestInterrupted(signal.SIGTERM)
+                raise SyntheticBaseException()
             if self.waits == 2:
                 raise subprocess.TimeoutExpired("pytest", timeout)
             return 143
@@ -298,7 +301,7 @@ def test_managed_pytest_kills_process_group_for_sigterm(
     monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *_args, **_kwargs: _Process())  # type: ignore[attr-defined]
     monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))  # type: ignore[attr-defined]
 
-    with pytest.raises(run_tests.ManagedTestInterrupted):
+    with pytest.raises(SyntheticBaseException):
         run_tests.run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})  # type: ignore[attr-defined]
 
     assert killed == [(77, signal.SIGTERM), (77, signal.SIGKILL)]

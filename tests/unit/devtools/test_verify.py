@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from devtools import required_gate, verify
+from devtools import required_gate, verify, verify_runs
 from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -65,6 +65,34 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == "gate_subprocess_launch_failed"
     assert history["steps"][0]["error"] == "ruff"
+
+
+def test_early_gate_failure_exit_is_authoritative() -> None:
+    result = verify._early_gate_failure_result(0.0, {"exit": 0, "diagnosis": "gate_missing_executable"})
+
+    assert result["exit"] == 127
+
+
+def test_finish_step_does_not_retry_unavailable_pytest_statistics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mutation: retrying the same unavailable evidence reader repeats an input failure."""
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    calls = 0
+
+    def unavailable(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise OSError("synthetic unavailable report")
+
+    monkeypatch.setattr(verify_runs, "aggregate_pytest_statistics", unavailable)
+
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": 1, "duration_s": 0.1})
+
+    assert result is not None
+    assert calls == 1
+    assert "statistics" not in result
 
 
 def test_native_selection_partitions_semantic_lanes() -> None:

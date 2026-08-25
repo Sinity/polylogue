@@ -21,6 +21,7 @@ class GateResult:
     missing_count: int = 0
     stale_count: int = 0
     error_count: int = 0
+    semantic_violation_count: int = 0
     diagnosis: str = "gate_passed"
     enforced: bool = True
     details: tuple[str, ...] = field(default_factory=tuple)
@@ -43,6 +44,7 @@ class GateResult:
             "missing_count": self.missing_count,
             "stale_count": self.stale_count,
             "error_count": self.error_count,
+            "semantic_violation_count": self.semantic_violation_count,
             "diagnosis": self.diagnosis,
             "enforced": self.enforced,
             "details": list(self.details),
@@ -80,6 +82,7 @@ def evidence_gate_result(
     missing_count: int = 0,
     stale_count: int = 0,
     error_count: int = 0,
+    semantic_violation_count: int = 0,
     executable: str | None = None,
     executable_available: bool | None = None,
     enforced: bool = True,
@@ -98,6 +101,8 @@ def evidence_gate_result(
         diagnosis = "gate_unreadable_input"
     elif error_count:
         diagnosis = "gate_input_error"
+    elif semantic_violation_count:
+        diagnosis = "gate_semantic_violation"
     elif required_count == 0:
         diagnosis = "gate_empty_required_population"
     elif inspected_count < required_count:
@@ -114,6 +119,7 @@ def evidence_gate_result(
         missing_count=missing_count,
         stale_count=stale_count,
         error_count=error_count,
+        semantic_violation_count=semantic_violation_count,
         diagnosis=diagnosis,
         enforced=enforced,
         details=tuple(str(detail) for detail in details),
