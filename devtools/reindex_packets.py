@@ -112,6 +112,11 @@ def _operator_writer(bead: Mapping[str, Any]) -> bool:
     }
 
 
+def _candidate_writer(bead: Mapping[str, Any]) -> bool:
+    access = str(_value(bead, "live_data_access") or "").lower()
+    return "candidate" in access and "write" in access
+
+
 def validate(reader: Any, *, root_id: str = ROOT_ID) -> dict[str, Any]:
     beads = {bead["id"]: bead for bead in reader.read()}
     if root_id not in beads:
@@ -125,16 +130,33 @@ def validate(reader: Any, *, root_id: str = ROOT_ID) -> dict[str, Any]:
     )
     errors: list[str] = []
     warnings = []
-    if closure - labelled:
-        warnings.append(f"{len(closure - labelled)} blocks-closure records have no campaign carrier")
+    open_closure = frozenset(bead_id for bead_id in closure if beads[bead_id].get("status") != "closed")
+    open_without_campaign = open_closure - labelled
+    if open_without_campaign:
+        errors.append(
+            "open blocks-closure records have no campaign carrier: " + ", ".join(sorted(open_without_campaign))
+        )
+    closed_without_campaign = (closure - open_closure) - labelled
+    if closed_without_campaign:
+        warnings.append(f"{len(closed_without_campaign)} closed blocks-closure records have no campaign carrier")
     if labelled - closure:
         warnings.append(f"{len(labelled - closure)} campaign-labelled records are outside the blocks closure")
+    open_without_shape = frozenset(
+        bead_id
+        for bead_id in open_closure & labelled
+        if (_value(beads[bead_id], "execution_shape") or _label(beads[bead_id], "execution-shape:"))
+        not in {"gate", "leaf"}
+    )
+    if open_without_shape:
+        errors.append(
+            "open campaign closure records have no valid execution shape: " + ", ".join(sorted(open_without_shape))
+        )
     leaves: list[Mapping[str, Any]] = []
     for bead_id in sorted(selected):
         bead = beads[bead_id]
         shape = _value(bead, "execution_shape") or _label(bead, "execution-shape:")
         if shape == "gate":
-            for field in (*LAUNCH, "worker_model_class", "worker_capability"):
+            for field in ("lane_packet", "lane_order", *LAUNCH, "worker_model_class", "worker_capability"):
                 if _present(_value(bead, field)):
                     errors.append(f"{bead_id}: gate carries {field}")
         elif bead.get("status") != "closed":
@@ -163,6 +185,8 @@ def validate(reader: Any, *, root_id: str = ROOT_ID) -> dict[str, Any]:
         assignments[bead["id"]] = assignment
         if _operator_writer(bead) and not _serialized(bead):
             errors.append(f"{bead['id']}: operator-authorized writer is not serialized")
+        if _candidate_writer(bead) and not _serialized(bead):
+            errors.append(f"{bead['id']}: candidate writer is not serialized")
 
     groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for bead_id, assignment in assignments.items():

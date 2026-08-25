@@ -102,6 +102,37 @@ def test_gate_and_leaf_carriers_are_separate_and_strings_are_valid() -> None:
     assert any("a: missing leaf carrier" in error for error in validate(FakeReader(beads))["structural_errors"])
 
 
+def test_open_closure_records_cannot_hide_behind_missing_campaign_or_shape() -> None:
+    beads = graph()
+    beads.append(bead("hidden", {}, status="open"))
+    beads[-1]["labels"] = ()
+    beads[1]["dependencies"] = (*beads[1]["dependencies"], dep("hidden"))
+    report = validate(FakeReader(beads))
+    assert "open blocks-closure records have no campaign carrier: hidden" in report["structural_errors"]
+
+    beads[-1]["metadata"] = {"campaign_id": "reindex-2026", "execution_shape": "mystery"}
+    report = validate(FakeReader(beads))
+    assert "open campaign closure records have no valid execution shape: hidden" in report["structural_errors"]
+
+
+def test_closed_historical_blocker_without_campaign_is_diagnostic_only() -> None:
+    beads = graph()
+    beads.append(bead("history", {}, status="closed"))
+    beads[-1]["labels"] = ()
+    beads[1]["dependencies"] = (*beads[1]["dependencies"], dep("history"))
+    report = validate(FakeReader(beads))
+    assert report["ok"]
+    assert report["warnings"] == ["1 closed blocks-closure records have no campaign carrier"]
+
+
+def test_gate_cannot_carry_packet_membership() -> None:
+    beads = graph()
+    beads[1]["metadata"].update(lane_packet="1", lane_order="1")
+    report = validate(FakeReader(beads))
+    assert "gate: gate carries lane_packet" in report["structural_errors"]
+    assert "gate: gate carries lane_order" in report["structural_errors"]
+
+
 def test_packet_order_and_leader_placement_fail_independently() -> None:
     beads = graph()
     beads[2]["metadata"]["lane_order"] = "2"
@@ -139,6 +170,14 @@ def test_authorized_writers_need_serialization_and_serialized_writer_is_allowed(
         "operator-authorized writer is not serialized" in error
         for error in validate(FakeReader(beads))["structural_errors"]
     )
+
+
+def test_candidate_writers_need_serialization() -> None:
+    beads = graph()
+    beads[2]["metadata"]["live_data_access"] = "read-only-sources-and-isolated-candidate-write"
+    assert "a: candidate writer is not serialized" in validate(FakeReader(beads))["structural_errors"]
+    beads[2]["metadata"]["lane_mode"] = "serialized-writer"
+    assert "a: candidate writer is not serialized" not in validate(FakeReader(beads))["structural_errors"]
 
 
 def test_pending_calibration_is_non_ready_not_structural_error() -> None:
