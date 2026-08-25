@@ -453,6 +453,14 @@ def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
         raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
 
 
+#: Recovery adjudication (``AuditRepository.adjudicate_recovery``) refuses any
+#: target list over this size as a bounded-command budget. A mutation plan
+#: with more targets than that has no valid adjudication request if it is
+#: ever interrupted, so it must never be constructed in the first place --
+#: enforce the same cap at plan-construction time (polylogue-39pdi).
+MAX_MUTATION_PLAN_TARGETS = 256
+
+
 def build_plan(
     *,
     operation: str,
@@ -464,6 +472,11 @@ def build_plan(
 ) -> MutationPlan:
     """Construct a :class:`MutationPlan` with a freshly computed plan hash."""
 
+    if len(target_refs) > MAX_MUTATION_PLAN_TARGETS:
+        raise ValueError(
+            f"{operation!r} plan has {len(target_refs)} target(s), exceeding the "
+            f"{MAX_MUTATION_PLAN_TARGETS}-target recovery-adjudication budget"
+        )
     resolved_context = dict(context or {})
     plan_hash = compute_plan_hash(
         operation=operation,
@@ -843,11 +856,29 @@ class OperationExecutor:
             )
         if self._audit is not None:
             self._recover_overlapping_operations(binding.actuator, args, fresh_plan)
-            recovered_effect = self._audit.has_recovered_effect(fresh_plan)
-            if recovered_effect is not None:
-                raise RecoveryBlockedError(
-                    f"operation {recovered_effect!r} already proved this semantic effect applied; refusing duplicate effect"
-                )
+            # polylogue-39pdi: the ``recovered_applied`` barrier records that a
+            # prior crash-recovered run proved its targets *absent* -- durable
+            # authority only for a destructive class whose absence is itself
+            # durable (``excise``). ``delete`` is explicitly re-ingest-
+            # resurrectable (archive identity is inode-based; see
+            # ``SessionDeleteActuator``'s docstring), and ``fresh_plan`` was
+            # just built by ``prepare()`` against *live* state, which for the
+            # delete actuator only ever includes targets that currently
+            # exist. So a nonempty fresh delete plan is itself proof the
+            # session was recreated since the barrier was recorded, and the
+            # barrier must not refuse a legitimate new delete of it forever.
+            # Delete is also naturally idempotent (``apply()`` reports
+            # ``already_satisfied`` for targets that no longer exist), so the
+            # duplicate-effect barrier is unnecessary for this class either
+            # way -- skip it rather than trusting stale rebuildable absence
+            # as permanent authority.
+            if fresh_plan.destructive_class != "delete":
+                recovered_effect = self._audit.has_recovered_effect(fresh_plan)
+                if recovered_effect is not None:
+                    raise RecoveryBlockedError(
+                        f"operation {recovered_effect!r} already proved this semantic effect applied; "
+                        "refusing duplicate effect"
+                    )
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
