@@ -93,33 +93,3 @@ def test_detect_orphans_count_and_bytes_match_disk_minus_db(
         sampled = set(result.orphan_samples)
         assert sampled.issubset(orphan_hashes)
         assert sampled.isdisjoint(ref_hashes)
-
-
-@given(orphans=st.integers(min_value=1, max_value=30))
-@settings(max_examples=20, deadline=None, suppress_health_check=_HEALTH_SUPPRESS)
-def test_cleanup_dry_run_never_deletes(orphans: int) -> None:
-    """``cleanup_orphans(dry_run=True)`` must always leave every blob on disk.
-
-    This is the safety boundary for ``polylogue ops doctor`` previews.
-    """
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = _store(Path(tmpdir))
-
-        hashes: set[str] = set()
-        for i in range(orphans):
-            h, _ = store.write_from_bytes(f"orphan-{i}".encode())
-            hashes.add(h)
-
-        result = store.cleanup_orphans(hashes, dry_run=True)
-
-        assert result.dry_run is True
-        assert result.deleted_count == 0
-        assert result.deleted_bytes == 0
-        # would_delete_count must equal what's actually on disk for the
-        # provided set (caller passed a clean set, not corrupted hashes).
-        assert result.would_delete_count == len(hashes)
-        # All blobs still on disk.
-        for h in hashes:
-            assert store.exists(h) is True

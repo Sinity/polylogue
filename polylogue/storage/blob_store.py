@@ -541,14 +541,6 @@ class BlobStore:
                     hash_hex=shard_path.name + leaf_path.name,
                 )
 
-    def remove(self, hash_hex: str) -> bool:
-        """Remove a blob from the store. Returns True if it existed."""
-        path = self.blob_path(hash_hex)
-        if path.exists():
-            path.unlink()
-            return True
-        return False
-
     def stats(self) -> dict[str, int]:
         """Return blob store statistics."""
         count = 0
@@ -683,74 +675,6 @@ class BlobStore:
             orphan_samples=tuple(orphan_samples),
         )
 
-    def cleanup_orphans(
-        self,
-        orphan_hashes: set[str],
-        *,
-        dry_run: bool = True,
-    ) -> CleanupOrphansResult:
-        """Delete orphaned blobs from the filesystem.
-
-        Safety: *dry_run* defaults to ``True`` — callers must
-        explicitly opt in to deletion.  The *orphan_hashes* set should
-        be produced by ``detect_orphans()`` immediately before cleanup
-        to avoid TOCTOU races against concurrent ingest.
-
-        Returns per-blob results and aggregate stats.
-        """
-        if dry_run:
-            would_delete_count = 0
-            would_delete_bytes = 0
-            for hash_hex in orphan_hashes:
-                if not _VALID_HEX.fullmatch(hash_hex):
-                    continue
-                path = self.blob_path(hash_hex)
-                if path.exists():
-                    would_delete_count += 1
-                    with suppress(OSError):
-                        would_delete_bytes += path.stat().st_size
-            return CleanupOrphansResult(
-                deleted_count=0,
-                deleted_bytes=0,
-                errors=0,
-                error_details=(),
-                dry_run=True,
-                would_delete_count=would_delete_count,
-                would_delete_bytes=would_delete_bytes,
-            )
-
-        deleted_count = 0
-        deleted_bytes = 0
-        errors = 0
-        error_details: list[str] = []
-
-        for hash_hex in orphan_hashes:
-            if not _VALID_HEX.fullmatch(hash_hex):
-                errors += 1
-                error_details.append(f"invalid hash: {hash_hex[:32]}...")
-                continue
-            path = self.blob_path(hash_hex)
-            if not path.exists():
-                continue
-            try:
-                file_size = path.stat().st_size
-                path.unlink()
-                deleted_count += 1
-                deleted_bytes += file_size
-            except OSError as exc:
-                errors += 1
-                error_details.append(f"{hash_hex[:16]}...: {exc}")
-
-        return CleanupOrphansResult(
-            deleted_count=deleted_count,
-            deleted_bytes=deleted_bytes,
-            errors=errors,
-            error_details=tuple(error_details),
-            dry_run=False,
-            would_delete_count=0,
-            would_delete_bytes=0,
-        )
-
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -792,19 +716,6 @@ class OrphanDetectionResult:
     orphan_count: int
     orphan_bytes: int
     orphan_samples: tuple[str, ...]  # up to max_sample representative hashes
-
-
-@dataclass(frozen=True)
-class CleanupOrphansResult:
-    """Result of an orphan blob cleanup operation."""
-
-    deleted_count: int
-    deleted_bytes: int
-    errors: int
-    error_details: tuple[str, ...]
-    dry_run: bool
-    would_delete_count: int
-    would_delete_bytes: int
 
 
 # Avoid shadowing by the method name
@@ -851,7 +762,6 @@ __all__ = [
     "BlobStore",
     "BlobVerifyAllResult",
     "BlobVerifyFailure",
-    "CleanupOrphansResult",
     "OrphanDetectionResult",
     "PreparedBlob",
     "get_blob_store",
