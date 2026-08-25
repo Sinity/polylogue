@@ -50,4 +50,4 @@ def test_repository_collection_hook_rejects_zero_timeout() -> None:
     )
 
     with pytest.raises(pytest.UsageError, match="0 < seconds <= 900; got 0"):
-        pytest_collection_modifyitems([item])
+        pytest_collection_modifyitems(items=[item])

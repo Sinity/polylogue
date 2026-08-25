@@ -55,9 +55,42 @@ def pytest_configure(config: pytest.Config) -> None:
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--polylogue-file-batch",
+        metavar="INDEX/COUNT",
+        help="run one deterministic file partition of the selected test corpus",
+    )
+
+
+def _file_batch(path: Path, count: int) -> int:
+    if path.is_absolute():
+        path = path.relative_to(_TESTS_REPO_ROOT)
+    return zlib.crc32(path.as_posix().encode()) % count
+
+
+def pytest_collection_modifyitems(config: pytest.Config | None = None, items: list[pytest.Item] | None = None) -> None:
     """Apply suite-wide timeout and bounded-memory execution contracts."""
     from tests.infra.timeout_policy import timeout_marker_error
+
+    if items is None:
+        items = []
+    batch = config.getoption("--polylogue-file-batch") if config is not None else None
+    if batch:
+        assert config is not None
+        try:
+            index_text, count_text = batch.split("/", maxsplit=1)
+            index, count = int(index_text), int(count_text)
+        except (TypeError, ValueError) as error:
+            raise pytest.UsageError("--polylogue-file-batch must be INDEX/COUNT") from error
+        if count < 1 or index < 0 or index >= count:
+            raise pytest.UsageError("--polylogue-file-batch requires 0 <= INDEX < COUNT")
+        selected: list[pytest.Item] = []
+        deselected: list[pytest.Item] = []
+        for item in items:
+            (selected if _file_batch(Path(str(item.path)), count) == index else deselected).append(item)
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
 
     for item in items:
         # A merged-head 12-worker census measured 0.5-0.9 GiB of private

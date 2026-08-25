@@ -191,11 +191,27 @@ def _native_pytest_steps(
         ]
         return [*command, "-m", marker, "-p", "no:randomly", *workers]
 
+    parallel_steps = (
+        [
+            (
+                f"pytest native parallel {batch + 1}/3 ({testmon_mode})",
+                [
+                    *lane_command(f"parallel-{batch + 1}-of-3", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
+                    f"--polylogue-file-batch={batch}/3",
+                ],
+            )
+            for batch in range(3)
+        ]
+        if testmon_mode == "all"
+        else [
+            (
+                f"pytest native parallel ({testmon_mode})",
+                lane_command("parallel", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
+            )
+        ]
+    )
     return [
-        (
-            f"pytest native parallel ({testmon_mode})",
-            lane_command("parallel", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
-        ),
+        *parallel_steps,
         (
             f"pytest native serial ({testmon_mode})",
             lane_command("serial", SERIAL_MARKER_EXPRESSION, serial_worker_args),
@@ -540,6 +556,23 @@ def _finish_and_record_verification(
     return payload
 
 
+def _aggregate_pytest_results(
+    results: Sequence[Mapping[str, Any]], *, expected_step_count: int, mode: str, exit_code: int
+) -> dict[str, Any]:
+    pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
+    outcomes: dict[str, int] = {}
+    for result in pytest_results:
+        for outcome, count in (result.get("outcomes") or {}).items():
+            outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
+    complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
+    return {
+        "selection_mode": mode,
+        "outcomes": outcomes,
+        "terminal_green": exit_code == 0,
+        "complete_corpus_covered": complete,
+    }
+
+
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
     parser.add_argument("--quick", action="store_true")
@@ -655,17 +688,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
         )
-    aggregate = {
-        "selection_mode": mode,
-        "outcomes": {
-            key: value
-            for result in results
-            if result["name"].startswith("pytest")
-            for key, value in (result.get("outcomes") or {}).items()
-        },
-        "terminal_green": exit_code == 0,
-        "complete_corpus_covered": False,
-    }
+    aggregate = _aggregate_pytest_results(
+        results,
+        expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
+        mode=mode,
+        exit_code=exit_code,
+    )
     diagnosis = next((str(result["diagnosis"]) for result in reversed(results) if result["exit"] != 0), None)
     payload = _finish_and_record_verification(
         run=run,

@@ -53,7 +53,12 @@ def test_full_corpus_does_not_duplicate_testmon_tracing_across_workers() -> None
         testmon_environment="polylogue-test",
     )
 
-    for _label, command in steps[-3:]:
+    assert [label for label, _command in steps[-5:-2]] == [
+        "pytest native parallel 1/3 (all)",
+        "pytest native parallel 2/3 (all)",
+        "pytest native parallel 3/3 (all)",
+    ]
+    for _label, command in steps[-5:]:
         assert "--testmon" not in command
         assert "--testmon-noselect" not in command
         assert not any(argument.startswith("--testmon-env=") for argument in command)
@@ -71,6 +76,28 @@ def test_affected_corpus_retains_testmon_selection() -> None:
         assert "--testmon" in command
         assert "--testmon-forceselect" in command
         assert "--testmon-env=polylogue-test" in command
+
+
+def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
+    aggregate = verify._aggregate_pytest_results(
+        [
+            {"name": "pytest native parallel 1/3 (all)", "outcomes": {"passed": 7, "skipped": 1}},
+            {"name": "pytest native parallel 2/3 (all)", "outcomes": {"passed": 11}},
+            {"name": "pytest native parallel 3/3 (all)", "outcomes": {"passed": 5, "xfailed": 1}},
+            {"name": "pytest native serial (all)", "outcomes": {"passed": 2}},
+            {"name": "pytest native storage-scale (all)", "outcomes": {"passed": 1}},
+        ],
+        expected_step_count=5,
+        mode="all",
+        exit_code=0,
+    )
+
+    assert aggregate == {
+        "selection_mode": "all",
+        "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
+        "terminal_green": True,
+        "complete_corpus_covered": True,
+    }
 
 
 def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch) -> None:
