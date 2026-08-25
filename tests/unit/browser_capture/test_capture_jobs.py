@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -17,6 +18,7 @@ from polylogue.browser_capture.capture_jobs import (
     CaptureJobRegistry,
     canonical_digest,
     canonical_json,
+    capture_job_database_path,
     capture_job_scope_namespace,
 )
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
@@ -475,6 +477,109 @@ def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: P
     assert all(browser_capture_route_contract_for(method, path) is not None for method, path in routes)
     assert capture_job_scope_namespace(tmp_path) == capture_job_scope_namespace(tmp_path)
     assert capture_job_scope_namespace(tmp_path) != capture_job_scope_namespace(tmp_path / "other")
+
+
+def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_path: Path, monkeypatch: Any) -> None:
+    """Anti-vacuity: bypassing unreadable-file entries or upsert refresh makes this test fail."""
+    root = tmp_path / "backfill-checkpoints"
+    root.mkdir(parents=True)
+    readable = root / "changing.json"
+    unreadable = root / "unreadable.json"
+    readable.write_text(json.dumps({"checkpoint": {"version": 1}}), encoding="utf-8")
+    unreadable.write_text("{}", encoding="utf-8")
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    connection = registry._connect()
+    try:
+        digest = "sha256:" + hashlib.sha256(readable.read_bytes()).hexdigest()
+        connection.execute(
+            "INSERT INTO capture_job_orphans VALUES (?, ?, ?, ?)",
+            (digest, "stale_kind", "stale diagnostic", "2026-01-01T00:00:00Z"),
+        )
+        connection.commit()
+        first = cast(list[dict[str, object]], registry.list_orphans(1)["orphans"])
+        refreshed_first = next(entry for entry in first if entry["source_digest"] == digest)
+        assert refreshed_first["orphan_kind"] == "legacy_backfill_checkpoint"
+        assert refreshed_first["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
+
+        readable.write_text("not json", encoding="utf-8")
+
+        original_read_bytes = Path.read_bytes
+
+        def raise_for_unreadable(path: Path) -> bytes:
+            if path == unreadable:
+                raise PermissionError(13, "permission denied")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", raise_for_unreadable)
+        second = cast(list[dict[str, object]], registry.list_orphans(1)["orphans"])
+        refreshed = next(entry for entry in second if entry["orphan_kind"] == "malformed_legacy_checkpoint")
+        assert refreshed["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
+        unreadable_entry = next(entry for entry in second if entry["orphan_kind"] == "unreadable_legacy_checkpoint")
+        assert unreadable_entry["path"] == str(unreadable)
+        assert unreadable_entry["errno_class"] == "PermissionError"
+    finally:
+        connection.close()
+
+
+def test_registry_uses_full_synchronous_mode(tmp_path: Path) -> None:
+    """Anti-vacuity: omitting FULL on a fresh registry connection makes this assertion fail."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    connection = registry._connect()
+    try:
+        assert connection.execute("PRAGMA synchronous").fetchone()[0] == 2
+    finally:
+        connection.close()
+
+
+def test_get_uses_one_snapshot_for_job_and_receipts(tmp_path: Path, monkeypatch: Any) -> None:
+    """Anti-vacuity: removing BEGIN lets the injected committed receipt leak into the response."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    payload = {"cutoff": "2026-01-01T00:00:00Z"}
+    _, created = registry.create(
+        {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "client_protocol": 1,
+            "intent": {
+                "schema_version": 1,
+                "version": 1,
+                "intent_key": INTENT_KEY,
+                "payload": payload,
+                "digest": canonical_digest(payload),
+            },
+        }
+    )
+    created_job = cast(dict[str, object], created["job"])
+    job_id = cast(str, created_job["job_id"])
+    original_connect = registry._connect
+    injected = False
+
+    def connect_with_interleaved_commit(_registry: CaptureJobRegistry) -> sqlite3.Connection:
+        nonlocal injected
+        connection = original_connect()
+        if injected:
+            return connection
+
+        def inject(_statement: str) -> None:
+            nonlocal injected
+            if injected or not _statement.startswith("SELECT receipt_json FROM capture_job_receipts"):
+                return
+            injected = True
+            other = sqlite3.connect(capture_job_database_path(tmp_path), isolation_level=None)
+            try:
+                other.execute(
+                    "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?)",
+                    (job_id, "interleaved", 1, json.dumps({"receipt_id": "interleaved"})),
+                )
+            finally:
+                other.close()
+
+        connection.set_trace_callback(inject)
+        return connection
+
+    monkeypatch.setattr(CaptureJobRegistry, "_connect", connect_with_interleaved_commit)
+    result = registry.get(job_id, {"provider": "chatgpt", "account_scope": SCOPE, "client_protocol": 1})
+    assert result["receipts"] == []
 
 
 def test_registry_storage_failure_is_a_structured_receiver_error(tmp_path: Path, monkeypatch: Any) -> None:
