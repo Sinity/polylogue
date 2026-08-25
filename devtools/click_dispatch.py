@@ -25,6 +25,7 @@ from devtools.command_catalog import (
     CommandSpec,
     grouped_command_specs,
 )
+from devtools.system_exit import translate_system_exit
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -256,13 +257,10 @@ def _dispatch(argv: list[str]) -> int:
         cli(args=argv, prog_name="devtools", standalone_mode=True)
         return 0
     except SystemExit as e:
-        code = e.code
-        if code is None:
-            return 0
-        if isinstance(code, int):
-            return code
-        print(code, file=sys.stderr)
-        return 1
+        translation = translate_system_exit(e)
+        if translation.message is not None:
+            print(translation.message, file=sys.stderr)
+        return translation.code
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -110,7 +110,10 @@ def test_default_command_group_forwards_verify_flags(monkeypatch: pytest.MonkeyP
     assert captured == [["--quick"]]
 
 
-@pytest.mark.parametrize("code, expected", [(None, 0), (7, 7)])
+@pytest.mark.parametrize(
+    "code, expected",
+    [(None, 0), (False, False), (True, True), (0, 0), (7, 7)],
+)
 def test_system_exit_codes_keep_python_cli_semantics(
     monkeypatch: pytest.MonkeyPatch, code: object, expected: int
 ) -> None:
@@ -130,14 +133,15 @@ def test_system_exit_codes_keep_python_cli_semantics(
     assert devtools_main.main(["status"]) == expected
 
 
+@pytest.mark.parametrize("code", ["", "0", 0.0, "command failed"])
 def test_non_integer_system_exit_fails_closed_and_preserves_message(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], code: object
 ) -> None:
     """Anti-vacuity: removing the dispatch translation makes this return 0 and lose the message."""
     fake_module = ModuleType("_polylogue_devtools_test_system_exit_message_fake")
 
     def fake_main(_argv: list[str] | None) -> int:
-        raise SystemExit("command failed")
+        raise SystemExit(code)
 
     fake_module.__dict__["main"] = fake_main
     monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
@@ -150,7 +154,7 @@ def test_non_integer_system_exit_fails_closed_and_preserves_message(
     assert devtools_main.main(["status"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "command failed\n"
+    assert captured.err == f"{code}\n"
 
 
 def test_why_unreadable_receipt_fails_through_dispatch(

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from devtools import project_motd
-from devtools.generated_surfaces import GENERATED_SURFACES
+from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
 
 
 def test_read_version_extracts_project_version(tmp_path: Path) -> None:
@@ -13,6 +14,50 @@ def test_read_version_extracts_project_version(tmp_path: Path) -> None:
     pyproject.write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
 
     assert project_motd.read_version(pyproject) == "1.2.3"
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [(None, "ok"), (0, "ok"), ("", "stale"), ("0", "stale"), (0.0, "stale"), ("boom", "stale")],
+)
+def test_run_check_fails_closed_for_non_integer_system_exit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    code: object,
+    expected: str,
+) -> None:
+    """Anti-vacuity: local ``int(exc.code or 0)`` would accept the false-green cases."""
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(code)
+
+    surface = GeneratedSurface("fake", "Fake", "test surface", (), fake_main)
+
+    assert project_motd.run_check(tmp_path, surface) == expected
+    assert capsys.readouterr().err == ""
+
+
+def test_status_verify_generated_reports_system_exit_surface_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n', encoding="utf-8")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit("boom")
+
+    monkeypatch.setattr(project_motd, "GENERATED_SURFACES", (GeneratedSurface("fake", "Fake", "test", (), fake_main),))
+    monkeypatch.setattr(project_motd, "git_status_summary", lambda cwd: ("feature/test", 0, 0, 0))
+    monkeypatch.setattr(project_motd, "git_short_revision", lambda cwd: "deadbeef")
+    monkeypatch.setattr(project_motd, "last_commit_subject", lambda cwd: "test")
+
+    assert project_motd.main(["--cwd", str(tmp_path), "--json", "--verify-generated"]) == 0
+    payload = capsys.readouterr()
+    assert payload.err == ""
+    status = json.loads(payload.out)
+    assert status["generated_surfaces"] == {"Fake": "stale"}
+    assert status["stale_surfaces"] == ["Fake"]
 
 
 def test_render_motd_contains_expected_sections(
