@@ -13,6 +13,7 @@ import fcntl
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _ARTIFACT_PROTOCOL_VERSION = 2
+_SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
 _BUILD_LOCK_ATTEMPTS = 3
@@ -669,6 +671,38 @@ class BenchmarkWorkloadProfile:
         return self.workload.purpose
 
 
+@dataclass(frozen=True)
+class SeededArchiveReachabilityEntry:
+    """One intentionally reusable seeded-archive recipe and its current key."""
+
+    kind: str
+    name: str
+    key: SeededArchiveKey
+
+    def to_payload(self) -> dict[str, str]:
+        return {"kind": self.kind, "name": self.name, "key": self.key.value}
+
+
+@dataclass(frozen=True)
+class SeededArchiveReachabilityInventory:
+    """Generated reachability authority for the persistent seeded-artifact cache."""
+
+    entries: tuple[SeededArchiveReachabilityEntry, ...]
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        return tuple(entry.key.value for entry in self.entries)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "entry_count": len(self.entries),
+            "kinds": {
+                kind: sum(entry.kind == kind for entry in self.entries) for kind in ("default", "named", "benchmark")
+            },
+            "entries": [entry.to_payload() for entry in self.entries],
+        }
+
+
 _BENCHMARK_PROVIDER_MIX = (
     ("claude-code", 80),
     ("codex", 15),
@@ -765,6 +799,55 @@ def benchmark_corpus_specs(
                 )
             )
     return replace(profile.workload, seed=seed).corpus_specs(tuple(session_shapes))
+
+
+def current_seeded_archive_reachability() -> SeededArchiveReachabilityInventory:
+    """Generate all current reusable seeded-artifact keys from fixture registries.
+
+    The default and named fixture registries are the only production cache
+    authority. Benchmark tiers are included at their named default seed. Test-
+    local, property-generated, and caller-supplied ``CorpusSpec`` values are
+    deliberately not reachable through this inventory and therefore remain
+    eligible for the cache's age-gated GC once no capability protects them.
+    """
+    entries: list[SeededArchiveReachabilityEntry] = []
+
+    def add(kind: str, name: str, specs: Iterable[CorpusSpec]) -> None:
+        entries.append(SeededArchiveReachabilityEntry(kind, name, seeded_archive_key(tuple(specs))))
+
+    add("default", "c03", (c03_semantic_corpus_spec(),))
+    add("default", "schema-coverage", schema_coverage_corpus_specs())
+    for named_profile in NAMED_WORKLOAD_PROFILES:
+        add("named", named_profile.name, named_profile.corpus_specs())
+    for benchmark_profile in BENCHMARK_WORKLOAD_PROFILES:
+        add("benchmark", benchmark_profile.tier.value, benchmark_corpus_specs(benchmark_profile.tier))
+
+    inventory = SeededArchiveReachabilityInventory(tuple(entries))
+    validate_seeded_archive_reachability(inventory)
+    return inventory
+
+
+def validate_seeded_archive_reachability(inventory: SeededArchiveReachabilityInventory) -> None:
+    """Reject empty, duplicate, or partial inventories before cache GC runs."""
+    if not inventory.entries:
+        raise ValueError("seeded archive reachability inventory is empty")
+    expected = {
+        ("default", "c03"),
+        ("default", "schema-coverage"),
+        *(("named", profile.name) for profile in NAMED_WORKLOAD_PROFILES),
+        *(("benchmark", profile.tier.value) for profile in BENCHMARK_WORKLOAD_PROFILES),
+    }
+    actual = {(entry.kind, entry.name) for entry in inventory.entries}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(f"seeded archive reachability inventory is incomplete (missing={missing}, extra={extra})")
+    if len(actual) != len(inventory.entries):
+        raise ValueError("seeded archive reachability inventory has duplicate recipes")
+    if len(set(inventory.keys)) != len(inventory.keys):
+        raise ValueError("seeded archive reachability inventory has duplicate keys")
+    if any(not _SEEDED_KEY.fullmatch(key) for key in inventory.keys):
+        raise ValueError("seeded archive reachability inventory has malformed keys")
 
 
 def build_benchmark_archive(
@@ -1921,7 +2004,6 @@ def _manifest_binds_to_key(manifest: SeededArchiveManifest, root: Path, key: See
     return manifest.receipt == dict(expected_receipt)
 
 
-_SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 _GC_WORKTREE_MARKERS = (".worktree", ".worktree.lock", ".artifact-worktree.lock")
 _GC_LEASE_MARKERS = (".lease", ".artifact.lease", ".query.lease")
 _GC_CONTROL_MARKERS = frozenset((*_GC_WORKTREE_MARKERS, *_GC_LEASE_MARKERS))
@@ -2038,8 +2120,8 @@ def gc_seeded_archive_artifacts(
     the complete inspect/delete interval, so active builders, query leases,
     clones, and explicitly protected worktrees remain untouched.
     """
-    if grace_period_s < 0:
-        raise ValueError("artifact GC grace period must be non-negative")
+    if not math.isfinite(grace_period_s) or grace_period_s < 0:
+        raise ValueError("artifact GC grace period must be finite and non-negative")
     reachable_values = {item.value if isinstance(item, SeededArchiveKey) else str(item) for item in reachable_keys}
     if any(_SEEDED_KEY.fullmatch(value) is None for value in reachable_values):
         raise ValueError("artifact GC reachability must use complete seeded archive keys")
@@ -2127,7 +2209,7 @@ def gc_seeded_archive_artifacts(
             except OSError:
                 resolved_root = root
             if any(
-                resolved_root == protected_root or protected_root in resolved_root.parents
+                resolved_root == protected_root or resolved_root in protected_root.parents
                 for protected_root in protected
             ):
                 entries.append(
@@ -3074,6 +3156,8 @@ __all__ = [
     "SeededArchiveClone",
     "SeededArchiveKey",
     "SeededArchiveManifest",
+    "SeededArchiveReachabilityEntry",
+    "SeededArchiveReachabilityInventory",
     "benchmark_corpus_specs",
     "benchmark_workload_profile",
     "benchmark_workload_tier",
@@ -3085,6 +3169,8 @@ __all__ = [
     "gc_seeded_archive_artifacts",
     "named_corpus_specs",
     "named_workload_profile",
+    "current_seeded_archive_reachability",
     "schema_coverage_corpus_specs",
     "seeded_archive_key",
+    "validate_seeded_archive_reachability",
 ]
