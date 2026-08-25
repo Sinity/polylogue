@@ -235,6 +235,7 @@ class ArtifactGcReport:
     grace_period_s: float
     reachable_keys: tuple[str, ...]
     entries: tuple[ArtifactGcEntry, ...]
+    delete_corrupt: bool = False
 
     @property
     def deleted_bytes(self) -> int:
@@ -256,6 +257,7 @@ class ArtifactGcReport:
             "reachable_keys": list(self.reachable_keys),
             "reclaimable_bytes": self.reclaimable_bytes,
             "deleted_bytes": self.deleted_bytes,
+            "delete_corrupt": self.delete_corrupt,
             "entries": [entry.to_payload() for entry in self.entries],
         }
 
@@ -2107,6 +2109,7 @@ def gc_seeded_archive_artifacts(
     grace_period_s: float = 24 * 60 * 60,
     now: float | None = None,
     dry_run: bool = True,
+    delete_corrupt: bool = False,
     protected_worktrees: Iterable[Path] = (),
     receipt_path: Path | None = None,
 ) -> ArtifactGcReport:
@@ -2115,7 +2118,10 @@ def gc_seeded_archive_artifacts(
     ``reachable_keys`` is mandatory by design. It is the current workload
     authority, not a build-id heuristic: a different checkout can publish the
     same bytes and a current checkout can legitimately reuse an older build.
-    Missing, malformed, or corrupt artifacts are retained and reported. Every
+    Missing, malformed, or corrupt artifacts are retained and reported unless
+    ``delete_corrupt`` explicitly authorizes age-gated deletion of a directory
+    whose path identity is not reachable. Reachable corrupt artifacts are
+    always retained so their recipe can rebuild them. Every
     destructive decision holds the cache, per-key, and final-root locks for
     the complete inspect/delete interval, so active builders, query leases,
     clones, and explicitly protected worktrees remain untouched.
@@ -2131,7 +2137,7 @@ def gc_seeded_archive_artifacts(
     cache_root = cache_root.expanduser()
     artifacts_root = cache_root / "artifacts"
     if not artifacts_root.is_dir():
-        report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, ())
+        report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, (), delete_corrupt)
         if receipt_path is not None:
             _write_gc_receipt(receipt_path, report)
         return report
@@ -2162,6 +2168,7 @@ def gc_seeded_archive_artifacts(
                         detail="cache root is owned by an active builder",
                     ),
                 ),
+                delete_corrupt,
             )
             if receipt_path is not None:
                 _write_gc_receipt(receipt_path, report)
@@ -2187,18 +2194,42 @@ def gc_seeded_archive_artifacts(
             manifest, size, corruption = _gc_manifest_integrity(root)
             key = manifest.key if manifest is not None else None
             manifest_id = manifest.manifest_id if manifest is not None else None
+            path_key = f"seeded-archive:sha256:{root.name}" if re.fullmatch(r"[0-9a-f]{64}", root.name) else None
             try:
-                age = max(0.0, current_time - max(root.stat().st_mtime, (root / "manifest.json").stat().st_mtime))
+                newest_mtime = root.stat().st_mtime
+                with contextlib.suppress(OSError):
+                    newest_mtime = max(newest_mtime, (root / "manifest.json").stat().st_mtime)
+                age = max(0.0, current_time - newest_mtime)
             except OSError:
                 age = None
             if corruption is not None:
-                entries.append(
-                    ArtifactGcEntry(
-                        root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.CORRUPT, corruption
+                if path_key in reachable:
+                    entries.append(
+                        ArtifactGcEntry(
+                            root.name,
+                            str(root),
+                            path_key,
+                            manifest_id,
+                            size,
+                            age,
+                            ArtifactGcDisposition.CORRUPT,
+                            f"reachable artifact is corrupt: {corruption}",
+                        )
                     )
-                )
-                continue
-            assert manifest is not None and key is not None
+                    continue
+                if delete_corrupt and path_key is not None:
+                    key = path_key
+                    deletion_detail = f"unreachable corrupt artifact: {corruption}"
+                else:
+                    entries.append(
+                        ArtifactGcEntry(
+                            root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.CORRUPT, corruption
+                        )
+                    )
+                    continue
+            else:
+                deletion_detail = None
+            assert key is not None
             if key in reachable:
                 entries.append(
                     ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.REACHABLE)
@@ -2304,11 +2335,29 @@ def gc_seeded_archive_artifacts(
                     continue
                 if age is None or age < grace_period_s:
                     entries.append(
-                        ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.GRACE)
+                        ArtifactGcEntry(
+                            root.name,
+                            str(root),
+                            key,
+                            manifest_id,
+                            size,
+                            age,
+                            ArtifactGcDisposition.GRACE,
+                            deletion_detail,
+                        )
                     )
                 elif dry_run:
                     entries.append(
-                        ArtifactGcEntry(root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.STALE)
+                        ArtifactGcEntry(
+                            root.name,
+                            str(root),
+                            key,
+                            manifest_id,
+                            size,
+                            age,
+                            ArtifactGcDisposition.STALE,
+                            deletion_detail,
+                        )
                     )
                 else:
                     try:
@@ -2332,7 +2381,14 @@ def gc_seeded_archive_artifacts(
                                 _VALIDATED_ARTIFACTS.pop(memo_key, None)
                         entries.append(
                             ArtifactGcEntry(
-                                root.name, str(root), key, manifest_id, size, age, ArtifactGcDisposition.DELETED
+                                root.name,
+                                str(root),
+                                key,
+                                manifest_id,
+                                size,
+                                age,
+                                ArtifactGcDisposition.DELETED,
+                                deletion_detail,
                             )
                         )
             finally:
@@ -2349,7 +2405,7 @@ def gc_seeded_archive_artifacts(
             with contextlib.suppress(OSError):
                 fcntl.flock(cache_fd, fcntl.LOCK_UN)
             os.close(cache_fd)
-    report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, tuple(entries))
+    report = ArtifactGcReport(cache_root, dry_run, grace_period_s, reachable, tuple(entries), delete_corrupt)
     if receipt_path is not None:
         _write_gc_receipt(receipt_path, report)
     return report

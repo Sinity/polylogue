@@ -43,6 +43,7 @@ from polylogue.storage.index_generation import IndexGenerationStore, RebuildLeas
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 _DEFAULT_CANARY_TEMPLATE: Path | None = None
@@ -245,14 +246,17 @@ def _seed_isolated_canary(
     if session_names == ("isolated-canary",) and not membership_names and _clone_default_canary_template(root):
         return
     initialize_active_archive_root(root)
+    seeded: dict[str, bytes] = {}
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for acquired_at_ms, name in enumerate(session_names, start=1):
-            archive.write_raw_payload(
+            payload = _codex_session(name)
+            raw_id = archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=_codex_session(name),
+                payload=payload,
                 source_path=f"{name}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
+            seeded[raw_id] = payload
     if membership_names:
         with sqlite3.connect(root / "source.db") as connection:
             for name in membership_names:
@@ -271,6 +275,8 @@ def _seed_isolated_canary(
                     (raw_id, f"codex-session:{name}", name, "1", blob_hash, 2),
                 )
             connection.commit()
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     backfill_historical_revision_evidence(root)
     receipt_path = write_valid_rebuild_receipt(root, _schema_receipt_path(root))
     receipt = rebuild_index_from_source_sync(

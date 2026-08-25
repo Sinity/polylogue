@@ -3100,7 +3100,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_browser_capture_auth_token,
                 extra_origins=browser_capture_extra_origins,
             )
-            server_task = asyncio.create_task(asyncio.to_thread(server.serve_forever, 0.5))
+            server_task = _start_server_task(server, label="browser-capture")
             tasks.append(server_task)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
@@ -3143,7 +3143,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
-            api_server_task = asyncio.create_task(asyncio.to_thread(api_server.serve_forever, 0.5))
+            api_server_task = _start_server_task(api_server, label="api")
             tasks.append(api_server_task)
             from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
@@ -3153,7 +3153,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
-            uds_server_task = asyncio.create_task(asyncio.to_thread(uds_server.serve_forever, 0.5))
+            uds_server_task = _start_server_task(uds_server, label="uds")
             tasks.append(uds_server_task)
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
@@ -3555,6 +3555,46 @@ async def _shutdown_server_if_serving(
             "daemon: %s server shutdown did not complete within 5s; closing socket directly",
             label,
         )
+
+
+def _start_server_task(
+    server: Any,
+    *,
+    label: str,
+) -> asyncio.Task[None]:
+    """Start a long-lived socket server without occupying asyncio's executor.
+
+    ``asyncio.run()`` always joins every default-executor worker during loop
+    teardown. A cancelled ``to_thread(serve_forever)`` future does not stop its
+    worker, so one missed or raced shutdown can freeze the entire daemon exit.
+    Start the server in an explicitly daemonized thread and expose only its
+    completion to the task graph. The normal shutdown path still calls
+    ``server.shutdown()`` and drains this task; a genuinely wedged server can no
+    longer strand interpreter teardown.
+    """
+    loop = asyncio.get_running_loop()
+    completed = asyncio.Event()
+    failure: list[BaseException] = []
+
+    def _serve() -> None:
+        try:
+            server.serve_forever(0.5)
+        except BaseException as exc:
+            failure.append(exc)
+        finally:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(completed.set)
+                # The daemon thread is intentionally non-owning. If a wedged
+                # server outlives loop teardown, there is no loop consumer left.
+
+    threading.Thread(target=_serve, name=f"{label}-server", daemon=True).start()
+
+    async def _wait() -> None:
+        await completed.wait()
+        if failure:
+            raise failure[0]
+
+    return asyncio.create_task(_wait(), name=f"{label}-server-completion")
 
 
 @click.group(help="Run long-lived Polylogue local services.")

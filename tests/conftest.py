@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
 import sqlite3
 import sys
 import threading
+import zlib
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from pathlib import Path
 from types import FrameType, ModuleType
@@ -54,11 +56,58 @@ def pytest_configure(config: pytest.Config) -> None:
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Reject unbounded or effectively disabled per-test timeout markers."""
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--polylogue-file-batch",
+        metavar="INDEX/COUNT",
+        help="run one deterministic file partition of the selected test corpus",
+    )
+
+
+def _file_batch(path: Path, count: int) -> int:
+    if path.is_absolute():
+        path = path.relative_to(_TESTS_REPO_ROOT)
+    return zlib.crc32(path.as_posix().encode()) % count
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply suite-wide timeout and bounded-memory execution contracts.
+
+    Pluggy only injects hook arguments that are required parameters; a
+    parameter with a default is treated as optional and silently omitted,
+    which previously made pytest call this hook with both arguments as
+    ``None`` and disabled file-batch deselection, the rebuild-index load
+    groups, and timeout-marker validation. Keep both parameters required.
+    """
     from tests.infra.timeout_policy import timeout_marker_error
 
+    batch = config.getoption("--polylogue-file-batch")
+    if batch:
+        try:
+            index_text, count_text = batch.split("/", maxsplit=1)
+            index, count = int(index_text), int(count_text)
+        except (TypeError, ValueError) as error:
+            raise pytest.UsageError("--polylogue-file-batch must be INDEX/COUNT") from error
+        if count < 1 or index < 0 or index >= count:
+            raise pytest.UsageError("--polylogue-file-batch requires 0 <= INDEX < COUNT")
+        selected: list[pytest.Item] = []
+        deselected: list[pytest.Item] = []
+        for item in items:
+            (selected if _file_batch(Path(str(item.path)), count) == index else deselected).append(item)
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
+
     for item in items:
+        # A merged-head 12-worker census measured 0.5-0.9 GiB of private
+        # memory per worker while rebuild-index tests from the same files ran
+        # concurrently, producing a 14.6 GiB cgroup peak. Keep file-local
+        # fixture isolation, but distribute this family over four stable
+        # loadgroups so unrelated tests can still use every configured worker.
+        item_path = Path(str(item.path))
+        if item_path.parent.name == "maintenance" and item_path.name.startswith("test_rebuild_index_"):
+            bucket = zlib.crc32(item_path.name.encode()) % 4
+            item.add_marker(pytest.mark.xdist_group(name=f"rebuild-index-memory-{bucket}"))
+
         marker = item.get_closest_marker("timeout")
         if marker is None:
             continue
@@ -410,7 +459,7 @@ def workspace_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     empty_archive_template: Path,
-) -> dict[str, Path]:
+) -> Iterator[dict[str, Path]]:
     from tests.infra.archive_templates import clone_archive_template
 
     data_dir = tmp_path / "data"
@@ -426,11 +475,19 @@ def workspace_env(
 
     clone_archive_template(empty_archive_template, archive_root)
 
-    return {
-        "archive_root": archive_root,
-        "data_root": data_dir,
-        "state_dir": state_dir,
-    }
+    try:
+        yield {
+            "archive_root": archive_root,
+            "data_root": data_dir,
+            "state_dir": state_dir,
+        }
+    finally:
+        # A bare ``with sqlite3.connect(...)`` commits or rolls back but does
+        # not close the connection.  Collect unreachable connection/cursor
+        # cycles before unlinking the archive so tmpfs does not retain large
+        # deleted-but-open fixture databases until the xdist worker exits.
+        gc.collect()
+        shutil.rmtree(archive_root, ignore_errors=True)
 
 
 @pytest.fixture
@@ -472,7 +529,7 @@ def cli_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     empty_archive_template: Path,
-) -> dict[str, Path]:
+) -> Iterator[dict[str, Path]]:
     """
     Isolated CLI workspace with archive roots and database.
 
@@ -510,14 +567,18 @@ def cli_workspace(
 
     clone_archive_template(empty_archive_template, archive_root)
 
-    return {
-        "archive_root": archive_root,
-        "data_root": data_dir,
-        "state_dir": state_dir,
-        "inbox_dir": inbox_dir,
-        "render_root": render_root,
-        "db_path": db_path,
-    }
+    try:
+        yield {
+            "archive_root": archive_root,
+            "data_root": data_dir,
+            "state_dir": state_dir,
+            "inbox_dir": inbox_dir,
+            "render_root": render_root,
+            "db_path": db_path,
+        }
+    finally:
+        gc.collect()
+        shutil.rmtree(archive_root, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

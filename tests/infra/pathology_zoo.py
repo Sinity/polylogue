@@ -11,12 +11,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import stat
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
-from shutil import copytree
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin
@@ -41,6 +39,9 @@ from tests.infra.workload_artifacts import (
     clone_immutable_tree,
     default_cache_root,
 )
+from tests.infra.workload_artifacts import _archive_schema_id as _production_archive_schema_id
+from tests.infra.workload_artifacts import _recipe_id as _production_recipe_id
+from tests.infra.workload_artifacts import _source_semantics_id as _production_source_semantics_id
 
 CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
 CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
@@ -161,7 +162,7 @@ _PATHOLOGY_ZOO_MUTATIONS: dict[str, PathologyZooMutation] = {
         """,
         (
             Origin.CLAUDE_AI_EXPORT.value,
-            f"claude-ai:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",
+            CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
         ),
     ),
     "lifecycle-anchor-drift": PathologyZooMutation(
@@ -621,11 +622,24 @@ def _build_pathology_zoo_uncached(archive_root: Path) -> PathologyZoo:
 
 
 def _pathology_cache_key() -> str:
-    """Stable aggregate identity, independent of the current git commit."""
+    """Stable aggregate identity, independent of the current git commit.
+
+    Hashing only this fixture module and the manifest member ids let a
+    cached artifact from before a parser, ingestion, or archive-schema change
+    keep matching after the change: ``build_immutable_tree`` reuses whatever
+    cache-key-tagged tree it finds regardless of whether the *code that
+    produced it* is still current. Fold in the same production fingerprints
+    ``tests.infra.workload_artifacts`` uses to key seeded archives so a
+    semantics change here forces a rebuild instead of certifying stale
+    materialized data.
+    """
     payload = {
-        "protocol": 1,
+        "protocol": 2,
         "manifest": [member.member_id for member in PRODUCTION_PATHOLOGY_ZOO_MANIFEST],
         "fixture_source": sha256(Path(__file__).read_bytes()).hexdigest(),
+        "recipe": _production_recipe_id(),
+        "source_semantics": _production_source_semantics_id(),
+        "archive_schema": _production_archive_schema_id(),
     }
     return "pathology-zoo:aggregate:" + sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -687,14 +701,17 @@ def build_pathology_zoo(
     aggregate verifiers never receive partial evidence by accident.
     """
     selected = _select_members(member_ids)
-    aggregate = build_pathology_zoo_ro(cache_root=cache_root)
-    clone = clone_immutable_tree(
-        ImmutableTreeArtifact(root=aggregate.archive_root, key=_pathology_cache_key(), files=()),
-        archive_root,
+    artifact = build_immutable_tree(
+        cache_root=(cache_root or default_cache_root()) / "pathology-zoo",
+        key=_pathology_cache_key(),
+        builder=lambda root: _build_pathology_zoo_uncached(root),
     )
-    # clone_immutable_tree only needs the source root and manifest identity;
-    # restore the production-derived durable paths against this private root.
-    del clone
+    aggregate = PathologyZoo(
+        archive_root=artifact.root,
+        manifest=_manifest_for_root(artifact.root),
+        selected_member_ids=pathology_zoo_member_ids(),
+    )
+    clone_immutable_tree(artifact, archive_root)
     selected_ids = {member.member_id for member in selected}
     return PathologyZoo(
         archive_root=archive_root,
@@ -716,10 +733,18 @@ def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
 
 
 def clone_pathology_zoo(zoo: PathologyZoo, destination: Path) -> PathologyZoo:
-    """Copy a built zoo archive into a private writable location."""
-    copytree(zoo.archive_root, destination)
-    for path in (destination, *destination.rglob("*")):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    """Reflink one already-materialized pathology zoo into a private writable root.
+
+    Clones directly from ``zoo.archive_root`` instead of re-resolving (and
+    validating against) the canonical artifact under the default cache root.
+    That earlier design rejected any zoo built with a caller-supplied
+    ``cache_root``, and rejected cloning a zoo that was itself already a
+    clone (as :func:`pathology_zoo_writable` does from the shared session
+    fixture) -- both are legitimate origins for a clone, not just the
+    canonical cache artifact.
+    """
+    artifact = ImmutableTreeArtifact(root=zoo.archive_root, key=_pathology_cache_key(), files=())
+    clone_immutable_tree(artifact, destination)
     return replace(zoo, archive_root=destination)
 
 
