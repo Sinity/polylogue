@@ -176,6 +176,39 @@ def _binding(
     return OperationBinding(spec, actuator)
 
 
+def _delete_binding(actuator: _Actuator) -> OperationBinding[object, object]:
+    """Like ``_binding``, but the target-authority policy's destructive class is ``delete``.
+
+    ``_typed_plan_from_actuator`` derives the *effective* ``destructive_class``
+    on the resolved plan from the binding's target-authority policy, not the
+    raw plan the actuator returned -- ``_binding``'s policy hardcodes
+    ``"reversible"``, so any test exercising delete-specific plan behavior
+    must use this instead.
+    """
+
+    spec = OperationSpec(
+        name="mutate-fixture",
+        kind=OperationKind.MAINTENANCE,
+        description="fixture",
+        mutates_state=True,
+        executor_status="executor-routed",
+        allowed_surfaces=("internal",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="session",
+                target_kinds=("session",),
+                required_capabilities=("archive.fixture.write",),
+                destructive_class="delete",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("derived",),
+                allowed_recovery=("none",),
+            ),
+        ),
+        affected_tiers=("user",),
+    )
+    return OperationBinding(spec, actuator)
+
+
 def _principal() -> MutationPrincipal:
     return MutationPrincipal("actor:test", frozenset({"archive.fixture.write"}), "internal", "system")
 
@@ -851,6 +884,96 @@ def test_applied_adjudication_retains_the_recovered_effect_barrier(tmp_path: Pat
         assert conn.execute(
             "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("completed", "recovered_applied")
+
+
+@dataclass
+class _DestructiveClassActuator(_Actuator):
+    """Like ``_Actuator``, but ``prepare()`` honors ``self.destructive_class``.
+
+    ``_Actuator.prepare()`` hardcodes ``destructive_class="reversible"``
+    regardless of the ``destructive_class`` field, so it cannot exercise the
+    delete-class recovery-barrier bypass on its own.
+    """
+
+    def prepare(self, _args: object) -> MutationPlan:
+        targets = ("session:changed",) if self.changed else self.target_refs
+        return build_plan(
+            operation=self.operation,
+            destructive_class=self.destructive_class,
+            target_refs=targets,
+            affected_tiers=("user",),
+            reversible=self.destructive_class in {"additive", "reversible"},
+        )
+
+
+def test_recovered_applied_delete_barrier_never_refuses_a_later_retry(tmp_path: Path) -> None:
+    """A ``delete``-class recovered-applied barrier must not block forever.
+
+    Session deletion is re-ingest-resurrectable (archive identity is
+    inode-based): a source replay can recreate the same session and produce
+    an identical parameter/target digest, so a legitimate subsequent delete
+    of it must not be permanently refused just because a prior
+    crash-recovered delete of the same identity was classified applied.
+    Delete is also naturally idempotent (``already_satisfied`` when nothing
+    remains), so the duplicate-effect barrier is unnecessary for this class
+    either way.
+
+    Anti-vacuity: restricting the ``destructive_class != "delete"`` bypass in
+    ``OperationExecutor.execute_bound`` back to an unconditional
+    ``has_recovered_effect`` check makes this test fail -- the second retry
+    would raise ``RecoveryBlockedError`` (matching the reversible-class
+    barrier test above) instead of applying, and ``actuator.calls`` would
+    stay 0.
+
+    Mirrors ``test_confirmed_applied_recovery_installs_a_durable_barrier_for_every_later_retry``:
+    the FIRST retry still gets blocked (it is the one that *discovers* and
+    classifies the dead overlapping op -- that immediate-overlap block is
+    unaffected by this fix). Only the durable ``recovered_applied`` barrier
+    a SECOND, later retry would otherwise hit is bypassed for ``delete``.
+    """
+
+    actuator = _DestructiveClassActuator(
+        destructive_class="delete",
+        recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"),
+    )
+    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    binding = _delete_binding(actuator)
+    first = OperationExecutor(audit=audit, token_factory=lambda: "delete-barrier-first")
+    first_preview = first.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    first_authorization = first.authorize_bound(binding, first_preview, _principal())
+    with pytest.raises(RecoveryBlockedError, match="already applied"):
+        first.execute_bound(binding, first_preview, first_authorization, object())
+
+    second = OperationExecutor(audit=audit, token_factory=lambda: "delete-barrier-second")
+    second_preview = second.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    second_authorization = second.authorize_bound(binding, second_preview, _principal())
+    receipt = second.execute_bound(binding, second_preview, second_authorization, object())
+
+    assert receipt.status == "applied"
+    assert actuator.calls == 1
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        # The barrier is still durably recorded (evidence preserved) even
+        # though it no longer refuses a later retry.
+        assert (
+            conn.execute("SELECT COUNT(*) FROM operation_runs WHERE terminal_reason = 'recovered_applied'").fetchone()[
+                0
+            ]
+            == 1
+        )
 
 
 def test_recovery_disposition_keeps_create_update_delete_outcomes_per_target(tmp_path: Path) -> None:
@@ -1908,3 +2031,152 @@ def test_token_consumption_and_initial_attempt_roll_back_together(
     assert auth_state == "active"
     assert preview_state == "prepared"
     assert run_count == 0
+
+
+def test_find_interrupted_operation_adopts_a_recovery_unknown_run(tmp_path: Path) -> None:
+    """A restart-classified ``recovery_unknown`` run must be adoptable, too.
+
+    Startup terminalizes an operator-blocking orphan as
+    ``status='failed'``/``terminal_reason='recovery_unknown'`` -- it never
+    stays ``interrupted``. Rerunning a committed raw recovery with matching
+    intent/postflight/receipt evidence looks its interrupted attempt up by
+    ``(operation_name, parameter_digest)`` to adopt it; restricting that
+    lookup to ``status = 'interrupted'`` leaves it wedged forever once
+    startup gets there first.
+
+    Anti-vacuity: narrowing ``find_interrupted_operation``'s WHERE clause
+    back to ``status = 'interrupted'`` only makes this test fail, since the
+    fixture operation is already terminalized to failed/recovery_unknown
+    before the lookup runs.
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    audit.recover_abandoned_attempts()
+    audit.record_recovery_disposition(
+        operation_id, RecoveryDisposition("unknown", "operator-blocking", "synthetic operator-blocking classification")
+    )
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        status, terminal_reason, parameter_digest, operation_name = conn.execute(
+            "SELECT status, terminal_reason, parameter_digest, operation_name FROM operation_runs WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+    assert (status, terminal_reason) == ("failed", "recovery_unknown")
+
+    found = audit.find_interrupted_operation(operation_name=operation_name, parameter_digest=parameter_digest)
+    assert found == operation_id
+    # And the same widened status set must let adoption actually finalize it.
+    audit.record_recovery_disposition(
+        operation_id,
+        RecoveryDisposition(
+            "confirmed-applied",
+            "forward",
+            "adoption evidence",
+            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
+        ),
+    )
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("completed", "recovered_applied")
+
+
+def test_adjudicate_recovery_records_the_adjudicator_not_the_original_actor(tmp_path: Path) -> None:
+    """``recovery_adjudicated`` events must attribute the adjudicator, not the original mutation actor.
+
+    Anti-vacuity: reverting ``actor_ref=adjudicator`` back to
+    ``actor_ref=str(run[0])`` (the original operation's actor) makes this
+    test fail, since the fixture's original actor (``actor:test`` from
+    ``_principal()``) differs from the adjudicator identity passed in.
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    audit.adjudicate_recovery(
+        operation_id,
+        target_outcomes={"session:fixture": "applied"},
+        reason="operator verified the interrupted effect committed",
+        adjudicator="user:reviewer",
+    )
+    events = audit.list_events(operation_id)
+    adjudicated = next(event for event in events if event["event_type"] == "recovery_adjudicated")
+    assert adjudicated["actor_ref"] == "user:reviewer"
+
+
+def test_adjudicate_recovery_refuses_a_running_operation_with_a_live_or_unknown_owner(tmp_path: Path) -> None:
+    """Adjudicating a ``running`` operation must require a conclusively dead owner.
+
+    Unlike the automatic recovery paths (``orphaned_operations``,
+    ``record_recovery_disposition``), adjudication used to accept any
+    ``running`` operation unconditionally -- a live standalone executor (an
+    MCP call or another process with no daemon pidfile involved) could still
+    be applying the mutation while adjudication marks targets reconciled and
+    removes the overlap barrier, permitting a concurrent/duplicate effect.
+
+    Anti-vacuity: dropping the liveness guard added for ``status ==
+    'running'`` in ``adjudicate_recovery`` makes this test fail -- the call
+    would succeed instead of raising.
+    """
+
+    audit = _audit(tmp_path)
+    audit.ensure_archive_authority(now_ms=1)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "live-owner-token")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:live",
+        archive_identity_digest="identity:live",
+        parameter_digest="params:live",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "running",
+        )
+
+    with pytest.raises(ValueError, match="not conclusively dead"):
+        audit.adjudicate_recovery(
+            operation_id,
+            target_outcomes={"session:fixture": "applied"},
+            reason="attempt to adjudicate a still-running operation",
+        )
+
+
+def test_list_targets_exposes_ordered_per_target_dispositions_for_inspection(tmp_path: Path) -> None:
+    """The recovery-unknown inspection payload must carry per-target refs and states.
+
+    The CLI/MCP ``operation-recovery`` status output previously returned
+    only the aggregate run and its events -- never the ordered target
+    dispositions an operator needs to actually build the documented
+    ``--target-outcome target_ref=applied|not-applied|unknown`` adjudication
+    command. ``list_targets`` is what both surfaces now read from.
+
+    Anti-vacuity: dropping ``AuditRepository.list_targets`` (or the
+    ``"targets"`` key the CLI/MCP payloads add from it) makes this test fail
+    with an ``AttributeError``/``KeyError``, or leaves ``targets`` empty for
+    an operation that demonstrably has one.
+    """
+
+    actuator = _Actuator(target_refs=("session:one", "session:two"))
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    audit.record_recovery_disposition(
+        operation_id,
+        RecoveryDisposition(
+            "confirmed-partial",
+            "retry-exact",
+            "domain inspector distinguished applied vs not-applied",
+            (
+                RecoveryTargetDisposition("session:one", "applied", "forward"),
+                RecoveryTargetDisposition("session:two", "not-applied", "retry-exact"),
+            ),
+        ),
+    )
+    targets = audit.list_targets(operation_id)
+    assert [(t["target_ref"], t["state"]) for t in targets] == [
+        ("session:one", "applied"),
+        ("session:two", "failed"),
+    ]
