@@ -395,6 +395,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace seeded-archive-cache-gc",
+        "workspace",
+        "Preview or apply age-gated GC for the shared seeded-archive fixture cache.",
+        "devtools.seeded_archive_cache_gc",
+        use_when=(
+            "Maintain the reusable NVMe seeded-artifact cache from the generated default, named-workload, and "
+            "benchmark reachability inventory. Preview is the default; pass --apply explicitly after reviewing "
+            "the bounded receipt. Active locks, leases, protected worktrees, corrupt evidence, and grace-period "
+            "artifacts remain under the shared GC primitive."
+        ),
+        examples=(
+            "devtools workspace seeded-archive-cache-gc --json",
+            "devtools workspace seeded-archive-cache-gc --apply --json",
+        ),
+    ),
+    CommandSpec(
         "workspace deployment-smoke",
         "workspace",
         "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",

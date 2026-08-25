@@ -164,6 +164,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace raw-quarantine-group-dedup-apply` | Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
+| `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 | `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
 | `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
