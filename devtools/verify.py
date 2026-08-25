@@ -335,7 +335,12 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         managed_command = lease.command(command)
         try:
             completed = run_managed_pytest(
-                managed_command, cwd=ROOT, env=lease.environment(env), stdout=sys.stderr, stderr=sys.stderr
+                managed_command,
+                cwd=ROOT,
+                env=lease.environment(env),
+                stdout=sys.stderr,
+                stderr=sys.stderr,
+                resource_metrics_path=artifacts.step_dir / "process-memory.json",
             )
         except KeyboardInterrupt:
             lease.finalize("cancelled")

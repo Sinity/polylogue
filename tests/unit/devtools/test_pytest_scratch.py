@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -183,6 +184,25 @@ def test_managed_pytest_kills_its_process_group_before_propagating_interrupt(
         run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})
 
     assert killed == [(42, signal.SIGTERM)]
+
+
+def test_managed_pytest_records_process_group_memory_peaks(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "process-memory.json"
+
+    completed = run_managed_pytest(
+        [sys.executable, "-c", "import time; time.sleep(0.7)"],
+        cwd=tmp_path,
+        env={},
+        resource_metrics_path=metrics_path,
+    )
+
+    assert completed.returncode == 0
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["schema_version"] == 1
+    assert metrics["samples"] >= 1
+    assert metrics["aggregate_peak"]["rss_bytes"] > 0
+    assert metrics["aggregate_peak"]["pss_bytes"] > 0
+    assert metrics["process_peaks"]
 
 
 def test_workstation_does_not_fallback_to_tmpfs_when_nvme_mount_is_missing(

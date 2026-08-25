@@ -68,6 +68,9 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     (artifacts.step_dir / "scratch-metrics.json").write_text(
         json.dumps({"high_water_usage": {"apparent_bytes": 128}}), encoding="utf-8"
     )
+    (artifacts.step_dir / "process-memory.json").write_text(
+        json.dumps({"aggregate_peak": {"pss_bytes": 256}}), encoding="utf-8"
+    )
 
     result = run.finish_step(step_id=artifacts.step_id, result={"exit": 1, "duration_s": 0.1})
 
@@ -77,6 +80,7 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     assert statistics["selected_count"] == 2
     assert statistics["event_count"] == 1
     assert result["scratch_metrics"]["high_water_usage"]["apparent_bytes"] == 128
+    assert result["process_memory"]["aggregate_peak"]["pss_bytes"] == 256
 
 
 def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
