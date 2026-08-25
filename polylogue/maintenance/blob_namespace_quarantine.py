@@ -20,6 +20,7 @@ import json
 import os
 import sqlite3
 import stat
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -345,20 +346,27 @@ def _fsync_directory(path: Path) -> None:
 
 def _write_immutable_json(path: Path, payload: dict[str, object]) -> str:
     encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = -1
+    temporary_path: Path | None = None
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as exc:
-        raise BlobNamespaceQuarantineError(f"immutable receipt already exists: {path}") from exc
-    try:
-        offset = 0
-        while offset < len(encoded):
-            written = os.write(descriptor, encoded[offset:])
-            if written == 0:
-                raise BlobNamespaceQuarantineError(f"could not write immutable receipt: {path}")
-            offset += written
-        os.fsync(descriptor)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError as exc:
+            raise BlobNamespaceQuarantineError(f"immutable receipt already exists: {path}") from exc
+        temporary_path.unlink()
+        temporary_path = None
     finally:
-        os.close(descriptor)
+        if descriptor != -1:
+            os.close(descriptor)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     _fsync_directory(path.parent)
     return hashlib.sha256(encoded).hexdigest()
 

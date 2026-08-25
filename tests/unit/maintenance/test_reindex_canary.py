@@ -72,6 +72,31 @@ from tests.infra.pathology_zoo import PathologyZoo
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
+def test_immutable_canary_attestation_failure_does_not_publish_torn_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial write leaves no final name, so the attestation can be retried.
+
+    Anti-vacuity: reverting ``_write_immutable_json`` to direct-open publication
+    makes this test red because the partial final pathname remains.
+    """
+    path = tmp_path / "canary-comparison-attestation.json"
+    payload: dict[str, object] = {"candidate_generation": {"generation_id": "gen-1-00000000", "owner_id": "owner"}}
+    real_fsync = os.fsync
+
+    def fail_after_partial_write(descriptor: int) -> None:
+        raise OSError("simulated fsync failure after write")
+
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.os.fsync", fail_after_partial_write)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        reindex_canary_module._write_immutable_json(path, payload)
+
+    assert not path.exists()
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.os.fsync", real_fsync)
+    reindex_canary_module._write_immutable_json(path, payload)
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
 @pytest.fixture(autouse=True)
 def _synthetic_report_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep structural report tests independent of the CLI lifecycle route.
