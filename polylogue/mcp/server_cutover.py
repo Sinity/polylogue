@@ -2061,6 +2061,34 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
             exclude_none=True,
         )
 
+    if operation in {"recovery_status", "recovery_adjudicate"}:
+        from polylogue.operations.audit import AuditRepository
+
+        operation_id = kwargs.get("operation_id")
+        if not isinstance(operation_id, str) or not operation_id:
+            return hooks.error_json("recovery maintenance requires operation_id", code="invalid_argument")
+        audit = AuditRepository.for_archive_root(config.archive_root)
+        if operation == "recovery_adjudicate":
+            confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="adjudicate recovery")
+            if confirm_error is not None:
+                return confirm_error
+            outcomes = kwargs.get("target_outcomes")
+            reason = kwargs.get("reason")
+            if not isinstance(outcomes, dict) or not isinstance(reason, str) or not reason:
+                return hooks.error_json(
+                    "recovery_adjudicate requires target_outcomes and reason", code="invalid_argument"
+                )
+            try:
+                audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason)
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_argument")
+        recovery_record = audit.get_operation(operation_id)
+        if recovery_record is None:
+            return hooks.error_json(f"operation not found: {operation_id}", code="not_found")
+        return hooks.json_payload(
+            MCPRootPayload(root={"operation": recovery_record, "events": audit.list_events(operation_id)})
+        )
+
     if operation == "rebuild_insights":
         confirm_error = _require_confirm(hooks, bool(kwargs.get("confirm") or False), verb="rebuild session insights")
         if confirm_error is not None:
@@ -2284,6 +2312,8 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                 "rebuild_index",
                 "update_index",
                 "rebuild_insights",
+                "recovery_status",
+                "recovery_adjudicate",
             ],
             targets: list[str] | None = None,
             dry_run: bool = False,
@@ -2296,6 +2326,8 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             failure_kind: str | None = None,
             parser_version: str | None = None,
             operation_id: str | None = None,
+            target_outcomes: dict[str, Literal["applied", "not-applied", "unknown"]] | None = None,
+            reason: str | None = None,
             confirm: bool = False,
         ) -> str:
             """Preview, execute, list, and inspect maintenance operations.
@@ -2322,6 +2354,8 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                         "failure_kind": failure_kind,
                         "parser_version": parser_version,
                         "operation_id": operation_id,
+                        "target_outcomes": target_outcomes,
+                        "reason": reason,
                         "confirm": confirm,
                     },
                 )

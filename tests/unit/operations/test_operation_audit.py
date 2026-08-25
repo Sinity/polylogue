@@ -36,6 +36,7 @@ from polylogue.operations.mutation_transaction import (
     RecoveryBlockedError,
     RecoveryDeclaration,
     RecoveryDisposition,
+    RecoveryTargetDisposition,
     TargetAuthorityPolicy,
     TargetDurability,
     TokenConsumedError,
@@ -731,6 +732,83 @@ def test_confirmed_applied_recovery_refuses_duplicate_effect(tmp_path: Path) -> 
         )
 
 
+def test_confirmed_applied_recovery_installs_a_durable_barrier_for_every_later_retry(tmp_path: Path) -> None:
+    """The first blocked retry must not make the second retry a fresh effect.
+
+    Anti-vacuity: this goes through a second preview and authorization after
+    the original operation is terminal, so overlap-only implementations pass
+    the first refusal and fail the second.
+    """
+
+    actuator = _Actuator(recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"))
+    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    binding = _binding(actuator)
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-first")
+    first_preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    first_authorization = retry.authorize_bound(binding, first_preview, _principal())
+    with pytest.raises(RecoveryBlockedError, match="already applied"):
+        retry.execute_bound(binding, first_preview, first_authorization, object())
+
+    second = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-second")
+    second_preview = second.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    second_authorization = second.authorize_bound(binding, second_preview, _principal())
+    with pytest.raises(RecoveryBlockedError, match="semantic effect applied"):
+        second.execute_bound(binding, second_preview, second_authorization, object())
+    assert actuator.calls == 0
+
+
+def test_partial_recovery_persists_each_target_continuation(tmp_path: Path) -> None:
+    """A mixed recovery cannot collapse target evidence into one flat action."""
+
+    actuator = _Actuator(
+        target_refs=("session:first", "session:second"),
+        recovery_disposition=RecoveryDisposition(
+            "confirmed-partial",
+            "retry-exact",
+            "first delete applied, second remains",
+            (
+                RecoveryTargetDisposition("session:first", "applied", "forward"),
+                RecoveryTargetDisposition("session:second", "not-applied", "retry-exact"),
+            ),
+        ),
+    )
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "partial-retry")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    receipt = executor.execute_bound(binding, preview, authorization, object())
+    assert receipt.status == "applied"
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
+        ).fetchall() == [("applied",), ("failed",)]
+    event = audit.list_events(operation_id)[-1]
+    assert event["event_type"] == "recovery_classified"
+    assert '"target_ref":"session:second"' in str(event["detail_json"])
+
+
 def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> None:
     """An unreadable ownership witness is blocking, never an orphan shortcut."""
 
@@ -758,6 +836,7 @@ def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> 
 
     assert actuator.inspections == 0
     assert actuator.calls == 0
+    assert audit.list_events(operation_id)[-1]["event_type"] == "recovery_classified"
 
 
 @pytest.mark.parametrize("owner_id", [None, "external:unverifiable"])
@@ -1387,7 +1466,7 @@ def test_blocked_finalization_rejects_targets_and_fails_parent_run(tmp_path: Pat
         ).fetchone() == ("rejected",)
 
 
-def test_reconciliation_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -> None:
+def test_authorized_adjudication_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -> None:
     audit = _audit(tmp_path)
     actuator = _Actuator(target_refs=("session:first", "session:second"))
     executor = OperationExecutor(audit=audit, token_factory=lambda: "reconcile-token")
@@ -1408,7 +1487,11 @@ def test_reconciliation_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -
         conn.commit()
     audit.recover_abandoned_attempts()
 
-    audit.reconcile_attempt(operation_id, outcome="applied", domain_receipt_ref="receipt:reconciled")
+    audit.adjudicate_recovery(
+        operation_id,
+        target_outcomes={"session:first": "applied", "session:second": "applied"},
+        reason="operator inspected durable target evidence",
+    )
 
     with sqlite3.connect(tmp_path / "audit.db") as conn:
         assert conn.execute(
@@ -1417,7 +1500,7 @@ def test_reconciliation_resolves_the_full_unknown_atomic_batch(tmp_path: Path) -
         assert conn.execute(
             "SELECT state, domain_receipt_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
             (operation_id,),
-        ).fetchall() == [("applied", "receipt:reconciled"), ("applied", "receipt:reconciled")]
+        ).fetchall() == [("applied", None), ("applied", None)]
 
 
 def test_invalid_capability_and_stale_preview_refuse_before_apply(tmp_path: Path) -> None:

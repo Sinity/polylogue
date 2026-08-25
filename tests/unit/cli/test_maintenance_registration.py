@@ -14,6 +14,7 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
 )
 from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._hook_payload_ref_reconciliation import hook_payload_ref_reconcile_command
+from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
 from polylogue.cli.commands.maintenance._plan import plan_command
 from polylogue.cli.commands.maintenance._raw_authority_recovery import raw_authority_recovery_command
 from polylogue.cli.commands.maintenance._run import run_command
@@ -49,6 +50,10 @@ def test_raw_authority_recovery_is_click_command() -> None:
     assert isinstance(raw_authority_recovery_command, click.Command)
 
 
+def test_operation_recovery_is_click_command() -> None:
+    assert isinstance(operation_recovery_command, click.Command)
+
+
 def test_maintenance_run_is_click_command() -> None:
     """run is a Click Command on the maintenance group."""
     assert isinstance(run_command, click.Command)
@@ -76,6 +81,7 @@ def test_maintenance_group_has_plan_and_run() -> None:
     assert "run" in cmds
     assert "run-preview" in cmds
     assert "raw-authority-recovery" in cmds
+    assert "operation-recovery" in cmds
 
 
 def test_maintenance_plan_help_output() -> None:

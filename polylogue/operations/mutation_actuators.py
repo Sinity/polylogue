@@ -38,6 +38,7 @@ from polylogue.operations.mutation_transaction import (
     MutationTargetStatus,
     RecoveryDisposition,
     RecoveryOperation,
+    RecoveryTargetDisposition,
     build_plan,
     make_target_ref,
 )
@@ -125,16 +126,24 @@ class SessionDeleteActuator:
         resumed by an exact retry over the original typed target identity.
         """
 
+        if not operation.target_evidence_complete:
+            return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
         if any(target.kind != "session" or not target.ref.startswith("session:") for target in operation.targets):
             return RecoveryDisposition("unknown", "operator-blocking", "delete recovery target identity is invalid")
-        existing = sum(
-            _session_exists(args.archive, target.ref.removeprefix("session:")) for target in operation.targets
+        outcomes = tuple(
+            RecoveryTargetDisposition(
+                target.ref,
+                "not-applied" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "applied",
+                "retry-exact" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "forward",
+            )
+            for target in operation.targets
         )
+        existing = sum(outcome.state == "not-applied" for outcome in outcomes)
         if existing == 0:
-            return RecoveryDisposition("confirmed-applied", "forward", "all delete targets are absent")
+            return RecoveryDisposition("confirmed-applied", "forward", "all delete targets are absent", outcomes)
         if existing == len(operation.targets):
-            return RecoveryDisposition("confirmed-not-applied", "retry-exact", "all delete targets remain")
-        return RecoveryDisposition("confirmed-partial", "retry-exact", "some delete targets remain")
+            return RecoveryDisposition("confirmed-not-applied", "retry-exact", "all delete targets remain", outcomes)
+        return RecoveryDisposition("confirmed-partial", "retry-exact", "some delete targets remain", outcomes)
 
 
 # ---------------------------------------------------------------------------

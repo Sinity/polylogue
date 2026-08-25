@@ -16,7 +16,7 @@ from polylogue.maintenance import raw_authority_recovery
 from polylogue.maintenance.raw_authority_recovery import (
     PruneOrphanedIndexRevisionSeedsActuator,
     RawAuthorityRecoveryError,
-    RecoveryOperation,
+    RawAuthorityRecoveryOperation,
     _canonical_bytes,
     _index_seed_digest,
     _RecoveryArgs,
@@ -121,7 +121,7 @@ def test_census_reset_reproduces_poisoned_ledger_and_preserves_source_authority(
     before_parser = (
         sqlite3.connect(tmp_path / "source.db").execute("SELECT * FROM raw_authority_parser_census").fetchall()
     )
-    dry = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    dry = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
     assert dry.before_counts == {
         "raw_authority_censuses": 1,
         "raw_authority_plans": 1,
@@ -132,7 +132,7 @@ def test_census_reset_reproduces_poisoned_ledger_and_preserves_source_authority(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone() == (1,)
 
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     report = apply_raw_authority_recovery(plan)
     assert report.status == "applied"
     assert report.postflight == {
@@ -186,7 +186,7 @@ def test_census_reset_refuses_a_build_dirtied_after_planning(tmp_path: Path, mon
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
     monkeypatch.setattr(VERSION_INFO, "dirty", False)
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
 
     monkeypatch.setattr(VERSION_INFO, "dirty", True)
     with pytest.raises(RawAuthorityRecoveryError, match="clean build"):
@@ -206,7 +206,7 @@ def test_census_reset_refuses_wal_visible_ledger_drift(tmp_path: Path, monkeypat
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
     with sqlite3.connect(source_db) as conn:
         assert conn.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     main_database_before = source_db.read_bytes()
 
     with sqlite3.connect(source_db) as conn:
@@ -214,7 +214,9 @@ def test_census_reset_refuses_wal_visible_ledger_drift(tmp_path: Path, monkeypat
 
     assert source_db.read_bytes() == main_database_before
     assert source_db.with_name("source.db-wal").is_file()
-    refreshed = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    refreshed = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup
+    )
     assert refreshed.ledger_digest != plan.ledger_digest
     assert refreshed.plan_digest != plan.plan_digest
     with pytest.raises(RawAuthorityRecoveryError, match="stale after ownership acquisition"):
@@ -237,7 +239,7 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     receipt_path = tmp_path / ".maintenance-state" / "raw-authority-recovery" / "nested" / "recovery.json"
     plan = inspect_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.RESET_CENSUS,
+        RawAuthorityRecoveryOperation.RESET_CENSUS,
         backup_manifest=backup,
         receipt_path=receipt_path,
     )
@@ -269,7 +271,7 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     plan_file.unlink()
     recovered = resume_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.RESET_CENSUS,
+        RawAuthorityRecoveryOperation.RESET_CENSUS,
         operation_id=operation_id,
         receipt_path=receipt_path,
     )
@@ -279,8 +281,11 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     assert receipt["operation_id"] == operation_id
     assert receipt["plan_digest"] == recovered.plan.plan_digest
     with sqlite3.connect(tmp_path / "audit.db") as audit:
-        assert audit.execute("SELECT status FROM operation_runs").fetchone() == ("completed",)
-        assert audit.execute("SELECT state FROM operation_targets").fetchone() == ("applied",)
+        # The raw receipt proves its own filesystem transition, but it cannot
+        # reconstruct a missing operation-service target witness. Leave audit
+        # authority unknown for bounded operator adjudication.
+        assert audit.execute("SELECT status FROM operation_runs").fetchone() == ("interrupted",)
+        assert audit.execute("SELECT state FROM operation_targets").fetchone() == ("unknown",)
 
 
 def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(
@@ -292,7 +297,7 @@ def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     plan_file = tmp_path / "persisted-recovery-plan.json"
     write_recovery_plan(plan, plan_file)
 
@@ -309,7 +314,7 @@ def test_census_reset_persists_source_continuity_intent_before_commit(
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
 
     original_write_pending = write_source_continuity_pending_intent
     pending_paths: list[Path] = []
@@ -357,7 +362,7 @@ def test_census_reset_clears_continuity_intent_when_precommit_backup_revalidatio
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
 
     def reject_changed_backup(*_args: object, **_kwargs: object) -> None:
         raise RawAuthorityRecoveryError("backup authority changed before commit")
@@ -393,10 +398,10 @@ def test_recovery_protected_digest_streams_rows_without_a_whole_table_payload(
         return _canonical_bytes(value)
 
     monkeypatch.setattr("polylogue.maintenance.raw_authority_recovery._canonical_bytes", reject_whole_table_payload)
-    before = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    before = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE protected_rows SET payload = x'ff' WHERE row_id = 2")
-    after = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    after = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
 
     assert after.protected_digest != before.protected_digest
 
@@ -409,7 +414,7 @@ def test_recovery_receipt_path_must_be_owned_by_the_archive(tmp_path: Path) -> N
     with pytest.raises(RawAuthorityRecoveryError, match="archive-owned durable location"):
         inspect_raw_authority_recovery(
             tmp_path,
-            RecoveryOperation.RESET_CENSUS,
+            RawAuthorityRecoveryOperation.RESET_CENSUS,
             receipt_path=tmp_path.parent / "arbitrary-recovery-receipt.json",
         )
 
@@ -427,7 +432,7 @@ def test_recovery_receipt_path_rejects_archive_symlink_escape(tmp_path: Path) ->
     with pytest.raises(RawAuthorityRecoveryError, match="must not traverse an archive symlink"):
         inspect_raw_authority_recovery(
             tmp_path,
-            RecoveryOperation.RESET_CENSUS,
+            RawAuthorityRecoveryOperation.RESET_CENSUS,
             receipt_path=receipt_dir / "escape" / "receipt.json",
         )
 
@@ -442,7 +447,7 @@ def test_recovery_fsyncs_each_new_durable_receipt_directory(tmp_path: Path, monk
     receipt_path = tmp_path / ".maintenance-state" / "raw-authority-recovery" / "nested" / "recovery.json"
     plan = inspect_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.RESET_CENSUS,
+        RawAuthorityRecoveryOperation.RESET_CENSUS,
         backup_manifest=backup,
         receipt_path=receipt_path,
     )
@@ -476,7 +481,7 @@ def test_recovery_fsyncs_surviving_receipt_parents_after_interrupted_creation(
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
     receipt_parent = tmp_path / ".maintenance-state" / "raw-authority-recovery"
     receipt_parent.mkdir(parents=True)
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
 
     original_fsync = os.fsync
     synced_inodes: set[int] = set()
@@ -498,7 +503,7 @@ def test_recovery_receipt_rejects_fifo_before_reading(tmp_path: Path, monkeypatc
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     receipt_path = Path(plan.receipt_path)
     receipt_path.parent.mkdir(parents=True)
     os.mkfifo(receipt_path)
@@ -522,7 +527,7 @@ def test_uncommitted_recovery_intent_reauthorizes_through_executor(
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
 
     _write_recovery_intent(plan)
 
@@ -541,9 +546,9 @@ def test_census_reset_dry_run_does_not_mutate_and_apply_requires_backup(tmp_path
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     before = (tmp_path / "source.db").read_bytes()
-    inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
     assert (tmp_path / "source.db").read_bytes() == before
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
         apply_raw_authority_recovery(plan)
     assert (tmp_path / "source.db").read_bytes() == before
@@ -557,7 +562,7 @@ def test_census_reset_refuses_malformed_ledger(tmp_path: Path) -> None:
         conn.execute("PRAGMA ignore_check_constraints = ON")
         conn.execute("UPDATE raw_authority_censuses SET scope_json = 'not-json'")
     with pytest.raises(RawAuthorityRecoveryError, match="malformed"):
-        inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS)
+        inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS)
 
 
 def test_census_reset_refuses_running_daemon_before_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -565,7 +570,7 @@ def test_census_reset_refuses_running_daemon_before_mutation(tmp_path: Path, mon
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     monkeypatch.setattr("polylogue.maintenance.raw_authority_recovery.running_daemon_pid", lambda _config: 123)
 
     with pytest.raises(RawAuthorityRecoveryError, match="polylogued is running"):
@@ -581,7 +586,7 @@ def test_census_reset_refuses_changed_source_fingerprint_before_mutation(
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_authority_parser_census SET detail = 'changed' WHERE raw_id = 'r-keep'")
 
@@ -627,11 +632,13 @@ def test_index_prune_reproduces_orphan_failure_and_preserves_present_rows(
         raise AssertionError("direct storage prune bypass was called")
 
     monkeypatch.setattr("polylogue.storage.raw_authority.prune_orphaned_index_revision_seeds", bypass)
-    dry = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS)
+    dry = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS)
     assert dry.before_counts == {"raw_revision_heads": 2, "raw_revision_applications": 2}
     assert sqlite3.connect(active_index).execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (2,)
 
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
     report = apply_raw_authority_recovery(plan)
     assert report.status == "applied"
     assert report.after_counts == {"raw_revision_heads": 1, "raw_revision_applications": 1}
@@ -678,7 +685,9 @@ def test_index_prune_plan_keeps_retained_seed_evidence_bounded(tmp_path: Path, m
         )
 
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
 
     assert plan.post_target_proof is not None
     applications_proof = plan.post_target_proof["raw_revision_applications"]
@@ -698,7 +707,9 @@ def test_index_prune_refuses_stale_active_pointer_and_wrong_backup(
     initialize_active_archive_root(tmp_path)
     _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
     other = tmp_path / "other" / "index.db"
     other.parent.mkdir()
     shutil.copy2(tmp_path / "index.db", other)
@@ -715,7 +726,9 @@ def test_index_prune_resume_refuses_an_unbacked_retained_head(tmp_path: Path, mo
     initialize_active_archive_root(tmp_path)
     active_index = _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
 
     from polylogue.maintenance import raw_authority_recovery
 
@@ -739,7 +752,7 @@ def test_index_prune_resume_refuses_an_unbacked_retained_head(tmp_path: Path, mo
     with pytest.raises(RawAuthorityRecoveryError, match="unbacked index head"):
         resume_raw_authority_recovery(
             tmp_path,
-            RecoveryOperation.PRUNE_INDEX_SEEDS,
+            RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
             operation_id=plan.operation_id,
         )
 
@@ -753,7 +766,9 @@ def test_index_prune_resume_accepts_source_backed_successor_heads(
     monkeypatch.setattr(VERSION_INFO, "dirty", False)
     active_index = _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
 
     from polylogue.maintenance import raw_authority_recovery
 
@@ -787,7 +802,7 @@ def test_index_prune_resume_accepts_source_backed_successor_heads(
 
     recovered = resume_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
         operation_id=plan.operation_id,
     )
     assert recovered.status == "already_satisfied"
@@ -809,7 +824,9 @@ def test_index_prune_resume_accepts_source_backed_in_place_successor_head(
     monkeypatch.setattr(VERSION_INFO, "dirty", False)
     active_index = _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
 
     from polylogue.maintenance import raw_authority_recovery
 
@@ -852,7 +869,7 @@ def test_index_prune_resume_accepts_source_backed_in_place_successor_head(
 
     recovered = resume_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
         operation_id=plan.operation_id,
     )
     assert recovered.status == "already_satisfied"
@@ -872,7 +889,7 @@ def test_census_reset_refuses_a_competing_source_continuity_intent(
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
     monkeypatch.setattr(VERSION_INFO, "dirty", False)
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         before = capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
     pending = write_source_continuity_pending_intent(
@@ -902,7 +919,7 @@ def test_recovery_refusal_precedes_continuity_reconciliation_and_preview(
     _seed_ledger(tmp_path / "source.db")
     _seed_raw(tmp_path / "source.db", "r-keep")
     backup = _backup_authority(tmp_path, monkeypatch, tier="source")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.RESET_CENSUS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup)
     source_db = tmp_path / "source.db"
     audit_db = tmp_path / "audit.db"
     before_source = source_db.read_bytes()
@@ -942,7 +959,9 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
     initialize_active_archive_root(tmp_path)
     active_index = _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
     _write_recovery_intent(plan)
 
     original_authorize = OperationExecutor.authorize_bound
@@ -954,7 +973,7 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
     with pytest.raises(RuntimeError, match="executor authorization was required"):
         resume_raw_authority_recovery(
             tmp_path,
-            RecoveryOperation.PRUNE_INDEX_SEEDS,
+            RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
             operation_id=plan.operation_id,
         )
     with sqlite3.connect(active_index) as conn:
@@ -964,7 +983,7 @@ def test_uncommitted_index_prune_intent_reauthorizes_before_deleting_candidates(
     monkeypatch.setattr(OperationExecutor, "authorize_bound", original_authorize)
     resumed = resume_raw_authority_recovery(
         tmp_path,
-        RecoveryOperation.PRUNE_INDEX_SEEDS,
+        RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
         operation_id=plan.operation_id,
     )
     assert resumed.status == "applied"
@@ -978,10 +997,12 @@ def test_index_recovery_actuator_receipt_retains_authorized_plan_identity(
     initialize_active_archive_root(tmp_path)
     _seed_index_seeds(tmp_path)
     backup = _backup_authority(tmp_path, monkeypatch, tier="index")
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup)
+    plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS, backup_manifest=backup
+    )
     args = _RecoveryArgs(
         archive_root=tmp_path,
-        operation=RecoveryOperation.PRUNE_INDEX_SEEDS,
+        operation=RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS,
         operation_id=plan.operation_id,
         expected_plan_digest=plan.plan_digest,
         backup_manifest=backup,
@@ -1019,7 +1040,7 @@ def test_index_prune_requires_index_backup(tmp_path: Path) -> None:
     archive_index = tmp_path / "index.db"
     before_active = active_index.read_bytes()
     before_archive = archive_index.read_bytes()
-    plan = inspect_raw_authority_recovery(tmp_path, RecoveryOperation.PRUNE_INDEX_SEEDS)
+    plan = inspect_raw_authority_recovery(tmp_path, RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS)
     with pytest.raises(RawAuthorityRecoveryError, match="backup authority"):
         apply_raw_authority_recovery(plan)
     assert active_index.read_bytes() == before_active

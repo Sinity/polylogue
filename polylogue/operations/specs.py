@@ -11,7 +11,6 @@ from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 from polylogue.core.user_state_targets import TARGET_KIND_NAMES
 from polylogue.operations.mutation_transaction import (
     IdempotencyPolicy,
-    RecoveryCapability,
     RecoveryDeclaration,
     Surface,
     TargetAuthorityPolicy,
@@ -1275,29 +1274,17 @@ def _declare_executor_recovery(specs: tuple[OperationSpec, ...]) -> tuple[Operat
     with no safe automatic continuation remains explicitly operator-blocking.
     """
 
+    from polylogue.operations.recovery_catalog import recovery_declaration_for
+
     declared: list[OperationSpec] = []
     for spec in specs:
         if spec.executor_status != "executor-routed" or spec.recovery is not None:
             declared.append(spec)
             continue
-        # A declaration can promise exact retry only once its actuator has a
-        # registered target inspector.  Other families are explicitly
-        # operator-blocking rather than inheriting a permissive idempotency
-        # default from their ordinary apply semantics.
-        exact_retry = spec.name == "mutate-delete-session"
-        capability: RecoveryCapability = "inspect-and-retry" if exact_retry else "operator-blocking"
         declared.append(
             replace(
                 spec,
-                recovery=RecoveryDeclaration(
-                    target_identity="typed-targets-v1",
-                    plan_binding="plan-hash-and-target-digest-v1",
-                    precondition_inspection="domain-owned",
-                    postcondition_inspection="domain-owned",
-                    exact_retry=exact_retry,
-                    partial_actions=("retry-exact",) if exact_retry else (),
-                    capability=capability,
-                ),
+                recovery=recovery_declaration_for(spec.name),
             )
         )
     return tuple(declared)

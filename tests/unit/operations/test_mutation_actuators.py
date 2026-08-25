@@ -208,6 +208,54 @@ class TestSessionDeleteActuator:
                 (operation_id,),
             ).fetchone() == ("recovery_classified",)
 
+    def test_missing_or_partial_preview_target_evidence_blocks_delete_recovery(self, tmp_path: Path) -> None:
+        """Recovery must retain the target-count mismatch, not inner-join it away.
+
+        Anti-vacuity: deleting one preview target while both durable target rows
+        and sessions survive used to reconstruct an empty/short set and claim
+        the delete had applied.
+        """
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        initialize_active_archive_root(archive_root)
+        first = _seed_archive_session(archive_root, native_id="lost-target-first")
+        second = _seed_archive_session(archive_root, native_id="lost-target-second")
+        actuator = SessionDeleteActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.delete_session"}), "api", "write")
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor.for_archive_root(archive_root)
+            preview = executor.prepare_bound_for_archive(
+                binding,
+                SessionDeleteArgs(archive=archive, session_ids=(first, second)),
+                principal,
+                archive_root=archive_root,
+            )
+            authorization = executor.authorize_bound(binding, preview, principal)
+            assert executor._audit is not None
+            operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            conn.execute(
+                "DELETE FROM operation_preview_targets WHERE preview_id = ? AND ordinal = 1", (preview.preview_ref,)
+            )
+            conn.execute(
+                "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+            )
+            conn.commit()
+
+        OperationExecutor.for_archive_root(archive_root)
+
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            assert conn.execute(
+                "SELECT status, unknown_count FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone() == (
+                "interrupted",
+                2,
+            )
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()

@@ -119,6 +119,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "raw_authority_recovery_command",
         "Inspect or apply one exact guarded raw-authority recovery plan.",
     ),
+    (
+        "operation-recovery",
+        "_operation_recovery",
+        "operation_recovery_command",
+        "Inspect or adjudicate bounded interrupted-operation recovery evidence.",
+    ),
     ("preview", "_preview", "preview_command", "Staleness inventory by model and scope. Read-only."),
     ("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
     (

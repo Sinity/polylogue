@@ -20,6 +20,7 @@ from polylogue.operations.mutation_transaction import (
     TargetAuthorityPolicy,
     build_plan,
 )
+from polylogue.operations.recovery_catalog import build_recovery_catalog, recovery_declaration_for
 from polylogue.operations.specs import OperationKind, OperationSpec, build_runtime_operation_catalog
 
 
@@ -151,3 +152,15 @@ def test_runtime_executor_routes_have_specific_capabilities_and_surfaces() -> No
         for policy in spec.target_authority
         for capability in policy.required_capabilities
     )
+
+
+def test_new_executor_family_cannot_inherit_a_recovery_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production catalog rejects an unclassified routed family at registration."""
+
+    from polylogue.operations import recovery_catalog
+
+    monkeypatch.delitem(recovery_catalog._DECLARATIONS, "mutate-delete-session")
+    with pytest.raises(ValueError, match="no explicit recovery declaration"):
+        build_recovery_catalog()
+    with pytest.raises(ValueError, match="no explicit recovery declaration"):
+        recovery_declaration_for("mutate-new-destructive-family")

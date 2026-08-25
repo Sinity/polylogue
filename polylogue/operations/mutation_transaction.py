@@ -560,6 +560,7 @@ class RecoveryDisposition:
     kind: RecoveryDispositionKind
     action: RecoveryAction
     detail: str | None = None
+    target_dispositions: tuple[RecoveryTargetDisposition, ...] = ()
 
     def __post_init__(self) -> None:
         if self.kind == "unknown" and self.action != "operator-blocking":
@@ -568,6 +569,22 @@ class RecoveryDisposition:
             raise ValueError("partial recovery requires a declared continuation action")
         if self.kind in {"confirmed-not-applied", "confirmed-applied"} and self.action == "operator-blocking":
             raise ValueError("confirmed recovery cannot use an operator-blocking action")
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryTargetDisposition:
+    """One independently inspectable target outcome in an interrupted plan."""
+
+    target_ref: str
+    state: Literal["applied", "not-applied", "unknown"]
+    action: RecoveryAction
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.target_ref:
+            raise ValueError("recovery target disposition requires a target ref")
+        if self.state == "unknown" and self.action != "operator-blocking":
+            raise ValueError("unknown recovery target must block an operator")
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,6 +597,15 @@ class RecoveryOperation:
     plan_hash: str
     target_digest: str
     targets: tuple[MutationTarget, ...]
+    expected_target_count: int
+    reconstructed_target_count: int
+    target_evidence_complete: bool
+
+    @property
+    def target_evidence_detail(self) -> str:
+        return (
+            f"reconstructed {self.reconstructed_target_count} of {self.expected_target_count} durable recovery targets"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -680,6 +706,12 @@ class OperationExecutor:
             attempt_owner_id=AuditRepository.current_process_attempt_owner(),
         )
         audit.reconcile_continuity()
+        # Validate the complete production catalog at the archive composition
+        # boundary. Startup must fail before the daemon can mutate if a newly
+        # routed family lacks an explicit recovery declaration.
+        from polylogue.operations.recovery_catalog import build_recovery_catalog
+
+        build_recovery_catalog()
         executor = cls(audit=audit, now_ms=now_ms, token_factory=token_factory, archive_root=archive_root)
         executor.recover_startup()
         return executor
@@ -694,21 +726,25 @@ class OperationExecutor:
 
         if self._audit is None or self._archive_root is None:
             return
-        for operation in self._audit.orphaned_operations():
-            if operation.operation != "mutate-delete-session":
-                continue
-            try:
-                from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-                from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.recovery_catalog import resolve_recovery_binding
 
-                with ArchiveStore.open_existing(self._archive_root, read_only=True) as archive:
-                    disposition = SessionDeleteActuator().inspect_recovery(
-                        operation, SessionDeleteArgs(archive=archive, session_ids=())
-                    )
-            except Exception as exc:
+        for operation in self._audit.orphaned_operations():
+            binding = resolve_recovery_binding(operation.operation, operation.operation_version)
+            if binding is None:
                 disposition = RecoveryDisposition(
-                    "unknown", "operator-blocking", f"startup target inspection failed: {exc}"
+                    "unknown", "operator-blocking", "operation/version has no registered recovery binding"
                 )
+            elif binding.inspector is None:
+                disposition = RecoveryDisposition(
+                    "unknown", "operator-blocking", "operation declaration requires authorized adjudication"
+                )
+            else:
+                try:
+                    disposition = binding.inspector(operation, self._archive_root)
+                except Exception as exc:
+                    disposition = RecoveryDisposition(
+                        "unknown", "operator-blocking", f"startup target inspection failed: {exc}"
+                    )
             self._audit.record_recovery_disposition(operation.operation_id, disposition)
         # Existing operations without a registered inspector are deliberately
         # terminalized only as unknown.  They can neither be replayed nor
@@ -862,6 +898,11 @@ class OperationExecutor:
             )
         if self._audit is not None:
             self._recover_overlapping_operations(binding.actuator, args, fresh_plan)
+            recovered_effect = self._audit.has_recovered_effect(fresh_plan)
+            if recovered_effect is not None:
+                raise RecoveryBlockedError(
+                    f"operation {recovered_effect!r} already proved this semantic effect applied; refusing duplicate effect"
+                )
         operation_id: str | None = None
         if self._audit is not None:
             operation_id = self._audit.consume_authorization_and_start(preview, authorization)
@@ -914,8 +955,20 @@ class OperationExecutor:
         for operation in overlapping:
             liveness = self._audit.attempt_owner_liveness(operation.operation_id)
             if liveness != "dead":
+                self._audit.record_recovery_disposition(
+                    operation.operation_id,
+                    RecoveryDisposition(
+                        "unknown", "operator-blocking", f"owner liveness is {liveness}; recovery is not authorized"
+                    ),
+                )
                 raise RecoveryBlockedError(f"overlapping operation {operation.operation_id!r} has a {liveness} owner")
             if operation.operation != plan.operation or operation.operation_version != plan.operation_version:
+                self._audit.record_recovery_disposition(
+                    operation.operation_id,
+                    RecoveryDisposition(
+                        "unknown", "operator-blocking", "operation family/version drift requires adjudication"
+                    ),
+                )
                 raise RecoveryBlockedError(
                     f"overlapping operation {operation.operation_id!r} belongs to an uninspectable family"
                 )
@@ -953,35 +1006,6 @@ class OperationExecutor:
                 raise RecoveryBlockedError(
                     f"operation {operation.operation_id!r} requires declared {disposition.action!r} continuation"
                 )
-
-    def reconcile_operation(
-        self,
-        operation_id: str,
-        *,
-        outcome: Literal["applied", "absent", "unknown"],
-        domain_receipt_ref: str | None = None,
-        reason: str | None = None,
-    ) -> None:
-        """Record explicit reconciliation without inferring success from a crash."""
-
-        if self._audit is None:
-            raise MutationTransactionError("reconciliation requires a durable audit repository")
-        self._audit.reconcile_attempt(
-            operation_id,
-            outcome=outcome,
-            domain_receipt_ref=domain_receipt_ref,
-            reason=reason,
-        )
-
-    def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
-        """Find the uniquely identified interrupted durable attempt for a recovery route."""
-
-        if self._audit is None:
-            raise MutationTransactionError("interrupted-operation lookup requires a durable audit repository")
-        return self._audit.find_interrupted_operation(
-            operation_name=operation_name,
-            parameter_digest=parameter_digest,
-        )
 
     def _typed_plan_from_actuator(
         self,
@@ -1163,6 +1187,7 @@ __all__ = [
     "RecoveryCapability",
     "RecoveryDeclaration",
     "RecoveryOperation",
+    "RecoveryTargetDisposition",
     "RecoveryPolicy",
     "Surface",
     "SurfaceDeniedError",

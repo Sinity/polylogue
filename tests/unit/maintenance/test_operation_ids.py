@@ -10,7 +10,7 @@ from polylogue.daemon.maintenance_registry_http import handle_status
 from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.raw_authority_recovery import (
     RawAuthorityRecoveryError,
-    RecoveryOperation,
+    RawAuthorityRecoveryOperation,
     inspect_raw_authority_recovery,
 )
 from polylogue.maintenance.registry import MaintenanceOperationRegistry
@@ -42,7 +42,7 @@ def test_raw_recovery_rejects_hostile_id_before_archive_access(tmp_path: Path) -
     with pytest.raises(RawAuthorityRecoveryError, match="path separators"):
         inspect_raw_authority_recovery(
             tmp_path / "missing-archive",
-            RecoveryOperation.RESET_CENSUS,
+            RawAuthorityRecoveryOperation.RESET_CENSUS,
             operation_id="../escape",
         )
 

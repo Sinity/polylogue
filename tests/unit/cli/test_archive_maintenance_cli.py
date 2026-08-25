@@ -31,7 +31,7 @@ from polylogue.core.json import json_document
 from polylogue.daemon.backup import backup_archive
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.raw_authority_recovery import (
-    RecoveryOperation,
+    RawAuthorityRecoveryOperation,
     inspect_raw_authority_recovery,
     write_recovery_plan,
 )
@@ -2149,7 +2149,7 @@ def test_raw_authority_recovery_cli_refuses_plan_for_another_operation(
 
     monkeypatch.setattr(VERSION_INFO, "dirty", False)
 
-    plan = inspect_raw_authority_recovery(cli_workspace["archive_root"], RecoveryOperation.RESET_CENSUS)
+    plan = inspect_raw_authority_recovery(cli_workspace["archive_root"], RawAuthorityRecoveryOperation.RESET_CENSUS)
     plan_file = tmp_path / "census-reset.plan.json"
     write_recovery_plan(plan, plan_file)
 
@@ -2161,7 +2161,7 @@ def test_raw_authority_recovery_cli_refuses_plan_for_another_operation(
             "maintenance",
             "raw-authority-recovery",
             "--operation",
-            RecoveryOperation.PRUNE_INDEX_SEEDS.value,
+            RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS.value,
             "--apply",
             "--plan-file",
             str(plan_file),
