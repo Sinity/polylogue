@@ -34,7 +34,7 @@ exec = ["devtools", "verify"]
 pool = "normal"
 result = "pytest"
 cache = "tree+environment"
-exclusive_keys = ["polylogue:testmon-graph"]
+exclusive_keys = ["polylogue:testmon-graph", "polylogue:seeded-archive-cache-gc"]
 scratch = "nvme"
 
 [operations.verify_quick]
@@ -65,7 +65,7 @@ pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 14400
-exclusive_keys = ["polylogue:testmon-graph"]
+exclusive_keys = ["polylogue:testmon-graph", "polylogue:seeded-archive-cache-gc"]
 scratch = "nvme"
 
 [operations.dev_loop_proof]

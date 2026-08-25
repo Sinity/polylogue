@@ -13,6 +13,7 @@ import fcntl
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -816,10 +817,10 @@ def current_seeded_archive_reachability() -> SeededArchiveReachabilityInventory:
 
     add("default", "c03", (c03_semantic_corpus_spec(),))
     add("default", "schema-coverage", schema_coverage_corpus_specs())
-    for profile in NAMED_WORKLOAD_PROFILES:
-        add("named", profile.name, profile.corpus_specs())
-    for profile in BENCHMARK_WORKLOAD_PROFILES:
-        add("benchmark", profile.tier.value, benchmark_corpus_specs(profile.tier))
+    for named_profile in NAMED_WORKLOAD_PROFILES:
+        add("named", named_profile.name, named_profile.corpus_specs())
+    for benchmark_profile in BENCHMARK_WORKLOAD_PROFILES:
+        add("benchmark", benchmark_profile.tier.value, benchmark_corpus_specs(benchmark_profile.tier))
 
     inventory = SeededArchiveReachabilityInventory(tuple(entries))
     validate_seeded_archive_reachability(inventory)
@@ -2119,8 +2120,8 @@ def gc_seeded_archive_artifacts(
     the complete inspect/delete interval, so active builders, query leases,
     clones, and explicitly protected worktrees remain untouched.
     """
-    if grace_period_s < 0:
-        raise ValueError("artifact GC grace period must be non-negative")
+    if not math.isfinite(grace_period_s) or grace_period_s < 0:
+        raise ValueError("artifact GC grace period must be finite and non-negative")
     reachable_values = {item.value if isinstance(item, SeededArchiveKey) else str(item) for item in reachable_keys}
     if any(_SEEDED_KEY.fullmatch(value) is None for value in reachable_values):
         raise ValueError("artifact GC reachability must use complete seeded archive keys")

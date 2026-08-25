@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import TextIO
 
 from tests.infra.workload_artifacts import (
+    ArtifactGcDisposition,
     ArtifactGcReport,
     SeededArchiveReachabilityInventory,
     current_seeded_archive_reachability,
@@ -85,7 +87,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Emit the complete report as JSON.")
     args = parser.parse_args(argv)
-    output = stdout
+    output: TextIO = stdout if stdout is not None else sys.stdout
     root = (args.cache_root or default_cache_root()).expanduser()
     receipt = (args.receipt or root / ".seeded-archive-gc-receipt.json").expanduser()
 
@@ -101,14 +103,19 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             receipt_path=receipt,
         )
     except (OSError, RuntimeError, ValueError) as exc:
-        print(f"refused: {exc}", file=output)
+        if args.json:
+            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+        else:
+            print(f"refused: {exc}", file=output)
         return 1
 
     if args.json:
         print(json.dumps(_report_payload(report, inventory=inventory), indent=2, sort_keys=True), file=output)
     else:
         _render_report(report, inventory=inventory, receipt=receipt, stdout=output)
-    return 0
+
+    failed = any(entry.disposition is ArtifactGcDisposition.DELETION_FAILED for entry in report.entries)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
