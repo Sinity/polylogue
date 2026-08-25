@@ -165,6 +165,8 @@ grep the diff and check both paths.
 
 ## Documentation map
 
+`docs/atlas/` — agent-orientation sheets with code-verified anchors: read
+your area's sheet before exploring (storage, daemon, mcp so far).
 `docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
 `CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,
