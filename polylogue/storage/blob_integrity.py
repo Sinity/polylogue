@@ -35,6 +35,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
+from polylogue.storage.blob_liveness import live_blob_ref_hashes
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -495,8 +496,10 @@ def _archive_source_blob_hashes_by_table(conn: sqlite3.Connection) -> dict[str, 
         if raw_hashes:
             hashes_by_table["raw_sessions"] = sorted(raw_hashes)
     if _table_exists(conn, "blob_refs"):
-        rows = conn.execute("SELECT blob_hash FROM blob_refs").fetchall()
-        ref_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
+        # A blob_refs row is only "referenced" here when its ref_type still
+        # joins to a live referent (polylogue-0v4tn) -- a dangling row alone
+        # is evidence, not liveness, and must not suppress an orphan finding.
+        ref_hashes = live_blob_ref_hashes(conn)
         if ref_hashes:
             hashes_by_table["blob_refs"] = sorted(ref_hashes)
     for table in ("attachments", "blob_publication_reservations", "verified_blob_receipts"):

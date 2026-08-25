@@ -15,7 +15,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import cast
 
-from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 from polylogue.storage.introspection import table_exists
 

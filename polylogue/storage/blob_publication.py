@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import IO, BinaryIO
 from uuid import uuid4
 
+from polylogue.storage.blob_liveness import inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -262,18 +263,21 @@ def _is_referenced(
     index_conn: sqlite3.Connection | None,
     blob_hash: bytes,
 ) -> bool:
-    for table in ("raw_sessions", "blob_refs"):
-        if (
-            _table_exists(source_conn, table)
-            and source_conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
-            is not None
-        ):
-            return True
-    return bool(
-        index_conn is not None
-        and _table_exists(index_conn, "attachments")
-        and index_conn.execute("SELECT 1 FROM attachments WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
-    )
+    """Delegate to the canonical blob-liveness relation.
+
+    Uses the same union GC and integrity consume: direct row-level
+    ``blob_hash`` referents (``raw_sessions``/``attachments``/
+    ``raw_hook_events``) and a ``blob_refs`` row only when its ``ref_type``
+    still joins to a live referent -- a dangling ``blob_refs`` row alone
+    (the prior behavior here) is not evidence of liveness.
+    """
+    return inspect_blob_liveness(
+        source_conn,
+        blob_hash.hex(),
+        index_conn=index_conn,
+        require_index=True,
+        include_reservations=False,
+    ).protected
 
 
 def inspect_blob_publication_receipts(

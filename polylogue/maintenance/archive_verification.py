@@ -53,8 +53,8 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_revision_fidelity,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
-from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
+from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
