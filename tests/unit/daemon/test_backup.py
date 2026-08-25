@@ -16,6 +16,7 @@ from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
+from polylogue.storage.blob_integrity import BlobLivenessProjection
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -591,7 +592,7 @@ def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index
     original_inventory = backup_mod._inventory_from_liveness
 
     def omit_attachment(
-        projection: backup_mod.BlobLivenessProjection,
+        projection: BlobLivenessProjection,
         reservations: set[str],
     ) -> dict[str, set[str]]:
         inventory = original_inventory(projection, reservations)
