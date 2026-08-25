@@ -2062,6 +2062,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         )
 
     if operation in {"recovery_status", "recovery_adjudicate"}:
+        from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
         from polylogue.operations.audit import AuditRepository
 
         operation_id = kwargs.get("operation_id")
@@ -2078,6 +2079,16 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
                 return hooks.error_json(
                     "recovery_adjudicate requires target_outcomes and reason", code="invalid_argument"
                 )
+            if any(not isinstance(target_ref, str) or not target_ref for target_ref in outcomes):
+                return hooks.error_json(
+                    "recovery_adjudicate target_outcomes keys must be target refs", code="invalid_argument"
+                )
+            if any(outcome not in {"applied", "not-applied", "unknown"} for outcome in outcomes.values()):
+                return hooks.error_json(
+                    "recovery_adjudicate outcomes must be applied, not-applied, or unknown", code="invalid_argument"
+                )
+            if block_reason := offline_maintenance_block_reason(config, active=True, dry_run=False):
+                return hooks.error_json(block_reason, code="offline_required")
             try:
                 audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason)
             except ValueError as exc:
@@ -2334,7 +2345,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
             Destructive/full-effect operations require ``confirm=True``:
             ``execute`` with ``dry_run=false``, ``rebuild_index``, and
-            ``rebuild_insights`` all fail closed without it (interim
+            ``rebuild_insights`` and ``recovery_adjudicate`` all fail closed without it (interim
             mitigation, polylogue-jn40).
             """
 

@@ -34,7 +34,7 @@ resources (`polylogue/mcp/server_resources.py`).
 | `write` | WRITE | `write` | mutation | `operation`: `add_tag`, `remove_tag`, `bulk_tag_sessions`, `set_metadata`, `delete_metadata`, `delete_session`, `add_mark`, `remove_mark`, `save_annotation`, `delete_annotation`, `capture_assertion_candidate`, `blackboard_post`, `import_annotation_batch`, `save_saved_view`, `delete_saved_view`, `save_recall_pack`, `delete_recall_pack`, `save_workspace`, `delete_workspace`, `record_correction`, `clear_corrections`, `deliver_context` — 22 operations |
 | `run` | RUN | `write` | exhaustive page | execute one saved-query/saved-view ref |
 | `judge` | JUDGE | `judge` | mutation | `decision`: `accept`, `reject`, `defer`, `supersede` — single or bulk (`items`) |
-| `maintenance` | MAINTENANCE | `maintenance` | maintenance | `operation`: `preview`, `execute`, `status`, `list`, `rebuild_index`, `update_index`, `rebuild_insights` — 7 operations |
+| `maintenance` | MAINTENANCE | `maintenance` | maintenance | `operation`: `preview`, `execute`, `status`, `list`, `rebuild_index`, `update_index`, `rebuild_insights`, `recovery_status`, `recovery_adjudicate` — 9 operations |
 
 Base read surface (no capability required) is 6 tools: `query`, `read`,
 `get`, `explain`, `context`, `status`. This is the default profile every
@@ -135,7 +135,7 @@ and the full 10-tool admin surface (~2,394 tokens) still undercuts it by
 ## 4. Retained exceptions and why they cannot use the algebra
 
 - **`maintenance()`'s entire operation surface** (`preview`, `execute`,
-  `list`, `status`, `rebuild_index`, `update_index`, `rebuild_insights`) has
+  `list`, `status`, `rebuild_index`, `update_index`, `rebuild_insights`, `recovery_status`, `recovery_adjudicate`) has
   **zero `OperationExecutor` routing** — confirmed live today:
   `grep OperationExecutor polylogue/maintenance/planner.py` returns no
   hits. This is real, acknowledged debt per `t46.8.3`'s own 2026-07-28 note,

@@ -8,6 +8,7 @@ from typing import Literal, cast
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.operations.audit import AuditRepository
 
 
@@ -40,10 +41,20 @@ def operation_recovery_command(
 
     audit = AuditRepository.for_archive_root(env.config.archive_root)
     outcomes = _outcomes(target_outcomes)
-    if outcomes:
+    if confirm or target_outcomes:
+        # ``--confirm`` alone still adjudicates: a run whose plan resolved to
+        # zero durable targets has no outcome to name, and must remain
+        # closable.  The audit repository refuses any partial target set.
         if not confirm or not reason:
             raise click.ClickException("adjudication requires --confirm and --reason")
-        audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason)
+        # The CLI is an offline surface with no writer lease of its own.
+        # Refuse rather than become a second writer beside a live daemon.
+        if block_reason := offline_maintenance_block_reason(env.config, active=True, dry_run=False):
+            raise click.ClickException(block_reason)
+        try:
+            audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
     operation = audit.get_operation(operation_id)
     if operation is None:
         raise click.ClickException(f"operation not found: {operation_id}")
