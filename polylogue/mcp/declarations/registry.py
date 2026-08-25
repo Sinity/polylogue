@@ -195,7 +195,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     _ToolRow(
         "maintenance",
         "Preview, execute, list, and inspect maintenance operations. execute with "
-        "dry_run=false, rebuild_index, and rebuild_insights require confirm=true "
+        "dry_run=false, rebuild_index, rebuild_insights, and recovery_adjudicate require confirm=true "
         "and fail closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",

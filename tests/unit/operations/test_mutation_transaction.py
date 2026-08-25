@@ -105,6 +105,41 @@ def test_plan_hash_changes_when_target_set_changes() -> None:
     assert _hash(("session:a",)) != _hash(("session:a", "session:b"))
 
 
+def test_build_plan_refuses_over_256_targets() -> None:
+    """A mutation plan over the recovery-adjudication target budget must never be constructed.
+
+    ``AuditRepository.adjudicate_recovery`` refuses any target list over 256
+    as a bounded-command budget; a mutation plan with more targets than that
+    has no valid adjudication request if it is ever interrupted, wedging it
+    forever. Enforcing the same cap at plan-construction time keeps that
+    from ever happening.
+
+    Anti-vacuity: removing the ``len(target_refs) > MAX_MUTATION_PLAN_TARGETS``
+    guard in ``build_plan`` makes this test fail -- 257 targets would build a
+    plan instead of raising, and a plan of exactly 256 would also need to
+    keep succeeding (checked below) so the fix doesn't over-tighten the cap.
+    """
+
+    too_many = tuple(f"session:{i}" for i in range(257))
+    with pytest.raises(ValueError, match="256"):
+        build_plan(
+            operation="mutate-bulk-fixture",
+            destructive_class="delete",
+            target_refs=too_many,
+            affected_tiers=("index",),
+            reversible=False,
+        )
+    exactly_budget = tuple(f"session:{i}" for i in range(256))
+    plan = build_plan(
+        operation="mutate-bulk-fixture",
+        destructive_class="delete",
+        target_refs=exactly_budget,
+        affected_tiers=("index",),
+        reversible=False,
+    )
+    assert plan.target_count == 256
+
+
 def test_prepare_performs_zero_mutation() -> None:
     store = _FakeStore(live_ids={"a", "b"})
     actuator = _FakeDeleteActuator()

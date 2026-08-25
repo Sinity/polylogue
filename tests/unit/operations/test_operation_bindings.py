@@ -15,6 +15,7 @@ from polylogue.operations.mutation_transaction import (
     DestructiveClass,
     MutationPlan,
     MutationReceipt,
+    RecoveryDisposition,
     TargetAuthorityPolicy,
     build_plan,
 )
@@ -48,6 +49,9 @@ class _Actuator:
             receipt_ref=None,
             applied_at="now",
         )
+
+    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
+        return RecoveryDisposition("unknown", "operator-blocking", "synthetic inspector")
 
 
 def _spec(*, policies: tuple[TargetAuthorityPolicy, ...] | None = None) -> OperationSpec:

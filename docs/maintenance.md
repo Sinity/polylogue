@@ -853,6 +853,64 @@ polylogue ops maintenance raw-authority-recovery \
 
 Apply is explicitly an offline operator-maintenance route, not a daemon-writer route. It refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation. Before the SQLite mutation it persists an fsynced immutable intent, including the complete plan, under `<archive-root>/.maintenance-state/raw-authority-recovery/`; a source-ledger reset also persists the established source-train continuity intent before committing. Each receipt-directory parent is fsynced while walked. A restart finalizes that intent into the self-hashed receipt only when the planned candidate rows are absent and every planned retained row matches; later append-only index successors are allowed. An uncommitted intent goes back through PREPARE, AUTHORIZE, and EXECUTE. Receipt destinations are restricted to that archive-owned durable location and are published through descriptor-relative no-follow operations that accept regular files only. If the external plan file was lost after a final-receipt failure, rerun `--apply --operation-id <shown-operation-id>` to resume the archive-owned intent, retaining `--receipt-file` when the original plan used a custom archive-owned receipt destination. It does not invoke the broad index reset or reparse path.
 
+### `polylogue ops maintenance operation-recovery` - inspecting and adjudicating interrupted mutations
+
+An executor-routed mutation that is interrupted before audit finalization
+leaves a nonterminal `operation_runs` row. The daemon classifies these once,
+explicitly, at startup under its own writer lease (`polylogued run` ->
+`recover_interrupted_operations`); it is not a side effect of constructing an
+`OperationExecutor`, so a request handler never reclassifies anything.
+
+What the archive can actually classify by itself is narrow, and the daemon
+does not pretend otherwise:
+
+- **`mutate-delete-session`** is auto-classifiable. A session either exists or
+  does not, so committed target state is real postcondition evidence and the
+  domain inspector can confirm applied, not-applied, or partial.
+- **Every other routed family**, and any operation version this build no
+  longer recognizes, **fails closed**. It is terminalized as an
+  operator-blocking `unknown` with `terminal_reason = 'recovery_unknown'`.
+  Create/update and mixed-effect families have no such postcondition oracle,
+  and are never guessed or silently retried.
+
+Classification is one-pass and idempotent. A classified run is terminal, so
+restarting the daemon over an already-recovered archive appends no further
+`recovery_classified` events.
+
+Two terminal reasons deliberately keep an operation blocking:
+
+- `recovery_unknown` keeps the run visible to overlap detection, so a later
+  mutation touching the same targets is refused rather than racing an effect
+  nobody has proved.
+- `recovered_applied` installs the duplicate-effect barrier: a confirmed
+  applied recovery refuses a second attempt at the same semantic effect.
+
+Both are adjudicable, which is what keeps them from being permanent wedges.
+Adjudication is an offline operator route with no writer lease of its own, so
+it refuses to run beside a live `polylogued`:
+
+```bash
+# Inspect only.
+polylogue ops maintenance operation-recovery \
+  --operation-id operation:... --output-format json
+
+# Adjudicate, naming every durable target exactly once.
+polylogue ops maintenance operation-recovery \
+  --operation-id operation:... \
+  --target-outcome session:claude:abc=not-applied \
+  --reason "verified against source export; the delete never committed" \
+  --confirm
+```
+
+A run whose plan resolved to zero durable targets never installs a barrier at
+all -- it has no target rows to overlap and no semantic effect to duplicate --
+and `--confirm --reason` with no `--target-outcome` closes it.
+
+The same two operations are reachable over MCP as
+`maintenance(operation="recovery_status", ...)` and
+`maintenance(operation="recovery_adjudicate", ..., confirm=true)`, under the
+same confirmation gate and the same offline-writer exclusion.
+
 ### Measuring Codex UUID-title coverage
 
 Codex sessions without a resolvable title (thread name / authored history /

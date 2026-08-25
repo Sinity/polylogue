@@ -11,8 +11,8 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.maintenance.operation_ids import validate_operation_id
 from polylogue.maintenance.raw_authority_recovery import (
     RawAuthorityRecoveryError,
+    RawAuthorityRecoveryOperation,
     RawAuthorityRecoveryPlan,
-    RecoveryOperation,
     apply_raw_authority_recovery,
     inspect_raw_authority_recovery,
     resume_raw_authority_recovery,
@@ -23,7 +23,7 @@ from polylogue.maintenance.raw_authority_recovery import (
 @click.command("raw-authority-recovery")
 @click.option(
     "--operation",
-    type=click.Choice([operation.value for operation in RecoveryOperation]),
+    type=click.Choice([operation.value for operation in RawAuthorityRecoveryOperation]),
     required=True,
     help="One exact recovery actuator to inspect or apply.",
 )
@@ -64,7 +64,7 @@ def raw_authority_recovery_command(
     try:
         if operation_id is not None:
             operation_id = validate_operation_id(operation_id)
-        selected = RecoveryOperation(operation)
+        selected = RawAuthorityRecoveryOperation(operation)
         if apply_changes:
             if plan_file is not None:
                 artifact = RawAuthorityRecoveryPlan.from_dict(json.loads(plan_file.read_text(encoding="utf-8")))

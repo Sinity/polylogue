@@ -3861,6 +3861,64 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-39pdi: a version-mismatched audit.db must not crash startup.
+
+    Before the fix, startup called ``recover_interrupted_operations``
+    unconditionally, even when audit.db (an ingestion-blocking durable tier)
+    is missing/version-mismatched -- letting a ``sqlite3.Error`` escape into
+    the ``BaseException`` shutdown path and kill the daemon instead of
+    leaving it degraded.
+
+    Anti-vacuity: removing the ``durable_schema_mismatch`` gate around the
+    recovery call (reverting to the unconditional call) makes this test fail
+    -- the patched ``recover_interrupted_operations`` gets called at least
+    once instead of staying at zero calls.
+
+    A durable-tier mismatch also blocks the live watcher itself
+    (``watcher_creation_blocked``), so startup idles waiting on signals
+    rather than reaching any watcher/browser-capture/API work; this is
+    bounded with ``asyncio.wait_for`` and cancelled rather than run to
+    completion.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    with sqlite3.connect(archive_root_path / "audit.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    recover_mock = Mock()
+
+    with (
+        patch(
+            "polylogue.operations.mutation_transaction.recover_interrupted_operations",
+            recover_mock,
+        ),
+        pytest.raises(TimeoutError),
+    ):
+        asyncio.run(
+            asyncio.wait_for(
+                daemon_cli.run_daemon_services(
+                    sources=(WatchSource(name="codex", root=archive_root_path),),
+                    debounce_s=1.0,
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                ),
+                timeout=5.0,
+            )
+        )
+
+    recover_mock.assert_not_called()
+
+
 def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4414,6 +4472,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
 
+    def fake_operation_recovery(_archive_root_path: Path) -> None:
+        events.append("operation-recovery")
+
     async def fake_loop(name: str) -> None:
         events.append(name)
         await asyncio.Event().wait()
@@ -4462,6 +4523,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
+        stack.enter_context(
+            patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", fake_operation_recovery)
+        )
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
         stack.enter_context(
@@ -4531,6 +4595,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
     assert "watcher" in events
     assert events.index("embedding-lifecycle") < events.index("api-bind")
     assert events.index("embedding-lifecycle") < events.index("fts") < events.index("watcher")
+    assert events.index("operation-recovery") < events.index("watcher")
     assert events.index("fts") < events.index("watcher")
     assert events.index("fts") < events.index("lineage") < events.index("watcher")
     assert events.index("lineage") < events.index("blob-publications") < events.index("watcher")

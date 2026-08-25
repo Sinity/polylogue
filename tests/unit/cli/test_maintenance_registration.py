@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import click
 from click.testing import CliRunner
 
@@ -14,11 +17,16 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
 )
 from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._hook_payload_ref_reconciliation import hook_payload_ref_reconcile_command
+from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
 from polylogue.cli.commands.maintenance._plan import plan_command
 from polylogue.cli.commands.maintenance._raw_authority_recovery import raw_authority_recovery_command
 from polylogue.cli.commands.maintenance._run import run_command
 from polylogue.cli.commands.maintenance._run_preview import run_preview_command
 from polylogue.cli.commands.maintenance._status import status_command
+from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
+from polylogue.services import RuntimeServices
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _registered_maintenance_command() -> click.Command:
@@ -49,6 +57,79 @@ def test_raw_authority_recovery_is_click_command() -> None:
     assert isinstance(raw_authority_recovery_command, click.Command)
 
 
+def test_operation_recovery_is_click_command() -> None:
+    assert isinstance(operation_recovery_command, click.Command)
+
+
+def _recovery_env(tmp_path: Path) -> AppEnv:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    return AppEnv(services=RuntimeServices(config=Config(archive_root=archive_root, render_root=tmp_path, sources=[])))
+
+
+def test_operation_recovery_adjudication_refuses_while_daemon_owns_writes(tmp_path: Path) -> None:
+    """The offline CLI must not become a second writer beside a live daemon.
+
+    Anti-vacuity: this patches the daemon-liveness probe, not the guard, so
+    dropping ``offline_maintenance_block_reason`` from the command makes the
+    adjudication proceed and fail with ``operation not found`` instead.
+    """
+
+    env = _recovery_env(tmp_path)
+    with patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=4321):
+        result = CliRunner().invoke(
+            operation_recovery_command,
+            [
+                "--operation-id",
+                "operation:test",
+                "--target-outcome",
+                "session:test=applied",
+                "--reason",
+                "operator evidence",
+                "--confirm",
+            ],
+            obj=env,
+        )
+    assert result.exit_code == 1
+    assert "4321" in result.output
+    assert "not found" not in result.output
+
+
+def test_operation_recovery_adjudication_requires_confirm_and_reason(tmp_path: Path) -> None:
+    """Adjudication fails closed without both operator authorizations."""
+
+    env = _recovery_env(tmp_path)
+    for extra in (["--confirm"], ["--reason", "operator evidence"]):
+        result = CliRunner().invoke(
+            operation_recovery_command,
+            ["--operation-id", "operation:test", "--target-outcome", "session:test=applied", *extra],
+            obj=env,
+        )
+        assert result.exit_code == 1
+        assert "requires --confirm and --reason" in result.output
+
+
+def test_operation_recovery_rejects_an_unknown_target_outcome_value(tmp_path: Path) -> None:
+    """The CLI validates outcome values before touching audit authority."""
+
+    env = _recovery_env(tmp_path)
+    result = CliRunner().invoke(
+        operation_recovery_command,
+        [
+            "--operation-id",
+            "operation:test",
+            "--target-outcome",
+            "session:test=probably",
+            "--reason",
+            "operator evidence",
+            "--confirm",
+        ],
+        obj=env,
+    )
+    assert result.exit_code == 1
+    assert "applied|not-applied|unknown" in result.output
+
+
 def test_maintenance_run_is_click_command() -> None:
     """run is a Click Command on the maintenance group."""
     assert isinstance(run_command, click.Command)
@@ -76,6 +157,7 @@ def test_maintenance_group_has_plan_and_run() -> None:
     assert "run" in cmds
     assert "run-preview" in cmds
     assert "raw-authority-recovery" in cmds
+    assert "operation-recovery" in cmds
 
 
 def test_maintenance_plan_help_output() -> None:
