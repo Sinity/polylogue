@@ -179,6 +179,24 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Data Model", "data-model.md", "Archive entities, storage shape, and metadata rules.", "internals"),
     _entry("Schema", "schema.md", "Index and durable tier schema, FTS, vectors, and versioning.", "internals"),
     _entry("Internals", "internals.md", "Working implementation reference and debugging landmarks.", "internals"),
+    _entry(
+        "Atlas: Storage",
+        "atlas/storage.md",
+        "Agent-orientation sheet: six-tier substrate, blob store, identity model, anchored invariants.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: Daemon",
+        "atlas/daemon.md",
+        "Agent-orientation sheet: runtime ownership, convergence stages, current operational state.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: MCP",
+        "atlas/mcp.md",
+        "Agent-orientation sheet: tool dispatch, declarations, contract flow.",
+        "internals",
+    ),
     _entry("Daemon", "daemon.md", "Daemon ownership, convergence, HTTP serving, and service operation.", "internals"),
     _entry(
         "Daemon Threat Model",
