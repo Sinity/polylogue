@@ -1153,14 +1153,10 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
         lease_events.append("stale")
         return 0
 
-        monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_interrupted_frontier", recover_frontier)
-        monkeypatch.setattr("polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
-        monkeypatch.setattr(
-            "polylogue.maintenance.raw_authority.repair_materialization", lambda *_args, **_kwargs: result
-        )
-        monkeypatch.setattr(
-            "polylogue.maintenance.raw_authority.materialization_generation_lease", fake_generation_lease
-        )
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_interrupted_frontier", recover_frontier)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.materialization_generation_lease", fake_generation_lease)
 
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
