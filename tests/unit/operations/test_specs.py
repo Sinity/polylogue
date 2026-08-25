@@ -71,6 +71,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-session-excision",
         "mutate-session-lifecycle-request",
         "mutate-identity-reset",
+        "mutate-abandon-pending-blob-gc-generation",
         "mutate-maintenance-target-run",
         "mutate-filesystem-reset",
     }

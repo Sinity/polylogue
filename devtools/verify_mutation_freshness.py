@@ -32,6 +32,7 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.mutation_scenario_catalog import MUTATION_CAMPAIGNS
+from devtools.required_gate import evidence_gate_result
 
 ROOT = _get_root()
 DEFAULT_FRESHNESS_DAYS = 60
@@ -55,22 +56,22 @@ class CampaignFreshness:
     kill_rate: float | None
     min_kill_rate: float | None
     counts: dict[str, int]
-    state: str  # "fresh" | "stale" | "missing"
+    state: str  # "fresh" | "stale" | "missing" | "unreadable"
 
 
 def _resolve_artifacts(repo_root: Path, glob: str) -> list[Path]:
     return sorted(repo_root.glob(glob))
 
 
-def _load_summary(path: Path) -> tuple[str | None, dict[str, int]]:
+def _load_summary(path: Path) -> tuple[str | None, dict[str, int], bool]:
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return None, {}
+        return None, {}, False
     created_at = payload.get("created_at")
     counts_raw = payload.get("counts", {})
     counts = {str(k): int(v) for k, v in counts_raw.items() if isinstance(v, int)}
-    return (created_at if isinstance(created_at, str) else None), counts
+    return (created_at if isinstance(created_at, str) else None), counts, True
 
 
 def _kill_rate(counts: dict[str, int]) -> float | None:
@@ -123,7 +124,21 @@ def assess_campaign(
         reverse=True,
     )
     newest = by_recency[0]
-    created_at, counts = _load_summary(newest)
+    created_at, counts, readable = _load_summary(newest)
+    if not readable:
+        return CampaignFreshness(
+            name=name,
+            freshness_days=freshness_days,
+            artifact_glob=glob,
+            artifact_count=len(artifacts),
+            newest_artifact=newest.relative_to(repo_root).as_posix(),
+            newest_created_at=None,
+            newest_age_days=None,
+            kill_rate=None,
+            min_kill_rate=min_kill_rate,
+            counts={},
+            state="unreadable",
+        )
     age = _age_days(created_at, now)
     if age is None:
         # Fall back to mtime if artifact created_at missing/unparseable.
@@ -217,12 +232,28 @@ def main(argv: list[str] | None = None) -> int:
 
     missing = [a for a in assessments if a.state == "missing"]
     stale = [a for a in assessments if a.state == "stale"]
+    unreadable = [a for a in assessments if a.state == "unreadable"]
     fresh = [a for a in assessments if a.state == "fresh"]
     below_threshold = [
         a for a in fresh if a.kill_rate is not None and a.min_kill_rate is not None and a.kill_rate < a.min_kill_rate
     ]
 
-    blocking = (args.strict and (bool(missing) or bool(stale))) or (args.enforce_kill_rate and bool(below_threshold))
+    enforced = bool(args.strict or args.enforce_kill_rate)
+    no_kill_evidence = [a for a in fresh if args.enforce_kill_rate and a.kill_rate is None]
+    gate = evidence_gate_result(
+        gate="mutation-freshness",
+        executable=sys.executable,
+        executable_available=True,
+        required_count=len(entries),
+        inspected_count=len(assessments),
+        unreadable_count=len(unreadable),
+        missing_count=len(missing),
+        stale_count=len(stale),
+        error_count=len(no_kill_evidence) + len(below_threshold),
+        enforced=enforced,
+        details=[a.name for a in (*unreadable, *no_kill_evidence)],
+    )
+    blocking = not gate.ok or (args.enforce_kill_rate and bool(below_threshold))
 
     if args.json:
         json.dump(
@@ -237,12 +268,14 @@ def main(argv: list[str] | None = None) -> int:
                     "fresh": len(fresh),
                     "stale": len(stale),
                     "missing": len(missing),
+                    "unreadable": len(unreadable),
                     "below_kill_threshold": len(below_threshold),
                     "orphan_artifact_names": len(orphan_names),
                 },
                 "campaigns": [a.__dict__ for a in assessments],
                 "below_kill_threshold": [a.name for a in below_threshold],
                 "orphan_artifact_names": orphan_names,
+                "required_gate": gate.to_payload(),
             },
             sys.stdout,
             indent=2,
@@ -250,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.stdout.write("\n")
     else:
-        prefix = "[BLOCK]" if args.strict else "[warn]"
+        prefix = "[BLOCK]" if enforced else "[warn]"
         print(f"registered active mutation campaigns: {len(assessments)}")
         print(f"  fresh:   {len(fresh)}")
         print(f"  stale:   {len(stale)} (older than freshness_days)")
@@ -264,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"newest={a.newest_artifact} "
                 f"age={a.newest_age_days:.1f}d (budget {a.freshness_days}d)"
             )
+        for a in unreadable:
+            print(f"[BLOCK] unreadable artifact: {a.name} (path={a.newest_artifact})")
         kill_prefix = "[BLOCK]" if args.enforce_kill_rate else "[warn]"
         for a in below_threshold:
             assert a.kill_rate is not None and a.min_kill_rate is not None
@@ -285,7 +320,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    ... and {len(fresh) - 5} more")
         print()
         print(f"blocking={blocking} (strict={args.strict})")
-
     return 1 if blocking else 0
 
 

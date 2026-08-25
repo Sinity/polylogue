@@ -179,6 +179,38 @@ def test_daemon_workload_probe_reports_blob_reference_debt(
     }
 
 
+def test_daemon_workload_probe_blob_reference_debt_survives_blocked_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blocked canonical blob liveness projection must return a probe
+    ``blob_reference_debt`` state, not crash the whole workload probe.
+
+    ``scan_blob_reference_debt`` can raise ``RuntimeError`` (not just
+    ``OSError``/``sqlite3.Error``) when the active index is missing or the
+    current source schema cannot satisfy the canonical projection. Anti-
+    vacuity: if the ``except`` clause in ``_blob_reference_debt_state`` stops
+    catching ``RuntimeError``, this test's ``probe(...)`` call raises
+    instead of returning a typed ``checked: False`` state, and the test
+    goes red.
+    """
+    db = tmp_path / "archive.sqlite"
+    source = tmp_path / "session.jsonl"
+    _seed_minimal_archive(db, source)
+
+    def fake_scan(path: Path) -> BlobReferenceDebtReport:
+        raise RuntimeError("canonical blob liveness projection blocked: index tier is unavailable")
+
+    monkeypatch.setattr(workload_probe, "scan_blob_reference_debt", fake_scan)
+
+    payload = probe(db, blob_reference_debt=True)
+
+    assert payload["ok"] is True  # the probe overall still completes
+    assert payload["blob_reference_debt"]["checked"] is False
+    assert payload["blob_reference_debt"]["ok"] is False
+    assert "canonical blob liveness projection blocked" in payload["blob_reference_debt"]["error"]
+
+
 def test_daemon_workload_probe_defaults_to_mixed_table_counts(tmp_path: Path) -> None:
     db = tmp_path / "archive.sqlite"
     _seed_minimal_archive(db, tmp_path / "session.jsonl")

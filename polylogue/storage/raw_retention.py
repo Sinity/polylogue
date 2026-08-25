@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Mapping
-from contextlib import closing, suppress
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -72,36 +72,6 @@ class RawRetentionSafetyError(RuntimeError):
 
 class _RawRevisionAuthorityUnavailableError(RawRetentionSafetyError):
     """Raised when source-tier authority cannot be read, not when it is invalid."""
-
-
-# Row surfaces whose own ``blob_hash`` column is a first-class reference to the
-# CAS payload, independent of the ``blob_refs`` ledger. Retention cleanup must
-# consult these directly: on the live archive 399 raw payload hashes carry no
-# ledger row at all, so a ledger-only liveness test would read them as dead.
-_BLOB_HASH_ROW_SURFACES: tuple[str, ...] = ("raw_sessions", "attachments", "raw_hook_events")
-
-
-def _blob_hash_still_referenced(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
-    """Return True if any surviving row still points at this CAS payload.
-
-    Blobs are content-addressed, so two raw snapshots of identical bytes share
-    one file. Deleting one snapshot's row must not unlink bytes another row
-    still names. The ``blob_refs`` ledger is checked first because it is the
-    intended catalog, but it is not treated as complete: each row surface that
-    carries its own ``blob_hash`` column is checked too, so a missing ledger
-    row cannot become evidence of death.
-    """
-    if (
-        _column_exists(conn, "blob_refs", "blob_hash")
-        and conn.execute("SELECT 1 FROM blob_refs WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
-    ):
-        return True
-    for table in _BLOB_HASH_ROW_SURFACES:
-        if not _table_exists(conn, table) or not _column_exists(conn, table, "blob_hash"):
-            continue
-        if conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone():
-            return True
-    return False
 
 
 @dataclass(frozen=True)
@@ -2127,6 +2097,7 @@ def cleanup_superseded_raw_snapshots(
     blob_store: BlobStore | None = None,
     protected_raw_ids: set[str] | frozenset[str] | None = None,
     eligible_raw_ids: set[str] | frozenset[str] | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> RawSnapshotCleanupResult:
     all_candidates = superseded_raw_snapshot_candidates(
         conn,
@@ -2185,33 +2156,31 @@ def cleanup_superseded_raw_snapshots(
     deleted_blob_count = 0
     deleted_blob_bytes = 0
     errors: list[str] = []
-    for candidate in candidates:
-        if _column_exists(conn, "blob_refs", "blob_hash"):
-            try:
-                blob_hash = bytes.fromhex(candidate.blob_store_hash)
-            except ValueError as exc:
-                errors.append(str(exc))
+
+    def main_database_path(connection: sqlite3.Connection | None) -> Path | None:
+        if connection is None:
+            return None
+        for _seq, name, file_name in connection.execute("PRAGMA database_list"):
+            if str(name) != "main":
                 continue
-            if _blob_hash_still_referenced(conn, blob_hash):
-                continue
-        else:
-            # Without a reference catalog, row cleanup cannot prove that this
-            # process owns the final CAS reference. Leave bytes for typed GC.
-            continue
-        try:
-            path = store.blob_path(candidate.blob_store_hash)
-        except ValueError as exc:
-            errors.append(str(exc))
-            continue
-        if not path.exists():
-            continue
-        with suppress(OSError):
-            deleted_blob_bytes += path.stat().st_size
-        try:
-            path.unlink()
-            deleted_blob_count += 1
-        except OSError as exc:
-            errors.append(f"{candidate.raw_id[:16]}: {exc}")
+            path = str(file_name or "")
+            if not path or path == ":memory:" or path.startswith("file::memory:"):
+                return None
+            return Path(path)
+        return None
+
+    source_path = main_database_path(conn)
+    index_path = main_database_path(index_conn)
+    candidate_hashes = {candidate.blob_store_hash for candidate in candidates if len(candidate.blob_store_hash) == 64}
+    if source_path is None or index_path is None:
+        errors.append("source or index tier is unavailable")
+    else:
+        from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
+
+        deleted_blob_count, deleted_blob_bytes, unlink_errors = unlink_unreferenced_blob_hashes_under_exclusion(
+            source_path, index_path, store.root, candidate_hashes
+        )
+        errors.extend(unlink_errors)
 
     return RawSnapshotCleanupResult(
         candidate_count=len(candidates),
@@ -2235,6 +2204,7 @@ def compact_paths_superseded_raw_snapshots(
     dry_run: bool = False,
     protected_raw_ids: set[str] | frozenset[str] | None = None,
     eligible_raw_ids: set[str] | frozenset[str] | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> RawSnapshotCleanupResult:
     totals = RawSnapshotCleanupResult(
         candidate_count=0,
@@ -2255,6 +2225,7 @@ def compact_paths_superseded_raw_snapshots(
             dry_run=dry_run,
             protected_raw_ids=protected_raw_ids,
             eligible_raw_ids=eligible_raw_ids,
+            index_conn=index_conn,
         )
         errors.extend(result.errors)
         totals = RawSnapshotCleanupResult(

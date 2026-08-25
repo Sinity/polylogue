@@ -268,11 +268,19 @@ def _write_attachment_witness(archive_root: Path) -> tuple[str, ...]:
 
 
 def _discard_attachment_witness_blobs(archive_root: Path, blob_hashes: tuple[str, ...]) -> None:
-    """Remove temporary witness blobs before source replay validates the store."""
+    """Discard unowned witness bytes in this scenario's private temporary archive.
+
+    This is test-fixture cleanup after the derived index carrying the only
+    attachment ownership rows has been moved aside. It is not a BlobStore or
+    production GC capability: the enclosing ``TemporaryDirectory`` owns the
+    entire archive and its contents cannot outlive this scenario.
+    """
     blob_store = BlobStore(archive_root / "blob")
     for blob_hash in blob_hashes:
-        if not blob_store.remove(blob_hash):
+        path = blob_store.blob_path(blob_hash)
+        if not path.exists():
             raise RuntimeError(f"attachment witness blob disappeared before cleanup: {blob_hash}")
+        path.unlink()
 
 
 def _seed_user_assertion(archive_root: Path) -> str:

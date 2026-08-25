@@ -477,7 +477,7 @@ def run_managed_pytest(
         sampler.start()
     try:
         process.wait()
-    except KeyboardInterrupt:
+    except BaseException:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
         try:

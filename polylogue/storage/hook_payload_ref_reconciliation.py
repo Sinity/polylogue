@@ -93,6 +93,22 @@ _STAGE_VERSION = 1
 _StageFailureInjector = Callable[[str], None]
 
 
+@dataclass(frozen=True, slots=True)
+class HookPayloadRefMatchStage:
+    """A connection-local, generation-attested legacy hook match stage.
+
+    The temp relations are only reusable while the source connection has not
+    observed a schema or data generation change, and has not itself written
+    since the stage was built.  Callers that hold writer exclusion can retain
+    this token for a bounded batch without re-running the ledger anti-join.
+    """
+
+    connection: sqlite3.Connection
+    schema_version: int
+    data_version: int
+    total_changes: int
+
+
 def _temporary_table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return (
         conn.execute(
@@ -112,6 +128,16 @@ def _clear_match_stage(conn: sqlite3.Connection) -> None:
 
 def _stage_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
     return tuple(str(row[1]) for row in conn.execute(f"PRAGMA temp.table_info({table})"))
+
+
+def _source_generation(conn: sqlite3.Connection) -> tuple[int, int, int]:
+    """Return the cheap invalidation marker for a connection-local stage."""
+
+    return (
+        int(conn.execute("PRAGMA schema_version").fetchone()[0]),
+        int(conn.execute("PRAGMA data_version").fetchone()[0]),
+        conn.total_changes,
+    )
 
 
 def _match_stage_readiness(conn: sqlite3.Connection) -> tuple[int, int, int, int] | None:
@@ -488,7 +514,7 @@ def _build_match_stage(
     return scanned_count, matched_count, matched_bytes, ambiguous_count
 
 
-def _create_match_stage(
+def _create_match_stage_writable(
     conn: sqlite3.Connection, *, failure_injector: _StageFailureInjector | None = None
 ) -> tuple[int, int, int, int]:
     """Build or verify the complete legacy hook-match stage.
@@ -505,6 +531,7 @@ def _create_match_stage(
     except sqlite3.Error:
         _clear_match_stage(conn)
         raise
+
     if ready is not None:
         return ready
 
@@ -529,6 +556,68 @@ def _create_match_stage(
         finally:
             _clear_match_stage(conn)
         raise
+
+
+def _create_match_stage(
+    conn: sqlite3.Connection,
+    *,
+    failure_injector: _StageFailureInjector | None = None,
+    force_refresh: bool = False,
+) -> tuple[int, int, int, int]:
+    """Build the read-only matcher stage, including query-only readers.
+
+    SQLite's query_only pragma also forbids TEMP tables. Temporarily relaxing
+    it permits this connection-local read model while a mode=ro URI still
+    prevents persistent source-tier writes.
+    """
+
+    query_only = bool(conn.execute("PRAGMA query_only").fetchone()[0])
+    if query_only:
+        conn.execute("PRAGMA query_only = OFF")
+    try:
+        if force_refresh:
+            _clear_match_stage(conn)
+        return _create_match_stage_writable(conn, failure_injector=failure_injector)
+    finally:
+        if query_only:
+            conn.execute("PRAGMA query_only = ON")
+
+
+def prepare_match_stage(conn: sqlite3.Connection, *, force_refresh: bool = False) -> HookPayloadRefMatchStage:
+    """Build and fully attest a stage for a bounded sequence of inspections.
+
+    This performs the expensive source-ledger validation exactly once.  A
+    caller must pass the returned token to ``ensure_current_match_stage``
+    before each use; that check is generation-only unless writes or schema
+    drift made the stage stale.
+    """
+
+    if force_refresh:
+        _create_match_stage(conn, force_refresh=True)
+    else:
+        _create_match_stage(conn)
+    schema_version, data_version, total_changes = _source_generation(conn)
+    return HookPayloadRefMatchStage(conn, schema_version, data_version, total_changes)
+
+
+def ensure_current_match_stage(
+    conn: sqlite3.Connection, stage: HookPayloadRefMatchStage | None
+) -> HookPayloadRefMatchStage:
+    """Refresh ``stage`` when connection-local liveness evidence changed."""
+
+    if stage is not None and stage.connection is conn:
+        schema_version, data_version, total_changes = _source_generation(conn)
+        if (
+            schema_version,
+            data_version,
+            total_changes,
+        ) == (
+            stage.schema_version,
+            stage.data_version,
+            stage.total_changes,
+        ):
+            return stage
+    return prepare_match_stage(conn, force_refresh=True)
 
 
 def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloadRefReconciliationPlan:

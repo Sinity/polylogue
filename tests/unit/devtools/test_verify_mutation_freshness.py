@@ -93,6 +93,7 @@ def test_main_uses_executable_catalog_and_soft_missing_default(
     assert rc == 0
     assert "missing: 1" in out
     assert "blocking=False" in out
+    assert '"required_gate"' not in out
 
 
 def test_strict_fails_when_catalog_campaign_is_missing(
@@ -119,7 +120,7 @@ def test_kill_rate_gate_reads_real_campaign_result(
     assert "kill rate below threshold: filters" in capsys.readouterr().out
 
 
-def test_kill_rate_gate_ignores_campaign_without_result(
+def test_kill_rate_gate_rejects_campaign_without_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -131,4 +132,31 @@ def test_kill_rate_gate_ignores_campaign_without_result(
         counts={"killed": 19, "survived": 1},
     )
     monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
-    assert verify_mutation_freshness.main(["--enforce-kill-rate"]) == 0
+    assert verify_mutation_freshness.main(["--enforce-kill-rate"]) == 1
+
+
+def test_enforced_mutation_gate_rejects_unreadable_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _use_catalog(monkeypatch, "filters")
+    artifact_dir = tmp_path / ".local" / "mutation-campaigns" / "filters"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "broken.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+
+    assert verify_mutation_freshness.main(["--enforce-kill-rate", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required_gate"]["diagnosis"] == "gate_unreadable_input"
+    assert payload["required_gate"]["unreadable_count"] == 1
+
+
+def test_non_enforced_missing_mutation_evidence_is_not_reported_as_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _use_catalog(monkeypatch, "filters")
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+
+    assert verify_mutation_freshness.main(["--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["required_gate"]["status"] == "not_enforced"
+    assert payload["required_gate"]["gate_passed"] is None

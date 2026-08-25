@@ -166,3 +166,84 @@ def gc_history_command(env: AppEnv, limit: int, output_format: str) -> None:
         )
         click.echo(f"  generation={row.generation_id}  completed_at={when}")
         click.echo(f"    reclaimed_count={row.reclaimed_count}  reclaimed_bytes={row.reclaimed_bytes}")
+
+
+@click.command("gc-recover")
+@click.option("--abandon", "generation_id", help="Terminally abandon this blocked pending generation.")
+@click.option("--yes", is_flag=True, help="Confirm abandonment. This never unlinks blobs.")
+@click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
+def gc_recover_command(generation_id: str | None, yes: bool, output_format: str) -> None:
+    """Inspect pending GC intent, or terminalize one through mutation authority."""
+    from polylogue.storage.blob_gc import inspect_pending_gc_generations
+
+    root = archive_root()
+    if yes and generation_id is None:
+        raise click.UsageError("--yes requires --abandon GENERATION_ID")
+    if generation_id is not None and not yes:
+        raise click.UsageError("--yes is required with --abandon")
+    adjudication: dict[str, object] | None = None
+    receipt_ref: str | None = None
+    if generation_id is not None:
+        from polylogue.config import Config
+        from polylogue.maintenance.offline_guard import offline_writer_block_reason
+        from polylogue.operations.bindings import runtime_operation_binding
+        from polylogue.operations.mutation_actuators import (
+            PendingBlobGCGenerationAbandonActuator,
+            PendingBlobGCGenerationAbandonArgs,
+        )
+        from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+
+        ownership_blocker = offline_writer_block_reason(
+            Config(archive_root=root, render_root=render_root(), sources=[])
+        )
+        if ownership_blocker is not None:
+            raise click.ClickException(
+                f"pending blob-GC abandonment requires the daemon to be stopped; {ownership_blocker}"
+            )
+        actuator = PendingBlobGCGenerationAbandonActuator()
+        args = PendingBlobGCGenerationAbandonArgs(archive_root=root, generation_id=generation_id)
+        executor = OperationExecutor.for_archive_root(root)
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal(
+            "user:cli",
+            frozenset({"archive.blob_gc.abandon_pending_generation"}),
+            "cli",
+            "maintenance",
+        )
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+        adjudication = dict(receipt.domain_receipt)
+        receipt_ref = receipt.receipt_ref
+    pending = inspect_pending_gc_generations(root / "source.db")
+    payload = {
+        "mode": "gc_recover",
+        "mutates": adjudication is not None,
+        "adjudication": adjudication,
+        "receipt_ref": receipt_ref,
+        "pending": [
+            {
+                "generation_id": item.generation_id,
+                "member_count": item.member_count,
+                "pending_member_count": item.pending_member_count,
+                "namespace_marker_present": item.namespace_marker is not None,
+            }
+            for item in pending
+        ],
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if adjudication is not None:
+        click.echo(
+            f"Abandoned {adjudication['abandoned_members']} pending member(s) from {adjudication['generation_id']}; "
+            "no blobs unlinked."
+        )
+    if not pending:
+        click.echo("No pending blob-GC generations.")
+        return
+    for item in pending:
+        click.echo(
+            f"{item.generation_id}: pending={item.pending_member_count} members={item.member_count} "
+            f"namespace_marker_present={item.namespace_marker is not None}"
+        )

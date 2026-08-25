@@ -53,9 +53,10 @@ pytestmark = pytest.mark.uses_real_clock(
 
 def _make_gc_db(path: Path) -> sqlite3.Connection:
     """Create the minimum schema needed by ``run_blob_gc``."""
-    # Blob GC fails closed unless the sibling index tier is readable. This
-    # fixture exercises an available-but-empty index, not a missing tier.
-    sqlite3.connect(path.with_name("index.db")).close()
+    # Blob GC fails closed unless every canonical owner surface is readable.
+    # This fixture exercises an available-but-empty active index surface.
+    with sqlite3.connect(path.with_name("index.db")) as index_conn:
+        index_conn.execute("CREATE TABLE attachments (attachment_id TEXT PRIMARY KEY, blob_hash BLOB)")
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(
@@ -68,10 +69,20 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             blob_size INTEGER NOT NULL DEFAULT 0,
             acquired_at TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE raw_hook_events (
+            hook_event_id TEXT PRIMARY KEY,
+            origin TEXT NOT NULL DEFAULT '',
+            native_id TEXT,
+            source_path TEXT NOT NULL DEFAULT '',
+            blob_hash BLOB
+        );
+        CREATE TABLE history_sidecars (
+            sidecar_id TEXT PRIMARY KEY
+        );
         CREATE TABLE blob_refs (
             blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
             ref_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar', 'hook_payload')),
             source_path TEXT,
             size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
             acquired_at_ms INTEGER NOT NULL DEFAULT 0,
@@ -84,7 +95,20 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             started_at_ms   INTEGER NOT NULL,
             completed_at_ms INTEGER,
             reclaimed_count INTEGER NOT NULL DEFAULT 0,
-            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
+            reclaimed_bytes INTEGER NOT NULL DEFAULT 0,
+            blob_namespace_marker TEXT
+        );
+        CREATE TABLE gc_generation_members (
+            generation_id TEXT NOT NULL,
+            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            candidate_size_bytes INTEGER NOT NULL CHECK(candidate_size_bytes >= 0),
+            intent_committed_at_ms INTEGER NOT NULL CHECK(intent_committed_at_ms >= 0),
+            outcome TEXT NOT NULL DEFAULT 'pending'
+                CHECK(outcome IN ('pending', 'removed', 'reconciled_removed', 'skipped_still_live', 'failed')),
+            outcome_at_ms INTEGER CHECK(outcome_at_ms >= 0),
+            outcome_detail TEXT,
+            PRIMARY KEY (generation_id, blob_hash),
+            CHECK((outcome = 'pending') = (outcome_at_ms IS NULL))
         );
         """
     )
@@ -279,36 +303,14 @@ def test_dedup_across_write_methods(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# § "Blob Store Model" → "GC identifies unreferenced blobs via link
-# counting." Combined with detect_orphans semantics.
-# ---------------------------------------------------------------------------
-
-
-def test_orphan_detection_only_surfaces_unreferenced_blobs(tmp_path: Path) -> None:
-    """docs/internals.md § Blob Store Model: orphan detection compares
-    on-disk blobs against the DB-referenced ID set; a blob is an
-    orphan iff it is on disk but absent from the reference set.
-    """
-    store = BlobStore(tmp_path / "blobs")
-    h_referenced, _ = store.write_from_bytes(b"referenced")
-    h_orphan, _ = store.write_from_bytes(b"orphan")
-
-    result = store.detect_orphans({h_referenced})
-    assert result.orphan_count == 1
-    assert h_orphan in result.orphan_samples
-    assert h_referenced not in result.orphan_samples
-
-
-# ---------------------------------------------------------------------------
-# § "GC concurrency model — snapshot reference check plus age floor"
+# § "GC concurrency model"
 # ---------------------------------------------------------------------------
 
 
 def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
-    """docs/internals.md § GC concurrency model — invariant 1
-    (DB reference check): ``_still_referenced`` queries
-    ``raw_sessions`` for the blob's ``raw_id``; if the row exists,
-    GC skips the blob.
+    """docs/internals.md § GC concurrency model, current-referent step:
+    canonical liveness resolves the source owner's ``blob_hash``; if the row
+    owns the bytes, GC skips the blob.
     """
     blob_root = tmp_path / "blobs"
     store = BlobStore(blob_root)
@@ -317,9 +319,9 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
 
     h, _ = store.write_from_bytes(b"still-referenced")
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'src.json', 1, '2025-01-01')",
-        (h,),
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
+        "VALUES (?, 'claude', 'src.json', ?, 1, '2025-01-01')",
+        (h, bytes.fromhex(h)),
     )
     conn.commit()
     conn.close()

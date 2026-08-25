@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-from devtools import run_tests
+from devtools import pytest_scratch, run_tests
 from devtools.pytest_collection_contract import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
@@ -20,9 +20,25 @@ from devtools.pytest_collection_contract import (
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
+    VerifyRun,
     git_head,
     pytest_command_worker_request,
 )
+
+
+def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
+    step = run._payload["steps"][-1]
+    step_dir = run.run_dir / "steps" / step["step_id"]
+    (step_dir / "selection.json").write_text(json.dumps({"selected_count": 1}), encoding="utf-8")
+    (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 0}), encoding="utf-8")
+    events = step_dir / "events"
+    events.mkdir()
+    (events / "gw0.jsonl").write_text(
+        json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
+    )
+    report = root / run_tests.PYTEST_REPORT_PATH
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({"tests": [{"nodeid": "test_ok", "outcome": "passed"}]}), encoding="utf-8")
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
@@ -116,6 +132,17 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     def direct_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         captured["cmd"] = cmd
         captured["env"] = kwargs["env"]
+        env = kwargs["env"]
+        Path(env["POLYLOGUE_PYTEST_SELECTION_PATH"]).write_text(json.dumps({"selected_count": 1}), encoding="utf-8")
+        Path(env["POLYLOGUE_PYTEST_SUMMARY_PATH"]).write_text(json.dumps({"exitstatus": 0}), encoding="utf-8")
+        events = Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"])
+        events.mkdir()
+        (events / "gw0.jsonl").write_text(
+            json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
+        )
+        report = run_tests.ROOT / run_tests.PYTEST_REPORT_PATH
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({"tests": [{"nodeid": "test_ok", "outcome": "passed"}]}), encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
@@ -142,6 +169,7 @@ def test_main_preserves_relative_selection_from_subdirectory(
 
     def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         captured["cmd"] = cmd
+        _write_passing_evidence(run_tests.ROOT, _kwargs["run"])
         return 0, 0.01, {"diagnosis": "pytest_passed"}
 
     monkeypatch.chdir(run_tests.ROOT / "tests" / "unit")
@@ -162,6 +190,7 @@ def test_main_preserves_path_valued_options_from_subdirectory(
 
     def _fake_run(_label: str, cmd: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         captured["cmd"] = cmd
+        _write_passing_evidence(run_tests.ROOT, _kwargs["run"])
         return 0, 0.01, {"diagnosis": "pytest_passed"}
 
     invocation = tmp_path / "nested"
@@ -248,6 +277,83 @@ def test_main_preserves_sigterm_for_managed_cancellation(
     assert run_tests.main(["tests/unit/example.py"]) == 143
     assert history["exit_code"] == 143
     assert history["steps"][0]["termination_reason"] == "sigterm"
+
+
+def test_managed_pytest_kills_process_group_for_sigterm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SyntheticBaseException(BaseException):
+        pass
+
+    class _Process:
+        pid = 77
+        waits = 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waits += 1
+            if timeout is None:
+                raise SyntheticBaseException()
+            if self.waits == 2:
+                raise subprocess.TimeoutExpired("pytest", timeout)
+            return 143
+
+    killed: list[tuple[int, signal.Signals]] = []
+    monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *_args, **_kwargs: _Process())  # type: ignore[attr-defined]
+    monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))  # type: ignore[attr-defined]
+
+    with pytest.raises(SyntheticBaseException):
+        run_tests.run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})  # type: ignore[attr-defined]
+
+    assert killed == [(77, signal.SIGTERM), (77, signal.SIGKILL)]
+
+
+def test_main_records_rewritten_focused_exit_and_why_surfaces_the_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mutation: letting a stale zero overwrite the finalized step hides this failure from ``why``."""
+    from devtools import why
+
+    history: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    original_start = VerifyRun.start_step
+
+    def start_step(self: VerifyRun, **kwargs: Any) -> Any:
+        artifacts = original_start(self, **kwargs)
+        captured["artifacts"] = artifacts
+        return artifacts
+
+    def stale_zero(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, str]]:
+        artifacts = captured["artifacts"]
+        artifacts.selection_path.write_text(json.dumps({"selected_count": 1}), encoding="utf-8")
+        artifacts.summary_path.write_text(json.dumps({"exitstatus": 0}), encoding="utf-8")
+        artifacts.events_dir.mkdir()
+        (artifacts.events_dir / "gw0.jsonl").write_text(
+            json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        report = tmp_path / run_tests.PYTEST_REPORT_PATH
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps({"tests": []}), encoding="utf-8")
+        return 0, 0.01, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(VerifyRun, "start_step", start_step)
+    monkeypatch.setattr(run_tests, "_run", stale_zero)
+
+    assert run_tests.main(["tests/unit/example.py"]) == 1
+    step = history["steps"][0]
+    assert step["process_exit"] == 0
+    assert step["exit"] == 1
+    assert step["status"] == "failed"
+    assert step["diagnosis"] == "pytest_report_incomplete"
+    stream = __import__("io").StringIO()
+    why._render(history, stream)
+    assert step["step_id"] in stream.getvalue()
 
 
 def test_normalize_selection_paths_preserves_pytest_path_option_semantics(
@@ -338,6 +444,7 @@ def test_main_preserves_keyword_and_marker_values_from_tests_directory(
 
     def capture(_label: str, command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         captured.extend(command)
+        _write_passing_evidence(run_tests.ROOT, _kwargs["run"])
         return 0, 0.01, {"diagnosis": "pytest_passed"}
 
     monkeypatch.setattr(
@@ -372,8 +479,6 @@ def test_main_finalizes_runner_exception_after_open_step(
     monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
 
     def explode(_label: str, command: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
-        run = kwargs["run"]
-        run.start_step(label="pytest focused", cmd=command)
         raise RuntimeError("focused runner exploded")
 
     monkeypatch.setattr(run_tests, "_run", explode)
@@ -426,6 +531,8 @@ def test_managed_runner_reclaims_its_scratch_for_every_terminal_outcome(
         basetemp.joinpath("small-diagnostic.txt").write_text("evidence", encoding="utf-8")
         if isinstance(result, KeyboardInterrupt):
             raise result
+        if result[0] == 0:
+            _write_passing_evidence(run_tests.ROOT, _kwargs["run"])
         return result
 
     monkeypatch.setattr(run_tests, "_run", fake_run)
@@ -460,7 +567,7 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
 
     def fake_run(_label: str, _cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         captured["cwd"] = kwargs["cwd"]
-        Path(run_tests.PYTEST_REPORT_PATH).write_text('{"fresh": true}')
+        _write_passing_evidence(run_tests.ROOT, kwargs["run"])
         return 0, 0.01, {"diagnosis": "pytest_passed"}
 
     monkeypatch.setattr(run_tests, "ROOT", root)
@@ -478,8 +585,8 @@ def test_main_anchors_and_refreshes_root_artifacts_from_any_invocation_directory
     assert run_tests.main(["tests/unit/example.py"]) == 0
 
     assert captured["cwd"] == str(root)
-    assert stale_report.read_text() == '{"fresh": true}'
-    assert json.loads(stale_statistics.read_text())["canonical_report_status"] == "missing"
+    assert json.loads(stale_report.read_text())["tests"][0]["outcome"] == "passed"
+    assert json.loads(stale_statistics.read_text())["canonical_report_status"] == "present"
     assert not (invocation_directory / ".cache").exists()
 
 

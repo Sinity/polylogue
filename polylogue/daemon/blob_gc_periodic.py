@@ -98,11 +98,9 @@ async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: a
 
 
 def run_blob_gc_once(source_db_path_arg: Path, blob_dir: Path) -> BlobGCResult | None:
-    """Run one bounded daemon blob-GC pass, or ``None`` if the blob store is absent."""
+    """Run one bounded daemon GC pass, preserving namespace-loss blockers."""
     from polylogue.storage.blob_gc import run_blob_gc_report
 
-    if not blob_dir.is_dir():
-        return None
     if not source_db_path_arg.is_file():
         return None
     return run_blob_gc_report(source_db_path_arg, blob_dir, max_batch=BLOB_GC_MAX_BATCH, dry_run=False)

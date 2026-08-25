@@ -12,8 +12,14 @@ from tests.infra.convergence_harness import (
     build_converged_archive,
     converge_convergence_archive,
     ingest_convergence_pathology,
-    rich_convergence_pathology,
     rotated_session_order,
+)
+from tests.infra.convergence_laws import (
+    ConvergenceLaw,
+    assert_projection_matches_oracle,
+    generated_convergence_workload,
+    read_semantic_projection,
+    semantic_oracle,
 )
 
 
@@ -23,9 +29,10 @@ from tests.infra.convergence_harness import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(rich_convergence_pathology().sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
 def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int) -> None:
-    pathology = rich_convergence_pathology()
+    workload = generated_convergence_workload()
+    pathology = workload.pathology
     order = rotated_session_order(pathology, shift)
     archive = build_converged_archive(tmp_path / "archive", pathology, session_order=order)
     baseline = build_converged_archive(tmp_path / "baseline", pathology, session_order=order)
@@ -38,3 +45,10 @@ def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int)
     )
     converge_convergence_archive(reingested)
     assert_archives_equivalent(baseline, reingested)
+    expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
+    for archive_root in (baseline.root, reingested.root):
+        assert_projection_matches_oracle(
+            read_semantic_projection(archive_root, probe_terms=workload.probe_terms),
+            expected,
+            law=ConvergenceLaw.IDEMPOTENCE,
+        )

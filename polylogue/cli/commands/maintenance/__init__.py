@@ -200,6 +200,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Inspect (default) or reconcile embeddings.db rows orphaned by an index rebuild.",
     ),
     ("gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."),
+    (
+        "gc-recover",
+        "_blob_gc",
+        "gc_recover_command",
+        "Inspect or explicitly abandon a blocked pending blob-GC generation without unlinking blobs.",
+    ),
     ("status", "_status", "status_command", "Inspect persisted maintenance operations (#1197)."),
     (
         "verify-archive",
@@ -212,12 +218,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_campaign_genesis",
         "verify_campaign_genesis_command",
         "Prove a campaign-genesis record against the immutable Git blobs it pins. Read-only.",
-    ),
-    (
-        "live-proof",
-        "_live_proof",
-        "live_proof_command",
-        "Collect one fixed, immutable live-proof receipt. Read-only.",
     ),
     (
         "cursor-authority-reconcile",

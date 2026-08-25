@@ -83,8 +83,8 @@ def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_pat
 
     for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
-            (blob_hash, size, "2026-05-24T00:00:00+00:00"),
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
+            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), size, "2026-05-24T00:00:00+00:00"),
         )
     conn.commit()
     conn.close()
@@ -134,8 +134,8 @@ def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_
     hashes = [store.write_from_bytes(f"payload-{idx}".encode())[0] for idx in range(3)]
     for blob_hash in hashes:
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
-            (blob_hash, 9, "2026-05-24T00:00:00+00:00"),
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
+            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), 9, "2026-05-24T00:00:00+00:00"),
         )
     conn.commit()
     conn.close()
@@ -190,10 +190,10 @@ def test_scan_blob_integrity_reads_source_tier_blob_refs(tmp_path: Path) -> None
     report = scan_blob_integrity(source_db, store=store, full=True)
 
     by_kind = {finding.kind: finding for finding in report.findings}
-    assert report.total_references_seen == 2
-    assert by_kind["orphan_blobs"].sample == (orphan_hash,)
+    assert report.total_references_seen == 1
+    assert set(by_kind["orphan_blobs"].sample) == {attachment_hash, orphan_hash}
     assert raw_hash not in by_kind["orphan_blobs"].sample
-    assert attachment_hash not in by_kind["orphan_blobs"].sample
+    assert attachment_hash in by_kind["orphan_blobs"].sample
 
 
 def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tmp_path: Path) -> None:
@@ -229,16 +229,107 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
 
     report = scan_blob_reference_debt(source_db, store=store, sample_size=2)
 
-    assert report.ok is False
-    assert report.total_references_seen == 6
-    assert report.missing_referenced_blobs == 5
-    assert report.sample == tuple(missing_hashes[:2])
-    assert report.reference_sources == {"raw_sessions": 1, "blob_refs": 5}
-    assert referenced_blob_hashes(source_db) == sorted([present_hash, *missing_hashes])
+    assert report.ok is True
+    assert report.total_references_seen == 1
+    assert report.missing_referenced_blobs == 0
+    assert report.sample == ()
+    assert report.reference_sources == {"source.db.raw_sessions": 1}
+    assert referenced_blob_hashes(source_db) == [present_hash]
+
+
+def test_source_capabilities_choose_current_shape_over_zero_user_version(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("PRAGMA user_version = 0")
+        capabilities = blob_integrity._source_schema_capabilities(conn)
+
+    assert capabilities.kind == "current_unversioned"
+    assert capabilities.current_authority is True
+    with pytest.raises(RuntimeError, match="canonical blob liveness projection blocked"):
+        referenced_blob_hashes(source_db)
+
+
+def test_source_capabilities_keep_versioned_schema_fail_closed(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        capabilities = blob_integrity._source_schema_capabilities(conn)
+
+    assert capabilities.kind == "current_versioned"
+    assert capabilities.current_authority is True
+
+
+def test_source_capabilities_project_legacy_raw_only_carrier(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    expected_hash = "a" * 64
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
+            """
+        )
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, blob_hash) VALUES (?, ?)", ("raw-1", bytes.fromhex(expected_hash))
+        )
+
+        capabilities = blob_integrity._source_schema_capabilities(conn)
+
+    assert capabilities.kind == "legacy_raw_only"
+    assert capabilities.legacy_carriers == ("raw_sessions",)
+    assert referenced_blob_hashes(source_db, require_index=False) == [expected_hash]
+
+
+def test_source_capabilities_conserve_mixed_legacy_and_typed_references(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    raw_hash = "b" * 64
+    sidecar_hash = "c" * 64
+    ledger_hash = "d" * 64
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
+            CREATE TABLE raw_hook_events (hook_event_id TEXT PRIMARY KEY);
+            CREATE TABLE history_sidecars (sidecar_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                PRIMARY KEY (blob_hash, ref_type, ref_id)
+            );
+            """
+        )
+        conn.execute("INSERT INTO raw_sessions (raw_id, blob_hash) VALUES (?, ?)", ("raw-1", bytes.fromhex(raw_hash)))
+        conn.execute(
+            "INSERT INTO history_sidecars (sidecar_id, blob_hash) VALUES (?, ?)",
+            ("sidecar-1", bytes.fromhex(sidecar_hash)),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
+            (bytes.fromhex(raw_hash), "raw-1", "raw_payload"),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
+            (bytes.fromhex(ledger_hash), "raw-gone", "attachment"),
+        )
+        capabilities = blob_integrity._source_schema_capabilities(conn)
+
+    assert capabilities.kind == "mixed_transitional"
+    assert capabilities.legacy_carriers == ("raw_sessions", "history_sidecars", "blob_refs")
+    assert referenced_blob_hashes(source_db, require_index=False) == sorted((raw_hash, sidecar_hash, ledger_hash))
+
+
+def test_source_catalog_failure_is_not_an_empty_reference_projection(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    source_db.write_bytes(b"not a sqlite database")
+
+    with pytest.raises(RuntimeError, match="source tier referenced-hash query failed"):
+        referenced_blob_hashes(source_db, require_index=False)
 
 
 def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
     present_hash, present_size = store.write_from_bytes(b"present")
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -260,11 +351,18 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
             ),
         )
 
+    # A current source tier cannot silently classify attachment-only bytes as
+    # unreferenced when the index authority is absent.
+    with pytest.raises(RuntimeError, match="index tier is unavailable"):
+        scan_blob_reference_debt(source_db, store=store)
+
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
     report = scan_blob_reference_debt(source_db, store=store)
 
     assert report.ok is True
     assert report.total_references_seen == 1
-    assert report.reference_sources == {"raw_sessions": 1}
+    assert report.reference_sources == {"source.db.raw_sessions": 1}
 
 
 def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:

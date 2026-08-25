@@ -988,41 +988,58 @@ Content-addressed blob storage for large binary data:
   `link_group_key`. (There is no separate `blob_links` table; the name is a
   historical alias for this row-group view of `raw_artifacts`.)
 - **Operations**: Blobs are write-once, read-many. No in-place modification.
-  GC identifies unreferenced blobs via a snapshot reference check plus an
-  age floor (see GC concurrency model below), not simple link counting.
+  GC identifies candidates from the namespace, then proves each physical
+  deletion through the protocol below, not simple link counting.
 
-### GC concurrency model — publication reservation, reference, and age floor
+### GC concurrency model
 
-`run_blob_gc` deletes orphan blob files using three safety
-invariants combined:
+`run_blob_gc` and `unlink_unreferenced_blob_hashes_under_exclusion` execute
+one numbered protocol. Each step is required; the age floor is only
+defense-in-depth and never proves a publisher is dead.
 
-1. **DB reference check** — `_still_referenced` queries `raw_sessions` for
-   the blob's `raw_id`. If a raw record points at the blob, GC skips it.
-   This is the snapshot/mark-and-sweep view of "this blob is in active use
-   right now." It only sees *committed* rows: a blob whose referencing
-   ingest has written the bytes to disk but not yet committed the row is,
-   by SQLite's isolation, indistinguishable from a true orphan to this
-   check alone.
-2. **Publication receipt** — archive orchestration prepares a bounded batch of
-   private temporary files, commits every per-publication receipt in one
-   source-tier transaction, then publishes every final content-addressed path.
-   The exact source-reference transaction consumes its own receipt ID; an
-   index-only attachment consumes its receipt only after the index commit.
-   Same-hash publishers cannot consume one another. Pure parser/source APIs
-   receive an injected writer and remain independent of archive paths/schema.
-   GC enumerates outside its lock, then holds the source-tier write lock only
-   across the bounded final reference/receipt recheck and unlink. Dry-run is
-   read-only.
-3. **Age floor** — a candidate must be older than
+1. **Candidate and namespace check.** Enumerate only a readable blob
+   namespace and retain its `st_dev`/`st_ino` identity for the prospective
+   generation. An unreadable root or shard blocks the pass. A pending intent
+   may resume only when that same namespace identity is still mounted.
+2. **Current referents and reservations.** Resolve every current source owner,
+   source `blob_refs` referent, rekeyable legacy hook owner, and active index
+   attachment under the canonical descriptor. Resolve publication reservations
+   separately. Any unreadable owner, missing required tier, unknown ref type,
+   or live referent/reservation retains the bytes.
+3. **Intent before unlink.** Commit `gc_generations` and one exact
+   `gc_generation_members` row per candidate, including the observed namespace
+   identity, before an unlink is attempted. The member row is the durable
+   recovery denominator, not a second ownership authority.
+4. **Age floor.** A candidate must be older than
    `max(MIN_AGE_S, now - prev_generation.completed_at)`
    (`polylogue/storage/blob_gc.py:run_blob_gc_report`). `MIN_AGE_S` is 60
-   seconds; `gc_generations` tracks the high-water mark of completed GC
-   runs so a blob created during the same window as the previous pass is
-   never reclaimed before its eventual reference can land. With no prior
-   generation recorded, the static `MIN_AGE_S` floor applies on its own.
+   seconds. This limits clock-skew and legacy/uninstrumented paths; it is not
+   used to infer that a live publisher has expired.
+5. **Final locked recheck.** Hold source then index writer locks, rebuild the
+   legacy-hook match stage, and repeat the referent/reservation check directly
+   before unlink. A newly live row produces `skipped_still_live`; a blocker
+   leaves the member pending.
+6. **Readable absence only.** Reconcile a pending member as removed only after
+   re-establishing readable root and shard evidence for the intent-bound
+   namespace. Namespace loss, a remount, or a replacement directory is a
+   blocker, never an absence result.
+7. **Restart reconciliation.** Resume the sole incomplete generation before
+   planning new work. Each member ends as removed, reconciled removed, still
+   live, or failed; only then may `gc_generations` become terminal and publish
+   reclaimed counters.
 
-The age floor was previously the sole defense against the race the reference
-check cannot see. A prior revision carried a late lease mechanism (`pending_blob_refs`,
+Publication reservations close the byte-publication-to-reference window:
+archive orchestration prepares a bounded batch of private temporary files,
+commits every per-publication receipt in one source-tier transaction, then
+publishes every final content-addressed path. The exact source-reference
+transaction consumes its own receipt ID; an index-only attachment consumes its
+receipt only after the index commit. Same-hash publishers cannot consume one
+another. Pure parser/source APIs receive an injected writer and remain
+independent of archive paths/schema. GC enumerates outside its lock, then holds
+the source-tier write lock only across the bounded final reference/receipt
+recheck and unlink. Dry-run is read-only.
+
+A prior revision carried a late lease mechanism (`pending_blob_refs`,
 `acquire_blob_leases`/`release_operation_leases`) meant to make that window
 explicit rather than relying on a timing heuristic. It was fully
 implemented and unit-tested but **never reachable in production**: the only
@@ -1039,7 +1056,7 @@ and committed references in batches of 500, so a slow following artifact
 could age an earlier blob past 60 seconds. Source v4 therefore reserves at
 the only boundary that closes the race: before final-path visibility.
 
-Crash reconciliation has no TTL. It classifies and retains receipts by
+Publication reconciliation has no TTL. It classifies and retains receipts by
 default, including missing-path receipts: absence is not proof that a paused
 publisher died. Automatic clearing requires archive-wide writer exclusion.
 Existing blob-without-reference rows remain explicit recoverable acquisition
@@ -1047,7 +1064,9 @@ debt until reacquisition or confirmed operator abandonment through
 `polylogue ops maintenance blob-publications`. Age is never treated as proof
 that a publisher is dead. Archive backup holds the same writer exclusion and
 copies an exact hash/size inventory for the union of durable references and
-publication receipts.
+publication receipts. Its blob-reference evidence records source resolution
+and independently queried active-index attachment hashes, so restoration can
+contradict an incomplete copy projection.
 
 - **Known issues**: GC has bugs with orphan detection and integrity
   verification ([#818](https://github.com/Sinity/polylogue/issues/818))
