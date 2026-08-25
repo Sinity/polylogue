@@ -138,37 +138,18 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
-| `devtools workspace agent-meta-sidecar-purge-apply` | Purge agent-*.meta.json subagent-sidecar phantom sessions from index.db. |
-| `devtools workspace agent-meta-sidecar-sweep` | Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0). |
-| `devtools workspace antigravity-phantom-purge-apply` | Delete antigravity brain-metadata phantom sessions and reclassify their raw rows. |
-| `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
-| `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
-| `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
-| `devtools workspace binary-artifact-reclassify-apply` | Persist raw_artifacts classification for binary-shaped raw rows. |
-| `devtools workspace binary-artifact-sweep` | Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc). |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-artifact-census` | Census quarantined raws into five authority buckets; apply pages raw_artifacts upserts and records durable receipts. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
-| `devtools workspace raw-byte-duplicate-supersession-apply` | Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw. |
-| `devtools workspace raw-failure-disposition-apply` | Apply reviewed terminal dispositions to historical raw parse failures. |
-| `devtools workspace raw-live-source-reconciliation` | Classify quarantined raw evidence against its live source file's current bytes. |
-| `devtools workspace raw-live-source-reconciliation-apply` | Promote quarantined raw evidence proven correct by live-source verification. |
-| `devtools workspace raw-membership-writeback-apply` | Propagate already-decided membership verdicts onto raw_sessions.revision_authority. |
-| `devtools workspace raw-quarantine-group-dedup-apply` | Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
-| `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
-| `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
-| `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
-| `devtools workspace unknown-export-reclassification-apply` | Reclassify proven ChatGPT browser-capture raws and write durable receipts. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 
