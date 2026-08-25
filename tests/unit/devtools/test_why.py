@@ -77,6 +77,7 @@ def test_failing_steps_are_surfaced() -> None:
         ("gate_missing_executable", "make it available on PATH"),
         ("gate_missing_input", "Restore the input"),
         ("gate_unreadable_input", "Make the input"),
+        ("gate_semantic_violation", "Read the detailed layering finding"),
         ("not_enforced", "Enable the gate's enforcement option"),
     ],
 )

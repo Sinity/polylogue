@@ -74,6 +74,10 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "A required gate input could not be read.",
         "Make the input named in the gate details readable, then re-run the gate.",
     ),
+    "gate_semantic_violation": Explanation(
+        "An import violates a package boundary declared by the layering policy.",
+        "Read the detailed layering finding and fix the offending import. If the boundary is intentional, have the normal layering-policy owner deliberately update the tracked declaration or baseline through its review process; do not baseline an accidental violation.",
+    ),
     "not_enforced": Explanation(
         "This gate was recorded but was not enforced.",
         "Enable the gate's enforcement option before relying on it as a check.",
