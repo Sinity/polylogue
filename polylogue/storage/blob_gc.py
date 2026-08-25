@@ -56,6 +56,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from polylogue.storage.blob_liveness import (
+    BlobLiveness,
     LivenessState,
     inspect_blob_liveness,
     inspect_blob_reservation,
@@ -64,7 +65,7 @@ from polylogue.storage.blob_liveness import (
 from polylogue.storage.blob_liveness import (
     blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column,
 )
-from polylogue.storage.hook_payload_ref_reconciliation import prepare_match_stage
+from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.version import VERSION_INFO
@@ -407,8 +408,8 @@ def _final_gc_member_liveness(
     index_conn: sqlite3.Connection | None,
     blob_hash: str,
     *,
-    legacy_hook_stage: object,
-) -> tuple[object, object]:
+    legacy_hook_stage: HookPayloadRefMatchStage,
+) -> tuple[BlobLiveness, BlobLiveness]:
     """Production seam for fault injection around GC's final locked recheck."""
     return (
         inspect_blob_liveness(

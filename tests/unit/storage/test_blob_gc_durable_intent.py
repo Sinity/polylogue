@@ -16,7 +16,9 @@ from pathlib import Path
 import pytest
 
 import polylogue.storage.blob_gc as blob_gc
+from polylogue.storage.blob_liveness import BlobLiveness
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -51,14 +53,14 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
 
     original_unlink = Path.unlink
 
-    def assert_intent_then_unlink(path: Path, *args: object, **kwargs: object) -> None:
+    def assert_intent_then_unlink(path: Path, missing_ok: bool = False) -> None:
         with sqlite3.connect(tmp_path / "source.db") as conn:
             row = conn.execute(
                 "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?",
                 (bytes.fromhex(blob_hash),),
             ).fetchone()
         assert row == ("pending",), "unlink ran before durable exact member intent"
-        original_unlink(path, *args, **kwargs)
+        original_unlink(path, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", assert_intent_then_unlink)
 
@@ -83,12 +85,18 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
     original_final = blob_gc._final_gc_member_liveness
     calls = 0
 
-    def crash_before_final(*args: object, **kwargs: object) -> object:
+    def crash_before_final(
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
+        candidate_hash: str,
+        *,
+        legacy_hook_stage: HookPayloadRefMatchStage,
+    ) -> tuple[BlobLiveness, BlobLiveness]:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("fault after intent commit")
-        return original_final(*args, **kwargs)
+        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_before_final)
     with pytest.raises(RuntimeError, match="after intent commit"):
@@ -110,12 +118,25 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
     original_outcome = blob_gc._commit_gc_member_outcome
     raised = False
 
-    def crash_before_outcome(*args: object, **kwargs: object) -> object:
+    def crash_before_outcome(
+        source_conn: sqlite3.Connection,
+        *,
+        generation_id: str,
+        blob_hash: str,
+        outcome: str,
+        detail: str | None = None,
+    ) -> None:
         nonlocal raised
         if not raised:
             raised = True
             raise RuntimeError("fault after unlink")
-        return original_outcome(*args, **kwargs)
+        original_outcome(
+            source_conn,
+            generation_id=generation_id,
+            blob_hash=blob_hash,
+            outcome=outcome,
+            detail=detail,
+        )
 
     monkeypatch.setattr(blob_gc, "_commit_gc_member_outcome", crash_before_outcome)
     with pytest.raises(RuntimeError, match="after unlink"):
@@ -207,12 +228,18 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
     original_final = blob_gc._final_gc_member_liveness
     calls = 0
 
-    def crash_second(*args: object, **kwargs: object) -> object:
+    def crash_second(
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
+        candidate_hash: str,
+        *,
+        legacy_hook_stage: HookPayloadRefMatchStage,
+    ) -> tuple[BlobLiveness, BlobLiveness]:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("fault during partial batch")
-        return original_final(*args, **kwargs)
+        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_second)
     with pytest.raises(RuntimeError, match="partial batch"):
@@ -252,7 +279,13 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
     _backdate(store, blob_hash)
     original_final = blob_gc._final_gc_member_liveness
 
-    def introduce_protection(source_conn: sqlite3.Connection, *args: object, **kwargs: object) -> object:
+    def introduce_protection(
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
+        candidate_hash: str,
+        *,
+        legacy_hook_stage: HookPayloadRefMatchStage,
+    ) -> tuple[BlobLiveness, BlobLiveness]:
         if kind == "referent":
             source_conn.execute(
                 "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
@@ -266,7 +299,7 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
                 "VALUES ('introduced-reservation', ?, ?, 'test', 1)",
                 (bytes.fromhex(blob_hash), size),
             )
-        return original_final(source_conn, *args, **kwargs)
+        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", introduce_protection)
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
