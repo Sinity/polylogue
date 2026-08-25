@@ -127,7 +127,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench mutation` | Run focused mutation campaigns with isolated execution and JSON artifacts. |
-| `devtools bench nightly-compare` | Compare nightly pytest-benchmark output with the committed baseline. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 
 ### Workspace

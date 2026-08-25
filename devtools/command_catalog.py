@@ -707,17 +707,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "bench nightly-compare",
-        "benchmarking",
-        "Compare nightly pytest-benchmark output with the committed baseline.",
-        "devtools.benchmark_compare_nightly",
-        use_when="Check the nightly scale benchmark result against its committed regression threshold.",
-        examples=(
-            "devtools bench nightly-compare tests/benchmarks/baselines/nightly-baseline.json nightly-results.json",
-            "devtools bench nightly-compare baseline.json candidate.json --fail-pct 20",
-        ),
-    ),
-    CommandSpec(
         "workspace continuity-evidence",
         "workspace",
         "Replay continuity scenarios and verify their query routes are discoverable.",
