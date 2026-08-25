@@ -35,7 +35,11 @@ from polylogue.operations.mutation_transaction import (
     MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
+    RecoveryDisposition,
+    RecoveryOperation,
+    RecoveryTargetDisposition,
     build_plan,
+    compute_parameter_digest,
     make_target_ref,
 )
 from polylogue.paths import render_root
@@ -1365,6 +1369,21 @@ class _RecoveryArgs:
     expected_plan_digest: str
     backup_manifest: Path | None
     receipt_path: Path
+    recovery_plan: RawAuthorityRecoveryPlan
+
+
+def _recovery_target_ref(operation: RawAuthorityRecoveryOperation) -> str:
+    """Return the one durable target ref an operation is allowed to touch."""
+
+    if operation is RawAuthorityRecoveryOperation.RESET_CENSUS:
+        return make_target_ref("source", operation.value)
+    return make_target_ref("index", operation.value)
+
+
+def _recovery_affected_tiers(operation: RawAuthorityRecoveryOperation) -> tuple[str, ...]:
+    """Return the exact tier set the operation mutates."""
+
+    return ("source",) if operation is RawAuthorityRecoveryOperation.RESET_CENSUS else ("index",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1382,16 +1401,11 @@ class _RecoveryActuator:
             backup_manifest=args.backup_manifest,
             receipt_path=args.receipt_path,
         )
-        target_ref = (
-            make_target_ref("source", args.operation.value)
-            if args.operation is RawAuthorityRecoveryOperation.RESET_CENSUS
-            else make_target_ref("index", args.operation.value)
-        )
         return build_plan(
             operation=self.operation,
             destructive_class=self.destructive_class,
-            target_refs=(target_ref,),
-            affected_tiers=("source",) if args.operation is RawAuthorityRecoveryOperation.RESET_CENSUS else ("index",),
+            target_refs=(_recovery_target_ref(args.operation),),
+            affected_tiers=_recovery_affected_tiers(args.operation),
             reversible=False,
             context={"recovery_plan_digest": live.plan_digest, "operation_id": args.operation_id},
         )
@@ -1407,11 +1421,7 @@ class _RecoveryActuator:
         if live.plan_digest != args.expected_plan_digest:
             raise PlanStaleError("raw-authority recovery plan digest changed before apply")
         report = _apply_plan(live)
-        target_ref = (
-            make_target_ref("source", args.operation.value)
-            if args.operation is RawAuthorityRecoveryOperation.RESET_CENSUS
-            else make_target_ref("index", args.operation.value)
-        )
+        target_ref = _recovery_target_ref(args.operation)
         affected_count = (
             sum(report.plan.before_counts.values())
             if args.operation is RawAuthorityRecoveryOperation.RESET_CENSUS
@@ -1430,6 +1440,22 @@ class _RecoveryActuator:
             operation_id=args.operation_id,
         )
 
+    def inspect_recovery(self, operation: RecoveryOperation, args: _RecoveryArgs) -> RecoveryDisposition:
+        """Adopt only an exact committed postflight with durable target evidence."""
+
+        if not operation.target_evidence_complete or len(operation.targets) != 1:
+            return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
+        target_ref = _recovery_target_ref(args.operation)
+        if operation.targets[0].ref != target_ref or _committed_postflight(args.recovery_plan) is None:
+            return RecoveryDisposition("unknown", "operator-blocking", "raw-authority postflight is not exact")
+        return RecoveryDisposition(
+            "confirmed-applied",
+            "forward",
+            "exact raw-authority postflight proved the prior domain commit",
+            (RecoveryTargetDisposition(target_ref, "applied", "forward"),),
+            evidence_ref=str(args.receipt_path),
+        )
+
 
 class ResetRawAuthorityCensusActuator(_RecoveryActuator):
     def __init__(self) -> None:
@@ -1439,6 +1465,50 @@ class ResetRawAuthorityCensusActuator(_RecoveryActuator):
 class PruneOrphanedIndexRevisionSeedsActuator(_RecoveryActuator):
     def __init__(self) -> None:
         super().__init__("mutate-prune-orphaned-index-revision-seeds", RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS)
+
+
+def _adopt_committed_recovery(
+    archive_root: Path,
+    actuator: _RecoveryActuator,
+    args: _RecoveryArgs,
+    plan: RawAuthorityRecoveryPlan,
+) -> None:
+    """Terminalize the interrupted audit attempt this committed recovery belongs to.
+
+    Adoption runs through the one canonical disposition route, so the domain
+    inspector -- not this call site -- decides whether the committed postflight
+    is exact enough to confirm the effect.  When no interrupted attempt binds
+    the plan there is nothing to adopt: audit authority stays non-terminal and
+    keeps blocking overlap rather than reporting a completed recovery failed.
+    """
+
+    from polylogue.operations.audit import AuditRepository
+
+    audit = AuditRepository.for_archive_root(
+        archive_root, attempt_owner_id=AuditRepository.current_process_attempt_owner()
+    )
+    # A crash leaves the attempt 'running' under a dead owner.  This is the
+    # same liveness-guarded route daemon startup uses; a live owner is left
+    # alone and simply yields no adoptable attempt.
+    audit.recover_abandoned_attempts()
+    raw_plan = build_plan(
+        operation=actuator.operation,
+        destructive_class=actuator.destructive_class,
+        target_refs=(_recovery_target_ref(args.operation),),
+        affected_tiers=_recovery_affected_tiers(args.operation),
+        reversible=False,
+        context={"recovery_plan_digest": plan.plan_digest, "operation_id": plan.operation_id},
+    )
+    operation_id = audit.find_interrupted_operation(
+        operation_name=actuator.operation,
+        parameter_digest=compute_parameter_digest(raw_plan),
+    )
+    if operation_id is None:
+        return
+    audit.record_recovery_disposition(
+        operation_id,
+        actuator.inspect_recovery(audit.recovery_operation(operation_id), args),
+    )
 
 
 def _receipt_for_plan(plan: RawAuthorityRecoveryPlan) -> dict[str, object] | None:
@@ -1542,6 +1612,7 @@ def apply_raw_authority_recovery(
         expected_plan_digest=selected.plan_digest,
         backup_manifest=Path(str(selected.backup_authority["manifest_path"])),
         receipt_path=Path(selected.receipt_path),
+        recovery_plan=selected,
     )
     actuator: _RecoveryActuator = (
         ResetRawAuthorityCensusActuator()
@@ -1576,7 +1647,9 @@ def apply_raw_authority_recovery(
                 # authorization. An uncommitted intent is evidence of interruption,
                 # not authority to perform the destructive mutation.
                 if _intent_for_plan(selected) is not None and _committed_postflight(selected) is not None:
-                    return _apply_plan(selected)
+                    recovered = _apply_plan(selected)
+                    _adopt_committed_recovery(root, actuator, args, selected)
+                    return recovered
                 executor = OperationExecutor.for_archive_root(root)
                 binding = runtime_operation_binding(actuator)
                 principal = MutationPrincipal(

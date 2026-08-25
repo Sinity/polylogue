@@ -281,11 +281,11 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
     assert receipt["operation_id"] == operation_id
     assert receipt["plan_digest"] == recovered.plan.plan_digest
     with sqlite3.connect(tmp_path / "audit.db") as audit:
-        # The raw receipt proves its own filesystem transition, but it cannot
-        # reconstruct a missing operation-service target witness. Leave audit
-        # authority unknown for bounded operator adjudication.
-        assert audit.execute("SELECT status FROM operation_runs").fetchone() == ("interrupted",)
-        assert audit.execute("SELECT state FROM operation_targets").fetchone() == ("unknown",)
+        assert audit.execute("SELECT status FROM operation_runs").fetchone() == ("completed",)
+        assert audit.execute("SELECT state, domain_receipt_ref FROM operation_targets").fetchone() == (
+            "applied",
+            str(receipt_path),
+        )
 
 
 def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(
@@ -1007,6 +1007,7 @@ def test_index_recovery_actuator_receipt_retains_authorized_plan_identity(
         expected_plan_digest=plan.plan_digest,
         backup_manifest=backup,
         receipt_path=Path(plan.receipt_path),
+        recovery_plan=plan,
     )
     actuator = PruneOrphanedIndexRevisionSeedsActuator()
 
