@@ -90,7 +90,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools test` | Run a focused pytest selection through the managed harness. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
@@ -130,7 +129,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench mutation` | Run focused mutation campaigns with isolated execution and JSON artifacts. |
 | `devtools bench nightly-compare` | Compare nightly pytest-benchmark output with the committed baseline. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
-| `devtools bench synthetic` | Run synthetic benchmark campaigns over generated archives. |
 
 ### Workspace
 
@@ -140,7 +138,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 
 <!-- END GENERATED: devtools-command-catalog -->

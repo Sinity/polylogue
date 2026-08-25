@@ -431,22 +431,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace scale-regression",
-        "workspace",
-        "Run the seeded large-archive scale-regression probe.",
-        "devtools.scale_regression_probe",
-        use_when=(
-            "Before closing scale-hardening work, seed a small archive with large-archive-shaped edge cases "
-            "and assert chunked insight rebuilds, bounded giant-session profiles, raw-materialization debt "
-            "visibility, reset source preservation, and run-ref no-drop invariants."
-        ),
-        examples=(
-            "devtools workspace scale-regression",
-            "devtools workspace scale-regression --json",
-            "devtools workspace scale-regression --workdir .cache/scale-regression --keep --json",
-        ),
-    ),
-    CommandSpec(
         "workspace lineage-validation",
         "workspace",
         "Validate lineage-count evidence before citing archive counts externally.",
@@ -691,17 +675,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "bench capture-regression",
-        "verification",
-        "Capture pipeline-probe summaries as durable local regression cases.",
-        "devtools.regression_capture",
-        use_when="Turn a live or probe failure JSON summary into a replayable local regression artifact.",
-        examples=(
-            "devtools bench capture-regression --input probe.json --name parse-drift",
-            "devtools bench pipeline --json | devtools bench capture-regression --name parse-drift --tag live",
-        ),
-    ),
-    CommandSpec(
         "verify layering",
         "verification",
         "Check inter-package imports against declared layering rules from docs/plans/layering.yaml.",
@@ -738,17 +711,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools bench nightly-compare tests/benchmarks/baselines/nightly-baseline.json nightly-results.json",
             "devtools bench nightly-compare baseline.json candidate.json --fail-pct 20",
-        ),
-    ),
-    CommandSpec(
-        "bench synthetic",
-        "benchmarking",
-        "Run synthetic benchmark campaigns over generated archives.",
-        "devtools.run_campaign",
-        use_when="Generate synthetic archives and run long-haul benchmark workloads.",
-        examples=(
-            "devtools bench synthetic --list",
-            "devtools bench synthetic --scale medium --campaign search-filters",
         ),
     ),
     CommandSpec(
