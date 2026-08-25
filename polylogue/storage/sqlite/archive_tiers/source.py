@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, 
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 34
+SOURCE_SCHEMA_VERSION = 35
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -561,7 +561,9 @@ CREATE TABLE IF NOT EXISTS gc_generations (
     started_at_ms    INTEGER NOT NULL,
     completed_at_ms  INTEGER,
     reclaimed_count  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0),
-    reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)
+    reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0),
+    blob_namespace_device INTEGER,
+    blob_namespace_inode  INTEGER
 ) STRICT;
 
 -- Each physical blob deletion has an exact durable member intent before GC

@@ -210,6 +210,14 @@ class _BlobNamespaceUnavailableError(RuntimeError):
     """The blob namespace cannot prove that an object is absent."""
 
 
+@dataclass(frozen=True, slots=True)
+class _BlobNamespaceIdentity:
+    """The filesystem identity that a durable GC plan is allowed to resume."""
+
+    device: int
+    inode: int
+
+
 def _namespace_error(blob_root: Path, exc: OSError) -> _BlobNamespaceUnavailableError:
     return _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} is unavailable or unreadable: {exc}")
 
@@ -251,6 +259,17 @@ def _assert_blob_namespace_readable(blob_root: Path) -> None:
             pass
     except OSError as exc:
         raise _namespace_error(blob_root, exc) from exc
+
+
+def _blob_namespace_identity(blob_root: Path) -> _BlobNamespaceIdentity:
+    """Observe the readable namespace identity before committing GC intent."""
+
+    _assert_blob_namespace_readable(blob_root)
+    try:
+        metadata = blob_root.stat()
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    return _BlobNamespaceIdentity(device=metadata.st_dev, inode=metadata.st_ino)
 
 
 def _candidate_blobs(
@@ -315,26 +334,42 @@ def _gc_member_table_available(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "gc_generation_members")
 
 
+def _gc_namespace_identity_columns_available(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "gc_generations"):
+        return False
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(gc_generations)")}
+    return {"blob_namespace_device", "blob_namespace_inode"}.issubset(columns)
+
+
 def _commit_gc_generation_intent(
     control_db_path: Path,
     *,
     generation_id: str,
     started_at_ms: int,
     members: tuple[_GCMemberIntent, ...],
+    namespace_identity: _BlobNamespaceIdentity,
 ) -> None:
     """Commit a generation and all exact member intents before any unlink."""
     with sqlite3.connect(control_db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not _gc_member_table_available(conn):
             raise RuntimeError("blob GC durable member-intent schema is unavailable")
+        if not _gc_namespace_identity_columns_available(conn):
+            raise RuntimeError("blob GC durable namespace-identity schema is unavailable")
         conn.execute(
             "INSERT INTO gc_generations "
-            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES (?, ?, ?, 0, 0)",
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, "
+            "blob_namespace_device, blob_namespace_inode) VALUES (?, ?, ?, 0, 0, ?, ?)",
             # An empty plan has no physical operation to recover.  Make it a
             # terminal, zero-summary generation in this same durable intent
             # transaction so a crash cannot turn it into a legacy unknown.
-            (generation_id, started_at_ms, started_at_ms if not members else None),
+            (
+                generation_id,
+                started_at_ms,
+                started_at_ms if not members else None,
+                namespace_identity.device,
+                namespace_identity.inode,
+            ),
         )
         conn.executemany(
             "INSERT INTO gc_generation_members "
@@ -415,6 +450,8 @@ def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | Non
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
         if not _gc_member_table_available(conn):
             return None, "blob GC durable member-intent schema is unavailable"
+        if not _gc_namespace_identity_columns_available(conn):
+            return None, "blob GC durable namespace-identity schema is unavailable"
         rows = conn.execute(
             "SELECT generation_id FROM gc_generations WHERE completed_at_ms IS NULL ORDER BY started_at_ms, generation_id"
         ).fetchall()
@@ -424,6 +461,31 @@ def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | Non
             return None, "multiple incomplete blob GC generations require operator investigation"
         generation_id = str(rows[0][0])
         return generation_id, None
+
+
+def _generation_namespace_matches(
+    control_db_path: Path,
+    generation_id: str,
+    blob_root: Path,
+) -> str | None:
+    """Refuse a pending intent whose observed namespace was swapped or remounted."""
+
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT blob_namespace_device, blob_namespace_inode FROM gc_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        return "blob GC generation disappeared before namespace verification"
+    if row[0] is None or row[1] is None:
+        return "pending blob GC generation lacks a durable blob namespace identity"
+    try:
+        observed = _blob_namespace_identity(blob_root)
+    except _BlobNamespaceUnavailableError as exc:
+        return str(exc)
+    if (int(row[0]), int(row[1])) != (observed.device, observed.inode):
+        return "blob namespace identity changed since GC intent was committed"
+    return None
 
 
 def _final_gc_member_liveness(
@@ -507,6 +569,10 @@ def _execute_gc_generation_members(
     A crash before the single outcome commit leaves exact pending intents for
     idempotent restart reconciliation.
     """
+    namespace_blocker = _generation_namespace_matches(control_db_path, generation_id, blob_root)
+    if namespace_blocker is not None:
+        report.blocked_reason = namespace_blocker
+        return 0, 0
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as history:
         members = [
             str(row[0]).lower()
@@ -681,12 +747,15 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     with exclude_archive_blob_publishers(source_db_path):
         if not _database_has_table(source_db_path, "gc_generation_members"):
             return 0, 0, ("blob GC durable member-intent schema is unavailable",)
+        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as schema_conn:
+            if not _gc_namespace_identity_columns_available(schema_conn):
+                return 0, 0, ("blob GC durable namespace-identity schema is unavailable",)
         tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
         if tier_blockers:
             return 0, 0, tier_blockers
         report = BlobGCResult(str(source_db_path), str(blob_root), False, len(blob_hashes))
         try:
-            _assert_blob_namespace_readable(blob_root)
+            namespace_identity = _blob_namespace_identity(blob_root)
         except _BlobNamespaceUnavailableError as exc:
             return 0, 0, (str(exc),)
         # This direct writer entry point must obey the exact same one-pending
@@ -755,6 +824,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             generation_id=generation_id,
             started_at_ms=int(time.time() * 1000),
             members=tuple(members),
+            namespace_identity=namespace_identity,
         )
         report = BlobGCResult(str(source_db_path), str(blob_root), False, len(members), generation_id=generation_id)
         evidence = GCRunEvidence(max_batch=len(members))
@@ -794,8 +864,8 @@ def run_blob_gc(
     -----------------
     1. Never delete a blob that still has a DB reference.
     2. Only delete blobs older than the previous completed GC generation
-       plus MIN_AGE_S (defense-in-depth; the sole protection against an
-       in-flight ingest, see the ``MIN_AGE_S`` docstring).
+       plus MIN_AGE_S (defense-in-depth; publication reservations and the
+       final locked recheck protect in-flight ingest).
     3. Bound each run to ``max_batch`` deletions.
 
     Parameters
@@ -885,9 +955,14 @@ def run_blob_gc_report(
         report.blocked_reason = "blob GC durable member-intent schema is unavailable"
         logger.error("Blob GC refused to run: %s", report.blocked_reason)
         return report
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as schema_conn:
+        if not _gc_namespace_identity_columns_available(schema_conn):
+            report.blocked_reason = "blob GC durable namespace-identity schema is unavailable"
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
 
     try:
-        _assert_blob_namespace_readable(blob_path)
+        namespace_identity = _blob_namespace_identity(blob_path)
     except _BlobNamespaceUnavailableError as exc:
         report.blocked_reason = str(exc)
         logger.error("Blob GC refused to run: %s", report.blocked_reason)
@@ -1011,6 +1086,7 @@ def run_blob_gc_report(
             generation_id=generation_id,
             started_at_ms=started_at_ms,
             members=tuple(members),
+            namespace_identity=namespace_identity,
         )
         if not members:
             report.generation_id = generation_id

@@ -141,7 +141,7 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             "path": str(blob_root),
             "present": blob_root.exists(),
             "backup_policy": "back_up_referenced_blobs_with_source_and_user_tiers",
-            "gc_safety_boundary": "source.db raw references plus the gc_generations age floor are authoritative",
+            "gc_safety_boundary": "canonical source/index liveness, publication reservations, namespace-bound intent, and the generation age floor",
         },
         "profiles": list(_BACKUP_PROFILES),
         "warnings": wal_warnings,

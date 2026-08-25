@@ -1,8 +1,8 @@
 """Regression tests for blob GC safety invariants.
 
-Verifies the two fatal GC bugs fixed in 1bd2f156 stay fixed:
+Verifies two historical GC regressions stay fixed:
 
-1. ``_still_referenced`` must check ``raw_sessions.raw_id``
+1. canonical liveness must check ``raw_sessions.blob_hash``
 2. ``_candidate_blobs`` must walk all 256 prefix subdirectories
 """
 
@@ -62,7 +62,7 @@ def _make_source_db(path: str | Path) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 
-def test_still_referenced_does_not_treat_raw_id_as_blob_reference() -> None:
+def test_canonical_liveness_does_not_treat_raw_id_as_blob_reference() -> None:
     """A raw observation ID that happens to look like a hash cannot pin bytes."""
     conn = _make_db()
     conn.execute(
@@ -75,7 +75,7 @@ def test_still_referenced_does_not_treat_raw_id_as_blob_reference() -> None:
     conn.close()
 
 
-def test_still_referenced_rejects_unknown_hash() -> None:
+def test_canonical_liveness_rejects_unknown_hash() -> None:
     """A blob not in raw_sessions is not referenced."""
     conn = _make_db()
     conn.execute(
@@ -88,14 +88,14 @@ def test_still_referenced_rejects_unknown_hash() -> None:
     conn.close()
 
 
-def test_still_referenced_empty_table() -> None:
+def test_canonical_liveness_empty_table() -> None:
     """With no raw_sessions rows, nothing is referenced."""
     conn = _make_db()
     assert inspect_blob_liveness(conn, "any-hash").state is LivenessState.UNREFERENCED
     conn.close()
 
 
-def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None:
+def test_canonical_liveness_recognizes_archive_source_hash(tmp_path: Path) -> None:
     """source references are BLOB hashes, not legacy raw_id text."""
     blob_hash = "a" * 64
     source_conn = _make_source_db(tmp_path / "source.db")

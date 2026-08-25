@@ -6,7 +6,7 @@
 -- shells). Its durable blob ref was nonetheless written as
 -- ref_type='raw_payload' keyed by a *synthetic* raw_id that never
 -- corresponds to any raw_sessions row. Blob GC's liveness check
--- (storage/blob_gc.py:_still_referenced) treated ANY row in blob_refs as
+-- (the former blob-GC liveness check) treated ANY row in blob_refs as
 -- proof of liveness -- a tautology, since the very row being asked about is
 -- itself the evidence -- so these refs were retained forever, uncounted, and
 -- invisible to GC (73,427 rows / ~1.94 GiB measured on the live archive).

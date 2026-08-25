@@ -265,8 +265,7 @@ own explicit checklist item, not an assumed side effect of this document.
 **Reuse `blob_gc.py`'s existing hardened deletion path; do not build a
 parallel one.** The bead's own phrasing — "mark physical blob collectible →
 existing GC collects" — points at the right shape: extend
-`_reference_surfaces`/`_still_referenced` (`storage/blob_gc.py`) with one more
-clause, and let GC's already-audited candidate-discovery,
+the canonical blob-liveness descriptor with one more owner, and let GC's already-audited candidate-discovery,
 `MIN_AGE_S`-gated, `BEGIN IMMEDIATE`-locked, publication-reservation-checked
 unlink + `gc_generations` bookkeeping do the actual deletion:
 
@@ -353,11 +352,11 @@ durable-tier changes: a **verified backup manifest** (`daemon/backup.py`,
 `backup_archive`/`_verify_backup_result`) run immediately before the first
 production reclamation pass, plus an explicit operator go-ahead (not
 automatic — no daemon-scheduled auto-reclamation in v1). `backup_archive`
-already builds its blob inventory from `source.db`'s referenced-hash set
-(`_source_blob_inventory`); a backup taken *after* reclamation naturally
+uses the canonical blob-liveness projection and persists independent active
+index attachment evidence; a backup taken *after* reclamation naturally
 excludes physically-deleted hashes and includes the successor + reference
-rows, which together are sufficient to reconstruct the original bytes —
-this needs no special-casing in the backup tool, only confirmation (via the
+rows, which together are sufficient to reconstruct the original bytes. This
+needs no special-casing in the backup tool, only confirmation (via the
 verification plan below) that the reconstruction is actually byte-exact
 before the first physical deletion is allowed to proceed.
 

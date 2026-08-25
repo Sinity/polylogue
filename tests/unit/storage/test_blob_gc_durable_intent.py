@@ -148,6 +148,38 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
+def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restart must not terminalize intent against a replacement namespace.
+
+    Anti-vacuity: a retry that treats any readable missing path as reconciled
+    removal would complete the pending member after the namespace swap.
+    """
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"namespace-bound pending intent")
+    _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+
+    def crash_after_intent(*_args: object, **_kwargs: object) -> tuple[BlobLiveness, BlobLiveness]:
+        raise RuntimeError("leave namespace-bound intent pending")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with pytest.raises(RuntimeError, match="namespace-bound intent pending"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+
+    observed_namespace = tmp_path / "observed-blob-namespace"
+    store.root.rename(observed_namespace)
+    store.root.mkdir()
+
+    retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert retry.blocked_reason == "blob namespace identity changed since GC intent was committed"
+    assert (observed_namespace / blob_hash[:2] / blob_hash[2:]).exists()
+    assert _member_rows(tmp_path / "source.db")[0][1:] == (blob_hash.upper(), "pending")
+
+
+@pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
 def test_gc_does_not_terminalize_a_generation_with_an_unknown_member(tmp_path: Path) -> None:
     """A completed generation is impossible while one member remains pending.
 
@@ -333,10 +365,12 @@ def test_report_counts_this_resume_while_generation_counts_all_durable_outcomes(
     _backdate(store, pending_hash)
     generation_id = "mixed-outcome-generation"
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        namespace = store.root.stat()
         conn.execute(
-            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES (?, 1, NULL, 0, 0)",
-            (generation_id,),
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, "
+            "blob_namespace_device, blob_namespace_inode) VALUES (?, 1, NULL, 0, 0, ?, ?)",
+            (generation_id, namespace.st_dev, namespace.st_ino),
         )
         conn.execute(
             "INSERT INTO gc_generation_members "
@@ -486,12 +520,18 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
 
 
 def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path) -> None:
-    """The v34 durable addition needs no backup and preserves the v33 table."""
+    """The v34/v35 durable additions need no backup and preserve v33 rows."""
     source_db = tmp_path / "source.db"
     with sqlite3.connect(source_db) as conn:
         conn.executescript(SOURCE_DDL)
         conn.execute("DROP INDEX idx_gc_generation_members_pending")
         conn.execute("DROP TABLE gc_generation_members")
+        conn.execute("DROP TABLE gc_generations")
+        conn.execute(
+            "CREATE TABLE gc_generations (generation_id TEXT PRIMARY KEY, started_at_ms INTEGER NOT NULL, "
+            "completed_at_ms INTEGER, reclaimed_count INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0), "
+            "reclaimed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)) STRICT"
+        )
         conn.execute("PRAGMA user_version = 33")
         conn.execute(
             "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
@@ -499,8 +539,8 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
         )
         conn.commit()
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
-        assert result.applied_versions == (34,)
-        assert conn.execute("PRAGMA user_version").fetchone() == (34,)
+        assert result.applied_versions == (34, 35)
+        assert conn.execute("PRAGMA user_version").fetchone() == (35,)
         assert conn.execute("SELECT generation_id FROM gc_generations").fetchone() == ("before-v34",)
         assert conn.execute("SELECT COUNT(*) FROM gc_generation_members").fetchone() == (0,)
         assert [row[1] for row in conn.execute("PRAGMA table_info(gc_generation_members)")] == [
