@@ -53,7 +53,7 @@ from polylogue.sources.origin_specs import (
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
-from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
+from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -152,7 +152,15 @@ class SeededArchiveKey:
 
 
 @dataclass(frozen=True)
-class SeededArchiveManifest:
+class CorpusArtifactManifest:
+    """Authenticated publication record for a deterministic corpus artifact.
+
+    The manifest describes construction and storage identity only.  It does
+    not carry an expected semantic result, incident classification, or case
+    admission state.  ``SeededArchiveManifest`` remains a compatibility alias
+    for existing fixture consumers.
+    """
+
     protocol_version: int
     key: str
     archive_id: str
@@ -176,10 +184,13 @@ class SeededArchiveManifest:
         return payload
 
 
+SeededArchiveManifest = CorpusArtifactManifest
+
+
 @dataclass(frozen=True)
 class SeededArchiveArtifact:
     root: Path
-    manifest: SeededArchiveManifest
+    manifest: CorpusArtifactManifest
 
     @property
     def facts(self) -> tuple[SyntheticArtifactFacts, ...]:
@@ -2807,12 +2818,13 @@ def _build_seeded_archive_inner(
                     SyntheticCorpus.write_spec_artifacts(spec, corpus_root / spec.provider, prefix=f"seed-{index:02d}")
                     for index, spec in enumerate(selected_specs)
                 )
-                sources = []
+                sources: list[Source] = []
                 for spec, written in zip(selected_specs, written_batches, strict=True):
-                    if spec.provider == "antigravity":
-                        sources.append(Source(name=spec.provider, path=written.files[0].parent.parent))
-                    else:
-                        sources.extend(Source(name=spec.provider, path=path) for path in written.files)
+                    source_paths = (
+                        (written.files[0].parent.parent,) if spec.provider == "antigravity" else written.files
+                    )
+                    package = provider_source_package(spec.provider, written.files, source_paths=source_paths)
+                    sources.extend(package.admitted_sources())
                 with _configured_archive_root(staging):
                     with patch(
                         "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
@@ -3197,6 +3209,7 @@ __all__ = [
     "ArtifactGcEntry",
     "ArtifactGcReport",
     "ImmutableTreeArtifact",
+    "CorpusArtifactManifest",
     "BENCHMARK_WORKLOAD_PROFILES",
     "BenchmarkWorkloadProfile",
     "BenchmarkWorkloadTier",

@@ -84,32 +84,21 @@ def named_seeded_archive(
 def named_seeded_archive_ro(
     monkeypatch: pytest.MonkeyPatch,
     workspace_env: dict[str, Path],
-    request: pytest.FixtureRequest,
 ) -> Callable[[str], Path]:
-    """Give path-based read consumers a private immutable-artifact clone.
+    """Give path-based read consumers the authenticated immutable artifact.
 
     CLI and completion tests open ``POLYLOGUE_ARCHIVE_ROOT`` by ordinary
-    filesystem paths, so they cannot receive the query lease's descriptor-
-    bound read-only guard.  A private clone preserves their existing surface
-    while making an accidental write test-local rather than cache-global.
+    filesystem paths.  The artifact is already sealed and content-addressed,
+    so a read-only consumer can share it directly; only a mutating consumer
+    receives a private clone through :func:`named_seeded_archive`.
     """
-
-    clones: list[SeededArchiveClone] = []
-
-    def close_clones() -> None:
-        for clone in reversed(clones):
-            clone.close()
-
-    request.addfinalizer(close_clones)
 
     def seed(name: str) -> Path:
         specs = named_corpus_specs(name)
         artifact = build_seeded_archive(specs)
-        clone = clone_seeded_archive(artifact, workspace_env["archive_root"])
-        clones.append(clone)
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
         monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
-        return clone.root / "index.db"
+        return artifact.root / "index.db"
 
     return seed
 

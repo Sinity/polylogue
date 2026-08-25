@@ -2,14 +2,129 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
+from polylogue.config import Source
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjectList: TypeAlias = list[JsonObject]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderSourcePackage:
+    """Provider-shaped input material for one law-owned candidate fixture.
+
+    This is deliberately an input primitive, not a case record.  It carries
+    enough information to reproduce and authenticate the bytes that enter the
+    production admission route, but it has no expected archive rows or
+    semantic verdict.  Consumers compose one package for the source traits
+    their law needs.
+    """
+
+    provider: str
+    source_paths: tuple[Path, ...]
+    wire_hashes: tuple[str, ...]
+    inventory: tuple[tuple[str, int], ...]
+    generator_id: str
+    schema_inputs: tuple[str, ...] = ()
+    attachment_hashes: tuple[str, ...] = ()
+    schedule_digest: str | None = None
+
+    @classmethod
+    def from_files(
+        cls,
+        provider: str,
+        files: tuple[Path, ...],
+        *,
+        source_paths: tuple[Path, ...] | None = None,
+        generator_id: str = "provider-source-package-v1",
+        schema_inputs: tuple[str, ...] = (),
+        attachment_bytes: tuple[bytes, ...] = (),
+        schedule_digest: str | None = None,
+    ) -> ProviderSourcePackage:
+        """Describe existing provider-shaped files without inventing semantics."""
+        if not provider or not files:
+            raise ValueError("a provider source package requires a provider and files")
+        if any(not path.is_file() for path in files):
+            raise ValueError("provider source package files must already exist")
+        paths = source_paths or files
+        if not paths:
+            raise ValueError("provider source package requires a declared source root")
+        if any(not path.exists() for path in paths):
+            raise ValueError("provider source package source paths must exist")
+        wire_hashes = tuple(_sha256_file(path) for path in files)
+        suffix_counts: dict[str, int] = {}
+        for path in files:
+            suffix_counts[path.suffix.lower() or "<none>"] = suffix_counts.get(path.suffix.lower() or "<none>", 0) + 1
+        inventory = (
+            ("files", len(files)),
+            ("bytes", sum(path.stat().st_size for path in files)),
+            *tuple(sorted((f"suffix:{suffix}", count) for suffix, count in suffix_counts.items())),
+        )
+        return cls(
+            provider=provider,
+            source_paths=tuple(paths),
+            wire_hashes=wire_hashes,
+            inventory=inventory,
+            generator_id=generator_id,
+            schema_inputs=tuple(schema_inputs),
+            attachment_hashes=tuple(hashlib.sha256(item).hexdigest() for item in attachment_bytes),
+            schedule_digest=schedule_digest,
+        )
+
+    @property
+    def identity(self) -> str:
+        """Content identity for caching input material, never semantic output."""
+        payload = {
+            "provider": self.provider,
+            "wire_hashes": self.wire_hashes,
+            "inventory": self.inventory,
+            "generator_id": self.generator_id,
+            "schema_inputs": self.schema_inputs,
+            "attachment_hashes": self.attachment_hashes,
+            "schedule_digest": self.schedule_digest,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return f"source-package:sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+    def admitted_sources(self) -> tuple[Source, ...]:
+        """Return the production ``Source`` inputs for the admission seam."""
+        return tuple(Source(name=self.provider, path=path) for path in self.source_paths)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def provider_source_package(
+    provider: str,
+    files: tuple[Path, ...],
+    *,
+    source_paths: tuple[Path, ...] | None = None,
+    generator_id: str = "synthetic-corpus-v1",
+    schema_inputs: tuple[str, ...] = (),
+    attachment_bytes: tuple[bytes, ...] = (),
+    schedule_digest: str | None = None,
+) -> ProviderSourcePackage:
+    """Build one composable provider/source package for a consuming law."""
+    return ProviderSourcePackage.from_files(
+        provider,
+        files,
+        source_paths=source_paths,
+        generator_id=generator_id,
+        schema_inputs=schema_inputs,
+        attachment_bytes=attachment_bytes,
+        schedule_digest=schedule_digest,
+    )
 
 
 @dataclass

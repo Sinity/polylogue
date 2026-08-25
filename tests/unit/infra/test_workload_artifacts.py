@@ -30,6 +30,7 @@ from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     ArtifactGcReport,
     BenchmarkWorkloadTier,
+    CorpusArtifactManifest,
     SeededArchiveClone,
     SeededArchiveReachabilityInventory,
     WorkloadProfile,
@@ -115,6 +116,17 @@ def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_s
     assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
     with pytest.raises(ValueError, match="unknown named seeded archive workload"):
         named_workload_profile("unknown")
+
+
+def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
+    tmp_path: Path,
+) -> None:
+    """Artifact identity is shared without turning the manifest into an oracle."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+
+    assert isinstance(artifact.manifest, CorpusArtifactManifest)
+    assert artifact.manifest.key == seeded_archive_key((c03_semantic_corpus_spec(),)).value
+    assert not hasattr(artifact.manifest, "expected_sessions")
 
 
 def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
@@ -1405,25 +1417,29 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 # ---------------------------------------------------------------------------
 
 
-def test_named_seeded_archive_ro_serves_a_readable_private_clone(
+def test_named_seeded_archive_ro_shares_the_authenticated_immutable_artifact(
     named_seeded_archive_ro: Callable[[str], Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The read-only fixture hands back a private clone for path-based consumers.
+    """Read-only path consumers do not pay for a writable clone.
 
-    Anti-vacuity: returning the shared artifact would make the ``artifacts/``
-    containment assertion fail, exposing a mutation leak into the shared cache.
+    Anti-vacuity: restoring the old clone path makes the patched clone helper
+    fail, while mutating consumers continue to use ``named_seeded_archive``.
     """
     monkeypatch.setattr(
         "tests.infra.corpus_fixtures.build_seeded_archive",
         lambda specs: build_seeded_archive(specs, cache_root=tmp_path / "cache"),
     )
+    monkeypatch.setattr(
+        "tests.infra.corpus_fixtures.clone_seeded_archive",
+        lambda *_args, **_kwargs: pytest.fail("read-only fixture unexpectedly cloned the artifact"),
+    )
     db_path = named_seeded_archive_ro("cli-chatgpt")
 
     assert db_path.is_file()
     assert db_path.name == "index.db"
-    assert "artifacts" not in db_path.parts
+    assert "artifacts" in db_path.parts
     assert os.environ["POLYLOGUE_ARCHIVE_ROOT"] == str(db_path.parent)
     with ArchiveStore.open_existing(db_path.parent, read_only=True) as archive:
         assert archive.count_sessions() > 0
