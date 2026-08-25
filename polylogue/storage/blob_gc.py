@@ -266,6 +266,72 @@ def _sharded_blob_path(blob_root: Path, blob_hash: str) -> Path:
     return blob_root / blob_hash[:2] / blob_hash[2:]
 
 
+def unlink_unreferenced_blob_hashes_under_exclusion(
+    source_db_path: Path,
+    index_db_path: Path,
+    blob_root: Path,
+    blob_hashes: set[str],
+) -> tuple[int, int, tuple[str, ...]]:
+    """Unlink specified hashes after GC's exact final liveness recheck.
+
+    Raw-retention has independently authorized row deletion, but never a
+    separate blob authority. It delegates its physical deletion to this
+    bounded GC seam: publisher exclusion, source then index write locks, and
+    the final canonical-owner/reservation recheck all happen immediately
+    before unlink.
+    """
+    if not blob_hashes:
+        return 0, 0, ()
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+    deleted = 0
+    deleted_bytes = 0
+    errors: list[str] = []
+    with exclude_archive_blob_publishers(source_db_path):
+        source_conn = sqlite3.connect(source_db_path)
+        index_conn: sqlite3.Connection | None = None
+        try:
+            source_conn.execute("BEGIN IMMEDIATE")
+            index_conn = sqlite3.connect(index_db_path)
+            index_conn.execute("BEGIN IMMEDIATE")
+            preflight = inspect_blob_liveness(source_conn, "0" * 64, index_conn=index_conn, require_index=True)
+            if preflight.state is LivenessState.BLOCKED:
+                return 0, 0, preflight.blockers
+            for blob_hash in sorted(blob_hashes):
+                decision = inspect_blob_liveness(source_conn, blob_hash, index_conn=index_conn, require_index=True)
+                if decision.state is LivenessState.BLOCKED:
+                    return deleted, deleted_bytes, decision.blockers
+                if decision.state is LivenessState.LIVE:
+                    continue
+                reservation = inspect_blob_reservation(source_conn, blob_hash)
+                if reservation.state is LivenessState.BLOCKED:
+                    return deleted, deleted_bytes, reservation.blockers
+                if reservation.state is LivenessState.LIVE:
+                    continue
+                target = _sharded_blob_path(blob_root, blob_hash)
+                try:
+                    size = target.stat().st_size
+                    target.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    errors.append(f"{blob_hash[:16]}: {exc}")
+                    continue
+                deleted += 1
+                deleted_bytes += size
+            source_conn.commit()
+        except Exception:
+            source_conn.rollback()
+            raise
+        finally:
+            if index_conn is not None:
+                if index_conn.in_transaction:
+                    index_conn.rollback()
+                index_conn.close()
+            source_conn.close()
+    return deleted, deleted_bytes, tuple(errors)
+
+
 def run_blob_gc(
     db_path: str | Path,
     blob_dir: str | Path,

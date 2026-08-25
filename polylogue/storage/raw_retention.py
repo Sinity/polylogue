@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Mapping
-from contextlib import closing, suppress
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +13,6 @@ from typing import Literal
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
-from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -2157,37 +2156,24 @@ def cleanup_superseded_raw_snapshots(
     deleted_blob_count = 0
     deleted_blob_bytes = 0
     errors: list[str] = []
-    for candidate in candidates:
-        if _column_exists(conn, "blob_refs", "blob_hash"):
-            try:
-                blob_hash = bytes.fromhex(candidate.blob_store_hash)
-            except ValueError as exc:
-                errors.append(str(exc))
-                continue
-            decision = inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index_conn, require_index=True)
-            if decision.state is LivenessState.BLOCKED:
-                errors.extend(decision.blockers)
-                continue
-            if decision.state is LivenessState.LIVE:
-                continue
-        else:
-            # Without a reference catalog, row cleanup cannot prove that this
-            # process owns the final CAS reference. Leave bytes for typed GC.
-            continue
-        try:
-            path = store.blob_path(candidate.blob_store_hash)
-        except ValueError as exc:
-            errors.append(str(exc))
-            continue
-        if not path.exists():
-            continue
-        with suppress(OSError):
-            deleted_blob_bytes += path.stat().st_size
-        try:
-            path.unlink()
-            deleted_blob_count += 1
-        except OSError as exc:
-            errors.append(f"{candidate.raw_id[:16]}: {exc}")
+    source_path = next(
+        (Path(str(row[2])) for row in conn.execute("PRAGMA database_list") if str(row[1]) == "main"), None
+    )
+    index_path = (
+        next((Path(str(row[2])) for row in index_conn.execute("PRAGMA database_list") if str(row[1]) == "main"), None)
+        if index_conn is not None
+        else None
+    )
+    candidate_hashes = {candidate.blob_store_hash for candidate in candidates if len(candidate.blob_store_hash) == 64}
+    if source_path is None or not str(source_path) or index_path is None or not str(index_path):
+        errors.append("index tier is unavailable")
+    else:
+        from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
+
+        deleted_blob_count, deleted_blob_bytes, unlink_errors = unlink_unreferenced_blob_hashes_under_exclusion(
+            source_path, index_path, store.root, candidate_hashes
+        )
+        errors.extend(unlink_errors)
 
     return RawSnapshotCleanupResult(
         candidate_count=len(candidates),

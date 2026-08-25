@@ -63,6 +63,24 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
         )"""
     )
     conn.execute(
+        """CREATE TABLE raw_hook_events (
+            hook_event_id TEXT PRIMARY KEY,
+            blob_hash BLOB
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE history_sidecars (
+            sidecar_id TEXT PRIMARY KEY,
+            blob_hash BLOB
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE blob_publication_reservations (
+            publication_id TEXT PRIMARY KEY,
+            blob_hash BLOB NOT NULL
+        )"""
+    )
+    conn.execute(
         """CREATE TABLE blob_refs (
             blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
             ref_id TEXT NOT NULL,
@@ -101,12 +119,15 @@ def _make_source_db(path: str | Path) -> sqlite3.Connection:
     )
     conn.execute(
         """CREATE TABLE blob_refs (
-            ref_id TEXT PRIMARY KEY,
-            owner_kind TEXT NOT NULL,
-            owner_id TEXT NOT NULL,
-            blob_hash BLOB NOT NULL
+            blob_hash BLOB NOT NULL,
+            ref_id TEXT NOT NULL,
+            ref_type TEXT NOT NULL,
+            PRIMARY KEY (blob_hash, ref_id, ref_type)
         ) STRICT"""
     )
+    conn.execute("CREATE TABLE raw_hook_events (hook_event_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
+    conn.execute("CREATE TABLE history_sidecars (sidecar_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
+    conn.execute("CREATE TABLE blob_publication_reservations (publication_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
     conn.commit()
     return conn
 
@@ -402,11 +423,25 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     conn.commit()
     conn.close()
 
+    from polylogue.storage import blob_gc
+
+    recheck_connections = 0
+    original_open_recheck = blob_gc._open_recheck_connection
+
+    def count_recheck_connection(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal recheck_connections
+        recheck_connections += 1
+        return original_open_recheck(*args, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_open_recheck_connection", count_recheck_connection)
+
     report = run_blob_gc_report(db_path, blob_root, max_batch=10)
 
     assert report.deleted_count == 0
     assert report.skipped_referenced == 1
-    # No final-lock pass happens after planning leaves an empty shortlist.
+    # An empty shortlist records one generation but must not open the final
+    # recheck work seam (a second staging/locking pass would increment this).
+    assert recheck_connections == 0
     assert report.generation_written is True
 
 

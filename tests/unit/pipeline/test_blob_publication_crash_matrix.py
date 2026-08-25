@@ -19,7 +19,9 @@ Boundaries covered, matching the design's named chain:
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 from hashlib import sha256
 from pathlib import Path
 
@@ -30,8 +32,10 @@ import polylogue.storage.sqlite.archive_tiers.source_write as source_write
 from polylogue.core.enums import Origin
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
+    abandon_blob_publication_receipts,
     consume_blob_publication_receipt,
     exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
@@ -84,6 +88,14 @@ def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_t
     assert outcome.cleared_referenced == 0
     assert outcome.retained_referenced == 2
     assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication-a",), ("publication-b",)]
+
+    with sqlite3.connect(index_db) as index:
+        index.execute("DELETE FROM attachments WHERE attachment_id = 'attachment'")
+    abandonment = abandon_blob_publication_receipts(
+        source_db, store.root, ["publication-a"], confirmed=True, index_db_path=index_db
+    )
+    assert abandonment.abandoned == 1
+    assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication-b",)]
 
 
 def test_reconciliation_retains_receipts_when_required_index_is_unavailable(tmp_path: Path) -> None:
@@ -388,7 +400,8 @@ def test_crash_during_source_commit_transaction_rolls_back_atomically_to_unresol
     assert len(_reservation_rows(source_db, expected_hash)) == 1
 
 
-def test_crash_after_index_commit_before_finalization_self_heals_via_reconciliation(
+@pytest.mark.uses_real_clock("backdates the physical blob before canonical GC")
+def test_crash_after_index_commit_keeps_receipt_until_explicit_terminal_abandonment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -472,7 +485,25 @@ def test_crash_after_index_commit_before_finalization_self_heals_via_reconciliat
         )
     assert outcome.cleared_referenced == 0
     assert outcome.retained_referenced == 1
-    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
+    rows = _reservation_rows(archive_root / "source.db", expected_hash)
+    assert len(rows) == 1
+
+    # The crash receipt is not a fifth owner. Once its sole referent is later
+    # deleted, exact-ID abandonment revalidates absence under writer exclusion
+    # and releases this publication only; GC can then collect the bytes.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM attachments WHERE blob_hash = ?", (expected_hash,))
+    abandonment = abandon_blob_publication_receipts(
+        archive_root / "source.db",
+        archive_root / "blob",
+        [rows[0][0]],
+        confirmed=True,
+        index_db_path=db_path,
+    )
+    assert abandonment.abandoned == 1
+    os.utime(BlobStore(archive_root / "blob").blob_path(expected_hash.hex()), (time.time() - 3600,) * 2)
+    assert run_blob_gc_report(archive_root / "source.db", archive_root / "blob").deleted_count == 1
+    assert not BlobStore(archive_root / "blob").exists(expected_hash.hex())
 
 
 def test_finalization_transaction_is_atomic_across_multiple_receipts(

@@ -72,7 +72,10 @@ def test_joined_ledger_kinds_protect_only_live_referents(
             conn.execute("DELETE FROM history_sidecars WHERE sidecar_id = ?", (identifier,))
         # A bare ledger row is not authority. Replacing the relation with a
         # membership test makes this assertion fail.
-        assert not inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True).protected
+        assert (
+            inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True).state
+            is LivenessState.UNREFERENCED
+        )
 
 
 def test_direct_owners_and_reservation_survive_missing_or_dangling_ledger(tmp_path: Path) -> None:
@@ -110,7 +113,10 @@ def test_direct_owners_and_reservation_survive_missing_or_dangling_ledger(tmp_pa
             is LivenessState.UNREFERENCED
         )
         conn.execute("DELETE FROM blob_publication_reservations")
-        assert not inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True).protected
+        assert (
+            inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True).state
+            is LivenessState.UNREFERENCED
+        )
 
 
 def test_unknown_or_missing_owner_surface_is_an_observable_gc_blocker(tmp_path: Path) -> None:
@@ -123,10 +129,10 @@ def test_unknown_or_missing_owner_surface_is_an_observable_gc_blocker(tmp_path: 
             (blob_hash,),
         )
         unknown = inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True)
-        assert unknown.protected and any("unknown" in blocker for blocker in unknown.blockers)
+        assert unknown.state is LivenessState.BLOCKED and any("unknown" in blocker for blocker in unknown.blockers)
         index.execute("DROP TABLE attachments")
         unavailable = inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index, require_index=True)
-        assert unavailable.protected and "index.attachments is missing" in unavailable.blockers
+        assert unavailable.state is LivenessState.BLOCKED and "index.attachments is missing" in unavailable.blockers
 
 
 @pytest.mark.uses_real_clock("backdates real GC candidates")
@@ -153,14 +159,15 @@ def test_unknown_ref_kind_on_another_hash_blocks_the_entire_destructive_pass(tmp
     assert store.exists(orphan_hash)
 
 
-def test_structured_decision_distinguishes_live_unreferenced_and_blocked(tmp_path: Path) -> None:
+def test_structured_decision_fails_closed_for_missing_required_source_schema(tmp_path: Path) -> None:
     root, blob_hash = _archive(tmp_path)
     with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
         decision = inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True)
         assert decision.state is LivenessState.UNREFERENCED
-        source.execute("DROP TABLE raw_sessions")
+        source.execute("DROP TABLE blob_refs")
         blocked = inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True)
         assert blocked.state is LivenessState.BLOCKED
+        assert "source.blob_refs is missing" in blocked.blockers
 
 
 def test_bulk_projection_excludes_dangling_ledger_rows_and_verification_receipts(tmp_path: Path) -> None:

@@ -283,7 +283,6 @@ def _liveness_decision(
         blob_hash.hex(),
         index_conn=index_conn,
         require_index=True,
-        include_reservations=False,
     )
 
 
@@ -473,42 +472,55 @@ def abandon_blob_publication_receipts(
         raise ValueError("confirmed=True is required to abandon publication receipts")
     requested = tuple(dict.fromkeys(publication_ids))
     with exclude_archive_blob_publishers(source_db_path):
-        by_id = {
-            item.publication_id: item
-            for item in inspect_blob_publication_receipts(
-                source_db_path,
-                blob_root,
-                index_db_path=index_db_path,
-            )
-        }
+        # An abandonment is an explicit terminal disposition, not a hash-level
+        # reconciliation shortcut. Recheck each requested receipt while source
+        # and index writers are excluded in the same order GC uses before its
+        # final unlink window.
+        from polylogue.storage.archive_identity import ArchiveLocation
+
+        resolved_index = index_db_path or ArchiveLocation.resolve(source_db_path.parent).active_index_path
+        source_conn = sqlite3.connect(source_db_path)
+        index_conn: sqlite3.Connection | None = None
         abandoned: list[str] = []
         skipped_referenced = 0
-        for publication_id in requested:
-            item = by_id.get(publication_id)
-            if item is None:
-                continue
-            if item.liveness.state is not LivenessState.UNREFERENCED:
-                skipped_referenced += 1
-                continue
-            abandoned.append(publication_id)
-        if abandoned:
-            conn = sqlite3.connect(source_db_path)
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.executemany(
+        found = 0
+        try:
+            source_conn.execute("BEGIN IMMEDIATE")
+            if not resolved_index.exists():
+                raise RuntimeError("index tier is unavailable")
+            index_conn = sqlite3.connect(resolved_index)
+            index_conn.execute("BEGIN IMMEDIATE")
+            rows = source_conn.execute(
+                f"SELECT publication_id, blob_hash FROM blob_publication_reservations "
+                f"WHERE publication_id IN ({', '.join('?' for _ in requested)})",
+                requested,
+            ).fetchall()
+            found = len(rows)
+            for publication_id, blob_hash in rows:
+                decision = _liveness_decision(source_conn, index_conn, bytes(blob_hash))
+                if decision.state is LivenessState.UNREFERENCED:
+                    abandoned.append(str(publication_id))
+                else:
+                    skipped_referenced += 1
+            if abandoned:
+                source_conn.executemany(
                     "DELETE FROM blob_publication_reservations WHERE publication_id = ?",
                     ((publication_id,) for publication_id in abandoned),
                 )
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            source_conn.commit()
+        except Exception:
+            source_conn.rollback()
+            raise
+        finally:
+            if index_conn is not None:
+                if index_conn.in_transaction:
+                    index_conn.rollback()
+                index_conn.close()
+            source_conn.close()
     return BlobPublicationAbandonment(
         abandoned=len(abandoned),
         skipped_referenced=skipped_referenced,
-        missing_receipts=len(requested) - len(abandoned) - skipped_referenced,
+        missing_receipts=len(requested) - found,
     )
 
 

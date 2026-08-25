@@ -233,12 +233,13 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
     assert report.total_references_seen == 1
     assert report.missing_referenced_blobs == 0
     assert report.sample == ()
-    assert report.reference_sources == {"canonical_owners": 1}
+    assert report.reference_sources == {"source.db.raw_sessions": 1}
     assert referenced_blob_hashes(source_db) == [present_hash]
 
 
 def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
     present_hash, present_size = store.write_from_bytes(b"present")
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -260,11 +261,18 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
             ),
         )
 
+    # A current source tier cannot silently classify attachment-only bytes as
+    # unreferenced when the index authority is absent.
+    with pytest.raises(RuntimeError, match="index tier is unavailable"):
+        scan_blob_reference_debt(source_db, store=store)
+
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+
     report = scan_blob_reference_debt(source_db, store=store)
 
     assert report.ok is True
     assert report.total_references_seen == 1
-    assert report.reference_sources == {"canonical_owners": 1}
+    assert report.reference_sources == {"source.db.raw_sessions": 1}
 
 
 def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:

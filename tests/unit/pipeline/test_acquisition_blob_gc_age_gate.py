@@ -232,7 +232,7 @@ def test_live_publisher_missing_path_receipt_is_retained_by_reconciliation(tmp_p
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
 
 
-def test_reconciliation_with_writer_exclusion_clears_only_terminal_receipts(tmp_path: Path) -> None:
+def test_reconciliation_with_writer_exclusion_clears_only_missing_receipts(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
@@ -265,11 +265,14 @@ def test_reconciliation_with_writer_exclusion_clears_only_terminal_receipts(tmp_
 
     assert missing_size > 0
     assert outcome.cleared_missing == 1
-    assert outcome.cleared_referenced == 1
+    # This manually-created referent has no publication identity attached to
+    # it, so reconciliation cannot consume this receipt merely by equal hash.
+    assert outcome.cleared_referenced == 0
+    assert outcome.retained_referenced == 1
     assert outcome.unresolved == 1
     with sqlite3.connect(source_db) as conn:
         remaining = conn.execute("SELECT lower(hex(blob_hash)) FROM blob_publication_reservations").fetchall()
-    assert remaining == [(unresolved_hash,)]
+    assert {row[0] for row in remaining} == {referenced_hash, unresolved_hash}
 
 
 def test_failed_reservation_batch_never_publishes_final_blob(

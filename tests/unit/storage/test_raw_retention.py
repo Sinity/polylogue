@@ -155,7 +155,7 @@ def _insert_archive_raw_session(
         INSERT INTO raw_sessions (
             raw_id, origin, native_id, source_path, source_index,
             blob_hash, blob_size, acquired_at_ms
-        ) VALUES (?, 'codex', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'codex-session', ?, ?, ?, ?, ?, ?)
         """,
         (raw_id, raw_id, str(source_path), source_index, bytes.fromhex(blob_hash), blob_size, acquired_at_ms),
     )
@@ -2798,15 +2798,17 @@ def test_raw_frontier_integrity_snapshot_unavailable_ops_tier_is_unknown_never_h
 
 
 def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path) -> None:
-    db_path = tmp_path / "source.db"
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    db_path = root / "source.db"
+    index_db = root / "index.db"
     source = tmp_path / "rollout.jsonl"
     source.write_text('{"type":"message"}\n', encoding="utf-8")
-    blob_store = BlobStore(tmp_path / "blob")
+    blob_store = BlobStore(root / "blob")
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    _ensure_archive_source_schema(conn)
 
     old_blob, old_size = _write_blob(blob_store, b"v1-old")
     current_blob, current_size = _write_blob(blob_store, b"v1-current")
@@ -2835,12 +2837,13 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
         ("raw-old-not-a-blob-hash", old_blob)
     ]
 
-    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+    with sqlite3.connect(index_db) as index_conn:
+        result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store, index_conn=index_conn)
 
     assert result.deleted_raw_count == 1
-    assert result.deleted_blob_count == 0
-    assert result.errors == ("index tier is unavailable",)
-    assert blob_store.exists(old_blob)
+    assert result.deleted_blob_count == 1
+    assert result.errors == ()
+    assert not blob_store.exists(old_blob)
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = 'raw-old-not-a-blob-hash'").fetchone() is None

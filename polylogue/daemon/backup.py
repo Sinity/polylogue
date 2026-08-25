@@ -440,7 +440,9 @@ def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
         conn.close()
 
 
-def _source_blob_inventory(source_db: Path) -> dict[str, set[str]]:
+def _source_blob_inventory(source_db: Path, index_db: Path) -> dict[str, set[str]]:
+    if not index_db.exists():
+        raise RuntimeError("index tier is required to copy canonical blob inventory")
     inventory = {blob_hash: {"referenced"} for blob_hash in referenced_blob_hashes(source_db, immutable=True)}
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
         has_reservations = conn.execute(
@@ -450,25 +452,6 @@ def _source_blob_inventory(source_db: Path) -> dict[str, set[str]]:
             for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
                 inventory.setdefault(bytes(blob_hash).hex(), set()).add("reserved")
     return inventory
-
-
-def _source_blob_hashes(source_db: Path) -> set[str]:
-    return set(_source_blob_inventory(source_db))
-
-
-def _index_attachment_blob_hashes(index_db: Path) -> set[str]:
-    if not index_db.exists():
-        return set()
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro&immutable=1", uri=True)) as conn:
-        has_attachments = conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'attachments'"
-        ).fetchone()
-        if has_attachments is None:
-            return set()
-        return {
-            bytes(blob_hash).hex()
-            for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM attachments WHERE blob_hash IS NOT NULL")
-        }
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -485,9 +468,9 @@ def _copy_referenced_blobs(
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    inventory = _source_blob_inventory(source_db)
-    for blob_hash in _index_attachment_blob_hashes(index_db) if index_db is not None else ():
-        inventory.setdefault(blob_hash, set()).add("index_attachment")
+    if index_db is None:
+        raise RuntimeError("index tier is required to copy canonical blob inventory")
+    inventory = _source_blob_inventory(source_db, index_db)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
     debt_report = scan_blob_reference_debt(
@@ -877,12 +860,17 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and hashes_valid
         )
         restored_hash_set = set(restored_hashes)
-        source_blob_hashes = _source_blob_hashes(restored / "source.db") if (restored / "source.db").exists() else set()
-        missing_source_blobs = source_blob_hashes - restored_hash_set
-        source_blobs_resolved = not missing_source_blobs
-        index_attachment_hashes = _index_attachment_blob_hashes(restored / "index.db")
-        missing_index_attachment_blobs = index_attachment_hashes - restored_hash_set
-        index_attachment_blobs_resolved = not missing_index_attachment_blobs
+        canonical_blob_hashes = (
+            set(_source_blob_inventory(restored / "source.db", restored / "index.db"))
+            if (restored / "source.db").exists() and (restored / "index.db").exists()
+            else set()
+        )
+        missing_source_blobs = canonical_blob_hashes - restored_hash_set
+        source_blobs_resolved = (
+            (restored / "source.db").exists() and (restored / "index.db").exists() and not missing_source_blobs
+        )
+        index_attachment_blobs_resolved = source_blobs_resolved
+        missing_index_attachment_blobs = missing_source_blobs
         ok = (
             all(tier_integrity.values())
             and omitted_absent

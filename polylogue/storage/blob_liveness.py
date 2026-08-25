@@ -8,19 +8,12 @@ part of this relation.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
-
-logger = logging.getLogger(__name__)
-
-
-class BlobLivenessError(RuntimeError):
-    """Raised when the closed owner descriptor is internally inconsistent."""
 
 
 class LivenessState(str, Enum):
@@ -38,12 +31,6 @@ class BlobOwner:
     blob_column: str | None = None
     ref_type: str | None = None
     referent_column: str | None = None
-
-    def __post_init__(self) -> None:
-        if bool(self.ref_type) != bool(self.referent_column):
-            raise BlobLivenessError(f"incomplete ref descriptor for {self.table}")
-        if self.blob_column is None and self.ref_type is None:
-            raise BlobLivenessError(f"descriptor for {self.table} has no liveness relation")
 
 
 # The sole map for per-hash inspection, bulk projection, schema preflight,
@@ -76,11 +63,6 @@ class BlobLiveness:
     surfaces: tuple[str, ...] = ()
     blockers: tuple[str, ...] = ()
 
-    @property
-    def protected(self) -> bool:
-        """Presentation adapter for displays. It must never authorize mutation."""
-        return self.state is not LivenessState.UNREFERENCED
-
 
 @dataclass(frozen=True, slots=True)
 class BlobLivenessProjection:
@@ -88,10 +70,7 @@ class BlobLivenessProjection:
 
     live_hashes: frozenset[str]
     blockers: tuple[str, ...] = ()
-
-    @property
-    def state(self) -> LivenessState:
-        return LivenessState.BLOCKED if self.blockers else LivenessState.LIVE
+    owner_hashes: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def blob_hash_bytes(blob_hash: str) -> bytes | None:
@@ -147,17 +126,9 @@ def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> 
     return blockers
 
 
-def liveness_schema_blockers(conn: sqlite3.Connection, *, tier: str, current_source: bool = False) -> tuple[str, ...]:
-    """Diagnostic compatibility adapter for the prior schema-preflight API."""
-    return tuple(_schema_blockers(conn, tier=tier, required=current_source))
-
-
 def _source_global_blockers(source_conn: sqlite3.Connection) -> list[str]:
-    current_source = _table_exists(source_conn, "blob_publication_reservations")
-    blockers = _schema_blockers(source_conn, tier="source", required=current_source)
-    if not current_source and not _table_exists(source_conn, "blob_refs"):
-        return blockers
-    if blockers or not blob_refs_has_ref_type_column(source_conn):
+    blockers = _schema_blockers(source_conn, tier="source", required=True)
+    if blockers:
         return blockers
     try:
         unknown = sorted(
@@ -170,32 +141,6 @@ def _source_global_blockers(source_conn: sqlite3.Connection) -> list[str]:
     if unknown:
         blockers.append(f"unknown blob_refs ref_type(s): {', '.join(unknown)}")
     return blockers
-
-
-def _legacy_hook_status(conn: sqlite3.Connection) -> str:
-    """Stage old hook evidence only where a raw-payload ledger row exists."""
-    if not blob_refs_has_ref_type_column(conn):
-        return "not_applicable"
-    if conn.execute("SELECT 1 FROM blob_refs WHERE ref_type = 'raw_payload' LIMIT 1").fetchone() is None:
-        return "not_applicable"
-    required = {"hook_event_id", "origin", "native_id", "source_path", "blob_hash"}
-    if not _table_exists(conn, "raw_hook_events") or required - {
-        str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)")
-    }:
-        return "unavailable"
-    try:
-        from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
-
-        _create_match_stage(conn)
-    except Exception:
-        logger.warning("could not stage legacy hook evidence; retaining affected blobs")
-        return "unavailable"
-    return "ready"
-
-
-def legacy_hook_liveness_status(conn: sqlite3.Connection) -> str:
-    """Non-destructive status adapter retained for the reconciliation census."""
-    return _legacy_hook_status(conn)
 
 
 def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, prefix: str) -> list[str]:
@@ -213,17 +158,6 @@ def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, pref
             AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)
             LIMIT 1""",
             (blob_bytes, owner.ref_type),
-        ).fetchone()
-        if row is not None:
-            surfaces.append(f"{prefix}.blob_refs")
-    if _legacy_hook_status(source_conn) == "ready":
-        row = source_conn.execute(
-            """SELECT 1 FROM blob_refs AS ref WHERE ref.blob_hash = ? AND ref.ref_type = 'raw_payload' AND (
-            EXISTS (SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS match
-                    WHERE match.blob_hash = ref.blob_hash AND match.orphaned_ref_id = ref.ref_id)
-            OR EXISTS (SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS ambiguous
-                       WHERE ambiguous.blob_hash = ref.blob_hash AND ambiguous.orphaned_ref_id = ref.ref_id)) LIMIT 1""",
-            (blob_bytes,),
         ).fetchone()
         if row is not None:
             surfaces.append(f"{prefix}.blob_refs")
@@ -250,10 +184,8 @@ def inspect_blob_liveness(
     *,
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
-    include_reservations: bool = True,
 ) -> BlobLiveness:
     """Return ``live``, ``unreferenced``, or typed ``blocked`` for one hash."""
-    del include_reservations  # Reservations are a separate exact-ID crash protocol.
     blockers = _source_global_blockers(source_conn)
     if index_conn is None:
         if require_index:
@@ -319,6 +251,7 @@ def project_live_blob_hashes(
     if blockers:
         return BlobLivenessProjection(frozenset(), tuple(dict.fromkeys(blockers)))
     hashes: set[str] = set()
+    owner_hashes: dict[str, set[str]] = {}
     try:
         for conn, tier in ((source_conn, "source"), (index_conn, "index")):
             if conn is None:
@@ -327,9 +260,12 @@ def project_live_blob_hashes(
                 assert owner.blob_column is not None
                 if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
                     continue
+                owner_name = f"{tier}.db.{owner.table}"
                 for row in conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
-                        hashes.add(row[0].hex())
+                        blob_hash = row[0].hex()
+                        hashes.add(blob_hash)
+                        owner_hashes.setdefault(owner_name, set()).add(blob_hash)
         if blob_refs_has_ref_type_column(source_conn):
             for owner in _owners(tier="source", ledger=True):
                 assert owner.ref_type is not None and owner.referent_column is not None
@@ -343,30 +279,26 @@ def project_live_blob_hashes(
                     (owner.ref_type,),
                 ):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
-                        hashes.add(row[0].hex())
+                        blob_hash = row[0].hex()
+                        hashes.add(blob_hash)
+                        owner_hashes.setdefault("source.db.blob_refs", set()).add(blob_hash)
     except sqlite3.Error as exc:
         return BlobLivenessProjection(frozenset(), (f"blob liveness query is unreadable: {exc}",))
-    return BlobLivenessProjection(frozenset(hashes))
-
-
-def validated_blob_liveness_joins() -> tuple[tuple[str, str, str], ...]:
-    """Compatibility read projection of the already-validated descriptor."""
-    return BLOB_REF_LIVENESS_JOIN
+    return BlobLivenessProjection(
+        frozenset(hashes),
+        owner_hashes=tuple((owner, frozenset(values)) for owner, values in sorted(owner_hashes.items())),
+    )
 
 
 __all__ = [
     "BLOB_OWNERS",
     "BLOB_REF_LIVENESS_JOIN",
     "BlobLiveness",
-    "BlobLivenessError",
     "BlobLivenessProjection",
     "LivenessState",
     "blob_hash_bytes",
     "blob_refs_has_ref_type_column",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
-    "legacy_hook_liveness_status",
-    "liveness_schema_blockers",
     "project_live_blob_hashes",
-    "validated_blob_liveness_joins",
 ]

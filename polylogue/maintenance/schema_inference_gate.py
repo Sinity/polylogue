@@ -221,20 +221,20 @@ def _source_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     }
 
 
-def _referenced_blob_hashes(conn: sqlite3.Connection) -> set[str]:
-    """Return the durable source-tier blob universe as canonical hashes."""
+def _referenced_blob_hashes(conn: sqlite3.Connection, *, index_conn: sqlite3.Connection | None) -> set[str]:
+    """Return the complete current blob universe; index authority is required."""
     from polylogue.storage.blob_liveness import project_live_blob_hashes
 
-    projection = project_live_blob_hashes(conn)
+    projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
     if projection.blockers:
         raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
     return set(projection.live_hashes)
 
 
-def _source_blob_denominators(conn: sqlite3.Connection) -> dict[str, int]:
+def _source_blob_denominators(conn: sqlite3.Connection, *, index_conn: sqlite3.Connection | None) -> dict[str, int]:
     """Return the source-tier hash universe an independent blob scan must cover."""
 
-    return {"distinct_referenced_blob_hashes": len(_referenced_blob_hashes(conn))}
+    return {"distinct_referenced_blob_hashes": len(_referenced_blob_hashes(conn, index_conn=index_conn))}
 
 
 def _duplicate_gate(
@@ -455,7 +455,8 @@ def _run_source_gates(archive_root: Path, *, index_path: Path, sample_limit: int
                 "reason": "required raw_authority_blockers table is missing",
             }
         source_counts = _source_counts(source)
-        blob_denominators = _source_blob_denominators(source)
+        with open_readonly_connection(index_path) as index:
+            blob_denominators = _source_blob_denominators(source, index_conn=index)
         duplicate_gate = _duplicate_gate(source, index_path=index_path, sample_limit=sample_limit)
     return {
         "gates": gates,
@@ -1579,8 +1580,11 @@ def _validate_schema_inference_gate_payload(
 
     try:
         live_schema_identity = _tier_schema_identity(expected_root, location)
-        with open_readonly_connection(expected_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename) as source:
-            referenced_hashes = _referenced_blob_hashes(source)
+        with (
+            open_readonly_connection(expected_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename) as source,
+            open_readonly_connection(location.active_index_path) as index,
+        ):
+            referenced_hashes = _referenced_blob_hashes(source, index_conn=index)
         live_source_gates = _run_source_gates(
             expected_root, index_path=location.active_index_path, sample_limit=sample_limit
         )
@@ -1905,8 +1909,11 @@ def validate_schema_inference_receipt(
             errors.append(str(exc))
         if verify_blob_integrity:
             try:
-                with open_readonly_connection(root / "source.db") as source:
-                    referenced_hashes = _referenced_blob_hashes(source)
+                with (
+                    open_readonly_connection(root / "source.db") as source,
+                    open_readonly_connection(ArchiveLocation.resolve(root).active_index_path) as index,
+                ):
+                    referenced_hashes = _referenced_blob_hashes(source, index_conn=index)
                 verified_snapshot = (
                     verified_blob_integrity_snapshot
                     if verified_blob_integrity_snapshot is not None
@@ -2165,8 +2172,8 @@ def _run_schema_inference_gate_locked(
     except Exception as exc:
         fidelity = {"report": {}, "typed_residuals": [], "passed": False, "reasons": [f"corpus audit raised: {exc}"]}
     try:
-        with open_readonly_connection(root / "source.db") as source:
-            referenced_hashes = _referenced_blob_hashes(source)
+        with open_readonly_connection(root / "source.db") as source, open_readonly_connection(index_path) as index:
+            referenced_hashes = _referenced_blob_hashes(source, index_conn=index)
         full_blob_hash_verification = _full_blob_hash_evidence(root, referenced_hashes=referenced_hashes)
     except (OSError, sqlite3.Error) as exc:
         full_blob_hash_verification = {
