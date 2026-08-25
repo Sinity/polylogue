@@ -52,6 +52,14 @@ from tests.infra.reindex_differential import (
 )
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 
+# The module-scoped `reindex_campaign_template` fixture below is local to
+# each xdist worker. Under `--dist=loadgroup` (the full-suite route),
+# scheduling this module's tests across multiple workers would build the
+# heavyweight production-shaped campaign once per worker -- exactly the
+# concurrent duplicate build this module exists to avoid. Pin every test in
+# this module to one worker.
+pytestmark = pytest.mark.xdist_group(name="reindex-campaign")
+
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()

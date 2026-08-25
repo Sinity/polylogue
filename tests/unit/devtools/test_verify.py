@@ -45,7 +45,15 @@ def test_native_selection_partitions_semantic_lanes() -> None:
     ]
 
 
-def test_full_corpus_does_not_duplicate_testmon_tracing_across_workers() -> None:
+def test_full_corpus_traces_but_never_selects_testmon() -> None:
+    """A full-corpus run (deliberate `--all`, or bootstrap) must still trace.
+
+    Omitting `--testmon` entirely on this route left `.cache/testmon/testmondata`
+    never populated, so a bootstrap run produced no compatible graph for the
+    next plain `devtools verify` to accept. Trace every test under
+    `--testmon-noselect` -- which records coverage without ever narrowing
+    selection -- so the corpus run itself creates the graph.
+    """
     steps = verify.build_verify_steps(
         quick=False,
         lab=False,
@@ -59,9 +67,10 @@ def test_full_corpus_does_not_duplicate_testmon_tracing_across_workers() -> None
         "pytest native parallel 3/3 (all)",
     ]
     for _label, command in steps[-5:]:
-        assert "--testmon" not in command
-        assert "--testmon-noselect" not in command
-        assert not any(argument.startswith("--testmon-env=") for argument in command)
+        assert "--testmon" in command
+        assert "--testmon-noselect" in command
+        assert "--testmon-forceselect" not in command
+        assert "--testmon-env=polylogue-test" in command
 
 
 def test_affected_corpus_retains_testmon_selection() -> None:

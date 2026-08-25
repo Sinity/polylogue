@@ -628,7 +628,8 @@ def _stageable_quarantined_census_cohort(
         if (
             len(sessions) != 1
             or str(make_session_id(provider, sessions[0].provider_session_id)) != session_id
-            or f"{provider.value}:{sessions[0].provider_session_id}" != logical_source_key
+            or f"{origin_from_provider(sessions[0].source_name).value}:{sessions[0].provider_session_id}"
+            != logical_source_key
             or bytes.fromhex(session_content_hash(sessions[0])) != accepted_hash
         ):
             return (), "same-source-path cohort differs from the accepted session"

@@ -70,15 +70,19 @@ def _file_batch(path: Path, count: int) -> int:
     return zlib.crc32(path.as_posix().encode()) % count
 
 
-def pytest_collection_modifyitems(config: pytest.Config | None = None, items: list[pytest.Item] | None = None) -> None:
-    """Apply suite-wide timeout and bounded-memory execution contracts."""
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply suite-wide timeout and bounded-memory execution contracts.
+
+    Pluggy only injects hook arguments that are required parameters; a
+    parameter with a default is treated as optional and silently omitted,
+    which previously made pytest call this hook with both arguments as
+    ``None`` and disabled file-batch deselection, the rebuild-index load
+    groups, and timeout-marker validation. Keep both parameters required.
+    """
     from tests.infra.timeout_policy import timeout_marker_error
 
-    if items is None:
-        items = []
-    batch = config.getoption("--polylogue-file-batch") if config is not None else None
+    batch = config.getoption("--polylogue-file-batch")
     if batch:
-        assert config is not None
         try:
             index_text, count_text = batch.split("/", maxsplit=1)
             index, count = int(index_text), int(count_text)

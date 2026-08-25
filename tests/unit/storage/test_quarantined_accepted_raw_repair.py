@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
-from polylogue.core.enums import Provider, Role
+from polylogue.core.enums import Origin, Provider, Role
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -22,7 +22,7 @@ from polylogue.storage.raw_reconciler import (
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
-from polylogue.storage.repair import inspect_quarantined_accepted_raws
+from polylogue.storage.repair import _stageable_quarantined_census_cohort, inspect_quarantined_accepted_raws
 from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -607,3 +607,67 @@ def test_quarantine_refinement_tolerates_prior_superseded_application_history(tm
     assert selected.state is RawAuthorityFrontierState.SAFELY_REKEYABLE
     assert selected.actuator is RawAuthorityActuator.REFINE_QUARANTINE
     assert selected.executable
+
+
+def test_stageable_quarantined_census_cohort_keys_by_origin_not_provider(tmp_path: Path) -> None:
+    """The census-staging cohort helper must key by origin, not the raw provider token.
+
+    ``Origin.CHATGPT_EXPORT`` ("chatgpt-export") and ``Provider.CHATGPT``
+    ("chatgpt") are deliberately different tokens (see
+    docs/provider-origin-identity.md). Comparing a candidate's normalized
+    identity against ``f"{provider.value}:{provider_session_id}"`` instead of
+    the origin-derived key made every real cohort look like it "differs from
+    the accepted session" and block source-v7 census staging for any origin
+    whose provider token differs from its origin string -- which is most of
+    them.
+    """
+    initialize_active_archive_root(tmp_path)
+    native_id = "cohort-one"
+    payload = json.dumps(_chatgpt_session(native_id, "proof text"), sort_keys=True).encode()
+    parsed = _parse_one(Provider.CHATGPT, payload, f"{native_id}.json")
+    assert parsed
+    session = parsed[0]
+    content_hash = bytes.fromhex(session_content_hash(session))
+    logical_source_key = f"{origin_from_provider(session.source_name).value}:{native_id}"
+    blob_hash_hex = hashlib.sha256(payload).hexdigest()
+    session_id = f"chatgpt-export:{native_id}"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path=f"{native_id}.json",
+            acquired_at_ms=1,
+        )
+        archive.commit()
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute(
+            """
+            UPDATE raw_sessions
+            SET logical_source_key = ?, revision_kind = 'full', source_revision = ?,
+                predecessor_source_revision = NULL, predecessor_raw_id = NULL, baseline_raw_id = NULL,
+                append_start_offset = NULL, append_end_offset = NULL, acquisition_generation = 0,
+                revision_authority = 'quarantined'
+            WHERE raw_id = ?
+            """,
+            (logical_source_key, blob_hash_hex, raw_id),
+        )
+        source.commit()
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.row_factory = sqlite3.Row
+        raw = conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        staged_ids, reason = _stageable_quarantined_census_cohort(
+            tmp_path,
+            conn=conn,
+            raw=raw,
+            origin=Origin.CHATGPT_EXPORT,
+            provider=Provider.CHATGPT,
+            logical_source_key=logical_source_key,
+            session_id=session_id,
+            accepted_hash=content_hash,
+        )
+
+    assert reason is None, reason
+    assert staged_ids == (raw_id,)

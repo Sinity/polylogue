@@ -159,7 +159,12 @@ def _native_pytest_steps(
     testmon_args = (
         ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
         if testmon_mode == "affected"
-        else []
+        # A full-corpus run (deliberate `--all`, or the bootstrap route taken
+        # when no compatible graph exists yet) still traces every test under
+        # `--testmon-noselect` so it populates `.cache/testmon/testmondata`;
+        # omitting `--testmon` here left bootstrap runs with no supported way
+        # to ever produce a graph that a later plain `devtools verify` accepts.
+        else ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
     )
     base = [
         sys.executable,

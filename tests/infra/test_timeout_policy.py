@@ -48,6 +48,7 @@ def test_repository_collection_hook_rejects_zero_timeout() -> None:
             get_closest_marker=lambda name: pytest.mark.timeout(0).mark if name == "timeout" else None,
         ),
     )
+    config = cast("pytest.Config", SimpleNamespace(getoption=lambda name: None))
 
     with pytest.raises(pytest.UsageError, match="0 < seconds <= 900; got 0"):
-        pytest_collection_modifyitems(items=[item])
+        pytest_collection_modifyitems(config, [item])
