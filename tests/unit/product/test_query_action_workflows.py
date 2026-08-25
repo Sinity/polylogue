@@ -9,14 +9,14 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from polylogue.cli.click_app import cli
-from polylogue.core.json import loads
-from polylogue.operations.action_contracts import ACTION_CONTRACT_BY_PATH, action_affordance_payloads
-from polylogue.product.workflows import (
+from devtools.product_workflows import (
     EXECUTABLE_WORKFLOW_GOLDEN_PATHS,
     ExecutableWorkflowGoldenPath,
     JsonExpectation,
 )
+from polylogue.cli.click_app import cli
+from polylogue.core.json import loads
+from polylogue.operations.action_contracts import ACTION_CONTRACT_BY_PATH, action_affordance_payloads
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
 
 

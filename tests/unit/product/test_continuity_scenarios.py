@@ -8,13 +8,13 @@ from devtools.continuity_replay import (
     materialize_route_arguments,
     project_fact,
 )
+from devtools.product_workflows import EXECUTABLE_WORKFLOW_GOLDEN_PATHS
 from polylogue.core.json import require_json_document
 from polylogue.product.continuity_scenarios import (
     CONTINUITY_SCENARIOS,
     ContinuityFactProjection,
     continuity_scenario,
 )
-from polylogue.product.workflows import EXECUTABLE_WORKFLOW_GOLDEN_PATHS
 from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
 from tests.infra.archive_scenarios import ScenarioContentBlock
 from tests.infra.continuity import load_continuity_catalog

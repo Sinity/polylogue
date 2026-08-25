@@ -1,4 +1,4 @@
-"""Executable demo-archive workflow paths used by product behavior tests."""
+"""Executable demo-archive workflow paths used by docs generation and QA."""
 
 from __future__ import annotations
 
