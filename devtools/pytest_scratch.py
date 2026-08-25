@@ -130,6 +130,12 @@ def _owner_is_alive(payload: dict[str, Any]) -> bool:
     return isinstance(pid, int) and isinstance(start, str) and _process_start_ticks(pid) == start
 
 
+def _run_owner_may_be_alive(run_id: str) -> bool:
+    """Preserve markerless trees while their run-id owner PID still exists."""
+    match = re.search(r"-(\d+)-[0-9a-f]{8}(?:-s\d+)?$", run_id)
+    return match is not None and _process_start_ticks(int(match.group(1))) is not None
+
+
 @contextlib.contextmanager
 def _lease_lock(root: Path) -> Any:
     """Serialize lease creation and stale cleanup within one scratch root."""
@@ -172,6 +178,25 @@ def _prune_stale_leases(root: Path) -> tuple[str, ...]:
             lease_root = marker.parent
             _remove_owned_tree(lease_root)
             removed.append(str(lease_root))
+    remaining_budget = _MAX_STALE_LEASES_PER_START - len(removed)
+    if remaining_budget > 0:
+        for run_root in sorted(leases_root.iterdir()):
+            if remaining_budget <= 0 or run_root.is_symlink() or not run_root.is_dir():
+                continue
+            if _run_owner_may_be_alive(run_root.name):
+                continue
+            with contextlib.suppress(OSError):
+                run_root.chmod(run_root.stat().st_mode | stat.S_IRWXU)
+            for lane_root in sorted(run_root.iterdir()):
+                if remaining_budget <= 0:
+                    break
+                if lane_root.name.startswith(".") or lane_root.is_symlink() or not lane_root.is_dir():
+                    continue
+                if lane_root.joinpath(_LEASE_FILE).exists():
+                    continue
+                _remove_owned_tree(lane_root)
+                removed.append(str(lane_root))
+                remaining_budget -= 1
     # A completed lane removes its leaf. Reclaim empty run containers later;
     # active or sibling lanes keep their container non-empty and untouched.
     for run_root in sorted(leases_root.iterdir()):

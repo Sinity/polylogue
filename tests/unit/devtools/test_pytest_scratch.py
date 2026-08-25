@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sys
 from pathlib import Path
@@ -92,6 +93,25 @@ def test_new_lease_reclaims_only_dead_owner_markers(tmp_path: Path) -> None:
     assert not empty.exists()
     assert live.lease_root.exists()
     live.finalize("success")
+
+
+def test_new_lease_reclaims_markerless_dead_hardened_tree_but_preserves_live_owner(tmp_path: Path) -> None:
+    scratch_root = tmp_path / "scratch"
+    dead = scratch_root / "runs" / "20260825T000000Z-all-999999999-deadbeef-s1" / "parallel"
+    dead.joinpath("pytest", "nested").mkdir(parents=True)
+    dead.joinpath("pytest", "nested", "payload").write_text("stale", encoding="utf-8")
+    dead.joinpath("pytest", "nested").chmod(0o400)
+    live = scratch_root / "runs" / f"20260825T000000Z-all-{os.getpid()}-cafebabe-s1" / "parallel"
+    live.joinpath("pytest").mkdir(parents=True)
+
+    lease = PytestScratchLease.acquire(
+        root=scratch_root, run_id="new-run", lane="parallel", evidence_dir=tmp_path / "evidence"
+    )
+
+    assert str(dead) in lease.stale_leases_reclaimed
+    assert not dead.exists()
+    assert live.exists()
+    lease.finalize("success")
 
 
 def test_managed_command_rejects_unowned_shared_basetemp(tmp_path: Path) -> None:
