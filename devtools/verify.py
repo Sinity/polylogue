@@ -386,6 +386,13 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         if output:
             artifacts.output_path.write_text(output, encoding="utf-8")
             metadata["output_path"] = str(artifacts.output_path.relative_to(ROOT))
+        if label == "render all" and completed.returncode != 0:
+            for line in output.splitlines():
+                if line.startswith("render all:") and "diagnosis: " in line:
+                    token = line.split("diagnosis: ", 1)[1].split(":", 1)[0].split(" ", 1)[0]
+                    if token:
+                        metadata["diagnosis"] = token
+                        break
         if "--json" in command:
             decoded: object = None
             with contextlib.suppress(json.JSONDecodeError):

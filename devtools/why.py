@@ -86,6 +86,46 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
     ),
+    "render_feeder_failed": Explanation(
+        "A declared documentation feeder returned a nonzero result, so the site was not assembled.",
+        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
+    ),
+    "render_feeder_exception": Explanation(
+        "A declared documentation feeder raised an exception before it completed.",
+        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
+    ),
+    "render_feeder_system_exit": Explanation(
+        "A declared documentation feeder terminated through its command boundary.",
+        "Read the feeder message, then run that feeder and devtools render pages again.",
+    ),
+    "render_pagefind_failed": Explanation(
+        "The declared Pagefind search-index output was not generated.",
+        "Install or repair Pagefind, then run devtools render pages again.",
+    ),
+    "render_input_missing": Explanation(
+        "A declared render input is missing, so freshness cannot be established.",
+        "Restore the declared input named in the render details, then run devtools render all again.",
+    ),
+    "render_input_unreadable": Explanation(
+        "A declared render input could not be read, so freshness cannot be established.",
+        "Make the declared input readable, then run devtools render all again.",
+    ),
+    "render_input_invalid": Explanation(
+        "A declared render input path or pattern is invalid.",
+        "Fix the declared input path or pattern, then run devtools render all again.",
+    ),
+    "render_surface_exception": Explanation(
+        "A generated surface raised an exception instead of producing its output.",
+        "Read the recorded render details, fix that surface, then run devtools render all again.",
+    ),
+    "render_stamp_write_failed": Explanation(
+        "The generated surface completed but its freshness stamp could not be published.",
+        "Make the cache path writable, then run devtools render all again.",
+    ),
+    "render_stamp_invalidate_failed": Explanation(
+        "An old freshness stamp could not be invalidated before rerendering.",
+        "Make the cache path writable, then run devtools render all again.",
+    ),
 }
 
 

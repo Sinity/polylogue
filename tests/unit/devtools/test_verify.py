@@ -67,6 +67,23 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     assert history["steps"][0]["error"] == "ruff"
 
 
+def test_render_all_diagnosis_is_carried_into_existing_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; print('render all: cli-reference failed; diagnosis: render_input_missing', file=sys.stderr); sys.exit(1)",
+    ]
+
+    exit_code, _elapsed, metadata = verify._run("render all", command, run=run)
+
+    assert exit_code == 1
+    assert metadata["diagnosis"] == "render_input_missing"
+    payload = json.loads((tmp_path / str(run.relative_run_dir) / "run.json").read_text(encoding="utf-8"))
+    assert payload["steps"][0]["diagnosis"] == "render_input_missing"
+
+
 def test_early_gate_failure_exit_is_authoritative() -> None:
     result = verify._early_gate_failure_result(0.0, {"exit": 0, "diagnosis": "gate_missing_executable"})
 
