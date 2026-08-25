@@ -15,6 +15,10 @@ This module removes the capability instead of scanning for its use:
   duration of every guarded test with a wrapper that raises immediately when
   called from test-file code (frame-checked, so production code under test
   is untouched — it still reads the real clock exactly as before).
+- A session-start profile is armed before test-module collection. It catches
+  the original built-in ``time`` calls and immutable ``datetime`` methods at
+  module import, while using the same caller boundary and structured
+  ``uses_real_clock`` exemptions as the fixture.
 - The same fixture patches the ``datetime`` symbol inside the *test's own
   module* to a subclass whose ``.now()``/``.utcnow()`` raise, mirroring the
   technique ``frozen_clock`` already uses to pin ``datetime.now`` in
@@ -47,12 +51,15 @@ them: they are the harness, not the tests.
 
 from __future__ import annotations
 
+import ast
+import sys
+import threading
 import time as _time_module
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from types import ModuleType
-from typing import Any
+from types import FrameType, ModuleType
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -62,6 +69,20 @@ from devtools import repo_root as _get_root
 ROOT = _get_root()
 TESTS_DIR = ROOT / "tests"
 INFRA_DIR = TESTS_DIR / "infra"
+_ProfileHook = Callable[[FrameType, str, Any], Any]
+
+_REAL_CLOCK_CALLS = {
+    _time_module.time: "time.time",
+    _time_module.time_ns: "time.time_ns",
+    _time_module.monotonic: "time.monotonic",
+    _time_module.monotonic_ns: "time.monotonic_ns",
+    datetime.now: "datetime.now",
+    datetime.utcnow: "datetime.utcnow",
+}
+_SOURCE_EXEMPTIONS: dict[Path, tuple[tuple[int, int], ...]] = {}
+_PROFILE_PREVIOUS: _ProfileHook | None = None
+_THREAD_PROFILE_PREVIOUS: _ProfileHook | None = None
+_PROFILE_INSTALLED = False
 
 _GUIDANCE = (
     "{name}() reads the host clock directly from test code ({path}), which "
@@ -95,6 +116,86 @@ def _caller_is_guarded(frame_depth: int) -> tuple[bool, Path | None]:
     frame = sys._getframe(frame_depth + 1)
     caller_path = Path(frame.f_code.co_filename)
     return _is_guarded_path(caller_path), caller_path
+
+
+def _uses_real_clock_marker(node: ast.AST) -> bool:
+    return any(isinstance(child, ast.Attribute) and child.attr == "uses_real_clock" for child in ast.walk(node))
+
+
+def _source_exemption_ranges(path: Path) -> tuple[tuple[int, int], ...]:
+    cached = _SOURCE_EXEMPTIONS.get(path)
+    if cached is not None:
+        return cached
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError):
+        ranges: tuple[tuple[int, int], ...] = ()
+    else:
+        found: list[tuple[int, int]] = []
+        for statement in tree.body:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and _uses_real_clock_marker(statement):
+                found.append((1, getattr(tree, "end_lineno", 1)))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            markers = [decorator for decorator in node.decorator_list if _uses_real_clock_marker(decorator)]
+            if markers:
+                start = min(getattr(marker, "lineno", node.lineno) for marker in markers)
+                found.append((start, getattr(node, "end_lineno", node.lineno)))
+        ranges = tuple(found)
+    _SOURCE_EXEMPTIONS[path] = ranges
+    return ranges
+
+
+def _source_is_exempt(frame: Any, path: Path) -> bool:
+    if any(start <= frame.f_lineno <= end for start, end in _source_exemption_ranges(path)):
+        return True
+    marker = frame.f_globals.get("pytestmark")
+    if isinstance(marker, ast.AST):
+        return _uses_real_clock_marker(marker)
+    if getattr(marker, "name", None) == "uses_real_clock":
+        return True
+    if isinstance(marker, (tuple, list)):
+        return any(getattr(value, "name", None) == "uses_real_clock" for value in marker)
+    return False
+
+
+def _clock_profile(frame: Any, event: str, arg: Any) -> Any:
+    if event == "c_call":
+        name = _REAL_CLOCK_CALLS.get(arg)
+        if name is None and getattr(arg, "__self__", None) is datetime:
+            name = {"now": "datetime.now", "utcnow": "datetime.utcnow"}.get(getattr(arg, "__name__", ""))
+        if name:
+            caller_path = Path(frame.f_code.co_filename)
+            if _is_guarded_path(caller_path) and not _source_is_exempt(frame, caller_path):
+                raise RuntimeError(_GUIDANCE.format(name=name, path=caller_path))
+    previous = _PROFILE_PREVIOUS
+    if previous is not None and callable(previous):
+        previous(frame, event, arg)
+    return _clock_profile
+
+
+def _install_collection_guard() -> None:
+    global _PROFILE_INSTALLED, _PROFILE_PREVIOUS, _THREAD_PROFILE_PREVIOUS
+    if _PROFILE_INSTALLED:
+        return
+    _PROFILE_PREVIOUS = cast(_ProfileHook | None, sys.getprofile())
+    _THREAD_PROFILE_PREVIOUS = cast(_ProfileHook | None, threading.getprofile())
+    sys.setprofile(_clock_profile)
+    threading.setprofile(_clock_profile)
+    _PROFILE_INSTALLED = True
+
+
+def _remove_collection_guard() -> None:
+    global _PROFILE_INSTALLED, _PROFILE_PREVIOUS, _THREAD_PROFILE_PREVIOUS
+    if not _PROFILE_INSTALLED:
+        return
+    sys.setprofile(cast(Any, _PROFILE_PREVIOUS))
+    threading.setprofile(cast(Any, _THREAD_PROFILE_PREVIOUS))
+    _PROFILE_PREVIOUS = None
+    _THREAD_PROFILE_PREVIOUS = None
+    _SOURCE_EXEMPTIONS.clear()
+    _PROFILE_INSTALLED = False
 
 
 def _time_raiser(name: str, real: Any) -> Any:
@@ -213,6 +314,26 @@ def pytest_configure(config: pytest.Config) -> None:
         "guard (tests/infra/clock_guard.py) because it genuinely needs the "
         "real wall/monotonic clock.",
     )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    del session
+    _install_collection_guard()
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    del session
+    _remove_collection_guard()
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    del session, exitstatus
+    _remove_collection_guard()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    del config
+    _remove_collection_guard()
 
 
 __all__ = ["pytest_configure"]
