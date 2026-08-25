@@ -410,9 +410,12 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # triggers and rebuild/repair/freshness machinery but no application-layer
 # consumers. Its only MATCH reader had zero production callers; the live
 # thread-search path already uses a LIKE substring scan. The sibling
-# `blocks_command_trigram` remains because `devtools/affordance_usage.py`'s
-# `_cli_action_rows` is a real consumer with a documented archive-scale
-# speedup. See the v63 declaration in lifecycle.py.
+# `blocks_command_trigram` was kept at v63 because `devtools/affordance_usage.py`'s
+# `_cli_action_rows` was a real consumer with a documented archive-scale
+# speedup; that devtools module was deleted 2026-08-25 (polylogue-9m6ry,
+# completed campaign analytics) with no product-surface replacement, so
+# whether `blocks_command_trigram` still has a live consumer is now open --
+# see the v63 declaration in lifecycle.py.
 # polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
 # reindex acceptance gate. They remain nullable only so pre-bootstrap index
 # generations can be opened long enough to undergo the semantic replay.

@@ -463,36 +463,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace affordance-usage",
-        "workspace",
-        "Analyze agent affordance/tool usage from archive tool-use rows.",
-        "devtools.affordance_usage",
-        use_when=(
-            "Dogfood agent-tool usage analysis without hand-written SQL: summarize tool families, raw tool names, "
-            "origin splits, recent adoption windows, structured failure rates, and representative samples."
-        ),
-        examples=(
-            "devtools workspace affordance-usage --days 7 --json",
-            "devtools workspace affordance-usage --detail-pattern codebase-memory --detail-pattern search_code --days 30",
-            "devtools workspace affordance-usage --out-dir .local/evidence/agent-affordance-usage",
-        ),
-    ),
-    CommandSpec(
-        "workspace read-package",
-        "workspace",
-        "Render a declarative package of Polylogue read artifacts.",
-        "devtools.read_package",
-        use_when=(
-            "Generate local demo/export packages from a JSON/YAML spec that names ordinary "
-            "read views, formats, and output paths, instead of hand-rolling repeated "
-            "`polylogue read --view ... --to file` shell snippets."
-        ),
-        examples=(
-            "devtools workspace read-package --spec package.json --session-id 019f... --out-dir product-read",
-            "devtools workspace read-package --spec package.yaml --session-id 019f... --out-dir product-read --dry-run --json",
-        ),
-    ),
-    CommandSpec(
         "verify agent-integration",
         "verification",
         "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",
@@ -593,21 +563,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "and smoke installed runtime console scripts."
         ),
         examples=("devtools release verify-distribution",),
-    ),
-    CommandSpec(
-        "workspace cost-reconciliation",
-        "verification",
-        "Reconcile Polylogue token accounting against private provider stores.",
-        "devtools.cost_reconciliation_probe",
-        use_when=(
-            "Validate archive token accounting against optional local Codex state_5.sqlite and "
-            "Claude stats-cache.json before publishing cost or usage-analysis claims."
-        ),
-        examples=(
-            "devtools workspace cost-reconciliation --json",
-            "devtools workspace cost-reconciliation --codex-state ~/.codex/state_5.sqlite --json",
-            "devtools workspace cost-reconciliation --claude-stats-cache ~/.config/claude/stats-cache.json --check",
-        ),
     ),
     CommandSpec(
         "bench pipeline",
@@ -794,21 +749,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools bench synthetic --list",
             "devtools bench synthetic --scale medium --campaign search-filters",
-        ),
-    ),
-    CommandSpec(
-        "workspace failure-context",
-        "workspace",
-        "Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope.",
-        "devtools.failure_context",
-        use_when=(
-            "Bootstrap an agent inner-loop debugging session for a failing test — surfaces production "
-            "files the test depends on, their recent commits, and fixtures the test uses, "
-            "all in one structured envelope."
-        ),
-        examples=(
-            "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar",
-            "devtools workspace failure-context tests/unit/storage/test_foo.py::test_bar --days 14",
         ),
     ),
     CommandSpec(

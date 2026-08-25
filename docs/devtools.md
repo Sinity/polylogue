@@ -112,7 +112,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
-| `devtools workspace cost-reconciliation` | Reconcile Polylogue token accounting against private provider stores. |
 | `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools workspace schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools workspace schema explain` | Explain a committed package element schema with evidence and annotations. |
@@ -137,13 +136,10 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
-| `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 
