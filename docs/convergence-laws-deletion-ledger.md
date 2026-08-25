@@ -1,0 +1,13 @@
+# Convergence law deletion ledger
+
+This ledger records replacement candidates for the broad route comparator and duplicate projectors. The candidates remain in place until `polylogue-04r9f` runs both variants and demonstrates mutation parity. This change does not delete production or test machinery.
+
+| Candidate | Current role | Exact deletion condition | Successor |
+| --- | --- | --- | --- |
+| `tests/infra/archive_canonical_snapshot.py::capture_canonical_snapshot` and `archive_snapshot` | Broad read-only relation and public-projection snapshot | Both 04r9f variants pass the shared FTS and partitioned-aggregate laws, including all five required mutants, and every current caller has a narrower typed projection or an explicit retained need | `tests/infra/convergence_laws.py::read_semantic_projection` plus variant route observations |
+| `tests/infra/archive_canonical_snapshot.py::assert_canonical_snapshots_equal`, `assert_canonical_archives_equal`, and `assert_archives_equivalent` | Canonical row comparator used by existing route and mutation tests | Mutation parity is demonstrated for order-sensitive overwrite, omitted batch member, unconditional rewrite/publication, stale excess retention, and over-broad invalidation. No caller still needs non-convergence archive-wide comparison | Shared law assertions and the experiment contract |
+| `tests/infra/convergence_harness.py::assert_archives_equivalent` | Convergence-specific wrapper around the broad comparator | All convergence property callers are migrated and the old comparator has no remaining convergence-only consumer | `assert_permutation_law`, `assert_batching_law`, `assert_idempotence_law`, and `assert_locality_law` |
+| `tests/infra/convergence_harness.py::SessionMaterializationFacts` and `session_materialization_facts` | Duplicate hand-selected derived-row projector | The 04r9f differential proves the typed semantic projection catches the same materialization mutations, and no independent maintenance test requires the detailed row census | The shared typed semantic projection or a named maintenance-specific projector |
+| `tests/infra/reindex_differential.py::DerivedModelSnapshot` and `snapshot_derived_model` | Broad derived-table and public-read differential | Reindex-specific acceptance is split from convergence-law acceptance, all non-convergence callers are migrated or explicitly retained, and the replacement preserves its anti-vacuity controls | Reindex-specific typed read projections; convergence uses the shared laws |
+
+The following are not deletion candidates in this bead: `tests/infra/corpus_program.py`, `tests/infra/pathology_composer.py`, and the existing production-route harness. They are shared fixture authorities and remain reusable by the experiment.
