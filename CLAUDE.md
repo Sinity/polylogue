@@ -116,18 +116,23 @@ explicit-and-retryable or a typed permanent refusal.
   syntax) — a bare unquoted word errors with a hint. The grammar
   (`archive/query/expression.py`) is a real DSL lowered to SQL.
 - **MCP**: 10 capability-gated operation-dispatcher tools; adding an operation
-  updates the dispatcher's verb table + a tool contract
-  (`EXPECTED_TOOL_NAMES` is derived; a missing contract fails discovery).
+  updates the dispatcher's verb table (`EXPECTED_TOOL_NAMES` is derived; a
+  missing tool contract fails discovery). Tool contracts are currently
+  per-tool, not per-operation, and MCP insight projections are a hard-coded
+  set that bypasses the registry — per-operation contracts and
+  registry-driven MCP are the direction, owned by polylogue-fja2v/4p1, not
+  current truth.
 - **Insights** are descriptor-driven (`insights/registry.py`); one registry
-  drives plaintext, JSON, and MCP.
+  drives plaintext and JSON (MCP: see the caveat above).
 - New Click params on query verbs go last — a positional shift silently
   reroutes args.
 
 ## Verification
 
-`devtools` owns repo readiness. Top-level commands: `bench demo release render
-status test verify why workspace` (catalog: `devtools/command_catalog.py`; add
-a command → add its `CommandSpec` + `render devtools-reference`).
+`devtools` owns repo readiness. The command surface is generated — consult
+`devtools --list-commands` or `docs/devtools.md` (catalog:
+`devtools/command_catalog.py`; add a command → add its `CommandSpec` +
+`render devtools-reference`).
 
 - `devtools test <sel>` — focused pytest through the managed harness (checkout
   guard, environment, typed result). Never bare `pytest`.
