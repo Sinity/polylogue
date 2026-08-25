@@ -34,7 +34,7 @@ from polylogue.storage.backup_attestation import (
     archive_tier_paths,
     sign_verification_receipt,
 )
-from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes, scan_blob_reference_debt
+from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes
 from polylogue.storage.blob_store import BlobStore
 
 logger = get_logger(__name__)
@@ -440,18 +440,39 @@ def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
         conn.close()
 
 
-def _source_blob_inventory(source_db: Path, index_db: Path) -> dict[str, set[str]]:
-    if not index_db.exists():
-        raise RuntimeError("index tier is required to copy canonical blob inventory")
-    inventory = {blob_hash: {"referenced"} for blob_hash in referenced_blob_hashes(source_db, immutable=True)}
+def _source_blob_inventory(source_db: Path, *, index_db: Path | None = None) -> dict[str, set[str]]:
+    """Read canonical blob inventory from backup copies, with index evidence when included."""
+
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+        inventory = {
+            blob_hash: {"referenced"}
+            for blob_hash in referenced_blob_hashes(
+                source_db,
+                immutable=True,
+                require_index=index_db is not None,
+                index_db=index_db,
+            )
+        }
         has_reservations = conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
         ).fetchone()
         if has_reservations is not None:
             for (blob_hash,) in conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
-                inventory.setdefault(bytes(blob_hash).hex(), set()).add("reserved")
+                inventory.setdefault(bytes(blob_hash).hex(), {"referenced"}).add("reserved")
     return inventory
+
+
+def _source_blob_reference_debt(inventory: dict[str, set[str]], store: BlobStore) -> BlobReferenceDebtReport:
+    """Report missing source-canonical blobs without reopening an index tier."""
+
+    referenced = sorted(blob_hash for blob_hash, protection in inventory.items() if "referenced" in protection)
+    missing = [blob_hash for blob_hash in referenced if not store.exists(blob_hash)]
+    return BlobReferenceDebtReport(
+        total_references_seen=len(referenced),
+        missing_referenced_blobs=len(missing),
+        sample=tuple(missing[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT]),
+        reference_sources={"source.db.canonical_liveness": len(referenced)},
+    )
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -468,17 +489,10 @@ def _copy_referenced_blobs(
     backup_root: Path,
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    if index_db is None:
-        raise RuntimeError("index tier is required to copy canonical blob inventory")
-    inventory = _source_blob_inventory(source_db, index_db)
+    inventory = _source_blob_inventory(source_db, index_db=index_db)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
-    debt_report = scan_blob_reference_debt(
-        source_db,
-        store=store,
-        sample_size=_MISSING_BLOB_WARNING_SAMPLE_LIMIT,
-        immutable=True,
-    )
+    debt_report = _source_blob_reference_debt(inventory, store)
     if not hashes:
         return 0, 0, debt_report
 
@@ -528,7 +542,7 @@ def _copy_referenced_blobs(
             f"{debt_report.missing_referenced_blobs} total"
             + (f" (sample: {sample})" if sample else "")
             + "; details: blob-reference-debt.json"
-            + " (this counts source.db/raw_sessions references only -- unfetched"
+            + " (this counts source.db canonical liveness -- unfetched"
             " index-tier attachments with a NULL blob_hash are never counted"
             " here; see `polylogue ops maintenance attachment-acquisition-debt`"
             " for attachment-tier acquisition state)"
@@ -847,15 +861,15 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             and hashes_valid
         )
         restored_hash_set = set(restored_hashes)
+        source_included = (restored / "source.db").exists()
+        index_path = restored / "index.db"
         canonical_blob_hashes = (
-            set(_source_blob_inventory(restored / "source.db", restored / "index.db"))
-            if (restored / "source.db").exists() and (restored / "index.db").exists()
+            set(_source_blob_inventory(restored / "source.db", index_db=index_path if index_path.exists() else None))
+            if source_included
             else set()
         )
         missing_canonical_blobs = canonical_blob_hashes - restored_hash_set
-        canonical_blobs_resolved = (
-            (restored / "source.db").exists() and (restored / "index.db").exists() and not missing_canonical_blobs
-        )
+        canonical_blobs_resolved = not source_included or not missing_canonical_blobs
         ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and canonical_blobs_resolved
         receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {

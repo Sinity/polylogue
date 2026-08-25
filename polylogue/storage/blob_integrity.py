@@ -496,7 +496,13 @@ def _current_source_schema(conn: sqlite3.Connection) -> bool:
 
 
 def _referenced_blob_hashes(
-    db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
+    db_path: Path,
+    conn: sqlite3.Connection,
+    *,
+    configured_root: Path | None = None,
+    require_index: bool = True,
+    index_db: Path | None = None,
+    immutable: bool = False,
 ) -> list[str]:
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
@@ -519,17 +525,18 @@ def _referenced_blob_hashes(
         except sqlite3.Error as exc:
             raise RuntimeError(f"source tier referenced-hash query failed for {source_db}: {exc}") from exc
 
-    if configured_root is not None:
+    if index_db is None and configured_root is not None:
         index_db = configured_root / "index.db"
-    else:
+    elif index_db is None:
         from polylogue.storage.archive_identity import ArchiveLocation
 
         index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
-    if db_path.name == "source.db" and index_db.exists():
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
+    if require_index and db_path.name == "source.db" and index_db.exists():
+        immutable_query = "&immutable=1" if immutable else ""
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
             projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
     else:
-        projection = project_live_blob_hashes(conn, require_index=True)
+        projection = project_live_blob_hashes(conn, require_index=require_index)
     if projection.blockers:
         if _current_source_schema(conn):
             raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
@@ -576,13 +583,25 @@ def _reference_source_counts(
     return {owner: len(hashes) for owner, hashes in projection.owner_hashes}
 
 
-def referenced_blob_hashes(db_path: str | Path, *, immutable: bool = False) -> list[str]:
+def referenced_blob_hashes(
+    db_path: str | Path,
+    *,
+    immutable: bool = False,
+    require_index: bool = True,
+    index_db: Path | None = None,
+) -> list[str]:
     """Return distinct blob hashes referenced by archive source evidence."""
 
     resolved_db_path = Path(db_path)
     immutable_query = "&immutable=1" if immutable else ""
     with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True)) as conn:
-        return _referenced_blob_hashes(resolved_db_path, conn)
+        return _referenced_blob_hashes(
+            resolved_db_path,
+            conn,
+            require_index=require_index,
+            index_db=index_db,
+            immutable=immutable,
+        )
 
 
 def _source_db_for_blob_reference_report(db_path: str | Path) -> Path:

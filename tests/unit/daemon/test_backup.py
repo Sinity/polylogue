@@ -19,7 +19,7 @@ from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -371,6 +371,8 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert (backup_root / "audit.db").exists()
     assert not (backup_root / "index.db").exists()
     assert not (backup_root / "ops.db").exists()
+    assert not list(backup_root.glob("*.db-wal"))
+    assert not list(backup_root.glob("*.db-shm"))
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
     receipt_path = backup_root / "verification-receipt.json"
     assert receipt_path.exists()
@@ -634,29 +636,28 @@ def test_backup_result_formats_non_default_omissions_neutrally() -> None:
 
 def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     hashes = tuple(f"{idx:064x}" for idx in range(25))
-    source_db = tmp_path / "source.db"
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
     with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
-        )
         for idx, blob_hash in enumerate(hashes):
             conn.execute(
-                "INSERT INTO blob_refs (blob_hash, raw_id, ref_type) VALUES (?, ?, ?)",
-                (bytes.fromhex(blob_hash), f"raw-{idx}", "attachment"),
+                """INSERT INTO raw_sessions
+                (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+                VALUES (?, 'codex-session', ?, 0, ?, 1, 1)""",
+                (f"raw-{idx}", f"/raw/{idx}.jsonl", bytes.fromhex(blob_hash)),
+            )
+            conn.execute(
+                """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                VALUES (?, ?, 'attachment', ?, 1, 1)""",
+                (bytes.fromhex(blob_hash), f"raw-{idx}", f"/raw/{idx}.jsonl"),
             )
     warnings: list[str] = []
     backup_root = tmp_path / "backup"
     backup_root.mkdir()
     count, size, debt = backup_mod._copy_referenced_blobs(
         source_db=source_db,
-        source_blob_root=tmp_path / "blob-store",
+        source_blob_root=archive_root / "blob",
         index_db=None,
         backup_root=tmp_path / "backup",
         warnings=warnings,

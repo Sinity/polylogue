@@ -15,7 +15,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import cast
 
-from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
 from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 from polylogue.storage.introspection import table_exists
 
@@ -182,7 +182,10 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
 
     candidate_table = "blob_ref_liveness_candidates"
     conn.execute(f"DROP TABLE IF EXISTS temp.{candidate_table}")
-    known_joins = BLOB_REF_LIVENESS_JOIN
+    try:
+        known_joins = validated_blob_ref_liveness_joins()
+    except ValueError as exc:
+        raise BlobRefLivenessError(str(exc)) from exc
     if not table_exists(conn, "blob_refs"):
         return BlobRefLivenessStagedPlan(
             BlobRefLivenessClassification(0, {}, {}, (), (), (), 0, (), 0),

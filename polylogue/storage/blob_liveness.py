@@ -56,14 +56,36 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "history_sidecars", ref_type="sidecar", referent_column="sidecar_id"),
 )
 
-# Non-destructive compatibility projection for existing census callers. There
-# is intentionally no duplicate closed-map validator in this module or any
-# consumer.
-BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = tuple(
-    (owner.ref_type, owner.table, owner.referent_column)
-    for owner in BLOB_OWNERS
-    if owner.ref_type is not None and owner.referent_column is not None and not owner.rekeyable_legacy_ref
-)
+
+def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
+    """Return the canonical ledger map, rejecting ambiguous descriptors.
+
+    Legacy rekeyable refs are intentionally outside this direct join map: the
+    matcher proves their ownership separately.  Every ordinary ref type must
+    have exactly one referent relation.
+    """
+
+    joins: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for owner in BLOB_OWNERS:
+        if owner.tier != "source" or owner.ref_type is None:
+            continue
+        if owner.rekeyable_legacy_ref:
+            continue
+        if not owner.ref_type or not owner.referent_column:
+            raise ValueError(f"invalid blob owner descriptor: {owner!r}")
+        if owner.ref_type in seen:
+            raise ValueError(
+                f"ambiguous blob_refs ref_type mapping for {owner.ref_type!r}: "
+                f"duplicate referent {owner.table}.{owner.referent_column}"
+            )
+        seen.add(owner.ref_type)
+        joins.append((owner.ref_type, owner.table, owner.referent_column))
+    return tuple(joins)
+
+
+# Non-destructive compatibility projection for existing census callers.
+BLOB_REF_LIVENESS_JOIN = validated_blob_ref_liveness_joins()
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +150,27 @@ def _legacy_hook_rekey_supported(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _legacy_hook_rekey_schema_blockers(conn: sqlite3.Connection) -> list[str]:
+    """Describe every missing fact needed to prove legacy hook ownership."""
+
+    required_columns = {
+        "blob_refs": ("blob_hash", "ref_id", "ref_type", "source_path", "size_bytes", "acquired_at_ms"),
+        "raw_hook_events": ("hook_event_id", "origin", "native_id", "source_path", "blob_hash"),
+        "raw_sessions": ("raw_id",),
+    }
+    blockers: list[str] = []
+    for table, columns in required_columns.items():
+        if not _table_exists(conn, table):
+            blockers.append(f"source.{table} is missing")
+            continue
+        missing = [column for column in columns if not _column_exists(conn, table, column)]
+        if missing:
+            blockers.append(f"source.{table} is missing columns: {', '.join(missing)}")
+    if blockers or not _legacy_hook_rekey_supported(conn):
+        blockers.append("source.legacy hook rekey evidence is unavailable")
+    return blockers
+
+
 def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> list[str]:
     if not required:
         return []
@@ -150,6 +193,8 @@ def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> 
                     blockers.append(f"source.{owner.table} is missing")
                 elif not _column_exists(conn, owner.table, owner.referent_column):
                     blockers.append(f"source.{owner.table} is missing columns: {owner.referent_column}")
+        if any(owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)):
+            blockers.extend(_legacy_hook_rekey_schema_blockers(conn))
     return blockers
 
 
@@ -194,24 +239,29 @@ def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, pref
 
 
 def _rekeyable_legacy_hook_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, prefix: str) -> list[str]:
-    """Return only legacy hook refs whose deterministic rekey proof is current.
+    """Return legacy hook refs whose deterministic rekey proof is current.
 
     The matcher is the same all-or-nothing stage consumed by blob-ref
-    reconciliation. A bare raw_payload ledger row remains non-authoritative.
+    reconciliation. Both deterministic matches and ambiguous candidates own
+    bytes: ambiguity blocks attribution rewrites, not retention.
     """
 
-    if not any(
-        owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)
-    ) or not _legacy_hook_rekey_supported(source_conn):
+    if not any(owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)):
         return []
     from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 
-    _create_match_stage(source_conn)
-    row = source_conn.execute(
-        """SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches
-        WHERE blob_hash = ? LIMIT 1""",
-        (blob_bytes,),
-    ).fetchone()
+    try:
+        _create_match_stage(source_conn)
+        row = source_conn.execute(
+            """SELECT 1 FROM (
+                SELECT blob_hash FROM temp.hook_payload_ref_reconciliation_matches
+                UNION
+                SELECT blob_hash FROM temp.hook_payload_ref_reconciliation_ambiguous
+            ) WHERE blob_hash = ? LIMIT 1""",
+            (blob_bytes,),
+        ).fetchone()
+    except Exception as exc:
+        raise RuntimeError(f"legacy hook rekey matcher failed: {exc}") from exc
     return [f"{prefix}.rekeyable_hook_payload"] if row is not None else []
 
 
@@ -254,7 +304,7 @@ def inspect_blob_liveness(
         surfaces.extend(_rekeyable_legacy_hook_surfaces(source_conn, blob_bytes, prefix="source.db"))
         if index_conn is not None:
             surfaces.extend(_direct_surfaces(index_conn, blob_bytes, tier="index", prefix="index.db"))
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, RuntimeError, ValueError) as exc:
         return BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob liveness query is unreadable: {exc}",))
     return BlobLiveness(LivenessState.LIVE if surfaces else LivenessState.UNREFERENCED, tuple(surfaces))
 
@@ -321,6 +371,8 @@ def project_live_blob_hashes(
         if blob_refs_has_ref_type_column(source_conn):
             for owner in _owners(tier="source", ledger=True):
                 assert owner.ref_type is not None and owner.referent_column is not None
+                if owner.rekeyable_legacy_ref:
+                    continue
                 if not _table_exists(source_conn, owner.table) or not _column_exists(
                     source_conn, owner.table, owner.referent_column
                 ):
@@ -334,20 +386,26 @@ def project_live_blob_hashes(
                         blob_hash = row[0].hex()
                         hashes.add(blob_hash)
                         owner_hashes.setdefault("source.db.blob_refs", set()).add(blob_hash)
-        if any(
-            owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)
-        ) and _legacy_hook_rekey_supported(source_conn):
+        if any(owner.rekeyable_legacy_ref for owner in _owners(tier="source", ledger=True)):
             from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
 
-            _create_match_stage(source_conn)
-            for row in source_conn.execute(
-                "SELECT DISTINCT blob_hash FROM temp.hook_payload_ref_reconciliation_matches"
-            ):
-                if isinstance(row[0], bytes) and len(row[0]) == 32:
-                    blob_hash = row[0].hex()
-                    hashes.add(blob_hash)
-                    owner_hashes.setdefault("source.db.rekeyable_hook_payload", set()).add(blob_hash)
-    except sqlite3.Error as exc:
+            try:
+                _create_match_stage(source_conn)
+                rows = source_conn.execute(
+                    """SELECT DISTINCT blob_hash FROM (
+                        SELECT blob_hash FROM temp.hook_payload_ref_reconciliation_matches
+                        UNION
+                        SELECT blob_hash FROM temp.hook_payload_ref_reconciliation_ambiguous
+                    )"""
+                )
+                for row in rows:
+                    if isinstance(row[0], bytes) and len(row[0]) == 32:
+                        blob_hash = row[0].hex()
+                        hashes.add(blob_hash)
+                        owner_hashes.setdefault("source.db.rekeyable_hook_payload", set()).add(blob_hash)
+            except Exception as exc:
+                raise RuntimeError(f"legacy hook rekey matcher failed: {exc}") from exc
+    except (sqlite3.Error, RuntimeError, ValueError) as exc:
         return BlobLivenessProjection(frozenset(), (f"blob liveness query is unreadable: {exc}",))
     return BlobLivenessProjection(
         frozenset(hashes),
@@ -366,4 +424,5 @@ __all__ = [
     "inspect_blob_liveness",
     "inspect_blob_reservation",
     "project_live_blob_hashes",
+    "validated_blob_ref_liveness_joins",
 ]

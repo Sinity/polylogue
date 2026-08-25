@@ -66,6 +66,9 @@ def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
     conn.execute(
         """CREATE TABLE raw_hook_events (
             hook_event_id TEXT PRIMARY KEY,
+            origin TEXT,
+            native_id TEXT,
+            source_path TEXT,
             blob_hash BLOB
         )"""
     )
@@ -123,10 +126,21 @@ def _make_source_db(path: str | Path) -> sqlite3.Connection:
             blob_hash BLOB NOT NULL,
             ref_id TEXT NOT NULL,
             ref_type TEXT NOT NULL,
+            source_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (blob_hash, ref_id, ref_type)
         ) STRICT"""
     )
-    conn.execute("CREATE TABLE raw_hook_events (hook_event_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
+    conn.execute(
+        """CREATE TABLE raw_hook_events (
+            hook_event_id TEXT PRIMARY KEY,
+            origin TEXT,
+            native_id TEXT,
+            source_path TEXT,
+            blob_hash BLOB
+        ) STRICT"""
+    )
     conn.execute("CREATE TABLE history_sidecars (sidecar_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
     conn.execute("CREATE TABLE blob_publication_reservations (publication_id TEXT PRIMARY KEY, blob_hash BLOB) STRICT")
     conn.commit()

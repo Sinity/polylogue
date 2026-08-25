@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.storage.hook_payload_ref_reconciliation as hook_payload_ref_reconciliation
 from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_integrity import referenced_blob_hashes
 from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness, project_live_blob_hashes
@@ -195,19 +196,25 @@ def test_bulk_projection_excludes_dangling_ledger_rows_and_verification_receipts
 
 @pytest.mark.uses_real_clock("backdates legacy hook and dangling blobs for the production GC age gate")
 def test_legacy_hook_rekey_proof_is_live_across_liveness_integrity_diagnostics_and_gc(tmp_path: Path) -> None:
-    """Only an exact legacy-hook rekey proof can retain an otherwise dangling ledger ref."""
+    """Matched and ambiguous legacy hook refs both retain their payload bytes."""
 
     root, _unused = _archive(tmp_path)
     store = BlobStore(root / "blob")
     legacy_hash, legacy_size = store.write_from_bytes(b'{"event":"PostToolUse","legacy":true}')
+    ambiguous_hash, ambiguous_size = store.write_from_bytes(b'{"event":"PostToolUse","ambiguous":true}')
     dangling_hash, dangling_size = store.write_from_bytes(b"arbitrary dangling raw-payload ledger row")
     old = time.time() - 3_600
     os.utime(store.blob_path(legacy_hash), (old, old))
+    os.utime(store.blob_path(ambiguous_hash), (old, old))
     os.utime(store.blob_path(dangling_hash), (old, old))
     source_path = "/hooks/legacy.jsonl"
     native_id = "legacy-native-id"
     deterministic_raw_id = deterministic_raw_session_id(
         "codex-session", source_path, 0, bytes.fromhex(legacy_hash), native_id
+    )
+    ambiguous_path = "/hooks/ambiguous.jsonl"
+    ambiguous_raw_id = deterministic_raw_session_id(
+        "codex-session", ambiguous_path, 0, bytes.fromhex(ambiguous_hash), "ambiguous-native-a"
     )
     with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
         # This is the pre-v22 shape produced by the historic hook writer: the
@@ -218,35 +225,105 @@ def test_legacy_hook_rekey_proof_is_live_across_liveness_integrity_diagnostics_a
             VALUES ('legacy-hook', 'codex-session', ?, 'session-1', ?, 'PostToolUse', '{}', 1)""",
             (native_id, source_path),
         )
+        # Two old hooks share a path and have no direct blob hashes. We cannot
+        # safely rewrite the ref to either hook, but its bytes remain owned.
+        source.executemany(
+            """INSERT INTO raw_hook_events
+            (hook_event_id, origin, native_id, session_native_id, source_path, event_type, payload_json, observed_at_ms)
+            VALUES (?, 'codex-session', ?, 'session-1', ?, 'PostToolUse', '{}', 1)""",
+            (
+                ("ambiguous-hook-a", "ambiguous-native-a", ambiguous_path),
+                ("ambiguous-hook-b", "ambiguous-native-b", ambiguous_path),
+            ),
+        )
         source.executemany(
             """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
             VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
             (
                 (bytes.fromhex(legacy_hash), deterministic_raw_id, source_path, legacy_size),
+                (bytes.fromhex(ambiguous_hash), ambiguous_raw_id, ambiguous_path, ambiguous_size),
                 (bytes.fromhex(dangling_hash), "not-a-deterministic-hook-id", "/hooks/dangling.jsonl", dangling_size),
             ),
         )
 
         live = inspect_blob_liveness(source, legacy_hash, index_conn=index, require_index=True)
+        ambiguous = inspect_blob_liveness(source, ambiguous_hash, index_conn=index, require_index=True)
         dangling = inspect_blob_liveness(source, dangling_hash, index_conn=index, require_index=True)
         projection = project_live_blob_hashes(source, index_conn=index, require_index=True)
         diagnostics = classify_blob_ref_liveness(source)
 
     assert live.state is LivenessState.LIVE
     assert live.surfaces == ("source.db.rekeyable_hook_payload",)
+    assert ambiguous.state is LivenessState.LIVE
+    assert ambiguous.surfaces == ("source.db.rekeyable_hook_payload",)
     assert dangling.state is LivenessState.UNREFERENCED
     assert legacy_hash in projection.live_hashes
+    assert ambiguous_hash in projection.live_hashes
     assert dangling_hash not in projection.live_hashes
-    assert diagnostics.rekeyable_hook_payload_count == 1
+    assert diagnostics.rekeyable_hook_payload_count == 2
     assert diagnostics.orphaned_by_ref_type == {"raw_payload": 1}
     assert legacy_hash in referenced_blob_hashes(root / "source.db")
+    assert ambiguous_hash in referenced_blob_hashes(root / "source.db")
     assert dangling_hash not in referenced_blob_hashes(root / "source.db")
 
     report = run_blob_gc_report(root / "source.db", store.root)
 
     assert report.deleted_count == 1
     assert store.exists(legacy_hash)
+    assert store.exists(ambiguous_hash)
     assert not store.exists(dangling_hash)
+
+
+@pytest.mark.uses_real_clock("backdates a blob while legacy matcher evidence is unavailable")
+def test_legacy_hook_rekey_schema_gap_blocks_liveness_and_gc(tmp_path: Path) -> None:
+    root, _unused = _archive(tmp_path)
+    store = BlobStore(root / "blob")
+    blob_hash, _size = store.write_from_bytes(b"must remain when rekey evidence is incomplete")
+    old = time.time() - 3_600
+    os.utime(store.blob_path(blob_hash), (old, old))
+
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        source.execute("ALTER TABLE blob_refs DROP COLUMN acquired_at_ms")
+        decision = inspect_blob_liveness(source, blob_hash, index_conn=index, require_index=True)
+
+    assert decision.state is LivenessState.BLOCKED
+    assert "source.blob_refs is missing columns: acquired_at_ms" in decision.blockers
+    assert "source.legacy hook rekey evidence is unavailable" in decision.blockers
+
+    report = run_blob_gc_report(root / "source.db", store.root)
+
+    assert report.blocked_reason is not None
+    assert "legacy hook rekey evidence is unavailable" in report.blocked_reason
+    assert store.exists(blob_hash)
+
+
+@pytest.mark.uses_real_clock("backdates a blob while the legacy matcher fails")
+def test_legacy_hook_rekey_matcher_failure_blocks_liveness_and_gc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _unused = _archive(tmp_path)
+    store = BlobStore(root / "blob")
+    blob_hash, _size = store.write_from_bytes(b"must remain when rekey matcher fails")
+    old = time.time() - 3_600
+    os.utime(store.blob_path(blob_hash), (old, old))
+
+    def fail_matcher(_conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+        raise RuntimeError("injected matcher integrity failure")
+
+    monkeypatch.setattr(hook_payload_ref_reconciliation, "_create_match_stage", fail_matcher)
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        decision = inspect_blob_liveness(source, blob_hash, index_conn=index, require_index=True)
+        projection = project_live_blob_hashes(source, index_conn=index, require_index=True)
+
+    assert decision.state is LivenessState.BLOCKED
+    assert "legacy hook rekey matcher failed" in decision.blockers[0]
+    assert projection.blockers and "legacy hook rekey matcher failed" in projection.blockers[0]
+
+    report = run_blob_gc_report(root / "source.db", store.root)
+
+    assert report.blocked_reason is not None
+    assert "legacy hook rekey matcher failed" in report.blocked_reason
+    assert store.exists(blob_hash)
 
 
 @pytest.mark.uses_real_clock("backdates the real blob mtime for GC's production age gate")

@@ -22,7 +22,7 @@ from polylogue.daemon.write_coordinator import daemon_write_lease_active
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
-from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessCandidate,
     BlobRefLivenessCandidateDigest,
@@ -635,14 +635,14 @@ def _validate_locked_candidate_plan(
         WHERE c.ref_type = ?
         """
         for ref_type, (table, column) in {
-            ref_type: (table, column) for ref_type, table, column in BLOB_REF_LIVENESS_JOIN
+            ref_type: (table, column) for ref_type, table, column in validated_blob_ref_liveness_joins()
         }.items()
     ]
     if referent_branches:
         live_referent_count = int(
             conn.execute(
                 f"SELECT COUNT(*) FROM ({' UNION ALL '.join(referent_branches)})",
-                tuple(ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN),
+                tuple(ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()),
             ).fetchone()[0]
         )
         if live_referent_count:
