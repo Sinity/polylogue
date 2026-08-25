@@ -214,12 +214,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Prove a campaign-genesis record against the immutable Git blobs it pins. Read-only.",
     ),
     (
-        "live-proof",
-        "_live_proof",
-        "live_proof_command",
-        "Collect one fixed, immutable live-proof receipt. Read-only.",
-    ),
-    (
         "cursor-authority-reconcile",
         "_cursor_authority",
         "cursor_authority_reconcile_command",
