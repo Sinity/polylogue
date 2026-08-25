@@ -10,6 +10,7 @@ import pytest
 import devtools.__main__ as devtools_main
 from devtools import project_motd, system_exit
 from devtools.command_catalog import COMMAND_SPECS, COMMANDS, CommandSpec
+from devtools.generated_surfaces import GeneratedSurface
 
 
 class _UnprintableCode:
@@ -169,6 +170,29 @@ def test_non_integer_system_exit_fails_closed_and_preserves_message(
         assert captured.err == f"{code}\n"
 
 
+def test_non_integer_system_exit_message_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = "x" * 5000
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_bounded_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(payload)
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ("x" * 253) + "...\n"
+
+
 def test_click_dispatch_and_project_motd_delegate_to_shared_system_exit_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -196,7 +220,7 @@ def test_click_dispatch_and_project_motd_delegate_to_shared_system_exit_authorit
     def surface_main(_argv: list[str] | None) -> int:
         raise SystemExit("motd route")
 
-    surface = project_motd.GeneratedSurface("fake", "Fake", "test", (), surface_main)
+    surface = GeneratedSurface("fake", "Fake", "test", (), surface_main)
     assert devtools_main.main(["status"]) == 1
     assert project_motd.run_check(tmp_path, surface) == "stale"
     assert [exc.code for exc in calls] == ["click route", "motd route"]
