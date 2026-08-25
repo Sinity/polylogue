@@ -15,9 +15,9 @@ from typing import TextIO
 
 from typing_extensions import TypedDict
 
+from devtools import system_exit
 from devtools.command_catalog import control_plane_command
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
-from devtools.system_exit import translate_system_exit
 
 ANSI_RESET = "\x1b[0m"
 ANSI_BOLD = "\x1b[1m"
@@ -122,7 +122,7 @@ def run_check(cwd: Path, surface: GeneratedSurface) -> str:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = surface.main(["--check"])
     except SystemExit as exc:
-        result = translate_system_exit(exc).code
+        result = system_exit.translate_system_exit(exc).code
     finally:
         os.chdir(previous_cwd)
     return "ok" if result == 0 else "stale"

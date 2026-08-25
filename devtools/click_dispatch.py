@@ -16,6 +16,7 @@ from typing import Any
 
 import click
 
+from devtools import system_exit
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -25,7 +26,6 @@ from devtools.command_catalog import (
     CommandSpec,
     grouped_command_specs,
 )
-from devtools.system_exit import translate_system_exit
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -257,7 +257,7 @@ def _dispatch(argv: list[str]) -> int:
         cli(args=argv, prog_name="devtools", standalone_mode=True)
         return 0
     except SystemExit as e:
-        translation = translate_system_exit(e)
+        translation = system_exit.translate_system_exit(e)
         if translation.message is not None:
             print(translation.message, file=sys.stderr)
         return translation.code

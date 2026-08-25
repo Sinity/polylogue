@@ -9,6 +9,14 @@ from devtools import project_motd
 from devtools.generated_surfaces import GENERATED_SURFACES, GeneratedSurface
 
 
+class _UnprintableCode:
+    def __str__(self) -> str:
+        raise RuntimeError("str failed")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("repr failed")
+
+
 def test_read_version_extracts_project_version(tmp_path: Path) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
@@ -18,7 +26,20 @@ def test_read_version_extracts_project_version(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "code, expected",
-    [(None, "ok"), (0, "ok"), ("", "stale"), ("0", "stale"), (0.0, "stale"), ("boom", "stale")],
+    [
+        (None, "stale"),
+        (False, "stale"),
+        (True, "stale"),
+        (0, "ok"),
+        (-7, "stale"),
+        (7, "stale"),
+        ("", "stale"),
+        ("0", "stale"),
+        (0.0, "stale"),
+        ("boom", "stale"),
+        (object(), "stale"),
+        (_UnprintableCode(), "stale"),
+    ],
 )
 def test_run_check_fails_closed_for_non_integer_system_exit(
     tmp_path: Path,
@@ -26,7 +47,7 @@ def test_run_check_fails_closed_for_non_integer_system_exit(
     code: object,
     expected: str,
 ) -> None:
-    """Anti-vacuity: local ``int(exc.code or 0)`` would accept the false-green cases."""
+    """Anti-vacuity: local truthiness or ``isinstance`` checks would accept false-green cases."""
 
     def fake_main(_argv: list[str] | None) -> int:
         raise SystemExit(code)
