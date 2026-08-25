@@ -1,351 +1,180 @@
-"""Contract tests for the stateless reindex packet verifier."""
+"""Miniature graphs for the reindex packet projection."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from io import StringIO
-from typing import Any, cast
+from typing import Any
 
-import pytest
-
-from devtools.reindex_packets import (
-    ROOT_ID,
-    Bead,
-    BeadDependency,
-    PacketReader,
-    ValidationReport,
-    main,
-    validate,
-)
+from devtools.reindex_packets import ROOT_ID, main, validate
 
 
-class FakeReader(PacketReader):
-    def __init__(self, beads: list[Bead]) -> None:
+class FakeReader:
+    def __init__(self, beads: list[dict[str, Any]]) -> None:
         self.beads = tuple(beads)
-        self.read_count = 0
 
-    def read(self) -> tuple[Bead, ...]:
-        self.read_count += 1
+    def read(self) -> tuple[dict[str, Any], ...]:
         return self.beads
 
 
-def _dep(source: str, target: str, kind: str = "blocks") -> BeadDependency:
-    return BeadDependency(issue_id=source, depends_on_id=target, type=kind)
+def dep(target: str, kind: str = "blocks") -> dict[str, str]:
+    return {"depends_on_id": target, "type": kind}
 
 
-def _metadata(**overrides: Any) -> dict[str, Any]:
-    values: dict[str, Any] = {
+def meta(**changes: Any) -> dict[str, Any]:
+    value = {
         "campaign_id": "reindex-2026",
-        "campaign_role": "closure",
-        "campaign_timing": "prep",
         "execution_shape": "leaf",
-        "execution_wave": "wave1",
-        "execution_lane": "lane1",
+        "execution_wave": "reindex-prep-a",
+        "execution_lane": "lane",
         "lane_packet": "1",
         "lane_order": "1",
-        "conflict_keys": "tests/unit/devtools/test_reindex_packets.py",
-        "write_scope": "tests/unit/devtools/test_reindex_packets.py",
-        "necessity_class": "execution-assurance",
-        "judgment_class": "mechanical",
+        "conflict_keys": "one; two",
+        "write_scope": "free-form scope",
+        "verification_commands": "devtools test",
         "model_policy": "provider-neutral-capability-v1",
         "worker_model_class": "cheap-capable",
-        "review_model_class": "standard",
-        "live_data_access": "forbidden",
-        "decision_closure": {
-            "resolved_decisions": [{"decision": "scope", "evidence": "bead:design"}],
-            "remaining_decision_points": [],
-            "escalation_owner": "operator",
-        },
-        "packet_execution_contract": {"outputs": ["report"], "verification": ["devtools test"]},
-        "effort": "small",
-        "expected_duration_evidence": {"source": "historical-run", "seconds": 600},
-        "deadline_policy": {"kind": "wave-exit", "evidence_ref": "bead:deadline"},
-        "dispatch_readiness": "ready",
-        "verification_commands": "devtools test tests/unit/devtools/test_reindex_packets.py; devtools verify",
-        "tdd_mode": "contract-first",
-        "anti_vacuity": {"mutation": "remove conflict filtering", "red_test": "test_conflict"},
-        "existing_test_disposition": {"status": "extend", "law": "packet contract"},
+        "review_model_class": "strong-review",
+        "live_data_access": "synthetic",
+        "decision_closure": "closed-by-spec",
+        "necessity_class": "required",
+        "tdd_mode": "focused",
     }
-    values.update(overrides)
-    return values
+    value.update(changes)
+    return value
 
 
-def _bead(
-    bead_id: str,
-    *,
-    metadata: dict[str, Any] | None = None,
-    labels: tuple[str, ...] = ("campaign:reindex-2026",),
-    status: str = "open",
-    dependencies: tuple[BeadDependency, ...] = (),
-) -> Bead:
-    return Bead(
-        id=bead_id,
-        title=bead_id,
-        description="description",
-        design="design",
-        acceptance_criteria="acceptance",
-        notes="notes",
-        status=status,
-        issue_type="task",
-        owner="owner",
-        labels=labels,
-        metadata=metadata or {},
-        dependencies=dependencies,
-    )
+def bead(
+    bead_id: str, metadata: dict[str, Any], dependencies: tuple[dict[str, str], ...] = (), status: str = "open"
+) -> dict[str, Any]:
+    return {
+        "id": bead_id,
+        "status": status,
+        "labels": ("campaign:reindex-2026",),
+        "metadata": metadata,
+        "dependencies": dependencies,
+    }
 
 
-def _valid_graph() -> list[Bead]:
-    root = _bead(
-        ROOT_ID,
-        metadata={"campaign_id": "reindex-2026", "campaign_role": "milestone", "execution_shape": "gate"},
-        dependencies=(_dep(ROOT_ID, "gate"),),
-    )
-    gate = _bead(
-        "gate",
-        metadata={"campaign_id": "reindex-2026", "campaign_role": "closure-gate", "execution_shape": "gate"},
-        dependencies=(_dep("gate", "a"), _dep("gate", "b"), _dep("gate", "c")),
-    )
-    leaves = [
-        _bead("a", metadata=_metadata(execution_wave="wave1", lane_order="1")),
-        _bead("b", metadata=_metadata(execution_wave="wave1", lane_order="2"), dependencies=(_dep("b", "a"),)),
-        _bead("c", metadata=_metadata(execution_wave="wave1", lane_order="3"), dependencies=(_dep("c", "b"),)),
-    ]
-    return [root, gate, *leaves]
-
-
-def _assert_error(report: ValidationReport, token: str) -> None:
-    assert any(token in error for error in report.errors), report.errors
-
-
-def test_blocks_only_scope_excludes_mixed_relation_expansion() -> None:
-    graph = _valid_graph()
-    graph.extend(
-        [
-            _bead("parent-child-only", metadata=_metadata(execution_shape="leaf"), dependencies=()),
-            _bead("discovered-only", metadata=_metadata(execution_shape="leaf"), dependencies=()),
-        ]
-    )
-    graph[1] = replace(
-        graph[1],
-        dependencies=graph[1].dependencies
-        + (_dep("gate", "parent-child-only", "parent-child"), _dep("gate", "discovered-only", "discovered-from")),
-    )
-
-    report = validate(FakeReader(graph))
-
-    assert report.blocks_only_ids == frozenset({ROOT_ID, "gate", "a", "b", "c"})
-    assert report.mixed_relation_ids >= {"parent-child-only", "discovered-only"}
-    closure_ids = cast(list[str], report.counts["closure_ids"])
-    assert "parent-child-only" not in closure_ids
-    assert report.differences["mixed_only_ids"] == ["discovered-only", "parent-child-only"]
-
-
-def test_labelled_leaf_without_typed_root_path_is_an_error() -> None:
-    graph = _valid_graph()
-    graph.append(_bead("restoration", metadata=_metadata()))
-
-    report = validate(FakeReader(graph))
-
-    _assert_error(report, "restoration: campaign leaf is not blocks-reachable")
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "token"),
-    [
-        ("execution_shape", None, "unshaped closure node"),
-        ("execution_lane", None, "missing leaf assignment"),
-        ("lane_order", "bad", "invalid lane order"),
-        ("packet_size_exception", {"reason": "stale"}, "unjustified packet size exception"),
-    ],
-)
-def test_typed_leaf_contract_rejects_malformed_carriers(field: str, value: Any, token: str) -> None:
-    graph = _valid_graph()
-    metadata = _metadata()
-    if field == "execution_shape":
-        metadata = {"campaign_id": "reindex-2026", "campaign_role": "closure"}
-    elif value is None:
-        metadata.pop(field)
-    else:
-        metadata[field] = value
-    graph[2] = replace(graph[2], metadata=metadata)
-
-    report = validate(FakeReader(graph))
-
-    _assert_error(report, token)
-
-
-def test_duplicate_assignment_and_packet_order_are_rejected() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(
-        graph[2],
-        metadata=_metadata(
-            execution_assignment={
-                "execution_wave": "wave2",
-                "execution_lane": "lane9",
-                "lane_packet": "9",
-                "lane_order": "9",
-            }
-        ),
-    )
-    graph[3] = replace(graph[3], metadata=_metadata(lane_order="1"), dependencies=(_dep("b", "a"),))
-    graph[4] = replace(graph[4], metadata=_metadata(lane_order="1"), dependencies=(_dep("c", "b"),))
-
-    report = validate(FakeReader(graph))
-
-    _assert_error(report, "incompatible duplicate assignment")
-    _assert_error(report, "duplicate packet order")
-
-
-def test_concurrent_conflict_requires_blocks_serialization() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(graph[2], metadata=_metadata(execution_lane="lane1", conflict_keys="storage/index_db"))
-    graph[3] = replace(
-        graph[3],
-        metadata=_metadata(execution_lane="lane2", conflict_keys="storage-index.db", lane_order="2"),
-        dependencies=(),
-    )
-    graph[4] = replace(graph[4], metadata=_metadata(execution_lane="lane3", conflict_keys="other", lane_order="3"))
-
-    report = validate(FakeReader(graph))
-
-    _assert_error(report, "concurrent conflict")
-
-
-def test_carrier_capability_and_readiness_fields_are_typed() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(
-        graph[2],
-        metadata=_metadata(
-            model_policy="gpt-5.6",
-            live_data_access=None,
-            expected_duration_evidence="unknown",
-            deadline_policy={"kind": "hard"},
+def graph() -> list[dict[str, Any]]:
+    root = bead(ROOT_ID, {"campaign_id": "reindex-2026", "execution_shape": "gate"}, (dep("gate"),))
+    gate = bead("gate", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, tuple(dep(item) for item in "abc"))
+    leader = bead(
+        "a",
+        meta(
+            packet_execution_contract="packet-v1",
+            effort="small",
+            expected_duration_evidence="receipt",
+            deadline_policy="bounded",
             dispatch_readiness="ready",
-            prerequisite_state="unmet",
         ),
     )
+    return [
+        root,
+        gate,
+        leader,
+        bead("b", meta(lane_order="2"), (dep("a"),)),
+        bead("c", meta(lane_order="3"), (dep("b"),)),
+    ]
 
-    report = validate(FakeReader(graph))
 
-    _assert_error(report, "provider-specific model policy")
-    _assert_error(report, "missing live-data authority")
-    _assert_error(report, "unknown duration evidence")
-    _assert_error(report, "deadline evidence")
-    _assert_error(report, "prerequisite state is unmet")
+def test_blocks_closure_excludes_mixed_and_reports_labelled_difference() -> None:
+    beads = graph() + [bead("related", meta())]
+    beads[1] = {**beads[1], "dependencies": (*beads[1]["dependencies"], dep("related", "relates-to"))}
+    report = validate(FakeReader(beads))
+    assert "related" not in report["blocks_only_closure"]
+    assert "related" in report["mixed_relation_expansion"]
+    assert report["differences"]["campaign_only_ids"] == ["related"]
 
 
-def test_prep_lane_cannot_claim_window_mutation_and_temp_code_needs_owner() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(
-        graph[2],
-        metadata=_metadata(
-            live_data_access="live-mutation",
-            temporary_code=True,
-            deletion_ledger={"items": []},
-        ),
+def test_gate_and_leaf_carriers_are_separate_and_strings_are_valid() -> None:
+    beads = graph()
+    beads[1]["metadata"]["worker_model_class"] = "worker"
+    report = validate(FakeReader(beads))
+    assert "gate: gate carries worker_model_class" in report["structural_errors"]
+    assert not any("a: missing leaf carrier" in error for error in report["structural_errors"])
+    beads[2]["metadata"].pop("tdd_mode")
+    assert any("a: missing leaf carrier" in error for error in validate(FakeReader(beads))["structural_errors"])
+
+
+def test_packet_order_and_leader_placement_fail_independently() -> None:
+    beads = graph()
+    beads[2]["metadata"]["lane_order"] = "2"
+    beads[3]["metadata"] = meta(lane_order="1", dispatch_readiness="ready")
+    report = validate(FakeReader(beads))
+    assert any("internal blocker is not earlier" in error for error in report["structural_errors"])
+    assert any("non-leader carries dispatch_readiness" in error for error in report["structural_errors"])
+
+
+def test_exact_conflict_keys_ignore_write_scope_but_require_serialization() -> None:
+    beads = graph()
+    beads[3]["metadata"] = meta(
+        execution_lane="other", lane_order="2", conflict_keys="one-long", write_scope="same prose"
+    )
+    beads[3]["dependencies"] = ()
+    report = validate(FakeReader(beads))
+    assert not any("exact conflict-key overlap" in error for error in report["structural_errors"])
+    beads[3]["metadata"] = meta(
+        execution_lane="other", lane_order="2", conflict_keys="one", write_scope="different prose"
+    )
+    assert any("exact conflict-key overlap" in error for error in validate(FakeReader(beads))["structural_errors"])
+
+
+def test_authorized_writers_need_serialization_and_serialized_writer_is_allowed() -> None:
+    beads = graph()
+    beads[2]["metadata"]["live_data_access"] = "explicit-operator-authorized-source-apply"
+    assert any(
+        "operator-authorized writer is not serialized" in error
+        for error in validate(FakeReader(beads))["structural_errors"]
+    )
+    beads[2]["metadata"].update(
+        live_data_access="explicit-operator-authorized-blob-apply", lane_mode="serialized-writer"
+    )
+    assert not any(
+        "operator-authorized writer is not serialized" in error
+        for error in validate(FakeReader(beads))["structural_errors"]
     )
 
-    report = validate(FakeReader(graph))
 
-    _assert_error(report, "window mutation in prep lane")
-    _assert_error(report, "temporary machinery without deletion owner")
-
-
-def test_packet_leader_recomputes_after_closed_former_leader() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(graph[2], status="closed", metadata={"execution_shape": "leaf"})
-
-    report = validate(FakeReader(graph))
-
-    packet = report.packet("wave1", "lane1", "1")
-    assert packet.leader_id == "b"
-    assert packet.dispatch_readiness == "ready"
-
-
-def test_wave_order_regressions_and_duration_calibration_are_reported() -> None:
-    graph = _valid_graph()
-    graph[2] = replace(
-        graph[2],
-        metadata=_metadata(
-            execution_wave="wave3",
-            expected_duration_evidence={
-                "source": "old",
-                "seconds": 4000,
-                "calibration_ref": "old",
-                "calibration_status": "stale",
-            },
-            observed_duration_seconds=10000,
-        ),
+def test_pending_calibration_is_non_ready_not_structural_error() -> None:
+    beads = graph()
+    beads[2]["metadata"].update(
+        effort="calibration-pending", expected_duration_evidence="pending: receipt", dispatch_readiness="blocked"
     )
-    graph[3] = replace(
-        graph[3], metadata=_metadata(execution_wave="wave3", lane_order="2"), dependencies=(_dep("b", "a"),)
-    )
-
-    report = validate(FakeReader(graph))
-
-    _assert_error(report, "duration exceeds 3600s")
-    _assert_error(report, "stale calibration reference")
-    assert report.calibration_findings == ("a: observed duration overshot estimate by more than 50%",)
+    report = validate(FakeReader(beads))
+    assert report["ok"] and report["counts"]["non_ready_packets"] == 1
+    assert "calibration pending" in report["packets"][0]["non_ready_reasons"]
 
 
-def test_read_only_reader_and_json_report_do_not_write_task_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+def test_historical_only_damage_fields_are_not_a_validator_policy() -> None:
+    beads = graph()
+    beads[2]["metadata"].update(deletion_ledger="historical-only", existing_test_disposition="none")
+    assert validate(FakeReader(beads))["ok"]
+
+
+def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> None:
+    calls: list[tuple[str, ...]] = []
 
     class Completed:
-        stdout = json.dumps({"id": ROOT_ID, "status": "closed"}) + "\n"
+        stdout = (
+            json.dumps(
+                {
+                    "id": ROOT_ID,
+                    "status": "closed",
+                    "labels": ["campaign:reindex-2026"],
+                    "metadata": {"campaign_id": "reindex-2026", "execution_shape": "gate"},
+                    "dependencies": [],
+                }
+            )
+            + "\n"
+        )
 
-    def fake_run(*args: Any, **kwargs: Any) -> Completed:
-        calls.append((tuple(args[0]), kwargs))
+    def run(command: list[str], **_: Any) -> Completed:
+        calls.append(tuple(command))
         return Completed()
 
-    monkeypatch.setattr("devtools.reindex_packets.subprocess.run", fake_run)
+    monkeypatch.setattr("devtools.reindex_packets.subprocess.run", run)
     output = StringIO()
-
-    exit_code = main(["--json"], stdout=output)
-
-    assert exit_code == 0
-    assert calls and "--readonly" in calls[0][0]
-    assert "note" not in calls[0][0]
-    payload = json.loads(output.getvalue())
-    assert payload["read_only"] is True
-
-
-def test_four_wave_graph_recomputes_cleanly() -> None:
-    graph = [
-        _bead(
-            ROOT_ID,
-            metadata={"campaign_id": "reindex-2026", "campaign_role": "milestone", "execution_shape": "gate"},
-            dependencies=(_dep(ROOT_ID, "gate"),),
-        ),
-        _bead(
-            "gate",
-            metadata={"campaign_id": "reindex-2026", "campaign_role": "closure-gate", "execution_shape": "gate"},
-            dependencies=tuple(_dep("gate", f"w{wave}-{index}") for wave in range(1, 5) for index in range(3)),
-        ),
-    ]
-    previous: str | None = None
-    for wave in range(1, 5):
-        for index in range(3):
-            bead_id = f"w{wave}-{index}"
-            dependencies = () if previous is None else (_dep(bead_id, previous),)
-            graph.append(
-                _bead(
-                    bead_id,
-                    metadata=_metadata(
-                        execution_wave=f"wave{wave}",
-                        execution_lane=f"lane{wave}",
-                        lane_order=str(index + 1),
-                        write_scope=f"scope/{wave}/{index}",
-                        conflict_keys=f"scope/{wave}/{index}",
-                    ),
-                    dependencies=dependencies,
-                )
-            )
-            previous = bead_id
-
-    report = validate(FakeReader(graph))
-
-    assert report.ok, report.errors
-    assert report.counts["open_leaves"] == 12
-    assert report.counts["packets"] == 4
+    assert main(["--json"], stdout=output) == 0
+    assert calls == [("bd", "--readonly", "export", "--all")]
+    assert json.loads(output.getvalue())["read_only"] is True
