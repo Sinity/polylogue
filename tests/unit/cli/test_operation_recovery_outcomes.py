@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
 import click
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli.commands.maintenance import _operation_recovery
 from polylogue.cli.commands.maintenance._operation_recovery import _outcomes
 
 
@@ -38,3 +44,36 @@ def test_outcomes_rejects_unknown_outcome_vocabulary() -> None:
 def test_outcomes_parses_ordinary_refs_without_embedded_equals() -> None:
     result = _outcomes(("session:one=applied", "session:two=not-applied", "session:three=unknown"))
     assert result == {"session:one": "applied", "session:two": "not-applied", "session:three": "unknown"}
+
+
+def test_operation_recovery_list_outputs_unresolved_runs_and_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Audit:
+        def __init__(self) -> None:
+            self.archive_root: Path | None = None
+
+        def list_recovery_operations(self) -> tuple[dict[str, object], ...]:
+            return (
+                {
+                    "operation": {"operation_id": "operation:interrupted", "status": "interrupted"},
+                    "targets": ({"target_ref": "session:one", "state": "unknown"},),
+                },
+            )
+
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._operation_recovery.AuditRepository.for_archive_root",
+        lambda root: _Audit(),
+    )
+    env = SimpleNamespace(config=SimpleNamespace(archive_root=Path("/archive")))
+    result = CliRunner().invoke(
+        _operation_recovery.operation_recovery_command, ["--list", "--output-format", "json"], obj=env
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "operations": [
+            {
+                "operation": {"operation_id": "operation:interrupted", "status": "interrupted"},
+                "targets": [{"target_ref": "session:one", "state": "unknown"}],
+            }
+        ]
+    }

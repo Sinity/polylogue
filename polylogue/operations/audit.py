@@ -1787,6 +1787,39 @@ class AuditRepository:
                 raise ValueError(f"operation {operation_id!r} is not interrupted")
             return self._recovery_operation(conn, row)
 
+    def list_recovery_operations(self) -> tuple[dict[str, object], ...]:
+        """List every interrupted or recovery-unknown run with target states.
+
+        This is the discovery counterpart to :meth:`recovery_operation`.
+        Recovery must remain bound to an exact operation id, but an operator
+        must be able to obtain that id without already knowing the operation's
+        name or parameter digest.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM operation_runs
+                WHERE status = 'interrupted'
+                   OR (status = 'failed' AND terminal_reason = 'recovery_unknown')
+                ORDER BY started_at_ms, operation_id
+                """
+            ).fetchall()
+            return tuple(
+                {"operation": dict(row), "targets": self._list_targets(conn, str(row["operation_id"]))} for row in rows
+            )
+
+    @staticmethod
+    def _list_targets(conn: sqlite3.Connection, operation_id: str) -> tuple[dict[str, object], ...]:
+        rows = conn.execute(
+            """
+            SELECT ordinal, target_ref, state, completed_at_ms, unknown_reason
+            FROM operation_targets WHERE operation_id = ? ORDER BY ordinal
+            """,
+            (operation_id,),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
+
     def list_targets(self, operation_id: str) -> tuple[dict[str, object], ...]:
         """Return one operation's ordered target dispositions (ref + current state).
 
@@ -1801,14 +1834,7 @@ class AuditRepository:
         """
 
         with self._connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT ordinal, target_ref, state, completed_at_ms, unknown_reason
-                FROM operation_targets WHERE operation_id = ? ORDER BY ordinal
-                """,
-                (operation_id,),
-            ).fetchall()
-            return tuple(dict(row) for row in rows)
+            return self._list_targets(conn, operation_id)
 
     def list_events(self, operation_id: str) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:
