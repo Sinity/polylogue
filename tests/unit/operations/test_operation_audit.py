@@ -2180,3 +2180,52 @@ def test_list_targets_exposes_ordered_per_target_dispositions_for_inspection(tmp
         ("session:one", "applied"),
         ("session:two", "failed"),
     ]
+
+
+def test_list_recovery_operations_discovers_interrupted_runs_without_operation_identity(
+    tmp_path: Path,
+) -> None:
+    """Recovery listing exposes every unresolved run and its target states."""
+
+    audit, interrupted_id = _dead_nonterminal_operation(tmp_path, _Actuator(target_refs=("session:one", "session:two")))
+    audit.recover_abandoned_attempts()
+
+    # A run already terminalized by startup recovery remains adjudicable and
+    # must be discoverable beside a freshly interrupted run.
+    audit.record_recovery_disposition(
+        interrupted_id,
+        RecoveryDisposition("unknown", "operator-blocking", "evidence is unavailable"),
+    )
+
+    second_audit = _audit(tmp_path)
+    second = OperationExecutor(audit=second_audit, token_factory=lambda: "second-crash-boundary-token")
+    second_actuator = _Actuator(target_refs=("session:three",))
+    second_binding = _binding(second_actuator)
+    second_preview = second.prepare_bound(
+        second_binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery-second",
+        archive_identity_digest="identity:recovery-second",
+        parameter_digest="params:recovery-second",
+    )
+    second_authorization = second.authorize_bound(second_binding, second_preview, _principal())
+    second_id = second_audit.consume_authorization_and_start(second_preview, second_authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute("UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (second_id,))
+        conn.commit()
+    second_audit.recover_abandoned_attempts()
+
+    listed = second_audit.list_recovery_operations()
+    assert {cast(dict[str, object], item["operation"])["operation_id"] for item in listed} == {
+        interrupted_id,
+        second_id,
+    }
+    first = next(
+        item for item in listed if cast(dict[str, object], item["operation"])["operation_id"] == interrupted_id
+    )
+    first_targets = cast(tuple[dict[str, object], ...], first["targets"])
+    assert [(target["target_ref"], target["state"]) for target in first_targets] == [
+        ("session:one", "unknown"),
+        ("session:two", "unknown"),
+    ]

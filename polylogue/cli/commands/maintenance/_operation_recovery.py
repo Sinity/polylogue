@@ -29,7 +29,8 @@ def _outcomes(values: tuple[str, ...]) -> dict[str, Literal["applied", "not-appl
 
 
 @click.command("operation-recovery")
-@click.option("--operation-id", required=True, help="Interrupted operation id to inspect or adjudicate.")
+@click.option("--operation-id", required=False, help="Interrupted operation id to inspect or adjudicate.")
+@click.option("--list", "list_operations", is_flag=True, help="List all interrupted operations and target states.")
 @click.option("--target-outcome", "target_outcomes", multiple=True, help="target_ref=applied|not-applied|unknown")
 @click.option("--reason", default=None, help="Operator evidence supporting an adjudication.")
 @click.option("--confirm", is_flag=True, help="Authorize the bounded per-target adjudication.")
@@ -43,7 +44,8 @@ def _outcomes(values: tuple[str, ...]) -> dict[str, Literal["applied", "not-appl
 @click.pass_obj
 def operation_recovery_command(
     env: AppEnv,
-    operation_id: str,
+    operation_id: str | None,
+    list_operations: bool,
     target_outcomes: tuple[str, ...],
     reason: str | None,
     confirm: bool,
@@ -53,6 +55,25 @@ def operation_recovery_command(
     """Inspect recovery evidence, or adjudicate at most 256 durable targets."""
 
     audit = AuditRepository.for_archive_root(env.config.archive_root)
+    if list_operations:
+        if operation_id or target_outcomes or reason or confirm:
+            raise click.ClickException("--list cannot be combined with an operation id or adjudication options")
+        operations = audit.list_recovery_operations()
+        if output_format == "json":
+            click.echo(json.dumps({"operations": list(operations)}, sort_keys=True, default=str))
+        else:
+            click.echo(f"Interrupted operations: {len(operations)}")
+            for item in operations:
+                listed_operation = cast(dict[str, object], item["operation"])
+                click.echo(f"Operation recovery: {listed_operation['status']}")
+                click.echo(f"Operation: {listed_operation['operation_id']}")
+                targets = cast(tuple[dict[str, object], ...], item["targets"])
+                click.echo(f"Targets: {len(targets)}")
+                for target in targets:
+                    click.echo(f"  {target['target_ref']}={target['state']}")
+        return
+    if operation_id is None:
+        raise click.ClickException("either --operation-id or --list is required")
     outcomes = _outcomes(target_outcomes)
     if confirm or target_outcomes:
         # ``--confirm`` alone still adjudicates: a run whose plan resolved to
