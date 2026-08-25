@@ -155,10 +155,10 @@ def _surface_input_inventory(surface: GeneratedSurface) -> _InputInventory:
     digest: str | None = None
     if missing_count == 0 and unreadable_count == 0 and invalid_count == 0:
         hasher = hashlib.sha256()
-        for path in paths:
-            hasher.update(path.encode("utf-8"))
+        for matched_path in paths:
+            hasher.update(matched_path.encode("utf-8"))
             hasher.update(b"\0")
-            hasher.update(matched[path])
+            hasher.update(matched[matched_path])
             hasher.update(b"\0")
         digest = hasher.hexdigest()
     return _InputInventory(
@@ -197,7 +197,7 @@ def _is_fresh(surface: GeneratedSurface, inventory: _InputInventory | None = Non
         stamp = json.loads(_stamp_path(surface.name).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return stamp == inventory.stamp_payload()
+    return isinstance(stamp, dict) and stamp == inventory.stamp_payload()
 
 
 def _stamp(surface: GeneratedSurface, inventory: _InputInventory | None = None) -> None:

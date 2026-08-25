@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -26,8 +27,17 @@ def test_render_pages_stops_before_assembly_on_nonzero_feeder(
     del configured_pages
     calls: list[str] = []
     monkeypatch.setattr(render_cli_reference, "main", lambda _argv: 7)
-    monkeypatch.setattr(render_devtools_reference, "main", lambda _argv: calls.append("devtools") or 0)
-    monkeypatch.setattr(render_docs_surface, "main", lambda _argv: calls.append("docs") or 0)
+
+    def render_devtools(_argv: list[str] | None) -> int:
+        calls.append("devtools")
+        return 0
+
+    def render_docs(_argv: list[str] | None) -> int:
+        calls.append("docs")
+        return 0
+
+    monkeypatch.setattr(render_devtools_reference, "main", render_devtools)
+    monkeypatch.setattr(render_docs_surface, "main", render_docs)
     monkeypatch.setattr(render_pages, "ROOT", tmp_path)
 
     def should_not_build(**_kwargs: object) -> Path:
@@ -71,7 +81,7 @@ def test_render_pages_pagefind_failure_is_nonzero_without_site_success(
         lambda config_path=None, output_dir=None: output,
     )
     monkeypatch.setattr(
-        pages_builder.subprocess,
+        subprocess,
         "run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("pagefind")),
     )

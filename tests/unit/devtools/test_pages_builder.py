@@ -18,7 +18,7 @@ def test_pagefind_failure_is_typed_and_does_not_return_site(
     site = tmp_path / "site"
     monkeypatch.setattr(pages_builder, "build_site", lambda **_kwargs: site)
     monkeypatch.setattr(
-        pages_builder.subprocess,
+        subprocess,
         "run",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
     )
