@@ -25,6 +25,8 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     MutationReceipt,
     MutationTarget,
+    RecoveryDisposition,
+    RecoveryOperation,
     TokenConsumedError,
     TokenExpiredError,
     validate_mutation_plan_integrity,
@@ -527,6 +529,16 @@ class AuditRepository:
             }
         if kind == "recover_abandoned_attempts":
             return {"now_ms": int(time.time() * 1000)}
+        if kind == "record_recovery_disposition":
+            operation_id = cast(str, args[0])
+            disposition = cast(RecoveryDisposition, args[1])
+            return {
+                "operation_id": operation_id,
+                "kind": disposition.kind,
+                "action": disposition.action,
+                "detail": disposition.detail,
+                "now_ms": int(time.time() * 1000),
+            }
         raise RuntimeError(f"unregistered audit continuity mutation {kind!r}")
 
     def _replay_pending_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
@@ -589,6 +601,16 @@ class AuditRepository:
                 )
             if mutation.kind == "recover_abandoned_attempts":
                 return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
+            if mutation.kind == "record_recovery_disposition":
+                return cast(Any, self.record_recovery_disposition).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    RecoveryDisposition(
+                        kind=cast(Any, payload["kind"]),
+                        action=cast(Any, payload["action"]),
+                        detail=cast(str | None, payload.get("detail")),
+                    ),
+                )
             raise RuntimeError(f"unregistered audit continuity mutation {mutation.kind!r}")
         finally:
             self._coordinated_mutation = None
@@ -1192,6 +1214,243 @@ class AuditRepository:
         if has_running is None:
             return ()
         return self._recover_abandoned_attempts()
+
+    def nonterminal_operations_overlapping(self, target_refs: tuple[str, ...]) -> tuple[RecoveryOperation, ...]:
+        """Return durable nonterminal operations touching an exact target set.
+
+        This deliberately discovers both running and already-interrupted work.
+        Callers must inspect the returned domain targets before issuing a new
+        authorization.  Audit rows provide identity and plan binding only;
+        they never stand in for target-state inspection.
+        """
+
+        if not target_refs:
+            return ()
+        placeholders = ", ".join("?" for _ in target_refs)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.operation_id, r.operation_name, r.operation_version,
+                       r.plan_hash, r.target_digest
+                FROM operation_runs AS r
+                JOIN operation_targets AS t ON t.operation_id = r.operation_id
+                WHERE r.status IN ('running', 'interrupted') AND t.target_ref IN ({placeholders})
+                ORDER BY r.started_at_ms, r.operation_id
+                """,
+                target_refs,
+            ).fetchall()
+            operations: list[RecoveryOperation] = []
+            for row in rows:
+                operation_id = str(row[0])
+                targets = tuple(
+                    MutationTarget(
+                        kind=str(target_row[0]),
+                        ref=str(target_row[1]),
+                        policy_key="audit-recovery",
+                        identity_digest=str(target_row[2]),
+                        effect_identity=str(target_row[3]),
+                        durability=cast(Any, str(target_row[4])),
+                        recovery=cast(Any, str(target_row[5])),
+                    )
+                    for target_row in conn.execute(
+                        """
+                        SELECT t.target_kind, t.target_ref, t.identity_digest, t.effect_identity,
+                               p.durability, p.recovery_policy
+                        FROM operation_targets AS t
+                        JOIN operation_preview_targets AS p
+                          ON p.preview_id = (SELECT preview_id FROM operation_runs WHERE operation_id = t.operation_id)
+                         AND p.ordinal = t.ordinal
+                        WHERE t.operation_id = ? ORDER BY t.ordinal
+                        """,
+                        (operation_id,),
+                    )
+                )
+                operations.append(
+                    RecoveryOperation(
+                        operation_id=operation_id,
+                        operation=str(row[1]),
+                        operation_version=int(row[2]),
+                        plan_hash=str(row[3]),
+                        target_digest=str(row[4]),
+                        targets=targets,
+                    )
+                )
+        return tuple(operations)
+
+    def attempt_owner_liveness(self, operation_id: str) -> Literal["dead", "live", "unknown"]:
+        """Classify whether a nonterminal operation may be recovered.
+
+        Unknown is intentionally distinct from dead.  A legacy owner string or
+        unreadable process witness blocks recovery and overlap just like a live
+        worker, because either can still own an in-flight target mutation.
+        """
+
+        with self._connection() as conn:
+            owners = conn.execute(
+                "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                (operation_id,),
+            ).fetchall()
+        states = {_attempt_owner_liveness(cast(str | None, row[0])) for row in owners}
+        if "live" in states:
+            return "live"
+        if "unknown" in states:
+            return "unknown"
+        return "dead"
+
+    def orphaned_operations(self) -> tuple[RecoveryOperation, ...]:
+        """Discover nonterminal operations whose owner is conclusively absent.
+
+        A legacy/unreadable owner is intentionally not an orphan.  This is the
+        liveness barrier that prevents recovery startup from stealing live
+        work before a domain inspector sees it.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT operation_id FROM operation_runs
+                WHERE status IN ('running', 'interrupted') ORDER BY started_at_ms, operation_id
+                """
+            ).fetchall()
+            operation_ids: list[str] = []
+            for row in rows:
+                operation_id = str(row[0])
+                owners = conn.execute(
+                    "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                    (operation_id,),
+                ).fetchall()
+                if owners and not all(
+                    _attempt_owner_liveness(cast(str | None, owner[0])) == "dead" for owner in owners
+                ):
+                    continue
+                operation_ids.append(operation_id)
+        recovered: list[RecoveryOperation] = []
+        for operation_id in operation_ids:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT operation_name, operation_version, plan_hash, target_digest
+                    FROM operation_runs WHERE operation_id = ? AND status IN ('running', 'interrupted')
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                targets = tuple(
+                    MutationTarget(
+                        kind=str(target_row[0]),
+                        ref=str(target_row[1]),
+                        policy_key="audit-recovery",
+                        identity_digest=str(target_row[2]),
+                        effect_identity=str(target_row[3]),
+                        durability=cast(Any, str(target_row[4])),
+                        recovery=cast(Any, str(target_row[5])),
+                    )
+                    for target_row in conn.execute(
+                        """
+                        SELECT t.target_kind, t.target_ref, t.identity_digest, t.effect_identity,
+                               p.durability, p.recovery_policy
+                        FROM operation_targets AS t
+                        JOIN operation_preview_targets AS p
+                          ON p.preview_id = (SELECT preview_id FROM operation_runs WHERE operation_id = t.operation_id)
+                         AND p.ordinal = t.ordinal
+                        WHERE t.operation_id = ? ORDER BY t.ordinal
+                        """,
+                        (operation_id,),
+                    )
+                )
+            recovered.append(
+                RecoveryOperation(
+                    operation_id=operation_id,
+                    operation=str(row[0]),
+                    operation_version=int(row[1]),
+                    plan_hash=str(row[2]),
+                    target_digest=str(row[3]),
+                    targets=targets,
+                )
+            )
+        return tuple(recovered)
+
+    @_continuity_mutation("record_recovery_disposition")
+    def record_recovery_disposition(self, operation_id: str, disposition: RecoveryDisposition) -> None:
+        """Finalize one orphaned operation from domain-provided target evidence."""
+
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
+        with self._connection() as conn:
+            self._begin(conn)
+            run = conn.execute(
+                "SELECT actor_ref, status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None:
+                raise ValueError(f"unknown operation {operation_id!r}")
+            if str(run[1]) not in {"running", "interrupted"}:
+                return
+            live_owner = conn.execute(
+                "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'", (operation_id,)
+            ).fetchall()
+            if any(_attempt_owner_liveness(cast(str | None, row[0])) == "live" for row in live_owner):
+                raise RuntimeError("cannot recover an operation owned by a live worker")
+            if disposition.kind == "confirmed-applied":
+                target_state, run_state, reason = "applied", "completed", "recovered_applied"
+            elif disposition.kind == "confirmed-not-applied":
+                target_state, run_state, reason = "failed", "failed", "recovered_not_applied"
+            elif disposition.kind == "confirmed-partial":
+                target_state, run_state, reason = "failed", "failed", f"recovered_partial:{disposition.action}"
+            else:
+                target_state, run_state, reason = "unknown", "interrupted", "unknown_effect"
+            conn.execute(
+                """
+                UPDATE operation_attempts
+                SET state = CASE WHEN ? = 'unknown' THEN 'unknown' ELSE 'reconciled' END,
+                    finished_at_ms = ?, unknown_reason = ?
+                WHERE operation_id = ? AND state IN ('running', 'unknown')
+                """,
+                (target_state, now_ms, disposition.detail, operation_id),
+            )
+            conn.execute(
+                """
+                UPDATE operation_targets
+                SET state = ?, completed_at_ms = ?, unknown_reason = ?
+                WHERE operation_id = ? AND state IN ('pending', 'running', 'unknown')
+                """,
+                (target_state, now_ms, disposition.detail, operation_id),
+            )
+            conn.execute(
+                """
+                UPDATE operation_runs
+                SET status = ?, terminal_reason = ?, updated_at_ms = ?, completed_at_ms = ?,
+                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
+                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'applied'),
+                    failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
+                    unknown_reason = ?
+                WHERE operation_id = ?
+                """,
+                (
+                    run_state,
+                    reason,
+                    now_ms,
+                    now_ms,
+                    operation_id,
+                    operation_id,
+                    operation_id,
+                    disposition.detail,
+                    operation_id,
+                ),
+            )
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="recovery_classified",
+                from_state=str(run[1]),
+                to_state=run_state,
+                actor_ref=str(run[0]),
+                occurred_at_ms=now_ms,
+                detail={
+                    "kind": disposition.kind,
+                    "action": disposition.action,
+                    "detail": (disposition.detail or "")[:512],
+                },
+            )
 
     @_continuity_mutation("recover_abandoned_attempts")
     def _recover_abandoned_attempts(self) -> tuple[str, ...]:

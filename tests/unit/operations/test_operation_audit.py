@@ -33,6 +33,9 @@ from polylogue.operations.mutation_transaction import (
     MutationReceipt,
     OperationExecutor,
     PlanStaleError,
+    RecoveryBlockedError,
+    RecoveryDeclaration,
+    RecoveryDisposition,
     TargetAuthorityPolicy,
     TargetDurability,
     TokenConsumedError,
@@ -57,6 +60,11 @@ class _Actuator:
     changed: bool = False
     calls: int = 0
     crash: bool = False
+    recovery_disposition: RecoveryDisposition = field(
+        default_factory=lambda: RecoveryDisposition("confirmed-not-applied", "retry-exact")
+    )
+    recovery_raises: bool = False
+    inspections: int = 0
     target_refs: tuple[str, ...] = ("session:fixture",)
     destructive_class: DestructiveClass = "reversible"
     required_confirmation: ConfirmationStrength = "role_only"
@@ -85,6 +93,12 @@ class _Actuator:
             receipt_ref=None,
             applied_at="now",
         )
+
+    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
+        self.inspections += 1
+        if self.recovery_raises:
+            raise OSError("synthetic target is unreadable")
+        return self.recovery_disposition
 
 
 @dataclass(frozen=True)
@@ -146,6 +160,15 @@ def _binding(
             ),
         ),
         affected_tiers=("user",),
+        recovery=RecoveryDeclaration(
+            target_identity="typed-targets-v1",
+            plan_binding="plan-hash-and-target-digest-v1",
+            precondition_inspection="domain-owned",
+            postcondition_inspection="domain-owned",
+            exact_retry=True,
+            partial_actions=("retry-exact",),
+            capability="inspect-and-retry",
+        ),
     )
     return OperationBinding(spec, actuator)
 
@@ -579,6 +602,162 @@ def test_recovery_marks_a_dead_process_owned_attempt_unknown(tmp_path: Path) -> 
         assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
             "interrupted",
         )
+
+
+def _dead_nonterminal_operation(tmp_path: Path, actuator: _Actuator) -> tuple[AuditRepository, str]:
+    """Create the production durable boundary immediately after attempt start."""
+
+    audit = _audit(tmp_path)
+    first = OperationExecutor(audit=audit, token_factory=lambda: "crash-boundary-token")
+    binding = _binding(actuator)
+    preview = first.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = first.authorize_bound(binding, preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+    return audit, operation_id
+
+
+def test_dead_attempt_is_inspected_before_overlapping_apply_and_exact_retry_is_single_effect(tmp_path: Path) -> None:
+    """A crash after attempt start is classified from the domain before retry.
+
+    Anti-vacuity: deleting overlap discovery, target inspection, or the
+    durable recovery finalization either leaves the first operation running or
+    permits the new apply without recording the classification.
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "retry-boundary-token")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    receipt = retry.execute_bound(binding, preview, authorization, object())
+
+    assert receipt.status == "applied"
+    assert actuator.inspections == 1
+    assert actuator.calls == 1
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "failed",
+        )
+        assert conn.execute(
+            "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
+            (operation_id,),
+        ).fetchone() == ("recovery_classified",)
+
+
+@pytest.mark.parametrize(
+    ("disposition", "raises"),
+    [
+        (RecoveryDisposition("unknown", "operator-blocking", "unreadable target"), False),
+        (RecoveryDisposition("confirmed-not-applied", "retry-exact"), True),
+    ],
+)
+def test_unreadable_or_unknown_recovery_never_consumes_overlapping_authority(
+    tmp_path: Path, disposition: RecoveryDisposition, raises: bool
+) -> None:
+    """Unknown target evidence blocks before a second authorization is consumed."""
+
+    actuator = _Actuator(recovery_disposition=disposition, recovery_raises=raises)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "blocked-retry-token")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    with pytest.raises(RecoveryBlockedError):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "interrupted",
+        )
+        assert conn.execute(
+            "SELECT state FROM operation_authorizations WHERE token_sha256 = ?", (token_sha256("blocked-retry-token"),)
+        ).fetchone() == ("active",)
+
+
+def test_confirmed_applied_recovery_refuses_duplicate_effect(tmp_path: Path) -> None:
+    """A target-specific applied classification cannot be replayed as a new effect."""
+
+    actuator = _Actuator(recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"))
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-retry-token")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    with pytest.raises(RecoveryBlockedError, match="already applied"):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "completed",
+        )
+
+
+def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> None:
+    """An unreadable ownership witness is blocking, never an orphan shortcut."""
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'external:unverifiable' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "unknown-owner-token")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    with pytest.raises(RecoveryBlockedError, match="unknown owner"):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.inspections == 0
+    assert actuator.calls == 0
 
 
 @pytest.mark.parametrize("owner_id", [None, "external:unverifiable"])

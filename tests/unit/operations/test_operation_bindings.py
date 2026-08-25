@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -15,6 +15,8 @@ from polylogue.operations.mutation_transaction import (
     DestructiveClass,
     MutationPlan,
     MutationReceipt,
+    RecoveryDeclaration,
+    RecoveryDisposition,
     TargetAuthorityPolicy,
     build_plan,
 )
@@ -49,6 +51,9 @@ class _Actuator:
             applied_at="now",
         )
 
+    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
+        return RecoveryDisposition("unknown", "operator-blocking", "synthetic inspector")
+
 
 def _spec(*, policies: tuple[TargetAuthorityPolicy, ...] | None = None) -> OperationSpec:
     return OperationSpec(
@@ -74,6 +79,15 @@ def _spec(*, policies: tuple[TargetAuthorityPolicy, ...] | None = None) -> Opera
                 ),
             )
         ),
+        recovery=RecoveryDeclaration(
+            target_identity="typed-targets-v1",
+            plan_binding="plan-hash-and-target-digest-v1",
+            precondition_inspection="domain-owned",
+            postcondition_inspection="domain-owned",
+            exact_retry=True,
+            partial_actions=("retry-exact",),
+            capability="inspect-and-retry",
+        ),
     )
 
 
@@ -98,6 +112,8 @@ def test_binding_rejects_unregistered_capability_and_missing_policy() -> None:
         ).validate()
     with pytest.raises(BindingValidationError, match="no target authority"):
         OperationBinding(_spec(policies=()), actuator).validate()
+    with pytest.raises(BindingValidationError, match="no recovery declaration"):
+        OperationBinding(replace(_spec(), recovery=None), actuator).validate()
 
 
 def test_binding_rejects_version_mismatch_and_duplicate_catalog_entries() -> None:
@@ -127,6 +143,7 @@ def test_runtime_executor_routes_have_specific_capabilities_and_surfaces() -> No
 
     assert routed
     assert all(spec.target_authority for spec in routed)
+    assert all(spec.recovery is not None for spec in routed)
     assert all(spec.allowed_surfaces for spec in routed)
     assert all(
         capability != "archive.legacy_runtime"

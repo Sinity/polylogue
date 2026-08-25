@@ -174,6 +174,40 @@ class TestSessionDeleteActuator:
             assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
+    def test_startup_inspects_a_dead_delete_attempt_before_any_later_apply(self, tmp_path: Path) -> None:
+        """Recovery startup reads the delete target, not the audit target state."""
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        initialize_active_archive_root(archive_root)
+        session_id = _seed_archive_session(archive_root, native_id="restart-delete")
+        actuator = SessionDeleteActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.delete_session"}), "api", "write")
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor.for_archive_root(archive_root)
+            args = SessionDeleteArgs(archive=archive, session_ids=(session_id,))
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            assert executor._audit is not None
+            operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            conn.execute(
+                "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+            )
+            conn.commit()
+
+        OperationExecutor.for_archive_root(archive_root)
+
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            assert conn.execute(
+                "SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone() == ("failed",)
+            assert conn.execute(
+                "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
+                (operation_id,),
+            ).fetchone() == ("recovery_classified",)
+
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
