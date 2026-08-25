@@ -144,10 +144,10 @@ acquired/released a blob-GC lease here, keyed by
 ``_blob_hashes``/``_operation_id`` payload entries. No production caller
 ever populated those keys (polylogue-v7e0), so the branch never executed;
 it was removed rather than left as unreachable code or ported into this
-registry as a fourth do-nothing entry. GC's sole defense against a blob
-write racing a concurrent ``blob-gc`` run is now the age floor documented on
-``polylogue.storage.blob_gc.MIN_AGE_S`` — see ``docs/internals.md`` "GC
-concurrency model" for the current, lease-free contract.
+registry as a fourth do-nothing entry. Publication reservations and GC's
+final locked liveness/reservation recheck protect a blob write racing a
+concurrent ``blob-gc`` run; the age floor remains defense-in-depth. See
+``docs/internals.md`` "GC concurrency model" for the current contract.
 """
 
 

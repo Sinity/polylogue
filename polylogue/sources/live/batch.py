@@ -4130,7 +4130,11 @@ class LiveBatchProcessor:
         lease.acquire()
         try:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
-            with closing(sqlite3.connect(source_db)) as conn, conn:
+            with (
+                closing(sqlite3.connect(source_db)) as conn,
+                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn,
+                conn,
+            ):
                 conn.row_factory = sqlite3.Row
                 try:
                     retention_authority = active_raw_retention_authority(
@@ -4148,6 +4152,7 @@ class LiveBatchProcessor:
                     min_acquired_at=self._raw_compaction_min_acquired_at,
                     protected_raw_ids=retention_authority.protected_raw_ids,
                     eligible_raw_ids=retention_authority.eligible_raw_ids,
+                    index_conn=index_conn,
                 )
         finally:
             lease.close()

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
+from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.hook_payload_ref_reconciliation import plan_hook_payload_ref_reconciliation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -212,3 +213,47 @@ def test_match_stage_failure_clears_every_temp_table_then_rebuilds(tmp_path: Pat
     assert rebuilt.scanned_count == 1
     assert rebuilt.unmatched_count == 0
     assert tuple(candidate.hook_event_id for candidate in rebuilt.matched) == ("hook-1",)
+
+
+def test_connection_stage_refreshes_after_source_write(tmp_path: Path) -> None:
+    """A token cannot reuse legacy-hook matches after its source evidence changes."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        blob_hash = _seed_pre_v22_hook_ref(
+            conn,
+            hook_event_id="hook-1",
+            origin="codex-session",
+            source_path="/hooks/a.jsonl",
+            native_id="native-1",
+            payload=b'{"event":"PostToolUse"}',
+        )
+        stage = reconciliation.prepare_match_stage(conn)
+        assert inspect_blob_liveness(conn, blob_hash.hex(), legacy_hook_stage=stage).state is LivenessState.LIVE
+
+        conn.execute("DELETE FROM raw_hook_events WHERE hook_event_id = 'hook-1'")
+
+        # The negative twin is a stale-stage reuse: the removed hook must no
+        # longer retain the otherwise dangling raw_payload ledger row.
+        assert inspect_blob_liveness(conn, blob_hash.hex(), legacy_hook_stage=stage).state is LivenessState.UNREFERENCED
+
+
+def test_missing_connection_stage_blocks_liveness_instead_of_guessing(tmp_path: Path) -> None:
+    """A damaged temp stage is a blocker, never evidence that bytes are dead."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        blob_hash = _seed_pre_v22_hook_ref(
+            conn,
+            hook_event_id="hook-1",
+            origin="codex-session",
+            source_path="/hooks/a.jsonl",
+            native_id="native-1",
+            payload=b'{"event":"PostToolUse"}',
+        )
+        stage = reconciliation.prepare_match_stage(conn)
+        conn.execute(f"DROP TABLE temp.{reconciliation._MATCH_TABLE}")
+
+        decision = inspect_blob_liveness(conn, blob_hash.hex(), legacy_hook_stage=stage)
+
+    assert decision.state is LivenessState.BLOCKED

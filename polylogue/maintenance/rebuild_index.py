@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.config import Config
 from polylogue.core.errors import PolylogueError
@@ -190,6 +190,7 @@ class RebuildProvenanceContext:
     consumed_evidence: dict[str, object]
     external_inventory_token: dict[str, object] = field(default_factory=dict)
     verified_blob_integrity_snapshot: dict[str, object] | None = None
+    active_index_context: Literal["required", "unavailable_for_candidate"] = "required"
 
     def validate(self, *, verify_blob_integrity: bool = False, refresh_blob_integrity: bool = False) -> None:
         cached_snapshot = None if refresh_blob_integrity else self.verified_blob_integrity_snapshot
@@ -197,7 +198,7 @@ class RebuildProvenanceContext:
             self.root,
             self.receipt_path,
             inventory_token=self.external_inventory_token,
-            verify_blob_integrity=verify_blob_integrity,
+            verify_blob_integrity=verify_blob_integrity and self.active_index_context == "required",
             verified_blob_integrity_snapshot=cached_snapshot,
         )
         refreshed_inventory_token = validated.get("external_ground_truth_inventory_token")
@@ -1544,7 +1545,11 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         raise RuntimeError(reason)
     from polylogue.maintenance.archive_verification import REINDEX_SOURCE_PREFLIGHT_CHECKS, verify_archive
 
-    source_liveness = verify_archive(root, checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    source_liveness = verify_archive(
+        root,
+        checks=REINDEX_SOURCE_PREFLIGHT_CHECKS,
+        active_index_context=("required" if location.active_index_path.exists() else "unavailable_for_candidate"),
+    )
     if source_liveness.blocking:
         failing = "; ".join(
             f"{check.name}: {check.summary}"
@@ -1648,6 +1653,9 @@ async def _rebuild_index_from_source_owned(
         consumed_evidence=consumed_evidence,
         external_inventory_token=cast(
             dict[str, object], consumed_evidence.get("external_ground_truth_inventory_token", {})
+        ),
+        active_index_context=(
+            "required" if ArchiveLocation.resolve(root).active_index_path.exists() else "unavailable_for_candidate"
         ),
     )
     # ``rebuild_index_from_source`` already acquired this root's

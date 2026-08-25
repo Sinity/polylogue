@@ -125,23 +125,40 @@ Restore expectations:
 - `ops.db` does not decide archive correctness; restore it only when preserving
   daemon history matters.
 - A restored blob store is valid only when referenced blobs still match their
-  SHA-256 paths and `source.db`/`user.db` references.
+  SHA-256 paths and source resolution plus active-index attachment ownership.
 - Blob backup includes the exact union of referenced and publication-reserved
-  bytes. `blob-inventory.json` records every hash and size; verification
-  re-hashes restored bytes rather than accepting an equal file count.
+  bytes. `blob-inventory.json` records every hash and size;
+  `blob-reference-evidence.json` separately records source resolution and
+  active-index attachment ownership. Verification re-hashes restored bytes
+  and checks the independent attachment evidence rather than accepting an
+  equal file count.
+- The blob namespace authority marker is deliberately excluded from ordinary
+  archive-file-set backups, including `full_evidence`. Those backups copy the
+  source tier and referenced bytes as independently verified artifacts, not
+  one atomic source-plus-namespace unit. Restoring a pending GC intent with a
+  newly created or separately restored blob root must therefore block on the
+  absent or different marker. An operator may terminalize that exact intent
+  through the authorized offline recovery route; it never rebinds the intent.
+  Preserve a marker only in a restore format that proves source.db and the
+  physical namespace were captured and restored as one bound unit.
 
 ## Blob GC Safety Boundary
 
 Blob garbage collection is dry-run-first work. A safe GC report must prove:
 
-- the candidate blob is not referenced by `source.db.raw_sessions`;
-- the candidate has neither a durable reference nor a publication reservation;
+- the candidate has no current canonical source or active-index attachment
+  owner and no publication reservation;
 - the candidate is older than the generation/age defense-in-depth gate
   (`MIN_AGE_S`; see `docs/internals.md` "GC concurrency model");
+- a durable intent bound to the observed namespace exists before unlink, and
+  the final source/index liveness and reservation recheck remains clear. The
+  final object observation and unlink are performed through no-follow root
+  and shard directory handles so a root swap cannot redirect the effect into
+  a replacement namespace;
 - the report names exact candidate counts and references before deletion.
 
-Do not delete blobs based only on filesystem age, directory mtime, or absence
-from `index.db`. `source.db` is the authority for raw evidence reachability.
+Do not delete blobs based only on filesystem age, directory mtime, or one
+tier's absence. Canonical liveness resolves source and active-index owners.
 
 ## Quarterly Restore Drill Runbook (polylogue-4be)
 

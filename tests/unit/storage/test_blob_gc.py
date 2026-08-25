@@ -1,8 +1,8 @@
 """Regression tests for blob GC safety invariants.
 
-Verifies the two fatal GC bugs fixed in 1bd2f156 stay fixed:
+Verifies two historical GC regressions stay fixed:
 
-1. ``_still_referenced`` must check ``raw_sessions.raw_id``
+1. canonical liveness must check ``raw_sessions.blob_hash``
 2. ``_candidate_blobs`` must walk all 256 prefix subdirectories
 """
 
@@ -15,13 +15,15 @@ import pytest
 
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
-    _reference_surfaces,
-    _still_referenced,
     read_gc_history,
     run_blob_gc,
     run_blob_gc_report,
+    unlink_unreferenced_blob_hashes_under_exclusion,
 )
+from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,138 +31,197 @@ from polylogue.storage.blob_store import BlobStore
 
 
 def _make_index_sibling(db_path: str | Path) -> Path:
-    """Create the minimal index tier GC requires beside a file-based fixture.
-
-    GC refuses to run when a reference tier it must consult cannot be read,
-    so a file-set fixture has to carry one. The table matters: the index tier
-    is where ``attachments.blob_hash`` lives, and it is the only surface that
-    knows about 1,240 of the live archive's attachment payloads.
-    """
+    """Bootstrap the production index tier GC requires beside a fixture."""
     index_path = Path(db_path).with_name("index.db")
-    conn = sqlite3.connect(str(index_path))
-    try:
-        conn.execute("CREATE TABLE IF NOT EXISTS attachments (blob_hash BLOB)")
-        conn.commit()
-    finally:
-        conn.close()
+    initialize_archive_database(index_path, ArchiveTier.INDEX)
     return index_path
 
 
 def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
-    """Create an in-memory or file-based SQLite database with GC schema."""
+    """Create an in-memory or file-based production source-tier fixture."""
     target = str(path) if path else ":memory:"
+    if path is not None and Path(path).name == "index.db":
+        initialize_archive_database(Path(path), ArchiveTier.INDEX)
+        conn = sqlite3.connect(target)
+        conn.row_factory = sqlite3.Row
+        return conn
     if path is not None:
         _make_index_sibling(path)
     conn = sqlite3.connect(target)
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            source_name TEXT NOT NULL DEFAULT '',
-            source_path TEXT NOT NULL DEFAULT '',
-            blob_hash BLOB,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL DEFAULT ''
-        )"""
-    )
-    conn.execute(
-        """CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            ref_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
-            source_path TEXT,
-            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
-            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (blob_hash, ref_type, ref_id)
-        )"""
-    )
-    # gc_generations carries the typed reclaim counters that production
-    # ``run_blob_gc`` writes and ``read_gc_history`` reads — matching the
-    # split-file source.db DDL (#1743).
-    conn.execute(
-        """CREATE TABLE gc_generations (
-            generation_id   TEXT PRIMARY KEY,
-            started_at_ms   INTEGER NOT NULL,
-            completed_at_ms INTEGER,
-            reclaimed_count INTEGER NOT NULL DEFAULT 0,
-            reclaimed_bytes INTEGER NOT NULL DEFAULT 0
-        )"""
-    )
-    conn.commit()
+    initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
 
 
 def _make_source_db(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            blob_hash BLOB NOT NULL,
-            blob_size INTEGER NOT NULL DEFAULT 0
-        ) STRICT"""
-    )
-    conn.execute(
-        """CREATE TABLE blob_refs (
-            ref_id TEXT PRIMARY KEY,
-            owner_kind TEXT NOT NULL,
-            owner_id TEXT NOT NULL,
-            blob_hash BLOB NOT NULL
-        ) STRICT"""
-    )
-    conn.commit()
-    return conn
+    return _make_db(path)
 
 
 # ---------------------------------------------------------------------------
-# _still_referenced — regression: must check raw_sessions.raw_id
+# Canonical decision: raw_id is observation identity, never blob liveness
 # ---------------------------------------------------------------------------
 
 
-def test_still_referenced_recognizes_raw_id() -> None:
-    """A blob whose hash matches a raw_sessions.raw_id is still referenced."""
+def test_canonical_liveness_does_not_treat_raw_id_as_blob_reference() -> None:
+    """A raw observation ID that happens to look like a hash cannot pin bytes."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('abc123def456', 'codex-session', 'test.json', ?, 42, 1)""",
+        (b"x" * 32,),
     )
     conn.commit()
-    assert _still_referenced(conn, "abc123def456") is True
+    assert inspect_blob_liveness(conn, "abc123def456").state is LivenessState.UNREFERENCED
     conn.close()
 
 
-def test_still_referenced_rejects_unknown_hash() -> None:
+def test_canonical_liveness_rejects_unknown_hash() -> None:
     """A blob not in raw_sessions is not referenced."""
     conn = _make_db()
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('known-hash-1', 'codex-session', 'test.json', ?, 10, 1)""",
+        (b"y" * 32,),
     )
     conn.commit()
-    assert _still_referenced(conn, "unknown-dead-hash") is False
+    assert inspect_blob_liveness(conn, "unknown-dead-hash").state is LivenessState.UNREFERENCED
     conn.close()
 
 
-def test_still_referenced_empty_table() -> None:
+def test_canonical_liveness_empty_table() -> None:
     """With no raw_sessions rows, nothing is referenced."""
     conn = _make_db()
-    assert _still_referenced(conn, "any-hash") is False
+    assert inspect_blob_liveness(conn, "any-hash").state is LivenessState.UNREFERENCED
     conn.close()
 
 
-def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None:
+def test_canonical_liveness_recognizes_archive_source_hash(tmp_path: Path) -> None:
     """source references are BLOB hashes, not legacy raw_id text."""
     blob_hash = "a" * 64
     source_conn = _make_source_db(tmp_path / "source.db")
     source_conn.execute(
-        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES (?, 'codex-session', '/fixture', ?, ?, 1)""",
         ("raw-1", bytes.fromhex(blob_hash), 42),
     )
     source_conn.commit()
 
-    assert _still_referenced(source_conn, blob_hash) is True
-    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions", "current.blob_refs"]
+    decision = inspect_blob_liveness(source_conn, blob_hash)
+    assert decision.state is LivenessState.LIVE
+    assert decision.surfaces == ("source.db.raw_sessions",)
     source_conn.close()
+
+
+def test_final_gc_recheck_uses_one_connection_when_source_and_index_alias(tmp_path: Path) -> None:
+    """The legacy single-file repair route must not lock its own database twice."""
+
+    db_path = tmp_path / "legacy.db"
+    conn = _make_source_db(db_path)
+    conn.close()
+    store = BlobStore(tmp_path / "blobs")
+    blob_hash, _size = store.write_from_bytes(b"legacy single-file candidate")
+
+    deleted, _bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(db_path, db_path, store.root, {blob_hash})
+
+    # The one-file legacy schema cannot satisfy current index ownership, so
+    # this route must fail closed. The anti-vacuity condition is that a second
+    # BEGIN IMMEDIATE on db_path would instead report "database is locked".
+    assert deleted == 0
+    assert any("index.attachments is missing" in error for error in errors)
+    assert not any("database is locked" in error for error in errors)
+    assert store.exists(blob_hash)
+
+
+def test_final_gc_stage_build_is_constant_for_10k_candidates_and_large_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final writer lock builds the legacy anti-join once, never per hash."""
+    import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
+
+    source_db = tmp_path / "source.db"
+    conn = _make_source_db(source_db)
+    (tmp_path / "blobs").mkdir()
+    candidates = {f"{index:064x}" for index in range(10_000)}
+    conn.executemany(
+        """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, 'raw_payload', '/ledger', 1, 1)""",
+        ((bytes.fromhex(blob_hash), f"dangling-{index}") for index, blob_hash in enumerate(sorted(candidates))),
+    )
+    conn.commit()
+    conn.close()
+
+    stage_builds = 0
+    readiness_checks = 0
+    original_build = reconciliation._build_match_stage
+    original_readiness = reconciliation._match_stage_readiness
+
+    def count_stage_builds(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal stage_builds
+        stage_builds += 1
+        return original_build(*args, **kwargs)
+
+    def count_readiness_checks(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal readiness_checks
+        readiness_checks += 1
+        return original_readiness(*args, **kwargs)
+
+    monkeypatch.setattr(reconciliation, "_build_match_stage", count_stage_builds)
+    monkeypatch.setattr(reconciliation, "_match_stage_readiness", count_readiness_checks)
+    deleted, deleted_bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(
+        source_db, source_db.with_name("index.db"), tmp_path / "blobs", candidates
+    )
+
+    assert (deleted, deleted_bytes, errors) == (0, 0, ())
+    # This is an operation-count contract, rather than a timing threshold:
+    # restoring per-hash readiness/stage construction makes it 10,000.
+    assert stage_builds == 1
+    # The initial absent-stage check and post-build attestation are the only
+    # full readiness passes. A per-hash anti-join validation is 10,002 here.
+    assert readiness_checks == 2
+
+
+def test_final_gc_synthetic_batch_uses_one_writer_connection_and_one_final_match_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measure the selected bounded-batch design against the old per-member shape.
+
+    The synthetic store is local to this test.  The selected design has one
+    final writer connection/stage for 32 candidates; the retired per-member
+    transaction design would make both counts 32.  This count-based
+    measurement is stable where a wall-clock threshold would not be.
+    """
+    import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
+    from polylogue.storage import blob_gc
+
+    source_db = tmp_path / "source.db"
+    _make_source_db(source_db).close()
+    store = BlobStore(tmp_path / "blobs")
+    hashes = {store.write_from_bytes(f"synthetic gc {number}".encode())[0] for number in range(32)}
+    final_connection_ids: set[int] = set()
+    final_stage_builds = 0
+    original_final = blob_gc._final_gc_member_liveness
+    original_stage_build = reconciliation._build_match_stage
+
+    def observe_final(source_conn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        final_connection_ids.add(id(source_conn))
+        return original_final(source_conn, *args, **kwargs)
+
+    def observe_stage(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal final_stage_builds
+        final_stage_builds += 1
+        return original_stage_build(*args, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", observe_final)
+    monkeypatch.setattr(reconciliation, "_build_match_stage", observe_stage)
+    deleted, _bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(
+        source_db, source_db.with_name("index.db"), store.root, hashes
+    )
+
+    assert (deleted, errors) == (32, ())
+    assert len(final_connection_ids) == 1
+    # One matcher stage is needed for non-destructive planning and one for the
+    # final writer batch; neither grows with the member count.
+    assert final_stage_builds == 2
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +264,9 @@ def test_candidate_blobs_respects_older_than(tmp_path: Path) -> None:
 
 
 def test_candidate_blobs_empty_dir(tmp_path: Path) -> None:
-    """Empty blob directory returns empty list."""
-    candidates = _candidate_blobs(tmp_path / "nonexistent", older_than=0)
-    assert candidates == []
+    """A missing root is a namespace blocker, not an empty candidate census."""
+    with pytest.raises(RuntimeError, match="blob namespace"):
+        _candidate_blobs(tmp_path / "nonexistent", older_than=0)
 
 
 def test_candidate_blobs_skips_dotfiles(tmp_path: Path) -> None:
@@ -216,12 +277,13 @@ def test_candidate_blobs_skips_dotfiles(tmp_path: Path) -> None:
     prefix_dir.mkdir()
     # Create a temp file that should be skipped
     (prefix_dir / ".blob.temp").write_bytes(b"temp")
-    # Create a real blob manually
-    (prefix_dir / "bbccddeeff0011223344556677889900aabbccdd").write_bytes(b"real")
+    # Create a real blob manually — a valid 64-char lowercase-hex hash.
+    remainder = "bb" * 31
+    (prefix_dir / remainder).write_bytes(b"real")
 
     candidates = _candidate_blobs(blob_root, older_than=0)
     found = {h for h, _ in candidates}
-    assert "aabbccddeeff0011223344556677889900aabbccdd" in found
+    assert "aa" + remainder in found
     assert "aa.blob.temp" not in found
 
 
@@ -229,16 +291,47 @@ def test_candidate_blobs_skips_non_two_char_prefix_dirs(tmp_path: Path) -> None:
     """Directories not matching the two-char prefix pattern should be skipped."""
     blob_root = tmp_path / "blobs"
     blob_root.mkdir(parents=True)
-    # Valid prefix dir
+    # Valid prefix dir with a valid 64-char lowercase-hex blob hash.
     (blob_root / "ab").mkdir()
-    (blob_root / "ab" / "cdef1234").write_bytes(b"real")
+    remainder = "cd" * 31
+    (blob_root / "ab" / remainder).write_bytes(b"real")
     # Non-prefix dir
     (blob_root / "not-a-prefix").mkdir()
 
     candidates = _candidate_blobs(blob_root, older_than=0)
     found = {h for h, _ in candidates}
-    assert "abcdef1234" in found
+    assert "ab" + remainder in found
     assert not any(h.startswith("not") for h in found)
+
+
+def test_candidate_blobs_filters_invalid_namespace_entries(tmp_path: Path) -> None:
+    """A shard file whose combined name is not exactly 64 lowercase-hex chars
+    must never be shortlisted.
+
+    Regression for a review finding: ``_candidate_blobs`` used to shortlist
+    any aged regular file regardless of name shape, so a foreign or
+    partially-written entry in a valid-looking shard directory would reach
+    ``_commit_gc_generation_intent`` and violate the 32-byte ``blob_hash``
+    CHECK constraint (or raise ``ValueError`` from ``bytes.fromhex``).
+    ``BlobStore.iter_namespace`` already classifies these as invalid
+    namespace entries; GC must leave them alone. If the length/hex guard in
+    ``_candidate_blobs`` is removed, this test goes red because the
+    short/uppercase/non-hex entries would reappear in the candidate set.
+    """
+    blob_root = tmp_path / "blobs"
+    blob_root.mkdir(parents=True)
+    prefix_dir = blob_root / "aa"
+    prefix_dir.mkdir()
+
+    valid_remainder = "11" * 31  # 62 chars + "aa" prefix = 64
+    (prefix_dir / valid_remainder).write_bytes(b"real")
+    (prefix_dir / "tooshort").write_bytes(b"short")  # not 64 chars total
+    (prefix_dir / ("zz" * 31)).write_bytes(b"nonhex")  # not lowercase hex
+    (prefix_dir / (valid_remainder.upper())).write_bytes(b"uppercase")  # not lowercase hex
+
+    candidates = _candidate_blobs(blob_root, older_than=0)
+    found = {h for h, _ in candidates}
+    assert found == {"aa" + valid_remainder}
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +363,9 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'test.json', ?, '2024-01-01')",
-        (h, len(b"referenced content")),
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'test.json', ?, ?, 1)""",
+        (bytes.fromhex(h), len(b"referenced content")),
     )
     conn.commit()
     conn.close()
@@ -301,7 +394,8 @@ def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -
 
     source_conn = _make_source_db(source_db_path)
     source_conn.execute(
-        "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES (?, 'codex-session', '/fixture', ?, ?, 1)""",
         ("raw-v1", bytes.fromhex(blob_hash), len(b"archive referenced content")),
     )
     source_conn.commit()
@@ -354,9 +448,9 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
         blob_hash, size = store.write_from_bytes(f"referenced-{index}".encode())
         _backdate(store, blob_hash)
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-            "VALUES (?, 'codex', ?, ?, '2026-01-01')",
-            (blob_hash, f"{index}.json", size),
+            """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES (?, 'codex-session', ?, ?, ?, 1)""",
+            (f"raw-{index}", f"{index}.json", bytes.fromhex(blob_hash), size),
         )
     orphan_hash, _ = store.write_from_bytes(b"bounded orphan")
     _backdate(store, orphan_hash)
@@ -364,15 +458,15 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
     conn.close()
 
     lock_rechecks = 0
-    original_reference_surfaces = blob_gc._reference_surfaces
+    original_inspect = blob_gc.inspect_blob_liveness
 
     def count_lock_rechecks(conn, *args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal lock_rechecks
         if conn.in_transaction:
             lock_rechecks += 1
-        return original_reference_surfaces(conn, *args, **kwargs)
+        return original_inspect(conn, *args, **kwargs)
 
-    monkeypatch.setattr(blob_gc, "_reference_surfaces", count_lock_rechecks)
+    monkeypatch.setattr(blob_gc, "inspect_blob_liveness", count_lock_rechecks)
     report = run_blob_gc_report(db_path, blob_root, max_batch=2)
 
     assert report.candidate_count == 41
@@ -387,7 +481,6 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
 def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.storage import blob_gc
 
     db_path = tmp_path / "source.db"
     blob_root = tmp_path / "blobs"
@@ -396,30 +489,33 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     blob_hash, size = store.write_from_bytes(b"referenced")
     _backdate(store, blob_hash)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'codex', 'referenced.json', ?, '2026-01-01')",
-        (blob_hash, size),
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'referenced.json', ?, ?, 1)""",
+        (bytes.fromhex(blob_hash), size),
     )
     conn.commit()
     conn.close()
 
-    stage_calls = 0
-    original = blob_gc._legacy_hook_liveness_status
+    from polylogue.storage import blob_gc
 
-    def count_stage_calls(connection: sqlite3.Connection) -> str:
-        nonlocal stage_calls
-        stage_calls += 1
-        return original(connection)
+    final_member_checks = 0
+    original_final_member_liveness = blob_gc._final_gc_member_liveness
 
-    monkeypatch.setattr(blob_gc, "_legacy_hook_liveness_status", count_stage_calls)
+    def count_final_member_checks(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal final_member_checks
+        final_member_checks += 1
+        return original_final_member_liveness(*args, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", count_final_member_checks)
+
     report = run_blob_gc_report(db_path, blob_root, max_batch=10)
 
     assert report.deleted_count == 0
     assert report.skipped_referenced == 1
-    # One stage per reference tier the planning pass consults (control tier +
-    # index tier), and none from a second destructive pass -- an empty
-    # shortlist must not re-enter the lock. Re-staging would double this.
-    assert stage_calls == 2
+    # An empty deletion plan records one generation but must not enter the
+    # per-member final recheck route.
+    assert final_member_checks == 0
+    assert report.generation_written is True
 
 
 def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
@@ -569,6 +665,36 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
 @pytest.mark.uses_real_clock(
     "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
 )
+def test_run_blob_gc_dry_run_does_not_create_namespace_marker(tmp_path: Path) -> None:
+    """A dry-run preview must not write the namespace marker.
+
+    Regression for a review finding: every ``dry_run=True`` call used to
+    reach the unconditional ``create_marker=True`` path, mutating an archive
+    that had no marker yet and failing against read-only backup media. If
+    ``run_blob_gc_report`` is changed back to bind (and create) a namespace
+    marker unconditionally, this test goes red because the marker file would
+    exist after a dry run against a marker-less archive.
+    """
+    db_path = tmp_path / "archive.db"
+    blob_root = tmp_path / "blobs"
+    blob_store = BlobStore(blob_root)
+
+    h, _ = blob_store.write_from_bytes(b"dry-run orphan")
+    _backdate(blob_store, h)
+    _make_db(db_path).close()
+
+    marker_path = blob_root / ".polylogue-blob-namespace"
+    assert not marker_path.exists()
+
+    would_delete = run_blob_gc(str(db_path), str(blob_root), max_batch=10, dry_run=True)
+
+    assert would_delete == 1
+    assert not marker_path.exists(), "a read-only preview must not create the namespace marker"
+
+
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
     """#1743: each committed pass writes a typed ``gc_generations`` row
     capturing the reclaimed blob count and freed bytes — the durable
@@ -586,9 +712,9 @@ def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
-        (referenced_hash,),
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+        VALUES ('raw', 'codex-session', 'x.json', ?, 1, 1)""",
+        (bytes.fromhex(referenced_hash),),
     )
     conn.commit()
     conn.close()
@@ -658,7 +784,10 @@ def test_run_blob_gc_refuses_when_the_index_tier_cannot_be_read(tmp_path: Path) 
 
     # The only reference to the attachment bytes anywhere in the archive.
     index_conn = sqlite3.connect(str(index_path))
-    index_conn.execute("INSERT INTO attachments (blob_hash) VALUES (?)", (bytes.fromhex(attachment_hash),))
+    index_conn.execute(
+        "INSERT INTO attachments (attachment_id, blob_hash, acquisition_status) VALUES ('attachment', ?, 'acquired')",
+        (bytes.fromhex(attachment_hash),),
+    )
     index_conn.commit()
     index_conn.close()
 

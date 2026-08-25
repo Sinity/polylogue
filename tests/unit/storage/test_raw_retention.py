@@ -155,7 +155,7 @@ def _insert_archive_raw_session(
         INSERT INTO raw_sessions (
             raw_id, origin, native_id, source_path, source_index,
             blob_hash, blob_size, acquired_at_ms
-        ) VALUES (?, 'codex', ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'codex-session', ?, ?, ?, ?, ?, ?)
         """,
         (raw_id, raw_id, str(source_path), source_index, bytes.fromhex(blob_hash), blob_size, acquired_at_ms),
     )
@@ -1385,10 +1385,11 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
 
         result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
         assert result.deleted_raw_count == 3
-        assert result.deleted_blob_count == 3
-        assert not blob_store.exists(full_old)
-        assert not blob_store.exists(append_old)
-        assert not blob_store.exists(leased_old)
+        assert result.deleted_blob_count == 0
+        assert all("index tier is unavailable" in error for error in result.errors)
+        assert blob_store.exists(full_old)
+        assert blob_store.exists(append_old)
+        assert blob_store.exists(leased_old)
         assert blob_store.exists(full_new)
         assert blob_store.exists(append_current)
         assert blob_store.exists(missing_old)
@@ -1704,7 +1705,7 @@ def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_pat
 
     result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
     assert result.deleted_raw_count == 1
-    assert not blob_store.exists(old_raw)
+    assert blob_store.exists(old_raw)
     assert blob_store.exists(current_raw)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (old_raw,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = ?", (old_raw,)).fetchone() is None
@@ -2797,15 +2798,17 @@ def test_raw_frontier_integrity_snapshot_unavailable_ops_tier_is_unknown_never_h
 
 
 def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path) -> None:
-    db_path = tmp_path / "source.db"
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    db_path = root / "source.db"
+    index_db = root / "index.db"
     source = tmp_path / "rollout.jsonl"
     source.write_text('{"type":"message"}\n', encoding="utf-8")
-    blob_store = BlobStore(tmp_path / "blob")
+    blob_store = BlobStore(root / "blob")
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    _ensure_archive_source_schema(conn)
 
     old_blob, old_size = _write_blob(blob_store, b"v1-old")
     current_blob, current_size = _write_blob(blob_store, b"v1-current")
@@ -2834,10 +2837,12 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
         ("raw-old-not-a-blob-hash", old_blob)
     ]
 
-    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+    with sqlite3.connect(index_db) as index_conn:
+        result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store, index_conn=index_conn)
 
     assert result.deleted_raw_count == 1
     assert result.deleted_blob_count == 1
+    assert result.errors == ()
     assert not blob_store.exists(old_blob)
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
@@ -3174,4 +3179,38 @@ def test_superseded_cleanup_keeps_blob_named_by_a_ledgerless_surviving_raw(tmp_p
         current_hash,
         "ledgerless-raw",
     }
+    conn.close()
+
+
+def test_cleanup_returns_typed_unavailable_result_for_in_memory_database_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank PRAGMA database_list path is not a filesystem database alias."""
+
+    blob_store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = _write_blob(blob_store, b"in-memory cleanup candidate")
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE blob_refs (ref_id TEXT)")
+    conn.execute("INSERT INTO raw_sessions VALUES ('candidate')")
+    monkeypatch.setattr(
+        raw_retention_mod,
+        "superseded_raw_snapshot_candidates",
+        lambda *_args, **_kwargs: [
+            raw_retention_mod.RawSnapshotCleanupCandidate(
+                raw_id="candidate",
+                source_path="/synthetic/source.jsonl",
+                source_index=0,
+                blob_size=blob_size,
+                blob_hash=blob_hash,
+            )
+        ],
+    )
+
+    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store, index_conn=conn)
+
+    assert result.deleted_raw_count == 1
+    assert result.deleted_blob_count == 0
+    assert result.errors == ("source or index tier is unavailable",)
+    assert blob_store.exists(blob_hash)
     conn.close()

@@ -49,12 +49,25 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import stat
 import time
-from contextlib import closing, suppress
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from polylogue.storage.blob_liveness import (
+    BlobLiveness,
+    LivenessState,
+    inspect_blob_liveness,
+    inspect_blob_reservation,
+    validated_blob_ref_liveness_joins,
+)
+from polylogue.storage.blob_liveness import (
+    blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column,
+)
+from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -72,7 +85,6 @@ class GCRunEvidence:
     """
 
     inspected: int = 0
-    deleted: int = 0
     skipped_referenced: int = 0
     skipped_reserved: int = 0
     skipped_missing: int = 0
@@ -98,6 +110,13 @@ class BlobGCResult:
     skipped_reserved: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
+    # These are deliberately distinct from ``deleted_count`` and
+    # ``reclaimed_bytes``, which describe this invocation only.  The durable
+    # generation counters are derived from every terminal member outcome and
+    # therefore include work completed before a crash/restart.
+    generation_reclaimed_count: int = 0
+    generation_reclaimed_bytes: int = 0
+    generation_completed: bool = False
     generation_id: str | None = None
     generation_written: bool = False
     older_than_s: float = 0.0
@@ -118,6 +137,9 @@ class BlobGCResult:
             "skipped_reserved": self.skipped_reserved,
             "skipped_missing": self.skipped_missing,
             "skipped_unlink_error": self.skipped_unlink_error,
+            "generation_reclaimed_count": self.generation_reclaimed_count,
+            "generation_reclaimed_bytes": self.generation_reclaimed_bytes,
+            "generation_completed": self.generation_completed,
             "generation_id": self.generation_id,
             "generation_written": self.generation_written,
             "older_than_s": self.older_than_s,
@@ -166,49 +188,6 @@ def _database_has_table(path: Path, table: str) -> bool:
         conn.close()
 
 
-def _blob_hash_bytes(blob_hash: str) -> bytes | None:
-    if len(blob_hash) != 64:
-        return None
-    try:
-        return bytes.fromhex(blob_hash)
-    except ValueError:
-        return None
-
-
-# blob_refs.ref_type -> the table/column a ref_id must actually resolve to for
-# that row to mean the blob is still live. 'attachment' refs are keyed by the
-# *parent session's* raw_id (write_source_raw_session/
-# write_source_raw_session_blob_ref always pass ref.raw_id=resolved_raw_id for
-# every entry in additional_blob_refs, regardless of ref_type -- verified
-# against every production call site, polylogue-tfzw0), not a raw_artifacts
-# row, so it joins the same table as 'raw_payload'. 'sidecar' has no
-# production writer today; it is included for completeness/forward-safety
-# against history_sidecars.sidecar_id, its only plausible referent.
-BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = (
-    ("raw_payload", "raw_sessions", "raw_id"),
-    ("attachment", "raw_sessions", "raw_id"),
-    ("hook_payload", "raw_hook_events", "hook_event_id"),
-    ("sidecar", "history_sidecars", "sidecar_id"),
-)
-
-# Private alias retained for the GC implementation's existing local naming.
-_BLOB_REF_LIVENESS_JOIN = BLOB_REF_LIVENESS_JOIN
-
-
-def _open_recheck_connection(path: Path, *, dry_run: bool) -> sqlite3.Connection:
-    """Open a sibling reference tier for the final recheck window.
-
-    A destructive pass takes a write transaction so no other process can
-    commit a new reference between the recheck and the unlink. A dry run
-    reads only and takes no lock, so it never blocks an ingest.
-    """
-    if dry_run:
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn = sqlite3.connect(str(path))
-    conn.execute("BEGIN IMMEDIATE")
-    return conn
-
-
 def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
     """Return a reason per reference tier that cannot be read.
 
@@ -229,246 +208,203 @@ def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
     return tuple(blockers)
 
 
-def _blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
-    """Guard for legacy/alternate ``blob_refs`` shapes lacking ``ref_type``/``ref_id``.
-
-    Some pre-#1743 fixtures and test doubles model ``blob_refs`` with a
-    different column set entirely (e.g. ``owner_kind``/``owner_id`` instead of
-    ``ref_type``/``ref_id``). The liveness join is meaningless there; callers
-    fall back to treating ``blob_refs`` as contributing nothing rather than
-    raising ``OperationalError``.
-    """
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(blob_refs)")}
-    return "ref_type" in columns and "ref_id" in columns
+class _BlobNamespaceUnavailableError(RuntimeError):
+    """The blob namespace cannot prove that an object is absent."""
 
 
-def _table_has_blob_hash_column(conn: sqlite3.Connection, table: str) -> bool:
-    return any(str(row[1]) == "blob_hash" for row in conn.execute(f"PRAGMA table_info({table})"))
+@dataclass(frozen=True, slots=True)
+class _BlobNamespaceIdentity:
+    """A Polylogue-owned, reboot-stable binding for a GC intent."""
+
+    marker: str
 
 
-def _prepare_legacy_hook_liveness(conn: sqlite3.Connection) -> str:
-    """Prepare the canonical legacy-hook reconciliation stage for this connection."""
-    if not _table_exists(conn, "raw_hook_events"):
-        return "not_applicable"
-    hook_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)")}
-    required = {"hook_event_id", "origin", "native_id", "source_path", "blob_hash"}
-    if required - hook_columns:
-        return "unavailable"
-    try:
-        # Reuse the same bounded, ambiguity-aware stage that the offline
-        # reconciliation classifier uses. GC only reads its match tables.
-        from polylogue.storage.hook_payload_ref_reconciliation import _create_match_stage
-
-        _create_match_stage(conn)
-    except Exception:
-        logger.warning("Could not stage legacy hook evidence for blob GC; retaining candidate blobs")
-        return "unavailable"
-    return "ready"
+_BLOB_NAMESPACE_MARKER = ".polylogue-blob-namespace"
 
 
-def _legacy_hook_liveness_status(conn: sqlite3.Connection) -> str:
-    """Prepare legacy-hook evidence once when this connection needs it."""
-    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
-        return "not_applicable"
-    if conn.execute("SELECT 1 FROM blob_refs WHERE ref_type = 'raw_payload' LIMIT 1").fetchone() is None:
-        return "not_applicable"
-    return _prepare_legacy_hook_liveness(conn)
+def _namespace_error(blob_root: Path, exc: OSError) -> _BlobNamespaceUnavailableError:
+    return _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} is unavailable or unreadable: {exc}")
 
 
-def _blob_refs_still_live(
-    conn: sqlite3.Connection,
-    blob_bytes: bytes,
-    *,
-    legacy_hook_status: str | None = None,
-) -> bool:
-    """Return True if some ``blob_refs`` row for this hash has a live referent.
-
-    Replaces a prior membership test that only checked whether ANY row in
-    ``blob_refs`` carried this hash -- a tautology, since the row being asked
-    about is itself the "evidence" (polylogue-tfzw0). A ``blob_refs`` row is
-    only real evidence of liveness when the table its own ``ref_type`` names
-    (see ``_BLOB_REF_LIVENESS_JOIN``) still has the row identified by
-    ``ref_id``. A hook-event blob ref whose ``raw_hook_events`` row was
-    deleted, or a stale ref left behind by a since-reverted write, no longer
-    joins to anything and is correctly treated as dead here. Unknown ref
-    types and known types whose referent table or key column is unavailable
-    are retained because GC cannot prove them dead.
-    """
-    if not _table_exists(conn, "blob_refs"):
-        return False
-    if not _blob_refs_has_ref_type_column(conn):
-        # A legacy or malformed reference table cannot prove that its rows are
-        # dead. Keep the blob until an offline integrity tool records a typed
-        # disposition; GC must never turn an unknown schema into evidence loss.
-        return True
-    ref_types = {
-        str(row[0])
-        for row in conn.execute("SELECT DISTINCT ref_type FROM blob_refs WHERE blob_hash = ?", (blob_bytes,))
-    }
-    if not ref_types:
-        return False
-    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
-    if ref_types - known_ref_types:
-        # Reconciliation reports unknown ref types as a blocker. GC follows
-        # the same fail-closed rule instead of deleting unclassified evidence.
-        return True
-    if "raw_payload" in ref_types:
-        legacy_hook_status = (
-            legacy_hook_status if legacy_hook_status is not None else _prepare_legacy_hook_liveness(conn)
-        )
-        if legacy_hook_status == "unavailable":
-            return True
-        if legacy_hook_status == "ready":
-            legacy_hook_row = conn.execute(
-                """
-                SELECT 1
-                FROM temp.hook_payload_ref_reconciliation_matches
-                WHERE blob_hash = ?
-                UNION ALL
-                SELECT 1
-                FROM temp.hook_payload_ref_reconciliation_ambiguous
-                WHERE blob_hash = ?
-                LIMIT 1
-                """,
-                (blob_bytes, blob_bytes),
-            ).fetchone()
-            if legacy_hook_row is not None:
-                return True
-    clauses = [
-        f"(ref_type = ? AND EXISTS (SELECT 1 FROM {referent_table} WHERE {referent_table}.{referent_column} = blob_refs.ref_id))"
-        for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN
-        if ref_type in ref_types
-    ]
-    params: list[str] = []
-    for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
-        if ref_type not in ref_types:
-            continue
-        if not _table_exists(conn, referent_table):
-            # The type is known, but this archive cannot evaluate its join.
-            # Keep the blob until the missing referent surface is restored or
-            # an integrity tool records a disposition.
-            return True
-        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
-        if referent_column not in referent_columns:
-            return True
-        params.append(ref_type)
-    if not clauses:
-        return False
-    query = f"SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ({' OR '.join(clauses)}) LIMIT 1"
-    row = conn.execute(query, (blob_bytes, *params)).fetchone()
-    return row is not None
+_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
-def _archive_reference_surfaces(
-    conn: sqlite3.Connection,
-    blob_hash: str,
-    *,
-    surface_prefix: str,
-    legacy_hook_status: str | None = None,
-) -> list[str]:
-    blob_bytes = _blob_hash_bytes(blob_hash)
-    if blob_bytes is None:
-        return []
+@dataclass(frozen=True, slots=True)
+class _ObservedBlobObject:
+    """One object observed through an already-bound namespace directory."""
 
-    surfaces: list[str] = []
-    for table in ("raw_sessions", "attachments", "raw_hook_events"):
-        if not _table_exists(conn, table) or not _table_has_blob_hash_column(conn, table):
-            continue
-        row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
-        if row is not None:
-            surfaces.append(f"{surface_prefix}.{table}")
-    if _blob_refs_still_live(conn, blob_bytes, legacy_hook_status=legacy_hook_status):
-        surfaces.append(f"{surface_prefix}.blob_refs")
-    return surfaces
+    blob_hash: str
+    size_bytes: int
+    shard_fd: int
+
+    def unlink(self) -> None:
+        """Unlink this exact pathname relative to its observed shard handle."""
+
+        os.unlink(self.blob_hash[2:], dir_fd=self.shard_fd)
 
 
-def _reference_surfaces(
-    conn: sqlite3.Connection,
-    blob_hash: str,
-    *,
-    source_db_path: Path | None = None,
-    source_conn: sqlite3.Connection | None = None,
-    index_conn: sqlite3.Connection | None = None,
-    legacy_hook_status: str | None = None,
-    source_legacy_hook_status: str | None = None,
-    index_legacy_hook_status: str | None = None,
-) -> list[str]:
-    surfaces = _archive_reference_surfaces(
-        conn,
-        blob_hash,
-        surface_prefix="current",
-        legacy_hook_status=legacy_hook_status,
-    )
+@dataclass(frozen=True, slots=True)
+class _OpenBlobNamespace:
+    """A marker-validated root descriptor used for one GC member batch."""
 
-    if source_conn is not None:
-        source_prefix = source_db_path.name if source_db_path is not None else "source"
-        surfaces.extend(
-            _archive_reference_surfaces(
-                source_conn,
-                blob_hash,
-                surface_prefix=source_prefix,
-                legacy_hook_status=source_legacy_hook_status,
-            )
-        )
-    elif source_db_path is not None and source_db_path.exists():
+    root_fd: int
+    identity: _BlobNamespaceIdentity
+
+    @contextmanager
+    def observe_object(self, blob_hash: str) -> Iterator[_ObservedBlobObject | None]:
+        """Yield a regular object bound to a no-follow shard descriptor, if present."""
+
         try:
-            source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
+            shard_fd = os.open(blob_hash[:2], _DIRECTORY_OPEN_FLAGS, dir_fd=self.root_fd)
+        except FileNotFoundError:
+            yield None
+            return
+        except OSError as exc:
+            raise _BlobNamespaceUnavailableError(
+                f"blob namespace shard {blob_hash[:2]} is unavailable or unreadable: {exc}"
+            ) from exc
+        try:
             try:
-                surfaces.extend(
-                    _archive_reference_surfaces(
-                        source_conn,
-                        blob_hash,
-                        surface_prefix=source_db_path.name,
-                        legacy_hook_status=source_legacy_hook_status,
-                    )
+                metadata = os.stat(blob_hash[2:], dir_fd=shard_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                yield None
+                return
+            except OSError as exc:
+                raise _BlobNamespaceUnavailableError(
+                    f"blob object {blob_hash} could not be inspected in its readable namespace: {exc}"
+                ) from exc
+            if not stat.S_ISREG(metadata.st_mode):
+                raise _BlobNamespaceUnavailableError(
+                    f"blob object {blob_hash} is not a regular file in its readable namespace"
                 )
-            finally:
-                source_conn.close()
-        except sqlite3.Error as exc:
-            logger.warning("Could not inspect archive source blob references in %s: %s", source_db_path, exc)
+            yield _ObservedBlobObject(blob_hash=blob_hash, size_bytes=metadata.st_size, shard_fd=shard_fd)
+        finally:
+            os.close(shard_fd)
 
-    if index_conn is not None:
-        surfaces.extend(
-            _archive_reference_surfaces(
-                index_conn,
-                blob_hash,
-                surface_prefix="index.db",
-                legacy_hook_status=index_legacy_hook_status,
+
+def _read_namespace_marker_from_fd(root_fd: int, blob_root: Path) -> _BlobNamespaceIdentity:
+    """Read the owned marker relative to a no-follow root descriptor."""
+
+    try:
+        marker_fd = os.open(_BLOB_NAMESPACE_MARKER, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+    except FileNotFoundError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} lacks its Polylogue authority marker"
+        ) from exc
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    try:
+        metadata = os.fstat(marker_fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise _BlobNamespaceUnavailableError(
+                f"blob namespace at {blob_root} has an invalid Polylogue authority marker"
             )
-        )
-
-    if _table_exists(conn, "raw_sessions"):
-        row = conn.execute(
-            "SELECT 1 FROM raw_sessions WHERE raw_id = ? LIMIT 1",
-            (blob_hash,),
-        ).fetchone()
-        if row is not None:
-            surfaces.append("current.raw_sessions")
-
-    return surfaces
-
-
-def _still_referenced(
-    conn: sqlite3.Connection,
-    blob_hash: str,
-    *,
-    source_db_path: Path | None = None,
-) -> bool:
-    """Return True if the blob hash is referenced by any archive row."""
-    return bool(_reference_surfaces(conn, blob_hash, source_db_path=source_db_path))
+        marker = os.read(marker_fd, 33).decode("ascii", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} has an invalid Polylogue authority marker"
+        ) from exc
+    finally:
+        os.close(marker_fd)
+    if len(marker) != 32 or any(char not in "0123456789abcdef" for char in marker):
+        raise _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} has an invalid Polylogue authority marker")
+    return _BlobNamespaceIdentity(marker=marker)
 
 
-def _has_publication_reservation(conn: sqlite3.Connection, blob_hash: str) -> bool:
-    blob_bytes = _blob_hash_bytes(blob_hash)
-    if blob_bytes is None or not _table_exists(conn, "blob_publication_reservations"):
-        return False
-    return (
-        conn.execute(
-            "SELECT 1 FROM blob_publication_reservations WHERE blob_hash = ? LIMIT 1",
-            (blob_bytes,),
-        ).fetchone()
-        is not None
-    )
+@contextmanager
+def _open_blob_namespace(
+    blob_root: Path, *, namespace_identity: _BlobNamespaceIdentity
+) -> Iterator[_OpenBlobNamespace]:
+    """Bind marker observation and member effects to stable root/shard handles."""
+
+    try:
+        root_fd = os.open(blob_root, _DIRECTORY_OPEN_FLAGS)
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    try:
+        observed = _read_namespace_marker_from_fd(root_fd, blob_root)
+        if observed != namespace_identity:
+            raise _BlobNamespaceUnavailableError("blob namespace authority changed since GC intent was committed")
+        yield _OpenBlobNamespace(root_fd=root_fd, identity=observed)
+    finally:
+        os.close(root_fd)
+
+
+def _is_lowercase_hex(value: str) -> bool:
+    """Return whether ``value`` is composed only of lowercase hex digits."""
+    return all(char in "0123456789abcdef" for char in value)
+
+
+def _fsync_directory(path: Path) -> None:
+    """Fsync a directory's inode so a prior entry write survives a crash."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_blob_object(
+    blob_root: Path, blob_hash: str, *, namespace_identity: _BlobNamespaceIdentity
+) -> tuple[int | None, tuple[str, ...]]:
+    """Read one object only after establishing its containing namespace.
+
+    ``None, ()`` means an object is absent from a readable namespace.  That is
+    the only shape a pending exact intent may reconcile as already removed.
+    A missing root, a non-directory root, or an unreadable shard is a blocker
+    because it does not identify the namespace that the old plan observed.
+    """
+    try:
+        with (
+            _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace,
+            namespace.observe_object(blob_hash) as observed,
+        ):
+            return (None if observed is None else observed.size_bytes), ()
+    except _BlobNamespaceUnavailableError as exc:
+        return None, (str(exc),)
+
+
+def _assert_blob_namespace_readable(blob_root: Path) -> None:
+    """Require that the root namespace itself can be enumerated."""
+    try:
+        with os.scandir(blob_root):
+            pass
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+
+
+def _blob_namespace_identity(blob_root: Path, *, create_marker: bool = False) -> _BlobNamespaceIdentity:
+    """Read the Polylogue-owned namespace marker, creating it only for a new plan."""
+
+    _assert_blob_namespace_readable(blob_root)
+    marker_path = blob_root / _BLOB_NAMESPACE_MARKER
+    if create_marker:
+        try:
+            with marker_path.open("x", encoding="ascii", errors="strict") as marker_file:
+                marker_file.write(uuid4().hex)
+                marker_file.flush()
+                os.fsync(marker_file.fileno())
+            # Closing the file makes neither its contents nor its directory
+            # entry durable. A new marker's identity is about to be recorded
+            # in `gc_generations` (a durable commit); fsync the containing
+            # directory too so a power loss cannot leave that durable intent
+            # pointing at a marker that never reached disk.
+            _fsync_directory(blob_root)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise _namespace_error(blob_root, exc) from exc
+    try:
+        marker = marker_path.read_text(encoding="ascii", errors="strict")
+    except FileNotFoundError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} lacks its Polylogue authority marker"
+        ) from exc
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+    if len(marker) != 32 or any(char not in "0123456789abcdef" for char in marker):
+        raise _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} has an invalid Polylogue authority marker")
+    return _BlobNamespaceIdentity(marker=marker)
 
 
 def _candidate_blobs(
@@ -482,16 +418,13 @@ def _candidate_blobs(
     Walks all prefix subdirectories (00–ff) to find actual blob files.
     Returns list of ``(blob_hash, mtime)`` tuples sorted by mtime ascending.
     """
-    if not blob_dir.is_dir():
-        return []
-
     candidates: list[tuple[str, float]] = []
     now = time.time()
     try:
         for prefix_dir in os.scandir(str(blob_dir)):
             if not prefix_dir.is_dir(follow_symlinks=False):
                 continue
-            if not prefix_dir.name or len(prefix_dir.name) != 2:
+            if not prefix_dir.name or len(prefix_dir.name) != 2 or not _is_lowercase_hex(prefix_dir.name):
                 continue
             try:
                 for entry in os.scandir(prefix_dir.path):
@@ -501,13 +434,21 @@ def _candidate_blobs(
                         and now - entry.stat().st_mtime >= older_than
                     ):
                         blob_hash = prefix_dir.name + entry.name
+                        # A shard directory can contain an aged file that is
+                        # not a valid blob member -- e.g. a foreign or
+                        # partially-written entry whose combined name is not
+                        # exactly 64 lowercase hex characters. `iter_namespace`
+                        # already classifies those as invalid namespace
+                        # entries; GC must leave them for the integrity
+                        # workflow rather than shortlist them into a member
+                        # intent that would violate the 32-byte hash CHECK.
+                        if len(blob_hash) != 64 or not _is_lowercase_hex(blob_hash):
+                            continue
                         candidates.append((blob_hash, entry.stat().st_mtime))
-            except PermissionError:
-                logger.warning("Permission denied scanning blob prefix: %s", prefix_dir.path)
-                continue
-    except PermissionError:
-        logger.warning("Permission denied scanning blob directory: %s", blob_dir)
-        return []
+            except OSError as exc:
+                raise _namespace_error(Path(prefix_dir.path), exc) from exc
+    except OSError as exc:
+        raise _namespace_error(blob_dir, exc) from exc
 
     candidates.sort(key=lambda pair: pair[1])
     return candidates
@@ -523,6 +464,557 @@ def _sharded_blob_path(blob_root: Path, blob_hash: str) -> Path:
     return blob_root / blob_hash[:2] / blob_hash[2:]
 
 
+@dataclass(frozen=True, slots=True)
+class _GCMemberIntent:
+    """One exact, already-planned filesystem deletion candidate."""
+
+    blob_hash: str
+    # This is the durable denominator for the generation's reclaimed-byte
+    # summary.  It is not a freshness binding: hash-path identity and the
+    # locked liveness/reservation recheck decide whether unlink may proceed.
+    size_bytes: int
+
+
+def _gc_member_table_available(conn: sqlite3.Connection) -> bool:
+    return _table_exists(conn, "gc_generation_members")
+
+
+def _gc_namespace_identity_columns_available(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "gc_generations"):
+        return False
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(gc_generations)")}
+    return {"blob_namespace_marker"}.issubset(columns)
+
+
+def _commit_gc_generation_intent(
+    control_db_path: Path,
+    *,
+    generation_id: str,
+    started_at_ms: int,
+    members: tuple[_GCMemberIntent, ...],
+    namespace_identity: _BlobNamespaceIdentity,
+) -> None:
+    """Commit a generation and all exact member intents before any unlink."""
+    with sqlite3.connect(control_db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if not _gc_member_table_available(conn):
+            raise RuntimeError("blob GC durable member-intent schema is unavailable")
+        if not _gc_namespace_identity_columns_available(conn):
+            raise RuntimeError("blob GC durable namespace-identity schema is unavailable")
+        conn.execute(
+            "INSERT INTO gc_generations "
+            "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, "
+            "blob_namespace_marker) VALUES (?, ?, ?, 0, 0, ?)",
+            # An empty plan has no physical operation to recover.  Make it a
+            # terminal, zero-summary generation in this same durable intent
+            # transaction so a crash cannot turn it into a legacy unknown.
+            (
+                generation_id,
+                started_at_ms,
+                started_at_ms if not members else None,
+                namespace_identity.marker,
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO gc_generation_members "
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (
+                (
+                    generation_id,
+                    bytes.fromhex(member.blob_hash),
+                    member.size_bytes,
+                    started_at_ms,
+                )
+                for member in members
+            ),
+        )
+        conn.commit()
+
+
+def _commit_gc_member_outcome(
+    source_conn: sqlite3.Connection,
+    *,
+    generation_id: str,
+    blob_hash: str,
+    outcome: str,
+    detail: str | None = None,
+) -> None:
+    """Stage one post-recheck result under the generation's writer lock.
+
+    The enclosing bounded batch commits these rows once all fresh liveness
+    rechecks and unlinks are complete.  A crash before that commit leaves the
+    pre-existing exact intents pending; a restart then distinguishes a
+    readable object absence from namespace loss.
+    """
+    cursor = source_conn.execute(
+        "UPDATE gc_generation_members SET outcome = ?, outcome_at_ms = ?, outcome_detail = ? "
+        "WHERE generation_id = ? AND blob_hash = ? AND outcome = 'pending'",
+        (outcome, int(time.time() * 1000), detail, generation_id, bytes.fromhex(blob_hash)),
+    )
+    if cursor.rowcount != 1:
+        raise RuntimeError("blob GC member outcome lost its exact pending intent")
+
+
+def _finalize_gc_generation(control_db_path: Path, generation_id: str) -> bool:
+    """Complete one generation only once every durable member is explained."""
+    with sqlite3.connect(control_db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("blob GC generation disappeared before finalization")
+        if row[0] is not None:
+            conn.rollback()
+            return True
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM gc_generation_members WHERE generation_id = ? AND outcome = 'pending'",
+            (generation_id,),
+        ).fetchone()[0]
+        if pending:
+            conn.rollback()
+            return False
+        reclaimed_count, reclaimed_bytes = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(candidate_size_bytes), 0) "
+            "FROM gc_generation_members WHERE generation_id = ? AND outcome = 'removed'",
+            (generation_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE gc_generations SET completed_at_ms = ?, reclaimed_count = ?, reclaimed_bytes = ? "
+            "WHERE generation_id = ? AND completed_at_ms IS NULL",
+            (int(time.time() * 1000), reclaimed_count, reclaimed_bytes, generation_id),
+        )
+        conn.commit()
+    return True
+
+
+def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | None]:
+    """Return the one restartable member generation, or a fail-closed reason."""
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+        if not _gc_member_table_available(conn):
+            return None, "blob GC durable member-intent schema is unavailable"
+        if not _gc_namespace_identity_columns_available(conn):
+            return None, "blob GC durable namespace-identity schema is unavailable"
+        rows = conn.execute(
+            "SELECT generation_id FROM gc_generations WHERE completed_at_ms IS NULL ORDER BY started_at_ms, generation_id"
+        ).fetchall()
+        if not rows:
+            return None, None
+        if len(rows) != 1:
+            return None, "multiple incomplete blob GC generations require operator investigation"
+        generation_id = str(rows[0][0])
+        return generation_id, None
+
+
+def _generation_namespace_matches(
+    control_db_path: Path,
+    generation_id: str,
+    blob_root: Path,
+) -> str | None:
+    """Refuse a pending intent whose observed namespace was swapped or remounted."""
+
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT blob_namespace_marker FROM gc_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        return "blob GC generation disappeared before namespace verification"
+    if row[0] is None:
+        return "pending blob GC generation lacks a durable blob namespace identity"
+    try:
+        observed = _blob_namespace_identity(blob_root)
+    except _BlobNamespaceUnavailableError as exc:
+        return str(exc)
+    if str(row[0]) != observed.marker:
+        return "blob namespace authority changed since GC intent was committed"
+    return None
+
+
+def _final_gc_member_liveness(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection | None,
+    blob_hash: str,
+    *,
+    legacy_hook_stage: HookPayloadRefMatchStage,
+) -> tuple[BlobLiveness, BlobLiveness]:
+    """Production seam for fault injection around GC's final locked recheck."""
+    return (
+        inspect_blob_liveness(
+            source_conn,
+            blob_hash,
+            index_conn=index_conn,
+            require_index=True,
+            legacy_hook_stage=legacy_hook_stage,
+        ),
+        inspect_blob_reservation(source_conn, blob_hash),
+    )
+
+
+def _unlink_observed_gc_member(observed: _ObservedBlobObject) -> None:
+    """Production seam between final object observation and its dirfd unlink."""
+
+    observed.unlink()
+
+
+@dataclass(frozen=True, slots=True)
+class _GCProtection:
+    """The one typed liveness/reservation decision consumed by GC paths."""
+
+    liveness: BlobLiveness
+    reservation: BlobLiveness
+
+    @property
+    def blockers(self) -> tuple[str, ...]:
+        return self.liveness.blockers + self.reservation.blockers
+
+    @property
+    def is_live(self) -> bool:
+        return self.liveness.state is LivenessState.LIVE or self.reservation.state is LivenessState.LIVE
+
+
+def _inspect_gc_protection(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection | None,
+    blob_hash: str,
+    *,
+    legacy_hook_stage: HookPayloadRefMatchStage,
+    final_recheck: bool,
+) -> _GCProtection:
+    """Project canonical liveness and reservation from one caller-owned lock state."""
+    if final_recheck:
+        liveness, reservation = _final_gc_member_liveness(
+            source_conn,
+            index_conn,
+            blob_hash,
+            legacy_hook_stage=legacy_hook_stage,
+        )
+    else:
+        liveness = inspect_blob_liveness(
+            source_conn,
+            blob_hash,
+            index_conn=index_conn,
+            require_index=True,
+            legacy_hook_stage=legacy_hook_stage,
+        )
+        reservation = inspect_blob_reservation(source_conn, blob_hash)
+    return _GCProtection(liveness, reservation)
+
+
+def _execute_gc_generation_members(
+    *,
+    control_db_path: Path,
+    sibling_index_db: Path,
+    blob_root: Path,
+    generation_id: str,
+    report: BlobGCResult,
+    evidence: GCRunEvidence,
+) -> tuple[int, int]:
+    """Run a bounded pending batch under one source/index writer window.
+
+    Intent is committed before this function starts.  Outcomes are staged only
+    after every locked recheck/unlink has completed, which keeps the legacy
+    liveness matcher current without rebuilding it after bookkeeping writes.
+    A crash before the single outcome commit leaves exact pending intents for
+    idempotent restart reconciliation.
+    """
+    namespace_blocker = _generation_namespace_matches(control_db_path, generation_id, blob_root)
+    if namespace_blocker is not None:
+        report.blocked_reason = namespace_blocker
+        return 0, 0
+    try:
+        namespace_identity = _blob_namespace_identity(blob_root)
+    except _BlobNamespaceUnavailableError as exc:
+        report.blocked_reason = str(exc)
+        return 0, 0
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as history:
+        members = [
+            str(row[0]).lower()
+            for row in history.execute(
+                "SELECT hex(blob_hash) FROM gc_generation_members "
+                "WHERE generation_id = ? AND outcome = 'pending' ORDER BY blob_hash",
+                (generation_id,),
+            )
+        ]
+    deleted_now = 0
+    reclaimed_bytes_now = 0
+    staged_outcomes: list[tuple[str, str, str | None]] = []
+    source_conn = sqlite3.connect(control_db_path)
+    index_conn: sqlite3.Connection | None = None
+    try:
+        source_conn.execute("BEGIN IMMEDIATE")
+        if control_db_path != sibling_index_db:
+            index_conn = sqlite3.connect(sibling_index_db)
+            index_conn.execute("BEGIN IMMEDIATE")
+        recheck_index = index_conn or (source_conn if control_db_path == sibling_index_db else None)
+        preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
+        if preflight.state is LivenessState.BLOCKED:
+            report.blocked_reason = "; ".join(preflight.blockers)
+            return deleted_now, reclaimed_bytes_now
+        try:
+            legacy_hook_stage = prepare_match_stage(source_conn)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            return deleted_now, reclaimed_bytes_now
+        try:
+            with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
+                for blob_hash in members:
+                    protection = _inspect_gc_protection(
+                        source_conn,
+                        recheck_index,
+                        blob_hash,
+                        legacy_hook_stage=legacy_hook_stage,
+                        final_recheck=True,
+                    )
+                    if protection.blockers:
+                        report.blocked_reason = "; ".join(protection.blockers)
+                        return deleted_now, reclaimed_bytes_now
+                    if protection.is_live:
+                        staged_outcomes.append(
+                            (
+                                blob_hash,
+                                "skipped_still_live",
+                                "canonical liveness or publication reservation became live",
+                            )
+                        )
+                        evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                        evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
+                        continue
+                    with namespace.observe_object(blob_hash) as observed:
+                        if observed is None:
+                            # The root and (where present) shard were freshly readable, so
+                            # this is a per-object absence rather than namespace loss.
+                            staged_outcomes.append(
+                                (blob_hash, "reconciled_removed", "blob absent in readable namespace")
+                            )
+                            evidence.skipped_missing += 1
+                            continue
+                        try:
+                            _unlink_observed_gc_member(observed)
+                        except FileNotFoundError:
+                            # Re-establish absence through the same root descriptor. A
+                            # pathname re-open could otherwise inspect a replacement
+                            # namespace after its root has been swapped.
+                            with namespace.observe_object(blob_hash) as replacement:
+                                if replacement is not None:
+                                    staged_outcomes.append((blob_hash, "failed", "blob changed during final unlink"))
+                                    evidence.skipped_unlink_error += 1
+                                    continue
+                            staged_outcomes.append(
+                                (blob_hash, "reconciled_removed", "blob disappeared in readable namespace")
+                            )
+                            evidence.skipped_missing += 1
+                            continue
+                        except OSError as exc:
+                            staged_outcomes.append((blob_hash, "failed", str(exc)))
+                            evidence.skipped_unlink_error += 1
+                            continue
+                        staged_outcomes.append((blob_hash, "removed", None))
+                        deleted_now += 1
+                        reclaimed_bytes_now += observed.size_bytes
+        except _BlobNamespaceUnavailableError as exc:
+            report.blocked_reason = str(exc)
+            return deleted_now, reclaimed_bytes_now
+        for blob_hash, outcome, detail in staged_outcomes:
+            _commit_gc_member_outcome(
+                source_conn,
+                generation_id=generation_id,
+                blob_hash=blob_hash,
+                outcome=outcome,
+                detail=detail,
+            )
+        source_conn.commit()
+    except Exception:
+        if source_conn.in_transaction:
+            source_conn.rollback()
+        raise
+    finally:
+        if index_conn is not None:
+            if index_conn.in_transaction:
+                index_conn.rollback()
+            index_conn.close()
+        source_conn.close()
+    _finalize_gc_generation(control_db_path, generation_id)
+    return deleted_now, reclaimed_bytes_now
+
+
+def _populate_generation_summary(report: BlobGCResult, control_db_path: Path, generation_id: str) -> None:
+    """Attach durable, all-attempt counters without relabeling run counters."""
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT completed_at_ms, reclaimed_count, reclaimed_bytes FROM gc_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("blob GC generation disappeared before report summary")
+    report.generation_completed = row[0] is not None
+    report.generation_reclaimed_count = int(row[1])
+    report.generation_reclaimed_bytes = int(row[2])
+
+
+def _resume_pending_gc_generation(
+    *,
+    control_db_path: Path,
+    sibling_index_db: Path,
+    blob_root: Path,
+    report: BlobGCResult,
+    max_batch: int,
+) -> bool:
+    """Run the sole pending generation and report whether the gate was used."""
+    pending_generation, pending_blocker = _pending_gc_generation(control_db_path)
+    if pending_blocker is not None:
+        report.blocked_reason = pending_blocker
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        return True
+    if pending_generation is None:
+        return False
+    evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
+    deleted, reclaimed_bytes = _execute_gc_generation_members(
+        control_db_path=control_db_path,
+        sibling_index_db=sibling_index_db,
+        blob_root=blob_root,
+        generation_id=pending_generation,
+        report=report,
+        evidence=evidence,
+    )
+    report.generation_id = pending_generation
+    report.generation_written = True
+    report.deleted_count = deleted
+    report.reclaimed_bytes = reclaimed_bytes
+    report.skipped_referenced = evidence.skipped_referenced
+    report.skipped_reserved = evidence.skipped_reserved
+    report.skipped_missing = evidence.skipped_missing
+    report.skipped_unlink_error = evidence.skipped_unlink_error
+    _populate_generation_summary(report, control_db_path, pending_generation)
+    return True
+
+
+def unlink_unreferenced_blob_hashes_under_exclusion(
+    source_db_path: Path,
+    index_db_path: Path,
+    blob_root: Path,
+    blob_hashes: set[str],
+) -> tuple[int, int, tuple[str, ...]]:
+    """Unlink specified hashes after GC's exact final liveness recheck.
+
+    Raw-retention has independently authorized row deletion, but never a
+    separate blob authority. It delegates its physical deletion to this
+    bounded GC seam: publisher exclusion, source then index write locks, and
+    the final canonical-owner/reservation recheck all happen immediately
+    before unlink.
+    """
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+    with exclude_archive_blob_publishers(source_db_path):
+        if not _database_has_table(source_db_path, "gc_generation_members"):
+            return 0, 0, ("blob GC durable member-intent schema is unavailable",)
+        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as schema_conn:
+            if not _gc_namespace_identity_columns_available(schema_conn):
+                return 0, 0, ("blob GC durable namespace-identity schema is unavailable",)
+        tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
+        if tier_blockers:
+            return 0, 0, tier_blockers
+        report = BlobGCResult(str(source_db_path), str(blob_root), False, len(blob_hashes))
+        try:
+            namespace_identity = _blob_namespace_identity(blob_root, create_marker=True)
+        except _BlobNamespaceUnavailableError as exc:
+            return 0, 0, (str(exc),)
+        # This direct writer entry point must obey the exact same one-pending
+        # generation gate as recurring GC.  In particular, it cannot create a
+        # second incomplete plan after raw retention has independently removed
+        # rows but before a prior physical deletion has been explained.
+        if _resume_pending_gc_generation(
+            control_db_path=source_db_path,
+            sibling_index_db=index_db_path,
+            blob_root=blob_root,
+            report=report,
+            max_batch=max(len(blob_hashes), 1),
+        ):
+            if report.blocked_reason is not None:
+                return report.deleted_count, report.reclaimed_bytes, (report.blocked_reason,)
+            with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+                errors = tuple(
+                    f"{str(row[0])[:16]}: {row[1]}"
+                    for row in source_conn.execute(
+                        "SELECT hex(blob_hash), outcome_detail FROM gc_generation_members "
+                        "WHERE generation_id = ? AND outcome = 'failed' ORDER BY blob_hash",
+                        (report.generation_id,),
+                    )
+                )
+            return report.deleted_count, report.reclaimed_bytes, errors
+        if not blob_hashes:
+            return 0, 0, ()
+        members: list[_GCMemberIntent] = []
+        try:
+            with (
+                closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn,
+                closing(sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True)) as index_conn,
+            ):
+                preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
+                if preflight.state is LivenessState.BLOCKED:
+                    return 0, 0, preflight.blockers
+                legacy_hook_stage = prepare_match_stage(source_conn)
+                for blob_hash in sorted(blob_hashes):
+                    size_bytes, namespace_blockers = _read_blob_object(
+                        blob_root, blob_hash, namespace_identity=namespace_identity
+                    )
+                    if namespace_blockers:
+                        return 0, 0, namespace_blockers
+                    if size_bytes is None:
+                        # A caller may hand us a stale candidate set.  A
+                        # readable object absence has no unlink and no member
+                        # intent/success attribution.
+                        continue
+                    protection = _inspect_gc_protection(
+                        source_conn,
+                        index_conn=index_conn,
+                        legacy_hook_stage=legacy_hook_stage,
+                        blob_hash=blob_hash,
+                        final_recheck=False,
+                    )
+                    if protection.blockers:
+                        return 0, 0, protection.blockers
+                    if protection.is_live:
+                        continue
+                    members.append(_GCMemberIntent(blob_hash, size_bytes))
+        except Exception as exc:
+            return 0, 0, (f"blob GC planning failed: {exc}",)
+        if not members:
+            return 0, 0, ()
+        generation_id = f"gc-{uuid4().hex}"
+        _commit_gc_generation_intent(
+            source_db_path,
+            generation_id=generation_id,
+            started_at_ms=int(time.time() * 1000),
+            members=tuple(members),
+            namespace_identity=namespace_identity,
+        )
+        report = BlobGCResult(str(source_db_path), str(blob_root), False, len(members), generation_id=generation_id)
+        evidence = GCRunEvidence(max_batch=len(members))
+        deleted, deleted_bytes = _execute_gc_generation_members(
+            control_db_path=source_db_path,
+            sibling_index_db=index_db_path,
+            blob_root=blob_root,
+            generation_id=generation_id,
+            report=report,
+            evidence=evidence,
+        )
+        if report.blocked_reason is not None:
+            return deleted, deleted_bytes, (report.blocked_reason,)
+        _populate_generation_summary(report, source_db_path, generation_id)
+        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+            errors = tuple(
+                f"{str(row[0])[:16]}: {row[1]}"
+                for row in source_conn.execute(
+                    "SELECT hex(blob_hash), outcome_detail FROM gc_generation_members "
+                    "WHERE generation_id = ? AND outcome = 'failed' ORDER BY blob_hash",
+                    (generation_id,),
+                )
+            )
+        return deleted, deleted_bytes, errors
+
+
 def run_blob_gc(
     db_path: str | Path,
     blob_dir: str | Path,
@@ -536,8 +1028,8 @@ def run_blob_gc(
     -----------------
     1. Never delete a blob that still has a DB reference.
     2. Only delete blobs older than the previous completed GC generation
-       plus MIN_AGE_S (defense-in-depth; the sole protection against an
-       in-flight ingest, see the ``MIN_AGE_S`` docstring).
+       plus MIN_AGE_S (defense-in-depth; publication reservations and the
+       final locked recheck protect in-flight ingest).
     3. Bound each run to ``max_batch`` deletions.
 
     Parameters
@@ -592,10 +1084,6 @@ def run_blob_gc_report(
         dry_run=dry_run,
         max_batch=int(max_batch),
     )
-    if not blob_path.is_dir():
-        logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
-        return report
-
     sibling_source_db = db_path_obj.with_name("source.db")
     control_db_path = (
         sibling_source_db
@@ -627,6 +1115,40 @@ def run_blob_gc_report(
         logger.error("Blob GC refused to run: %s", reason)
         report.blocked_reason = reason
         return report
+    if not _database_has_table(control_db_path, "gc_generation_members"):
+        report.blocked_reason = "blob GC durable member-intent schema is unavailable"
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        return report
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as schema_conn:
+        if not _gc_namespace_identity_columns_available(schema_conn):
+            report.blocked_reason = "blob GC durable namespace-identity schema is unavailable"
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
+
+    # A dry run never reaches the namespace-bound unlink path below (its
+    # final recheck resolves candidate paths directly), so it must not bind
+    # -- let alone create -- a namespace marker.  Doing so would turn a
+    # read-only preview into a mutation of the archive and would fail
+    # against read-only backup media that a preview is explicitly meant to
+    # support.
+    namespace_identity: _BlobNamespaceIdentity | None = None
+    if not dry_run:
+        try:
+            namespace_identity = _blob_namespace_identity(blob_path, create_marker=True)
+        except _BlobNamespaceUnavailableError as exc:
+            report.blocked_reason = str(exc)
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
+
+    if not dry_run and _resume_pending_gc_generation(
+        control_db_path=control_db_path,
+        sibling_index_db=sibling_index_db,
+        blob_root=blob_path,
+        report=report,
+        max_batch=max_batch,
+    ):
+        return report
+
     # Filesystem enumeration is deliberately outside the destructive source
     # lock. The lock protects only the bounded final recheck+unlink window.
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as planning_conn:
@@ -635,7 +1157,12 @@ def run_blob_gc_report(
     if prev_completed_at is not None:
         older_than = max(older_than, time.time() - prev_completed_at)
     report.older_than_s = older_than
-    candidates = _candidate_blobs(blob_path, older_than=older_than)
+    try:
+        candidates = _candidate_blobs(blob_path, older_than=older_than)
+    except _BlobNamespaceUnavailableError as exc:
+        report.blocked_reason = str(exc)
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        return report
     report.candidate_count = len(candidates)
     if not candidates:
         return report
@@ -652,9 +1179,6 @@ def run_blob_gc_report(
     planning_conn.row_factory = sqlite3.Row
     planning_source_conn: sqlite3.Connection | None = None
     planning_index_conn: sqlite3.Connection | None = None
-    planning_legacy_hook_status = "not_applicable"
-    planning_source_legacy_hook_status = "not_applicable"
-    planning_index_legacy_hook_status = "not_applicable"
     try:
         # The source sibling is optional: for a single-file set the control
         # database is itself the source surface. The index sibling is not --
@@ -664,29 +1188,47 @@ def run_blob_gc_report(
             planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
         if control_db_path != sibling_index_db:
             planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
-        planning_legacy_hook_status = _legacy_hook_liveness_status(planning_conn)
-        if planning_source_conn is not None:
-            planning_source_legacy_hook_status = _legacy_hook_liveness_status(planning_source_conn)
-        if planning_index_conn is not None:
-            planning_index_legacy_hook_status = _legacy_hook_liveness_status(planning_index_conn)
+        # Fail the entire destructive pass closed before candidate selection
+        # when a current owner surface cannot be evaluated.  Per-hash calls
+        # below retain their long-standing aliases for testable snapshot and
+        # final-recheck orchestration; the schema contract itself has one
+        # owner in blob_liveness.
+        planning_source = planning_source_conn or planning_conn
+        planning_index = planning_index_conn or (planning_conn if control_db_path == sibling_index_db else None)
+        preflight = inspect_blob_liveness(
+            planning_source,
+            "",
+            index_conn=planning_index,
+            require_index=True,
+        )
+        if preflight.state is LivenessState.BLOCKED:
+            report.blocked_reason = "; ".join(preflight.blockers)
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
+        try:
+            planning_legacy_hook_stage = prepare_match_stage(planning_source)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            logger.error("Blob GC refused to run: %s", report.blocked_reason)
+            return report
         for blob_hash, mtime in candidates:
             if len(shortlist) >= max_batch:
                 break
             evidence.inspected += 1
-            if _reference_surfaces(
-                planning_conn,
-                blob_hash,
-                source_db_path=(sibling_source_db if planning_source_conn is not None else None),
-                source_conn=planning_source_conn,
-                index_conn=planning_index_conn,
-                legacy_hook_status=planning_legacy_hook_status,
-                source_legacy_hook_status=planning_source_legacy_hook_status,
-                index_legacy_hook_status=planning_index_legacy_hook_status,
-            ):
-                evidence.skipped_referenced += 1
-                continue
-            if _has_publication_reservation(planning_conn, blob_hash):
-                evidence.skipped_reserved += 1
+            protection = _inspect_gc_protection(
+                planning_source,
+                index_conn=planning_index,
+                legacy_hook_stage=planning_legacy_hook_stage,
+                blob_hash=blob_hash,
+                final_recheck=False,
+            )
+            if protection.blockers:
+                report.blocked_reason = "; ".join(protection.blockers)
+                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                return report
+            if protection.is_live:
+                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                 continue
             shortlist.append((blob_hash, mtime))
     finally:
@@ -696,144 +1238,120 @@ def run_blob_gc_report(
             planning_index_conn.close()
         planning_conn.close()
 
+    if not dry_run:
+        assert namespace_identity is not None  # bound above whenever not dry_run
+        members: list[_GCMemberIntent] = []
+        for blob_hash, _mtime in shortlist:
+            size_bytes, namespace_blockers = _read_blob_object(
+                blob_path, blob_hash, namespace_identity=namespace_identity
+            )
+            if namespace_blockers:
+                report.blocked_reason = "; ".join(namespace_blockers)
+                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                return report
+            if size_bytes is None:
+                # A readable vanished planning candidate is neither an unlink
+                # nor a success attribution.
+                continue
+            members.append(_GCMemberIntent(blob_hash, size_bytes))
+        generation_id = f"gc-{uuid4().hex}"
+        started_at_ms = int(time.time() * 1000)
+        _commit_gc_generation_intent(
+            control_db_path,
+            generation_id=generation_id,
+            started_at_ms=started_at_ms,
+            members=tuple(members),
+            namespace_identity=namespace_identity,
+        )
+        if not members:
+            report.generation_id = generation_id
+            report.generation_written = True
+            _populate_generation_summary(report, control_db_path, generation_id)
+            report.inspected_count = evidence.inspected
+            report.skipped_referenced = evidence.skipped_referenced
+            report.skipped_reserved = evidence.skipped_reserved
+            return report
+        deleted, reclaimed_bytes = _execute_gc_generation_members(
+            control_db_path=control_db_path,
+            sibling_index_db=sibling_index_db,
+            blob_root=blob_path,
+            generation_id=generation_id,
+            report=report,
+            evidence=evidence,
+        )
+        report.generation_id = generation_id
+        report.generation_written = True
+        report.deleted_count = deleted
+        report.reclaimed_bytes = reclaimed_bytes
+        report.inspected_count = evidence.inspected
+        report.skipped_referenced = evidence.skipped_referenced
+        report.skipped_reserved = evidence.skipped_reserved
+        report.skipped_missing = evidence.skipped_missing
+        report.skipped_unlink_error = evidence.skipped_unlink_error
+        _populate_generation_summary(report, control_db_path, generation_id)
+        return report
+
     if not shortlist:
         report.inspected_count = evidence.inspected
         report.skipped_referenced = evidence.skipped_referenced
         report.skipped_reserved = evidence.skipped_reserved
-        if dry_run:
-            report.would_delete_count = 0
-            return report
-        history_conn = sqlite3.connect(str(control_db_path))
-        try:
-            now_ms = int(time.time() * 1000)
-            generation_id = f"gc-{uuid4().hex}"
-            history_conn.execute(
-                "INSERT INTO gc_generations "
-                "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-                "VALUES (?, ?, ?, 0, 0)",
-                (generation_id, now_ms, now_ms),
-            )
-            history_conn.commit()
-            report.generation_id = generation_id
-            report.generation_written = True
-        finally:
-            history_conn.close()
         return report
 
-    connection_uri = f"file:{control_db_path}?mode=ro" if dry_run else str(control_db_path)
-    conn = sqlite3.connect(connection_uri, uri=dry_run)
-    conn.row_factory = sqlite3.Row
-    source_conn: sqlite3.Connection | None = None
+    # The mutation route returned above.  Dry runs retain the same canonical
+    # final check but deliberately create no generation/member history.
+    assert dry_run
+    conn = sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)
     index_conn: sqlite3.Connection | None = None
-    legacy_hook_status = "not_applicable"
-    source_legacy_hook_status = "not_applicable"
-    index_legacy_hook_status = "not_applicable"
     affected = 0
-    reclaimed_bytes = 0
-    started_at_ms = int(time.time() * 1000)
     try:
-        # Invariant 3 spans every tier the recheck reads, not just the control
-        # tier. A read-only sibling connection excludes no writer, so a
-        # concurrent commit could create the very reference this pass is about
-        # to decide does not exist. Each sibling therefore takes its own
-        # BEGIN IMMEDIATE for the recheck+unlink window. Tiers are always
-        # locked in the same order (control, then source, then index) so two
-        # GC passes cannot deadlock against each other.
-        if not dry_run:
-            conn.execute("BEGIN IMMEDIATE")
-        if control_db_path != sibling_source_db and sibling_source_db.exists():
-            source_conn = _open_recheck_connection(sibling_source_db, dry_run=dry_run)
         if control_db_path != sibling_index_db:
-            index_conn = _open_recheck_connection(sibling_index_db, dry_run=dry_run)
-        legacy_hook_status = _legacy_hook_liveness_status(conn)
-        if source_conn is not None:
-            source_legacy_hook_status = _legacy_hook_liveness_status(source_conn)
-        if index_conn is not None:
-            index_legacy_hook_status = _legacy_hook_liveness_status(index_conn)
+            index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
+        recheck_index = index_conn or (conn if control_db_path == sibling_index_db else None)
+        recheck_preflight = inspect_blob_liveness(conn, "", index_conn=recheck_index, require_index=True)
+        if recheck_preflight.state is LivenessState.BLOCKED:
+            report.blocked_reason = "; ".join(recheck_preflight.blockers)
+            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            return report
+        try:
+            recheck_legacy_hook_stage = prepare_match_stage(conn)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            return report
 
         for blob_hash, _mtime in shortlist:
-            if _reference_surfaces(
+            protection = _inspect_gc_protection(
                 conn,
-                blob_hash,
-                source_db_path=(sibling_source_db if source_conn is not None else None),
-                source_conn=source_conn,
-                index_conn=index_conn,
-                legacy_hook_status=legacy_hook_status,
-                source_legacy_hook_status=source_legacy_hook_status,
-                index_legacy_hook_status=index_legacy_hook_status,
-            ):
-                evidence.skipped_referenced += 1
-                continue
-            if _has_publication_reservation(conn, blob_hash):
-                evidence.skipped_reserved += 1
+                index_conn=recheck_index,
+                legacy_hook_stage=recheck_legacy_hook_stage,
+                blob_hash=blob_hash,
+                final_recheck=False,
+            )
+            if protection.blockers:
+                report.blocked_reason = "; ".join(protection.blockers)
+                logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+                return report
+            if protection.is_live:
+                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                 continue
 
             target = _sharded_blob_path(blob_path, blob_hash)
-            if dry_run:
-                if target.is_file():
-                    affected += 1
-                    evidence.deleted += 1
-                else:
-                    evidence.skipped_missing += 1
-                continue
-
-            try:
-                freed_bytes = target.stat().st_size
-            except OSError:
-                freed_bytes = 0
-            try:
-                target.unlink()
-            except FileNotFoundError:
+            if target.is_file():
+                affected += 1
+            else:
                 evidence.skipped_missing += 1
-                continue
-            except PermissionError:
-                logger.warning("Permission denied deleting blob: %s", blob_hash)
-                evidence.skipped_unlink_error += 1
-                continue
-            except OSError as exc:
-                logger.warning("Failed to delete blob %s: %s", blob_hash, exc)
-                evidence.skipped_unlink_error += 1
-                continue
-            affected += 1
-            evidence.deleted += 1
-            reclaimed_bytes += freed_bytes
 
-        if dry_run:
-            report.would_delete_count = affected
-        else:
-            generation_id = f"gc-{uuid4().hex}"
-            conn.execute(
-                "INSERT INTO gc_generations "
-                "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (generation_id, started_at_ms, int(time.time() * 1000), affected, reclaimed_bytes),
-            )
-            conn.commit()
-            report.generation_id = generation_id
-            report.generation_written = True
-            report.deleted_count = affected
-            report.reclaimed_bytes = reclaimed_bytes
+        report.would_delete_count = affected
         report.inspected_count = evidence.inspected
         report.skipped_referenced = evidence.skipped_referenced
         report.skipped_reserved = evidence.skipped_reserved
         report.skipped_missing = evidence.skipped_missing
         report.skipped_unlink_error = evidence.skipped_unlink_error
         return report
-    except Exception:
-        if not dry_run:
-            conn.rollback()
-        raise
     finally:
-        # The sibling tiers are read during the recheck and never written, so
-        # their transactions are always rolled back; the lock existed only to
-        # exclude a concurrent reference commit.
-        for sibling in (index_conn, source_conn):
-            if sibling is None:
-                continue
-            if not dry_run:
-                with suppress(sqlite3.Error):
-                    sibling.rollback()
-            sibling.close()
+        if index_conn is not None:
+            index_conn.close()
         conn.close()
 
 
@@ -846,6 +1364,121 @@ class GCHistoryRow:
     completed_at_ms: int | None
     reclaimed_count: int
     reclaimed_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class PendingGCGeneration:
+    """Operator-visible state for an incomplete exact GC intent."""
+
+    generation_id: str
+    member_count: int
+    pending_member_count: int
+    namespace_marker: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GCGenerationAdjudication:
+    """The terminal, non-destructive disposition of a blocked generation."""
+
+    generation_id: str
+    abandoned_members: int
+    completed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GCGenerationAbandonmentState:
+    """Exact durable state that an abandonment preview binds to."""
+
+    generation_id: str
+    namespace_marker: str | None
+    pending_member_count: int
+    completed: bool
+
+
+def inspect_gc_generation_abandonment(control_db_path: str | Path, generation_id: str) -> GCGenerationAbandonmentState:
+    """Read one exact generation for a zero-effect abandonment preview."""
+
+    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT blob_namespace_marker, completed_at_ms, "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
+            "FROM gc_generations AS generation WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"blob GC generation does not exist: {generation_id}")
+    return GCGenerationAbandonmentState(
+        generation_id=generation_id,
+        namespace_marker=str(row[0]) if row[0] is not None else None,
+        completed=row[1] is not None,
+        pending_member_count=int(row[2]),
+    )
+
+
+def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingGCGeneration]:
+    """List incomplete GC intents without assigning them any new authority."""
+
+    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+        if not _gc_member_table_available(conn) or not _gc_namespace_identity_columns_available(conn):
+            return []
+        rows = conn.execute(
+            "SELECT generation.generation_id, generation.blob_namespace_marker, "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id), "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
+            "FROM gc_generations AS generation WHERE generation.completed_at_ms IS NULL "
+            "ORDER BY generation.started_at_ms, generation.generation_id"
+        ).fetchall()
+    return [
+        PendingGCGeneration(str(row[0]), int(row[2]), int(row[3]), str(row[1]) if row[1] is not None else None)
+        for row in rows
+    ]
+
+
+def _abandon_pending_gc_generation(
+    control_db_path: str | Path, generation_id: str, *, confirmed: bool
+) -> GCGenerationAdjudication:
+    """Executor-only primitive that terminalizes one blocked intent without blob effects.
+
+    This is deliberately the only recovery action for a namespace that cannot
+    prove continuity. A future GC pass creates a new intent from current
+    physical referents and reservations; historical rows never authorize it.
+    """
+
+    if not confirmed:
+        raise ValueError("explicit confirmation is required to abandon a pending blob GC generation")
+    path = Path(control_db_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"blob GC generation does not exist: {generation_id}")
+        if row[0] is not None:
+            conn.rollback()
+            return GCGenerationAdjudication(generation_id, 0, True)
+        cursor = conn.execute(
+            "UPDATE gc_generation_members SET outcome = 'failed', outcome_at_ms = ?, "
+            "outcome_detail = 'operator abandoned blocked namespace-bound intent; no unlink performed' "
+            "WHERE generation_id = ? AND outcome = 'pending'",
+            (int(time.time() * 1000), generation_id),
+        )
+        abandoned = cursor.rowcount
+        reclaimed_count, reclaimed_bytes = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(candidate_size_bytes), 0) "
+            "FROM gc_generation_members WHERE generation_id = ? AND outcome = 'removed'",
+            (generation_id,),
+        ).fetchone()
+        conn.execute(
+            "UPDATE gc_generations SET completed_at_ms = ?, reclaimed_count = ?, reclaimed_bytes = ? "
+            "WHERE generation_id = ? AND completed_at_ms IS NULL",
+            (int(time.time() * 1000), reclaimed_count, reclaimed_bytes, generation_id),
+        )
+        conn.commit()
+    return GCGenerationAdjudication(generation_id, abandoned, True)
 
 
 def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRow]:
@@ -918,7 +1551,7 @@ class OrphanedBlobRefCensus:
     def to_privacy_safe_dict(self) -> dict[str, object]:
         """Serialize aggregate counts without exposing database-derived names."""
         payload = self.to_dict()
-        known_ref_types = {ref_type for ref_type, _table, _column in BLOB_REF_LIVENESS_JOIN}
+        known_ref_types = {ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()}
         ref_type_counts = self.ref_type_counts or {}
         payload["ref_type_counts"] = {
             ref_type: count for ref_type, count in ref_type_counts.items() if ref_type in known_ref_types
@@ -931,115 +1564,27 @@ class OrphanedBlobRefCensus:
 
 
 def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
-    """Count ``blob_refs`` rows whose ``ref_id`` has no live referent, per ref_type.
-
-    Read-only; safe to call against a live connection or a read-only handle.
-    A ``ref_type`` whose referent table or key column does not exist (an old
-    archive predating that table) is reported as unavailable rather than
-    counted as fully orphaned. Unknown ref types are reported separately.
-    Neither disposition is included in ``total`` because neither is proven
-    dead, matching the fail-closed stance ``_blob_refs_still_live`` takes.
-    """
+    """Project the canonical blob-ref classifier into the GC census surface."""
     if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
         count = (
             int(conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]) if _table_exists(conn, "blob_refs") else 0
         )
         return OrphanedBlobRefCensus(total=0, by_ref_type={}, schema_unavailable_count=count)
-    ref_type_counts = {
-        str(row[0]): int(row[1])
-        for row in conn.execute("SELECT ref_type, COUNT(*) FROM blob_refs GROUP BY ref_type ORDER BY ref_type")
-    }
-    by_ref_type: dict[str, int] = {}
-    unknown_ref_types: dict[str, int] = {}
-    unavailable_ref_types: dict[str, int] = {}
-    deferred_by_ref_type: dict[str, int] = {}
-    legacy_hook_status = "not_applicable"
-    if ref_type_counts.get("raw_payload"):
-        legacy_hook_status = _prepare_legacy_hook_liveness(conn)
-    for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
-        count = ref_type_counts.get(ref_type, 0)
-        if not count:
-            continue
-        if not _table_exists(conn, referent_table):
-            unavailable_ref_types[ref_type] = count
-            continue
-        referent_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({referent_table})")}
-        if referent_column not in referent_columns:
-            unavailable_ref_types[ref_type] = count
-            continue
-        legacy_exclusion = ""
-        if ref_type == "raw_payload" and legacy_hook_status in {"ready", "unavailable"}:
-            orphan_count = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM blob_refs AS b
-                    WHERE b.ref_type = ?
-                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
-                    """,
-                    (ref_type,),
-                ).fetchone()[0]
-            )
-            if legacy_hook_status == "unavailable":
-                if orphan_count:
-                    deferred_by_ref_type[ref_type] = orphan_count
-                continue
-            deferred_count = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*) FROM blob_refs AS b
-                    WHERE b.ref_type = ?
-                      AND NOT EXISTS (SELECT 1 FROM {referent_table} AS r WHERE r.{referent_column} = b.ref_id)
-                      AND (
-                          EXISTS (
-                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
-                              WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
-                          )
-                          OR EXISTS (
-                              SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
-                              WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
-                          )
-                      )
-                    """,
-                    (ref_type,),
-                ).fetchone()[0]
-            )
-            if deferred_count:
-                deferred_by_ref_type[ref_type] = deferred_count
-            legacy_exclusion = """
-              AND NOT (
-                  EXISTS (
-                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_matches AS m
-                      WHERE m.blob_hash = b.blob_hash AND m.orphaned_ref_id = b.ref_id
-                  )
-                  OR EXISTS (
-                      SELECT 1 FROM temp.hook_payload_ref_reconciliation_ambiguous AS a
-                      WHERE a.blob_hash = b.blob_hash AND a.orphaned_ref_id = b.ref_id
-                  )
-              )
-            """
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*) FROM blob_refs AS b
-            WHERE b.ref_type = ?
-              AND NOT EXISTS (
-                  SELECT 1 FROM {referent_table}
-                  WHERE {referent_table}.{referent_column} = b.ref_id
-              )
-              {legacy_exclusion}
-            """,
-            (ref_type,),
-        ).fetchone()
-        count = int(row[0]) if row is not None else 0
-        if count:
-            by_ref_type[ref_type] = count
-    known_ref_types = {ref_type for ref_type, _table, _column in _BLOB_REF_LIVENESS_JOIN}
-    unknown_ref_types = {
-        ref_type: count for ref_type, count in ref_type_counts.items() if ref_type not in known_ref_types
-    }
+    from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
+
+    classification = classify_blob_ref_liveness(conn)
+    ref_type_counts = classification.ref_type_counts
+    unknown_ref_types = {ref_type: ref_type_counts[ref_type] for ref_type in classification.unknown_ref_types}
+    unavailable_ref_types = {ref_type: ref_type_counts[ref_type] for ref_type in classification.unavailable_ref_types}
+    deferred_by_ref_type = (
+        {"raw_payload": classification.rekeyable_hook_payload_count}
+        if classification.rekeyable_hook_payload_count
+        else {}
+    )
     return OrphanedBlobRefCensus(
-        total=sum(by_ref_type.values()),
-        by_ref_type=by_ref_type,
-        scanned_count=sum(ref_type_counts.values()),
+        total=classification.orphaned_count,
+        by_ref_type=classification.orphaned_by_ref_type,
+        scanned_count=classification.scanned_count,
         ref_type_counts=ref_type_counts,
         unknown_ref_types=unknown_ref_types,
         unavailable_ref_types=unavailable_ref_types,
@@ -1049,12 +1594,17 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
 
 __all__ = [
     "BlobGCResult",
-    "BLOB_REF_LIVENESS_JOIN",
     "MIN_AGE_S",
     "GCHistoryRow",
+    "GCGenerationAdjudication",
+    "GCGenerationAbandonmentState",
+    "PendingGCGeneration",
     "GCRunEvidence",
     "OrphanedBlobRefCensus",
     "census_orphaned_blob_refs",
+    "inspect_blob_liveness",
+    "inspect_gc_generation_abandonment",
+    "inspect_pending_gc_generations",
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",

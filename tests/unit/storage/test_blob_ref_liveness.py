@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.maintenance.blob_ref_liveness_reconciliation as liveness_reconciliation
+import polylogue.storage.blob_liveness as canonical_blob_liveness
 import polylogue.storage.blob_ref_liveness as blob_ref_liveness
 import polylogue.storage.hook_payload_ref_reconciliation as hook_payload_ref_reconciliation
 from polylogue.daemon.backup import backup_archive
@@ -17,7 +18,7 @@ from polylogue.maintenance.blob_ref_liveness_reconciliation import (
     BlobRefLivenessReconciliationError,
     reconcile_blob_ref_liveness,
 )
-from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.blob_liveness import BlobOwner
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessStagedPlan,
     classify_blob_ref_liveness,
@@ -570,9 +571,10 @@ def test_apply_rejects_receipt_bound_row_content_staleness_before_delete(
 def test_ref_type_mapping_ambiguity_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive_root = _source_archive(tmp_path)
     monkeypatch.setattr(
-        blob_ref_liveness,
-        "BLOB_REF_LIVENESS_JOIN",
-        BLOB_REF_LIVENESS_JOIN + (("raw_payload", "raw_hook_events", "hook_event_id"),),
+        canonical_blob_liveness,
+        "BLOB_OWNERS",
+        canonical_blob_liveness.BLOB_OWNERS
+        + (BlobOwner("source", "raw_hook_events", ref_type="raw_payload", referent_column="hook_event_id"),),
     )
 
     with sqlite3.connect(archive_root / "source.db") as conn:

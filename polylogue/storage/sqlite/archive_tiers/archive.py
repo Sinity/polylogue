@@ -122,7 +122,7 @@ from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuer
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.blob_store import CleanupOrphansResult, Heartbeat, PreparedBlob
+from polylogue.storage.blob_store import Heartbeat, PreparedBlob
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -590,20 +590,6 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         del data
         return self._refuse()
-
-    def remove(self, hash_hex: str) -> NoReturn:
-        del hash_hex
-        self._refuse()
-
-    def cleanup_orphans(
-        self,
-        orphan_hashes: set[str],
-        *,
-        dry_run: bool = True,
-    ) -> CleanupOrphansResult:
-        if not dry_run:
-            return self._refuse()
-        return super().cleanup_orphans(orphan_hashes, dry_run=True)
 
     def flush(self) -> tuple[()]:
         return ()

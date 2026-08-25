@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
@@ -53,8 +53,8 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_revision_fidelity,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
-from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
+from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -1212,7 +1212,8 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
 #: intends), so a ref_type this check doesn't recognize is itself a gap the
 #: check surfaces via `_error_check`, not a silent skip.
 _BLOB_REF_REFERENT_TABLES: dict[str, tuple[str, str]] = {
-    ref_type: (referent_table, referent_column) for ref_type, referent_table, referent_column in BLOB_REF_LIVENESS_JOIN
+    ref_type: (referent_table, referent_column)
+    for ref_type, referent_table, referent_column in validated_blob_ref_liveness_joins()
 }
 
 
@@ -1457,7 +1458,11 @@ def _check_blob_refs_liveness_at_candidate(
 
 
 def _check_blob_integrity(
-    archive_root: Path, sample_limit: int, index_path: Path | None = None
+    archive_root: Path,
+    sample_limit: int,
+    index_path: Path | None = None,
+    *,
+    active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
 ) -> ArchiveVerificationCheck:
     """Require a complete physical scan of the durable blob namespace.
 
@@ -1486,6 +1491,7 @@ def _check_blob_integrity(
             full=True,
             sample_size=sample_limit,
             configured_root=archive_root,
+            active_index_context=active_index_context,
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _error_check("blob-integrity", f"could not scan the physical blob namespace: {exc}", exc=exc)
@@ -1510,7 +1516,9 @@ def _check_blob_integrity_at_candidate(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
     """Run the durable full blob scan against the candidate reference set."""
-    return _check_blob_integrity(archive_root, sample_limit, index_path)
+    return _check_blob_integrity(
+        archive_root, sample_limit, index_path, active_index_context="unavailable_for_candidate"
+    )
 
 
 def _check_attachment_acquisition_debt(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
@@ -3699,6 +3707,7 @@ def verify_archive(
     checks: Sequence[str] | None = None,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
     index_path_override: Path | None = None,
+    active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
 ) -> ArchiveVerificationReport:
     """Run every selected archive-coherence check and return the aggregate report.
 
@@ -3727,6 +3736,8 @@ def verify_archive(
             result = (
                 spec.candidate_run(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None and spec.candidate_run is not None
+                else _check_blob_integrity(archive_root, sample_limit, active_index_context=active_index_context)
+                if spec.name == "blob-integrity"
                 else spec.run(archive_root, sample_limit)
             )
         except Exception as exc:  # defense-in-depth: see module/function docstring

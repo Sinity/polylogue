@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import IO, BinaryIO
 from uuid import uuid4
 
+from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -42,7 +43,12 @@ class BlobPublicationInspection:
     publisher_id: str
     reserved_at_ms: int
     blob_present: bool
-    referenced: bool
+    liveness: BlobLiveness
+
+    @property
+    def referenced(self) -> bool:
+        """Presentation adapter for receipt listings, never a clear authorization."""
+        return self.liveness.state is LivenessState.LIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +58,8 @@ class BlobPublicationReconciliation:
     retained_referenced: int = 0
     retained_missing: int = 0
     unresolved: int = 0
+    retained_blocked: int = 0
+    blockers: tuple[str, ...] = ()
     scanned: int = 0
     last_scanned_publication_id: str | None = None
 
@@ -257,22 +265,24 @@ def consume_blob_publication_receipt(
     )
 
 
-def _is_referenced(
+def _liveness_decision(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
     blob_hash: bytes,
-) -> bool:
-    for table in ("raw_sessions", "blob_refs"):
-        if (
-            _table_exists(source_conn, table)
-            and source_conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
-            is not None
-        ):
-            return True
-    return bool(
-        index_conn is not None
-        and _table_exists(index_conn, "attachments")
-        and index_conn.execute("SELECT 1 FROM attachments WHERE blob_hash = ? LIMIT 1", (blob_hash,)).fetchone()
+) -> BlobLiveness:
+    """Delegate to the canonical blob-liveness relation.
+
+    Uses the same union GC and integrity consume: direct row-level
+    ``blob_hash`` referents (``raw_sessions``/``attachments``/
+    ``raw_hook_events``) and a ``blob_refs`` row only when its ``ref_type``
+    still joins to a live referent -- a dangling ``blob_refs`` row alone
+    (the prior behavior here) is not evidence of liveness.
+    """
+    return inspect_blob_liveness(
+        source_conn,
+        blob_hash.hex(),
+        index_conn=index_conn,
+        require_index=True,
     )
 
 
@@ -337,7 +347,7 @@ def inspect_blob_publication_receipts(
                 publisher_id=str(row["publisher_id"]),
                 reserved_at_ms=int(row["reserved_at_ms"]),
                 blob_present=store.exists(bytes(row["blob_hash"]).hex()),
-                referenced=_is_referenced(source_conn, index_conn, bytes(row["blob_hash"])),
+                liveness=_liveness_decision(source_conn, index_conn, bytes(row["blob_hash"])),
             )
             for row in rows
         )
@@ -374,14 +384,18 @@ def reconcile_blob_publication_reservations(
     retained_referenced = 0
     retained_missing = 0
     unresolved = 0
+    retained_blocked = 0
+    blockers: list[str] = []
     clear_ids: list[str] = []
     for item in inspections:
-        if item.referenced:
-            if may_clear:
-                clear_ids.append(item.publication_id)
-                cleared_referenced += 1
-            else:
-                retained_referenced += 1
+        if item.liveness.state is LivenessState.BLOCKED:
+            retained_blocked += 1
+            blockers.extend(item.liveness.blockers)
+        elif item.liveness.state is LivenessState.LIVE:
+            # A hash-level owner proves retention, not which publication made
+            # it durable. Only the matching reference transaction consumes a
+            # reservation, so two same-hash receipts cannot clear each other.
+            retained_referenced += 1
         elif not item.blob_present:
             if may_clear:
                 clear_ids.append(item.publication_id)
@@ -410,6 +424,8 @@ def reconcile_blob_publication_reservations(
         retained_referenced=retained_referenced,
         retained_missing=retained_missing,
         unresolved=unresolved,
+        retained_blocked=retained_blocked,
+        blockers=tuple(dict.fromkeys(blockers)),
         scanned=len(inspections),
         last_scanned_publication_id=inspections[-1].publication_id if inspections else None,
     )
@@ -456,42 +472,55 @@ def abandon_blob_publication_receipts(
         raise ValueError("confirmed=True is required to abandon publication receipts")
     requested = tuple(dict.fromkeys(publication_ids))
     with exclude_archive_blob_publishers(source_db_path):
-        by_id = {
-            item.publication_id: item
-            for item in inspect_blob_publication_receipts(
-                source_db_path,
-                blob_root,
-                index_db_path=index_db_path,
-            )
-        }
+        # An abandonment is an explicit terminal disposition, not a hash-level
+        # reconciliation shortcut. Recheck each requested receipt while source
+        # and index writers are excluded in the same order GC uses before its
+        # final unlink window.
+        from polylogue.storage.archive_identity import ArchiveLocation
+
+        resolved_index = index_db_path or ArchiveLocation.resolve(source_db_path.parent).active_index_path
+        source_conn = sqlite3.connect(source_db_path)
+        index_conn: sqlite3.Connection | None = None
         abandoned: list[str] = []
         skipped_referenced = 0
-        for publication_id in requested:
-            item = by_id.get(publication_id)
-            if item is None:
-                continue
-            if item.referenced:
-                skipped_referenced += 1
-                continue
-            abandoned.append(publication_id)
-        if abandoned:
-            conn = sqlite3.connect(source_db_path)
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.executemany(
+        found = 0
+        try:
+            source_conn.execute("BEGIN IMMEDIATE")
+            if not resolved_index.exists():
+                raise RuntimeError("index tier is unavailable")
+            index_conn = sqlite3.connect(resolved_index)
+            index_conn.execute("BEGIN IMMEDIATE")
+            rows = source_conn.execute(
+                f"SELECT publication_id, blob_hash FROM blob_publication_reservations "
+                f"WHERE publication_id IN ({', '.join('?' for _ in requested)})",
+                requested,
+            ).fetchall()
+            found = len(rows)
+            for publication_id, blob_hash in rows:
+                decision = _liveness_decision(source_conn, index_conn, bytes(blob_hash))
+                if decision.state is LivenessState.UNREFERENCED:
+                    abandoned.append(str(publication_id))
+                else:
+                    skipped_referenced += 1
+            if abandoned:
+                source_conn.executemany(
                     "DELETE FROM blob_publication_reservations WHERE publication_id = ?",
                     ((publication_id,) for publication_id in abandoned),
                 )
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
+            source_conn.commit()
+        except Exception:
+            source_conn.rollback()
+            raise
+        finally:
+            if index_conn is not None:
+                if index_conn.in_transaction:
+                    index_conn.rollback()
+                index_conn.close()
+            source_conn.close()
     return BlobPublicationAbandonment(
         abandoned=len(abandoned),
         skipped_referenced=skipped_referenced,
-        missing_receipts=len(requested) - len(abandoned) - skipped_referenced,
+        missing_receipts=len(requested) - found,
     )
 
 

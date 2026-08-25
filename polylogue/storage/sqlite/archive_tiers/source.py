@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, 
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 33
+SOURCE_SCHEMA_VERSION = 35
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -561,8 +561,30 @@ CREATE TABLE IF NOT EXISTS gc_generations (
     started_at_ms    INTEGER NOT NULL,
     completed_at_ms  INTEGER,
     reclaimed_count  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0),
-    reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)
+    reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0),
+    blob_namespace_marker TEXT
 ) STRICT;
+
+-- Each physical blob deletion has an exact durable member intent before GC
+-- enters its final locked liveness recheck.  ``gc_generations`` remains the
+-- compact history surface; its counters are derived only after every member
+-- has a closed outcome below.
+CREATE TABLE IF NOT EXISTS gc_generation_members (
+    generation_id            TEXT NOT NULL REFERENCES gc_generations(generation_id) ON DELETE CASCADE,
+    blob_hash                BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    candidate_size_bytes     INTEGER NOT NULL CHECK(candidate_size_bytes >= 0),
+    intent_committed_at_ms   INTEGER NOT NULL CHECK(intent_committed_at_ms >= 0),
+    outcome                  TEXT NOT NULL DEFAULT 'pending'
+        CHECK(outcome IN ('pending', 'removed', 'reconciled_removed', 'skipped_still_live', 'failed')),
+    outcome_at_ms            INTEGER CHECK(outcome_at_ms >= 0),
+    outcome_detail           TEXT,
+    PRIMARY KEY(generation_id, blob_hash),
+    CHECK((outcome = 'pending') = (outcome_at_ms IS NULL))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_gc_generation_members_pending
+ON gc_generation_members(generation_id, blob_hash)
+WHERE outcome = 'pending';
 
 -- v31 (feature/fix/raw-authority-census): each bounded artifact-census apply
 -- records its canonical receipt in the source tier in the same transaction as

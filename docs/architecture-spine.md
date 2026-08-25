@@ -78,11 +78,12 @@ Load-bearing policy files are parsed and enforced by the gate that owns their se
 ### Blob store: content-addressed with SHA-256 prefix sharding
 - **Chosen**: 256 subdirectories (`blob/00/` through `blob/ff/`), write-once, read-many.
 - **Rejected**: Path-based storage — no automatic dedup.
-- **Constraint**: GC combines a DB snapshot reference check with a
-  generation-age floor (`gc_generations`, `MIN_AGE_S`) as its sole defense
-  against a blob write racing a concurrent GC pass; a lease-based second
-  invariant was removed as unreachable dead code (polylogue-v7e0). Unreferenced
-  blobs still need explicit cleanup.
+- **Constraint**: GC commits namespace-bound intent before unlink, resolves
+  current canonical references and publication reservations, then repeats that
+  check under source/index locks. The generation-age floor
+  (`gc_generations`, `MIN_AGE_S`) is defense-in-depth; the old lease mechanism
+  was removed as unreachable dead code (polylogue-v7e0). Unreferenced blobs
+  still need explicit cleanup.
 
 ### Daemon convergence: explicit stages, no implicit storage upgrade
 - **Chosen**: Daemon runs named convergence stages (FTS freshness, insight refresh, embedding) on a schedule.

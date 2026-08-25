@@ -115,7 +115,7 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
             "raw_id": "raw-1",
             "origin": "codex-session",
             "native_id": "session",
-            "logical_source_key": "codex:session",
+            "logical_source_key": "codex-session:session",
             "source_path": str(ground_truth / "session.jsonl"),
             "blob_hash": expected_hash,
             "blob_size": len(b"actual external codex raw"),
@@ -132,6 +132,23 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     assert {
         name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in ("source.db", "index.db")
     } == before
+
+
+def test_canonical_liveness_blockage_returns_a_failed_gate_receipt(tmp_path: Path) -> None:
+    """The gate must report a blocked owner projection instead of escaping its result contract."""
+
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DROP TABLE history_sidecars")
+
+    payload = _run(root, tmp_path, ground_truth=ground_truth)
+
+    assert payload["verdict"] == "FAIL"
+    assert any(
+        "canonical blob liveness projection blocked: source.history_sidecars is missing" in reason
+        for reason in payload["pass_fail_reasons"]
+    )
 
 
 def test_readiness_accepts_equivalent_blob_evidence_from_another_verifier(tmp_path: Path) -> None:

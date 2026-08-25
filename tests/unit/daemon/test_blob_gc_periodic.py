@@ -22,54 +22,18 @@ from typing import Any
 
 import pytest
 
+import polylogue.storage.blob_gc as blob_gc
 from polylogue.daemon import blob_gc_periodic
 from polylogue.daemon.blob_gc_periodic import run_blob_gc_once
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _make_source_db(path: Path) -> None:
-    # The production GC contract requires every reference-bearing tier to be
-    # readable before deletion. Model an available empty index tier here.
-    sqlite3.connect(path.with_name("index.db")).close()
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.execute(
-            """CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL DEFAULT 0,
-                acquired_at TEXT NOT NULL DEFAULT ''
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-                ref_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
-                acquired_at_ms INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (blob_hash, ref_type, ref_id)
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE gc_generations (
-                generation_id   TEXT PRIMARY KEY,
-                started_at_ms   INTEGER NOT NULL,
-                completed_at_ms INTEGER,
-                reclaimed_count INTEGER NOT NULL DEFAULT 0,
-                reclaimed_bytes INTEGER NOT NULL DEFAULT 0
-            )"""
-        )
-        conn.execute(
-            """CREATE TABLE blob_publication_reservations (
-                blob_hash BLOB NOT NULL
-            )"""
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """Create the supported current archive shape used by the daemon."""
+    assert path.name == "source.db"
+    initialize_active_archive_root(path.parent)
 
 
 def _backdate(blob_store: BlobStore, blob_hash: str) -> None:
@@ -82,11 +46,13 @@ def _backdate(blob_store: BlobStore, blob_hash: str) -> None:
     os.utime(blob_store.blob_path(blob_hash), (0, 0))
 
 
-def test_run_blob_gc_once_returns_none_when_blob_dir_absent(tmp_path: Path) -> None:
+def test_run_blob_gc_once_blocks_when_blob_namespace_is_absent(tmp_path: Path) -> None:
     db_path = tmp_path / "source.db"
     _make_source_db(db_path)
     result = run_blob_gc_once(db_path, tmp_path / "blob")
-    assert result is None
+    assert result is not None
+    assert result.blocked_reason is not None
+    assert "blob namespace" in result.blocked_reason
 
 
 def test_run_blob_gc_once_returns_none_when_source_db_absent(tmp_path: Path) -> None:
@@ -110,6 +76,37 @@ def test_run_blob_gc_once_reclaims_unreferenced_aged_blob(tmp_path: Path) -> Non
     assert result is not None
     assert result.deleted_count == 1
     assert not blob_store.blob_path(blob_hash).exists()
+
+
+def test_daemon_gc_keeps_pending_intent_when_blob_root_disappears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon route reports namespace loss instead of reconciling removal."""
+    db_path = tmp_path / "source.db"
+    _make_source_db(db_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"daemon root disappearance")
+    _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+
+    def crash_after_intent(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("leave daemon intent pending")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with pytest.raises(RuntimeError, match="leave daemon intent pending"):
+        run_blob_gc_once(db_path, store.root)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+    store.root.rename(tmp_path / "blob.unmounted")
+
+    report = run_blob_gc_once(db_path, store.root)
+
+    assert report is not None
+    assert report.blocked_reason is not None
+    assert "blob namespace" in report.blocked_reason
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
+        ).fetchone() == ("pending",)
 
 
 def test_orphaned_blobs_is_not_a_manual_maintenance_route() -> None:
@@ -139,16 +136,19 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
 
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES (?, 'codex-session', '/fixture', ?, ?, 1)",
             ("raw-coordinator", bytes.fromhex(referenced_hash), referenced_size),
         )
         conn.execute(
-            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
-            (bytes.fromhex(referenced_hash), "raw-coordinator", "raw_payload"),
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+            "VALUES (?, ?, ?, '/fixture', ?, 1)",
+            (bytes.fromhex(referenced_hash), "raw-coordinator", "raw_payload", referenced_size),
         )
         conn.execute(
-            "INSERT INTO blob_publication_reservations (blob_hash) VALUES (?)",
-            (bytes.fromhex(reserved_hash),),
+            "INSERT INTO blob_publication_reservations "
+            "(publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms) VALUES (?, ?, ?, 'test', 1)",
+            ("reserved-coordinator", bytes.fromhex(reserved_hash), 0),
         )
         conn.commit()
 
@@ -288,7 +288,9 @@ def test_periodic_publication_reconciliation_repeats_safe_cleanup_and_retains_un
         remaining = conn.execute(
             "SELECT blob_hash FROM blob_publication_reservations ORDER BY publication_id"
         ).fetchall()
-    assert [bytes(row[0]).hex() for row in remaining] == [unresolved_hash]
+    remaining_hashes = [bytes(row[0]).hex() for row in remaining]
+    assert unresolved_hash in remaining_hashes
+    assert len(remaining_hashes) == 2
 
 
 def test_periodic_publication_reconciliation_pages_past_unresolved_rows(
@@ -370,7 +372,7 @@ def test_periodic_publication_reconciliation_pages_past_unresolved_rows(
         remaining = conn.execute(
             "SELECT publication_id FROM blob_publication_reservations ORDER BY publication_id"
         ).fetchall()
-    assert remaining == [("publication-a",), ("publication-b",)]
+    assert remaining == [("publication-a",), ("publication-b",), ("publication-d",)]
 
 
 def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index(
@@ -415,7 +417,8 @@ def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index
     outcome = asyncio.run(_reconcile_blob_publications(actor="maintenance.blob_publication_reconciliation"))
 
     assert outcome is not None
-    assert outcome.cleared_referenced == 1
+    assert outcome.cleared_referenced == 0
+    assert outcome.retained_referenced == 1
     assert outcome.scanned == 1
     with sqlite3.connect(source_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1

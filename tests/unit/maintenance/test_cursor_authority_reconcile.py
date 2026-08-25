@@ -501,8 +501,7 @@ def test_backup_validation_rehashes_and_rejects_mismatched_tier(
     receipt_payload: dict[str, object] = {
         "verdict": "success",
         "verification": {
-            "source_blobs_resolved": True,
-            "index_attachment_blobs_resolved": True,
+            "canonical_blobs_resolved": True,
             "blob_inventory_exact": True,
         },
         "manifest_sha256": hashlib.sha256((backup / "manifest.json").read_bytes()).hexdigest(),

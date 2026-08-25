@@ -311,7 +311,7 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
             candidate._conn.execute("CREATE TABLE user_tier.candidate_user_probe (value INTEGER) STRICT")
         assert candidate._blob_publisher is not None
         blob_publisher = candidate._blob_publisher
-        existing_blob_hash = next(blob_publisher.iter_all())
+        next(blob_publisher.iter_all())
         staging_root = blob_publisher.staging_root
         staging_stat = staging_root.stat()
         staging_before = (
@@ -350,8 +350,6 @@ def test_owned_candidate_refuses_source_user_and_blob_writes(
             lambda: blob_publisher.write_from_path(source_path),
             lambda: blob_publisher.write_from_fileobj(BytesIO(b"candidate-write")),
             lambda: blob_publisher.write_from_bytes(b"candidate-write"),
-            lambda: blob_publisher.remove(existing_blob_hash),
-            lambda: blob_publisher.cleanup_orphans({existing_blob_hash}, dry_run=False),
         )
         for refusing_call in refusing_blob_calls:
             with pytest.raises(InactiveCandidateDurableWriteError, match="may not publish"):
