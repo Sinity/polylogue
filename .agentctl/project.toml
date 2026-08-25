@@ -44,6 +44,20 @@ pool = "normal"
 result = "pytest"
 cache = "tree+environment"
 
+[operations.seeded_archive_cache_gc]
+description = "Preview or apply bounded GC for the reusable seeded-archive fixture cache"
+exec = ["devtools", "workspace", "seeded-archive-cache-gc", "--json"]
+pool = "normal"
+result = "json"
+cache = "none"
+timeout_seconds = 900
+exclusive_keys = ["polylogue:seeded-archive-cache-gc"]
+scratch = "nvme"
+
+[operations.seeded_archive_cache_gc.parameters.apply]
+type = "bool"
+flag = "--apply"
+
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=12", "devtools", "verify", "--all"]

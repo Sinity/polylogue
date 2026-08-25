@@ -31,6 +31,7 @@ from tests.infra.workload_artifacts import (
     ArtifactGcReport,
     BenchmarkWorkloadTier,
     SeededArchiveClone,
+    SeededArchiveReachabilityInventory,
     WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
@@ -45,10 +46,12 @@ from tests.infra.workload_artifacts import (
     build_seeded_archive,
     c03_semantic_corpus_spec,
     clone_seeded_archive,
+    current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
     named_corpus_specs,
     named_workload_profile,
     seeded_archive_key,
+    validate_seeded_archive_reachability,
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
@@ -126,6 +129,24 @@ def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None
     benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
     assert {spec.origin for spec in named.corpus_specs()} == {named.workload.origin}
     assert {spec.origin for spec in benchmark_corpus_specs(benchmark.tier)} == {benchmark.workload.origin}
+
+
+def test_current_seeded_archive_reachability_is_generated_and_rejects_partial_sets() -> None:
+    inventory = current_seeded_archive_reachability()
+
+    assert {entry.kind for entry in inventory.entries} == {"default", "named", "benchmark"}
+    assert {entry.name for entry in inventory.entries if entry.kind == "default"} == {"c03", "schema-coverage"}
+    assert {entry.name for entry in inventory.entries if entry.kind == "named"} == {
+        profile.name for profile in NAMED_WORKLOAD_PROFILES
+    }
+    assert {entry.name for entry in inventory.entries if entry.kind == "benchmark"} == {
+        profile.tier.value for profile in BENCHMARK_WORKLOAD_PROFILES
+    }
+    assert len(inventory.keys) == len(set(inventory.keys))
+    validate_seeded_archive_reachability(inventory)
+
+    with pytest.raises(ValueError, match="incomplete"):
+        validate_seeded_archive_reachability(SeededArchiveReachabilityInventory(inventory.entries[:-1]))
 
 
 def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(
@@ -1800,7 +1821,7 @@ def test_artifact_gc_retains_corruption_and_explicit_worktree_protection(tmp_pat
         grace_period_s=1,
         now=10_000,
         dry_run=False,
-        protected_worktrees=(protected.root,),
+        protected_worktrees=(protected.root / "query-clone" / "index.db",),
     )
     protected_entry = next(entry for entry in guarded.entries if entry.name == protected.root.name)
     assert protected_entry.disposition is ArtifactGcDisposition.ACTIVE_WORKTREE
