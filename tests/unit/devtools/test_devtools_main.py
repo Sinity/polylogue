@@ -255,11 +255,11 @@ def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytes
 
     monkeypatch.setitem(
         COMMANDS,
-        "workspace failure-context",
-        CommandSpec("workspace failure-context", "workspace", "fake workspace command", fake_module.__name__),
+        "workspace lineage-validation",
+        CommandSpec("workspace lineage-validation", "workspace", "fake workspace command", fake_module.__name__),
     )
 
-    assert devtools_main.main(["workspace", "failure-context", "node-id", "--json"]) == 0
+    assert devtools_main.main(["workspace", "lineage-validation", "node-id", "--json"]) == 0
     assert captured == [["node-id", "--json"]]
 
 

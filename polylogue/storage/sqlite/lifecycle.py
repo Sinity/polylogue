@@ -896,8 +896,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # production callers, while the live thread-search path already
         # uses a LIKE scan. This is a clone-safe CACHE_REMOVAL delta, so
         # fast-forward drops the table and its triggers without raw replay.
-        # `blocks_command_trigram` remains because affordance usage has a
-        # real production consumer for it.
+        # `blocks_command_trigram` was kept at v63 because affordance usage
+        # had a real production consumer for it; that devtools consumer
+        # (devtools/affordance_usage.py) was deleted 2026-08-25
+        # (polylogue-9m6ry) with no replacement, so its continued
+        # justification is now open -- see the comment in
+        # archive_tiers/index.py.
         classes=(DerivedDeltaClass.CACHE_REMOVAL,),
         operations=(
             FastForwardOperation(

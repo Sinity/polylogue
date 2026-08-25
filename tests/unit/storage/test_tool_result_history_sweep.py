@@ -1,10 +1,8 @@
 """Tests for the polylogue-omsw tool-result/file-history reclassification sweep.
 
-Covers the read-only sweep (``scan_tool_result_and_file_history_artifacts``)
-and the ``--apply``-gated actuator
-(``devtools/tool_result_history_reclassify_apply.py``), mirroring the
-existing ``binary_artifact_sweep``/``binary_artifact_reclassify_apply``
-pattern for an earlier miscapture class (polylogue-hbtj2).
+Covers the read-only sweep (``scan_tool_result_and_file_history_artifacts``),
+mirroring the existing ``binary_artifact_sweep`` pattern for an earlier
+miscapture class (polylogue-hbtj2).
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from devtools.tool_result_history_reclassify_apply import main as reclassify_apply_main
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -112,40 +109,3 @@ def test_sweep_finds_tool_result_and_file_history_rows_but_not_genuine_sessions(
     }
     assert found_native_ids == {"toolu_01scratchprobe", "history-only-session"}
     assert plan.by_kind() == {"tool_result_sidecar": 1, "file_history_snapshot": 1}
-
-
-def test_reclassify_apply_dry_run_writes_nothing(archive: Path) -> None:
-    _seed(archive)
-
-    exit_code = reclassify_apply_main(["--archive-root", str(archive), "--json"])
-    assert exit_code == 0
-
-    with sqlite3.connect(archive / "source.db") as conn:
-        count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]
-    assert count == 0
-
-
-def test_reclassify_apply_persists_raw_artifacts_without_touching_raw_sessions(archive: Path) -> None:
-    _seed(archive)
-
-    with sqlite3.connect(archive / "source.db") as conn:
-        raw_sessions_before = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
-
-    exit_code = reclassify_apply_main(["--archive-root", str(archive), "--apply", "--json"])
-    assert exit_code == 0
-
-    with sqlite3.connect(archive / "source.db") as conn:
-        conn.row_factory = sqlite3.Row
-        raw_sessions_after = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
-        artifact_rows = conn.execute("SELECT artifact_kind, source_path FROM raw_artifacts").fetchall()
-
-    # Never deletes raw_sessions rows -- durable-tier evidence retention
-    # precedent (the 2026-07-22 hook-inflation postmortem).
-    assert raw_sessions_after == raw_sessions_before == 3
-
-    kinds_by_path = {row["source_path"]: row["artifact_kind"] for row in artifact_rows}
-    assert kinds_by_path["/home/user/.claude/projects/proj/tool-results/toolu_01scratchprobe.json"] == (
-        "tool_result_sidecar"
-    )
-    assert kinds_by_path["/home/user/.claude/projects/proj/history-only-session.jsonl"] == "file_history_snapshot"
-    assert kinds_by_path["/home/user/.claude/projects/proj/genuine-session.jsonl"] != "file_history_snapshot"

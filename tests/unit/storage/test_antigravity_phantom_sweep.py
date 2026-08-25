@@ -7,8 +7,7 @@ conversation content lives in ``conversations/*.pb`` and is acquired
 separately (PR #3441). These tests build the phantom shape through the real
 production parser (:func:`parse_brain_metadata`) and the real archive writer
 (:meth:`ArchiveStore.write_raw_and_parsed`), then exercise the read-only
-sweep and the ``--apply``-gated purge actuator end to end against a
-throwaway archive -- never the live one.
+sweep against a throwaway archive -- never the live one.
 """
 
 from __future__ import annotations
@@ -18,10 +17,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from polylogue.archive.artifact_taxonomy import ArtifactKind
-from polylogue.core.enums import Origin
 from polylogue.sources.parsers.antigravity import BRAIN_METADATA_FRAGMENT_FLAG, parse_brain_metadata
 from polylogue.storage.antigravity_phantom_sweep import scan_antigravity_phantom_sessions
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -189,78 +184,3 @@ def test_scan_works_without_source_connection(tmp_path: Path) -> None:
     assert plan.candidates[0].session_id == phantom_id
     assert plan.candidates[0].source_path is None
     assert plan.missing_raw_row_count == 0  # not tracked when source_conn is absent
-
-
-def test_purge_apply_dry_run_deletes_nothing(tmp_path: Path) -> None:
-    from devtools.antigravity_phantom_purge_apply import main as purge_main
-
-    root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        phantom_id, _ = _seed_phantom_session(
-            archive,
-            tmp_path,
-            work_dir="dry-run-work",
-            artifact_name="notes",
-            acquired_at_ms=1_800_000_000_000,
-        )
-
-    exit_code = purge_main(["--archive-root", str(root), "--json"])
-    assert exit_code == 0
-
-    index_conn = sqlite3.connect(root / "index.db")
-    try:
-        count = index_conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (phantom_id,)).fetchone()[0]
-    finally:
-        index_conn.close()
-    assert count == 1, "dry-run must not delete the session"
-
-
-def test_purge_apply_deletes_sessions_and_reclassifies_raw_rows(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from devtools.antigravity_phantom_purge_apply import main as purge_main
-
-    root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        phantom_id, phantom_raw_id = _seed_phantom_session(
-            archive,
-            tmp_path,
-            work_dir="apply-work",
-            artifact_name="summary",
-            acquired_at_ms=1_800_000_000_000,
-        )
-        real_id, real_raw_id = _real_session(archive, tmp_path, acquired_at_ms=1_800_000_000_100)
-
-    exit_code = purge_main(["--archive-root", str(root), "--apply", "--json"])
-    assert exit_code == 0
-    output = json.loads(capsys.readouterr().out)
-    assert output["applied"] is True
-    assert output["deleted_count"] == 1
-    assert output["raw_artifacts_observations_written"] == 1
-
-    index_conn = sqlite3.connect(root / "index.db")
-    index_conn.row_factory = sqlite3.Row
-    try:
-        remaining = index_conn.execute("SELECT session_id, origin FROM sessions").fetchall()
-    finally:
-        index_conn.close()
-    remaining_ids = {row["session_id"] for row in remaining}
-    assert phantom_id not in remaining_ids, "phantom session must be purged"
-    assert real_id in remaining_ids, "real antigravity session must survive"
-    assert all(row["origin"] == Origin.ANTIGRAVITY_SESSION.value for row in remaining)
-
-    source_conn = sqlite3.connect(root / "source.db")
-    source_conn.row_factory = sqlite3.Row
-    try:
-        artifact_row = source_conn.execute(
-            "SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (phantom_raw_id,)
-        ).fetchone()
-        real_artifact_row = source_conn.execute(
-            "SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (real_raw_id,)
-        ).fetchone()
-    finally:
-        source_conn.close()
-    assert artifact_row is not None
-    assert artifact_row["artifact_kind"] == ArtifactKind.AGENT_SIDECAR_META.value
-    # The real session's raw row must not have been touched by this scoped run.
-    assert real_artifact_row is None
