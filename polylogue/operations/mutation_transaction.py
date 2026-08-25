@@ -606,6 +606,7 @@ class RecoveryOperation:
     expected_target_count: int
     reconstructed_target_count: int
     target_evidence_complete: bool
+    context: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def target_evidence_detail(self) -> str:

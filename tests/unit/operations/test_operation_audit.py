@@ -42,6 +42,7 @@ from polylogue.operations.mutation_transaction import (
     TokenConsumedError,
     TokenExpiredError,
     build_plan,
+    recover_interrupted_operations,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -815,6 +816,43 @@ def test_bounded_adjudication_can_unwedge_a_recovered_applied_barrier(tmp_path: 
     assert actuator.calls == 1
 
 
+def test_applied_adjudication_retains_the_recovered_effect_barrier(tmp_path: Path) -> None:
+    """An applied operator decision still refuses every duplicate effect.
+
+    Anti-vacuity: replacing the recovered-applied terminal reason with the
+    ordinary completed reason lets the retry reach the actuator.
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    assert audit.recover_abandoned_attempts() == (operation_id,)
+    audit.adjudicate_recovery(
+        operation_id,
+        target_outcomes={"session:fixture": "applied"},
+        reason="operator verified the interrupted effect committed",
+    )
+
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "adjudicated-applied-retry")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+    with pytest.raises(RecoveryBlockedError, match="semantic effect applied"):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("completed", "recovered_applied")
+
+
 def test_recovery_disposition_keeps_create_update_delete_outcomes_per_target(tmp_path: Path) -> None:
     """A mixed mutation remains a per-target audit record, never a delete shortcut."""
 
@@ -1337,6 +1375,48 @@ def test_typed_domain_receipt_replays_after_source_prepare_crash(
     with sqlite3.connect(tmp_path / "source.db") as source:
         command = source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0]
     assert command is None
+
+
+def test_recovery_disposition_replays_after_source_prepare_crash_at_daemon_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon startup completes a prepared recovery classification command.
+
+    Anti-vacuity: omitting target dispositions from the write-ahead command
+    makes this restart raise before it can clear the pending source command.
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_disposition(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "record_recovery_disposition" and phase == "after_source_prepare":
+            raise RuntimeError("crash after recovery disposition prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_disposition)
+    disposition = RecoveryDisposition(
+        "confirmed-not-applied",
+        "retry-exact",
+        "inspector proved the target was retained",
+        (RecoveryTargetDisposition("session:fixture", "not-applied", "retry-exact"),),
+    )
+    with pytest.raises(RuntimeError, match="recovery disposition prepare"):
+        audit.record_recovery_disposition(operation_id, disposition)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    recover_interrupted_operations(tmp_path)
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed", "recovered_not_applied")
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed",)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
 
 
 def test_atomic_batch_finalization_marks_every_target_and_terminates_run(tmp_path: Path) -> None:

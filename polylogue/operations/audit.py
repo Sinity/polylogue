@@ -27,6 +27,7 @@ from polylogue.operations.mutation_transaction import (
     MutationTarget,
     RecoveryDisposition,
     RecoveryOperation,
+    RecoveryTargetDisposition,
     TokenConsumedError,
     TokenExpiredError,
     validate_mutation_plan_integrity,
@@ -537,6 +538,15 @@ class AuditRepository:
                 "kind": disposition.kind,
                 "action": disposition.action,
                 "detail": disposition.detail,
+                "target_dispositions": [
+                    {
+                        "target_ref": item.target_ref,
+                        "state": item.state,
+                        "action": item.action,
+                        "detail": item.detail,
+                    }
+                    for item in disposition.target_dispositions
+                ],
                 "evidence_ref": disposition.evidence_ref,
                 "now_ms": int(time.time() * 1000),
             }
@@ -609,6 +619,15 @@ class AuditRepository:
                         kind=cast(Any, payload["kind"]),
                         action=cast(Any, payload["action"]),
                         detail=cast(str | None, payload.get("detail")),
+                        target_dispositions=tuple(
+                            RecoveryTargetDisposition(
+                                target_ref=cast(str, item["target_ref"]),
+                                state=cast(Any, item["state"]),
+                                action=cast(Any, item["action"]),
+                                detail=cast(str | None, item.get("detail")),
+                            )
+                            for item in cast(list[dict[str, object]], payload.get("target_dispositions", []))
+                        ),
                         evidence_ref=cast(str | None, payload.get("evidence_ref")),
                     ),
                 )
@@ -1342,6 +1361,23 @@ class AuditRepository:
             """,
             (operation_id,),
         ).fetchall()
+        context: Mapping[str, object] = {}
+        preview = conn.execute(
+            """
+            SELECT p.plan_json
+            FROM operation_previews AS p
+            JOIN operation_runs AS r ON r.preview_id = p.preview_id
+            WHERE r.operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if preview is not None:
+            try:
+                plan_payload = json.loads(str(preview[0]))
+            except (TypeError, json.JSONDecodeError):
+                plan_payload = None
+            if isinstance(plan_payload, dict) and isinstance(plan_payload.get("context"), dict):
+                context = cast(Mapping[str, object], plan_payload["context"])
         complete = (
             expected > 0
             and len(target_rows) == expected
@@ -1373,6 +1409,7 @@ class AuditRepository:
             expected_target_count=expected,
             reconstructed_target_count=len(target_rows),
             target_evidence_complete=complete,
+            context=context,
         )
 
     @_continuity_mutation("record_recovery_disposition")
@@ -1579,6 +1616,11 @@ class AuditRepository:
                 for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
             ]
             run_state, terminal_reason = _run_state_for_targets(states)
+            if states and all(state == "applied" for state in states):
+                # An operator's applied decision is still recovery evidence.
+                # Keep the duplicate-effect barrier that an automatic
+                # confirmed-applied classification would have installed.
+                run_state, terminal_reason = "completed", "recovered_applied"
             if "unknown" in states:
                 # An adjudicated unknown is still unknown: keep the run
                 # terminal-but-adjudicable rather than reopening it as
