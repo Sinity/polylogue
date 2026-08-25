@@ -628,7 +628,8 @@ def _stageable_quarantined_census_cohort(
         if (
             len(sessions) != 1
             or str(make_session_id(provider, sessions[0].provider_session_id)) != session_id
-            or f"{provider.value}:{sessions[0].provider_session_id}" != logical_source_key
+            or f"{origin_from_provider(sessions[0].source_name).value}:{sessions[0].provider_session_id}"
+            != logical_source_key
             or bytes.fromhex(session_content_hash(sessions[0])) != accepted_hash
         ):
             return (), "same-source-path cohort differs from the accepted session"
@@ -1057,7 +1058,7 @@ def _inspect_quarantined_accepted_raw(
     if (
         origin_from_provider(parsed.source_name) != origin
         or str(make_session_id(parsed.source_name, parsed.provider_session_id)) != str(head["session_id"])
-        or f"{provider.value}:{parsed.provider_session_id}" != logical_source_key
+        or f"{origin_from_provider(parsed.source_name).value}:{parsed.provider_session_id}" != logical_source_key
         or bytes.fromhex(session_content_hash(parsed)) != accepted_hash
     ):
         return _quarantined_raw_item(raw_id, "normalized parser identity or content differs from the accepted session")

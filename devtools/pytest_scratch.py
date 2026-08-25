@@ -18,6 +18,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import threading
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -129,6 +130,12 @@ def _owner_is_alive(payload: dict[str, Any]) -> bool:
     return isinstance(pid, int) and isinstance(start, str) and _process_start_ticks(pid) == start
 
 
+def _run_owner_may_be_alive(run_id: str) -> bool:
+    """Preserve markerless trees while their run-id owner PID still exists."""
+    match = re.search(r"-(\d+)-[0-9a-f]{8}(?:-s\d+)?$", run_id)
+    return match is not None and _process_start_ticks(int(match.group(1))) is not None
+
+
 @contextlib.contextmanager
 def _lease_lock(root: Path) -> Any:
     """Serialize lease creation and stale cleanup within one scratch root."""
@@ -171,6 +178,25 @@ def _prune_stale_leases(root: Path) -> tuple[str, ...]:
             lease_root = marker.parent
             _remove_owned_tree(lease_root)
             removed.append(str(lease_root))
+    remaining_budget = _MAX_STALE_LEASES_PER_START - len(removed)
+    if remaining_budget > 0:
+        for run_root in sorted(leases_root.iterdir()):
+            if remaining_budget <= 0 or run_root.is_symlink() or not run_root.is_dir():
+                continue
+            if _run_owner_may_be_alive(run_root.name):
+                continue
+            with contextlib.suppress(OSError):
+                run_root.chmod(run_root.stat().st_mode | stat.S_IRWXU)
+            for lane_root in sorted(run_root.iterdir()):
+                if remaining_budget <= 0:
+                    break
+                if lane_root.name.startswith(".") or lane_root.is_symlink() or not lane_root.is_dir():
+                    continue
+                if lane_root.joinpath(_LEASE_FILE).exists():
+                    continue
+                _remove_owned_tree(lane_root)
+                removed.append(str(lane_root))
+                remaining_budget -= 1
     # A completed lane removes its leaf. Reclaim empty run containers later;
     # active or sibling lanes keep their container non-empty and untouched.
     for run_root in sorted(leases_root.iterdir()):
@@ -419,7 +445,13 @@ def _event_high_water(evidence_dir: Path, terminal: ScratchUsage) -> ScratchUsag
 
 
 def run_managed_pytest(
-    command: list[str], *, cwd: Path, env: Mapping[str, str], stdout: Any = None, stderr: Any = None
+    command: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    stdout: Any = None,
+    stderr: Any = None,
+    resource_metrics_path: Path | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """Run pytest in an owned process group and reap it before lease cleanup."""
     process = subprocess.Popen(
@@ -430,6 +462,19 @@ def run_managed_pytest(
         stderr=stderr,
         start_new_session=True,
     )
+    stop_sampling = threading.Event()
+    sampler = (
+        threading.Thread(
+            target=_sample_process_group_memory,
+            args=(process.pid, resource_metrics_path, stop_sampling),
+            name="pytest-memory-sampler",
+            daemon=True,
+        )
+        if resource_metrics_path is not None
+        else None
+    )
+    if sampler is not None:
+        sampler.start()
     try:
         process.wait()
     except BaseException:
@@ -442,7 +487,82 @@ def run_managed_pytest(
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
         raise
+    finally:
+        stop_sampling.set()
+        if sampler is not None:
+            sampler.join(timeout=2)
     return subprocess.CompletedProcess(command, process.returncode)
+
+
+def _process_group_pids(process_group: int) -> tuple[int, ...]:
+    members: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            fields = entry.joinpath("stat").read_text(encoding="utf-8").rsplit(") ", 1)[1].split()
+            group = int(fields[2])
+        except (OSError, IndexError, ValueError):
+            continue
+        if group == process_group:
+            members.append(int(entry.name))
+    return tuple(members)
+
+
+def _process_memory(pid: int) -> dict[str, int] | None:
+    values: dict[str, int] = {}
+    try:
+        for line in Path(f"/proc/{pid}/smaps_rollup").read_text(encoding="utf-8").splitlines():
+            name, separator, raw = line.partition(":")
+            if separator and name in {"Rss", "Pss", "Private_Clean", "Private_Dirty", "Swap"}:
+                values[name] = int(raw.split()[0]) * 1024
+    except (OSError, IndexError, ValueError):
+        return None
+    return {
+        "rss_bytes": values.get("Rss", 0),
+        "pss_bytes": values.get("Pss", 0),
+        "private_bytes": values.get("Private_Clean", 0) + values.get("Private_Dirty", 0),
+        "swap_bytes": values.get("Swap", 0),
+    }
+
+
+def _sample_process_group_memory(process_group: int, destination: Path, stop: threading.Event) -> None:
+    """Persist aggregate and per-process peaks for one owned pytest process group."""
+    aggregate_peak = {"rss_bytes": 0, "pss_bytes": 0, "private_bytes": 0, "swap_bytes": 0}
+    process_peaks: dict[str, dict[str, int]] = {}
+    samples = 0
+    while True:
+        aggregate = dict.fromkeys(aggregate_peak, 0)
+        for pid in _process_group_pids(process_group):
+            usage = _process_memory(pid)
+            if usage is None:
+                continue
+            peak = process_peaks.setdefault(str(pid), dict.fromkeys(aggregate_peak, 0))
+            for name, value in usage.items():
+                aggregate[name] += value
+                peak[name] = max(peak[name], value)
+        for name, value in aggregate.items():
+            aggregate_peak[name] = max(aggregate_peak[name], value)
+        samples += 1
+        if stop.wait(0.5):
+            break
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "process_group": process_group,
+                "sample_interval_seconds": 0.5,
+                "samples": samples,
+                "aggregate_peak": aggregate_peak,
+                "process_peaks": process_peaks,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 __all__ = [

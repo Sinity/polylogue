@@ -158,6 +158,70 @@ def test_native_selection_partitions_semantic_lanes() -> None:
     ]
 
 
+def test_full_corpus_traces_but_never_selects_testmon() -> None:
+    """A full-corpus run (deliberate `--all`, or bootstrap) must still trace.
+
+    Omitting `--testmon` entirely on this route left `.cache/testmon/testmondata`
+    never populated, so a bootstrap run produced no compatible graph for the
+    next plain `devtools verify` to accept. Trace every test under
+    `--testmon-noselect` -- which records coverage without ever narrowing
+    selection -- so the corpus run itself creates the graph.
+    """
+    steps = verify.build_verify_steps(
+        quick=False,
+        lab=False,
+        testmon_mode="all",
+        testmon_environment="polylogue-test",
+    )
+
+    assert [label for label, _command in steps[-5:-2]] == [
+        "pytest native parallel 1/3 (all)",
+        "pytest native parallel 2/3 (all)",
+        "pytest native parallel 3/3 (all)",
+    ]
+    for _label, command in steps[-5:]:
+        assert "--testmon" in command
+        assert "--testmon-noselect" in command
+        assert "--testmon-forceselect" not in command
+        assert "--testmon-env=polylogue-test" in command
+
+
+def test_affected_corpus_retains_testmon_selection() -> None:
+    steps = verify.build_verify_steps(
+        quick=False,
+        lab=False,
+        testmon_mode="affected",
+        testmon_environment="polylogue-test",
+    )
+
+    for _label, command in steps[-3:]:
+        assert "--testmon" in command
+        assert "--testmon-forceselect" in command
+        assert "--testmon-env=polylogue-test" in command
+
+
+def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
+    aggregate = verify._aggregate_pytest_results(
+        [
+            {"name": "pytest native parallel 1/3 (all)", "statistics": {"outcomes": {"passed": 7, "skipped": 1}}},
+            {"name": "pytest native parallel 2/3 (all)", "statistics": {"outcomes": {"passed": 11}}},
+            {"name": "pytest native parallel 3/3 (all)", "statistics": {"outcomes": {"passed": 5, "xfailed": 1}}},
+            {"name": "pytest native serial (all)", "statistics": {"outcomes": {"passed": 2}}},
+            {"name": "pytest native storage-scale (all)", "statistics": {"outcomes": {"passed": 1}}},
+        ],
+        expected_step_count=5,
+        mode="all",
+        exit_code=0,
+    )
+
+    assert aggregate == {
+        "selection_mode": "all",
+        "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
+        "terminal_green": True,
+        "complete_corpus_covered": True,
+    }
+
+
 def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SINNIXD_OPERATION", "verify_quick")
 
@@ -181,6 +245,9 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     (artifacts.step_dir / "scratch-metrics.json").write_text(
         json.dumps({"high_water_usage": {"apparent_bytes": 128}}), encoding="utf-8"
     )
+    (artifacts.step_dir / "process-memory.json").write_text(
+        json.dumps({"aggregate_peak": {"pss_bytes": 256}}), encoding="utf-8"
+    )
 
     result = run.finish_step(step_id=artifacts.step_id, result={"exit": 1, "duration_s": 0.1})
 
@@ -190,6 +257,7 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     assert statistics["selected_count"] == 2
     assert statistics["event_count"] == 1
     assert result["scratch_metrics"]["high_water_usage"]["apparent_bytes"] == 128
+    assert result["process_memory"]["aggregate_peak"]["pss_bytes"] == 256
 
 
 def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

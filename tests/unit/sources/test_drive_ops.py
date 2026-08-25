@@ -27,6 +27,7 @@ import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
+from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
@@ -502,7 +503,7 @@ def test_iter_drive_raw_data_two_revision_fixture_gets_real_lineage(tmp_path: Pa
         ).fetchone()
 
     provider_session_id = first_sessions[0].provider_session_id
-    expected_logical_source_key = f"{Provider.GEMINI.value}:{provider_session_id}"
+    expected_logical_source_key = f"{origin_from_provider(first_sessions[0].source_name).value}:{provider_session_id}"
     # The durable fix: both raws now carry the real identity key and a typed
     # revision_kind, no longer NULL/'unknown'.
     assert first_row["logical_source_key"] == expected_logical_source_key

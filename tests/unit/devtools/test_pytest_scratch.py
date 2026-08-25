@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,6 +93,25 @@ def test_new_lease_reclaims_only_dead_owner_markers(tmp_path: Path) -> None:
     assert not empty.exists()
     assert live.lease_root.exists()
     live.finalize("success")
+
+
+def test_new_lease_reclaims_markerless_dead_hardened_tree_but_preserves_live_owner(tmp_path: Path) -> None:
+    scratch_root = tmp_path / "scratch"
+    dead = scratch_root / "runs" / "20260825T000000Z-all-999999999-deadbeef-s1" / "parallel"
+    dead.joinpath("pytest", "nested").mkdir(parents=True)
+    dead.joinpath("pytest", "nested", "payload").write_text("stale", encoding="utf-8")
+    dead.joinpath("pytest", "nested").chmod(0o400)
+    live = scratch_root / "runs" / f"20260825T000000Z-all-{os.getpid()}-cafebabe-s1" / "parallel"
+    live.joinpath("pytest").mkdir(parents=True)
+
+    lease = PytestScratchLease.acquire(
+        root=scratch_root, run_id="new-run", lane="parallel", evidence_dir=tmp_path / "evidence"
+    )
+
+    assert str(dead) in lease.stale_leases_reclaimed
+    assert not dead.exists()
+    assert live.exists()
+    lease.finalize("success")
 
 
 def test_managed_command_rejects_unowned_shared_basetemp(tmp_path: Path) -> None:
@@ -183,6 +204,25 @@ def test_managed_pytest_kills_its_process_group_before_propagating_interrupt(
         run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})
 
     assert killed == [(42, signal.SIGTERM)]
+
+
+def test_managed_pytest_records_process_group_memory_peaks(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "process-memory.json"
+
+    completed = run_managed_pytest(
+        [sys.executable, "-c", "import time; time.sleep(0.7)"],
+        cwd=tmp_path,
+        env={},
+        resource_metrics_path=metrics_path,
+    )
+
+    assert completed.returncode == 0
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["schema_version"] == 1
+    assert metrics["samples"] >= 1
+    assert metrics["aggregate_peak"]["rss_bytes"] > 0
+    assert metrics["aggregate_peak"]["pss_bytes"] > 0
+    assert metrics["process_peaks"]
 
 
 def test_workstation_does_not_fallback_to_tmpfs_when_nvme_mount_is_missing(

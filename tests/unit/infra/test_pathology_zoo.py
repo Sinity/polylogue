@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
-from shutil import copytree
 
 import pytest
 
@@ -19,6 +18,7 @@ from tests.infra.pathology_zoo import (
     PathologyZoo,
     build_pathology_zoo,
     build_pathology_zoo_ro,
+    clone_pathology_zoo,
     make_pathology_zoo_member_red,
     pathology_zoo_member_ids,
 )
@@ -139,7 +139,10 @@ def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
     assert len(selection.selected_raw_ids) == len(set(selection.selected_raw_ids))
 
     mutated_root = tmp_path / "pathology-zoo-canary-mutation"
-    copytree(pathology_zoo.archive_root, mutated_root)
+    # Writable derivatives must come from the canonical immutable aggregate,
+    # not from the session-scoped writable clone used by read-only tests.
+    canonical_zoo = build_pathology_zoo_ro()
+    clone_pathology_zoo(canonical_zoo, mutated_root)
     with sqlite3.connect(mutated_root / "index.db") as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:zoo-append-self",))
         conn.commit()

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 
@@ -1000,6 +1001,103 @@ class TestMaintenanceTool:
             )
             assert result.get("is_error") is True
             assert result.get("code") == "not_found"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("target_outcomes", "detail"),
+        [
+            ({"session:test": "bogus"}, "outcome value outside the closed vocabulary"),
+            ({"session:test": None}, "non-string outcome value"),
+            ({7: "applied"}, "non-string target ref"),
+        ],
+    )
+    async def test_recovery_adjudication_refuses_malformed_outcomes(
+        self, tmp_path: Path, target_outcomes: dict[object, object], detail: str
+    ) -> None:
+        """Malformed adjudication input is refused at the MCP boundary.
+
+        Anti-vacuity: dropping the boundary validation lets these reach
+        ``adjudicate_recovery``, where a non-string key raises ``KeyError``
+        rather than a typed refusal.
+        """
+
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn,
+                    operation="recovery_adjudicate",
+                    operation_id="operation:test",
+                    target_outcomes=target_outcomes,
+                    reason="operator evidence",
+                    confirm=True,
+                )
+            )
+        assert result.get("is_error") is True, detail
+        assert result.get("code") == "invalid_argument", detail
+
+    @pytest.mark.asyncio
+    async def test_recovery_adjudication_fails_closed_without_confirm(self, tmp_path: Path) -> None:
+        """``recovery_adjudicate`` honours the confirmation the tool declares."""
+
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn,
+                    operation="recovery_adjudicate",
+                    operation_id="operation:test",
+                    target_outcomes={"session:test": "applied"},
+                    reason="operator evidence",
+                )
+            )
+        assert result.get("is_error") is True
+        assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
+    async def test_recovery_adjudication_refuses_beside_a_live_daemon_writer(self, tmp_path: Path) -> None:
+        """MCP adjudication is not a second writer racing the daemon.
+
+        Anti-vacuity: removing the offline-guard call makes this reach the
+        audit repository and fail with ``not_found`` instead of refusing.
+        """
+
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with (
+            installed_runtime_services(archive_root),
+            patch("polylogue.maintenance.offline_guard.running_daemon_pid", return_value=4321),
+        ):
+            result = json.loads(
+                await invoke_surface_async(
+                    maintenance_fn,
+                    operation="recovery_adjudicate",
+                    operation_id="operation:test",
+                    target_outcomes={"session:test": "applied"},
+                    reason="operator evidence",
+                    confirm=True,
+                )
+            )
+        assert result.get("is_error") is True
+        assert result.get("code") == "offline_required"
+        assert "4321" in result.get("message", "")
 
 
 class TestMaintenanceConfirmGates:

@@ -331,6 +331,10 @@ class VerifyRun:
                     step["scratch_metrics_path"] = str(
                         self.relative_run_dir / "steps" / step_id / "scratch-metrics.json"
                     )
+                process_memory = _read_json(step_dir / "process-memory.json")
+                if process_memory:
+                    step["process_memory"] = process_memory
+                    step["process_memory_path"] = str(self.relative_run_dir / "steps" / step_id / "process-memory.json")
             self.write()
             return dict(step)
         return None

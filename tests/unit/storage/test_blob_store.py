@@ -26,6 +26,54 @@ from polylogue.storage.blob_store import (
 # ---------------------------------------------------------------------------
 
 
+def test_publish_fsyncs_staged_file_before_close_and_shard_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Blob bytes and their shard entry reach stable storage in order.
+
+    Anti-vacuity: removing either the staged-file ``fsync`` or the
+    post-replace shard-directory ``fsync`` makes the corresponding ordering
+    assertion fail.
+    """
+    blob_store = BlobStore(tmp_path / "blobs")
+    events: list[tuple[str, int | None]] = []
+    real_close = os.close
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def recording_close(fd: int) -> None:
+        events.append(("close", fd))
+        real_close(fd)
+
+    def recording_fsync(fd: int) -> None:
+        events.append(("fsync", fd))
+        real_fsync(fd)
+
+    def recording_replace(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        real_replace(source, destination)
+        events.append(("replace", None))
+
+    monkeypatch.setattr(os, "close", recording_close)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "replace", recording_replace)
+
+    blob_store.write_from_bytes(b"durable blob")
+
+    file_fsync_index = next(index for index, event in enumerate(events) if event[0] == "fsync")
+    file_fsync_fd = events[file_fsync_index][1]
+    assert file_fsync_fd is not None
+    assert events[file_fsync_index + 1] == ("close", file_fsync_fd)
+
+    replace_index = next(index for index, event in enumerate(events) if event[0] == "replace")
+    directory_fsync_index = next(
+        index for index in range(replace_index + 1, len(events)) if events[index][0] == "fsync"
+    )
+    directory_fsync_fd = events[directory_fsync_index][1]
+    assert directory_fsync_fd is not None
+    assert directory_fsync_index > replace_index
+    assert events[directory_fsync_index + 1] == ("close", directory_fsync_fd)
+
+
 def test_write_from_fileobj_round_trips_content(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     payload = b"streamed blob content"
