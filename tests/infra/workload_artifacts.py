@@ -816,10 +816,10 @@ def current_seeded_archive_reachability() -> SeededArchiveReachabilityInventory:
 
     add("default", "c03", (c03_semantic_corpus_spec(),))
     add("default", "schema-coverage", schema_coverage_corpus_specs())
-    for profile in NAMED_WORKLOAD_PROFILES:
-        add("named", profile.name, profile.corpus_specs())
-    for profile in BENCHMARK_WORKLOAD_PROFILES:
-        add("benchmark", profile.tier.value, benchmark_corpus_specs(profile.tier))
+    for named_profile in NAMED_WORKLOAD_PROFILES:
+        add("named", named_profile.name, named_profile.corpus_specs())
+    for benchmark_profile in BENCHMARK_WORKLOAD_PROFILES:
+        add("benchmark", benchmark_profile.tier.value, benchmark_corpus_specs(benchmark_profile.tier))
 
     inventory = SeededArchiveReachabilityInventory(tuple(entries))
     validate_seeded_archive_reachability(inventory)

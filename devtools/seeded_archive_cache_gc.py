@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import TextIO
@@ -85,7 +86,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Emit the complete report as JSON.")
     args = parser.parse_args(argv)
-    output = stdout
+    output = stdout or sys.stdout
     root = (args.cache_root or default_cache_root()).expanduser()
     receipt = (args.receipt or root / ".seeded-archive-gc-receipt.json").expanduser()
 
