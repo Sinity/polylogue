@@ -2864,7 +2864,12 @@ async def _run_daemon_services_under_active_writer_lease(
     # acquisition) may still start: acquisition only ever writes source.db,
     # so a derived-only mismatch (index.db/embeddings.db) must not stop it.
     watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
-    durable_mismatch = enable_watch and durable_tier_schema_mismatch()
+    # Unconditional (not gated on ``enable_watch``): operation recovery below
+    # touches audit.db on every startup regardless of whether the watcher is
+    # even enabled, so it needs its own answer to "is a durable tier missing
+    # or version-mismatched" rather than borrowing the watch-gated one.
+    durable_schema_mismatch = durable_tier_schema_mismatch()
+    durable_mismatch = enable_watch and durable_schema_mismatch
     watcher_creation_blocked = durable_mismatch
     lifecycle_events_enabled = not watcher_blocked
     if watcher_blocked:
@@ -2947,6 +2952,34 @@ async def _run_daemon_services_under_active_writer_lease(
             DaemonLifecycle.start,
             details={"archive_root": str(archive_root_path)},
         )
+        # Interrupted effects are classified once under the real daemon writer
+        # lease. Executor construction is request-local and must never recover.
+        # polylogue-39pdi: a missing/version-mismatched audit.db (or another
+        # ingestion-blocking durable tier) makes this touch a schema the
+        # running build cannot read, which used to surface as an uncaught
+        # sqlite3.Error escaping into the BaseException shutdown path below
+        # and killing the daemon instead of leaving it degraded. Route it
+        # through the same parked-startup-task decision the schema preflight
+        # already makes for other archive work.
+        if durable_schema_mismatch:
+            logger.error(
+                "daemon: operation-recovery startup skipped — %s. Interrupted "
+                "operations remain unclassified pending schema recovery.",
+                schema_alert.message,
+            )
+            set_degraded(
+                DegradedReason(
+                    code="operation_recovery_parked",
+                    message=schema_alert.message,
+                    detail={"check_name": schema_alert.check_name},
+                )
+            )
+        else:
+            from polylogue.operations.mutation_transaction import recover_interrupted_operations
+
+            await write_coordinator.run_sync(
+                "daemon.operation_recovery.startup", recover_interrupted_operations, archive_root_path
+            )
         previous_signal_handlers = install_signal_handlers(_daemon_lifecycle)
     except BaseException:
         lifecycle = _daemon_lifecycle

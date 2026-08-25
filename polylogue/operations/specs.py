@@ -9,11 +9,7 @@ from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
 from polylogue.core.user_state_targets import TARGET_KIND_NAMES
-from polylogue.operations.mutation_transaction import (
-    IdempotencyPolicy,
-    Surface,
-    TargetAuthorityPolicy,
-)
+from polylogue.operations.mutation_transaction import IdempotencyPolicy, Surface, TargetAuthorityPolicy
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.

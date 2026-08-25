@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.config import Source
+from polylogue.maintenance import blob_namespace_quarantine as quarantine_module
 from polylogue.maintenance.blob_namespace_quarantine import (
     BlobNamespaceCleanupPlan,
     BlobNamespaceMoveCapability,
@@ -32,6 +33,31 @@ def _archive(tmp_path: Path) -> Path:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     return root
+
+
+def test_immutable_quarantine_receipt_failure_does_not_publish_torn_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial write leaves no final name, so the receipt can be retried.
+
+    Anti-vacuity: reverting ``_write_immutable_json`` to direct-open publication
+    makes this test red because the partial final pathname remains.
+    """
+    path = tmp_path / "before.json"
+    payload: dict[str, object] = {"kind": "blob_namespace_quarantine", "phase": "before"}
+    real_fsync = os.fsync
+
+    def fail_after_partial_write(descriptor: int) -> None:
+        raise OSError("simulated fsync failure after write")
+
+    monkeypatch.setattr("polylogue.maintenance.blob_namespace_quarantine.os.fsync", fail_after_partial_write)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        quarantine_module._write_immutable_json(path, payload)
+
+    assert not path.exists()
+    monkeypatch.setattr("polylogue.maintenance.blob_namespace_quarantine.os.fsync", real_fsync)
+    quarantine_module._write_immutable_json(path, payload)
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
 
 
 def _verified_source_backup(archive_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

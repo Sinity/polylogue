@@ -35,7 +35,7 @@ exec = ["devtools", "verify"]
 pool = "normal"
 result = "pytest"
 cache = "tree+environment"
-exclusive_keys = ["polylogue:testmon-graph"]
+exclusive_keys = ["polylogue:testmon-graph", "polylogue:seeded-archive-cache-gc"]
 scratch = "nvme"
 
 [operations.verify_quick]
@@ -59,10 +59,6 @@ scratch = "nvme"
 type = "bool"
 flag = "--apply"
 
-[operations.seeded_archive_cache_gc.parameters.delete_corrupt]
-type = "bool"
-flag = "--delete-corrupt"
-
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=12", "devtools", "verify", "--all"]
@@ -70,7 +66,7 @@ pool = "bulk"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 14400
-exclusive_keys = ["polylogue:testmon-graph"]
+exclusive_keys = ["polylogue:testmon-graph", "polylogue:seeded-archive-cache-gc"]
 scratch = "nvme"
 
 [operations.dev_loop_proof]

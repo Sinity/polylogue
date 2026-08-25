@@ -36,6 +36,9 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationReceipt,
     MutationTargetStatus,
+    RecoveryDisposition,
+    RecoveryOperation,
+    RecoveryTargetDisposition,
     build_plan,
     make_target_ref,
 )
@@ -115,6 +118,32 @@ class SessionDeleteActuator:
             applied_at=plan.prepared_at,
             domain_receipt={"deleted_count": deleted, "session_count": len(session_ids)},
         )
+
+    def inspect_recovery(self, operation: RecoveryOperation, args: SessionDeleteArgs) -> RecoveryDisposition:
+        """Classify a dead delete from the archive, never from audit state.
+
+        Delete is convergent per target.  A mixed result can therefore only be
+        resumed by an exact retry over the original typed target identity.
+        """
+
+        if not operation.target_evidence_complete or not operation.targets:
+            return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
+        if any(target.kind != "session" or not target.ref.startswith("session:") for target in operation.targets):
+            return RecoveryDisposition("unknown", "operator-blocking", "delete recovery target identity is invalid")
+        outcomes = tuple(
+            RecoveryTargetDisposition(
+                target.ref,
+                "not-applied" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "applied",
+                "retry-exact" if _session_exists(args.archive, target.ref.removeprefix("session:")) else "forward",
+            )
+            for target in operation.targets
+        )
+        existing = sum(outcome.state == "not-applied" for outcome in outcomes)
+        if existing == 0:
+            return RecoveryDisposition("confirmed-applied", "forward", "all delete targets are absent", outcomes)
+        if existing == len(operation.targets):
+            return RecoveryDisposition("confirmed-not-applied", "retry-exact", "all delete targets remain", outcomes)
+        return RecoveryDisposition("confirmed-partial", "retry-exact", "some delete targets remain", outcomes)
 
 
 # ---------------------------------------------------------------------------

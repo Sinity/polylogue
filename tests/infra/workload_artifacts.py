@@ -13,6 +13,7 @@ import fcntl
 import gc
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -2125,8 +2126,8 @@ def gc_seeded_archive_artifacts(
     the complete inspect/delete interval, so active builders, query leases,
     clones, and explicitly protected worktrees remain untouched.
     """
-    if grace_period_s < 0:
-        raise ValueError("artifact GC grace period must be non-negative")
+    if not math.isfinite(grace_period_s) or grace_period_s < 0:
+        raise ValueError("artifact GC grace period must be finite and non-negative")
     reachable_values = {item.value if isinstance(item, SeededArchiveKey) else str(item) for item in reachable_keys}
     if any(_SEEDED_KEY.fullmatch(value) is None for value in reachable_values):
         raise ValueError("artifact GC reachability must use complete seeded archive keys")

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TextIO
 
 from tests.infra.workload_artifacts import (
+    ArtifactGcDisposition,
     ArtifactGcReport,
     SeededArchiveReachabilityInventory,
     current_seeded_archive_reachability,
@@ -84,17 +85,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         action="store_true",
         help="Actually delete eligible aged artifacts. Without this flag, preview only.",
     )
-    parser.add_argument(
-        "--delete-corrupt",
-        action="store_true",
-        help=(
-            "Treat aged corrupt directories with unreachable path identities as eligible; "
-            "actual deletion still requires --apply."
-        ),
-    )
     parser.add_argument("--json", action="store_true", help="Emit the complete report as JSON.")
     args = parser.parse_args(argv)
-    output = stdout or sys.stdout
+    output: TextIO = stdout if stdout is not None else sys.stdout
     root = (args.cache_root or default_cache_root()).expanduser()
     receipt = (args.receipt or root / ".seeded-archive-gc-receipt.json").expanduser()
 
@@ -106,19 +99,23 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             reachable_keys=inventory.keys,
             grace_period_s=args.grace_period_s,
             dry_run=not args.apply,
-            delete_corrupt=args.delete_corrupt,
             protected_worktrees=args.protected_worktree,
             receipt_path=receipt,
         )
     except (OSError, RuntimeError, ValueError) as exc:
-        print(f"refused: {exc}", file=output)
+        if args.json:
+            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+        else:
+            print(f"refused: {exc}", file=output)
         return 1
 
     if args.json:
         print(json.dumps(_report_payload(report, inventory=inventory), indent=2, sort_keys=True), file=output)
     else:
         _render_report(report, inventory=inventory, receipt=receipt, stdout=output)
-    return 0
+
+    failed = any(entry.disposition is ArtifactGcDisposition.DELETION_FAILED for entry in report.entries)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

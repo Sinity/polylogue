@@ -25,6 +25,9 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     MutationReceipt,
     MutationTarget,
+    RecoveryDisposition,
+    RecoveryOperation,
+    RecoveryTargetDisposition,
     TokenConsumedError,
     TokenExpiredError,
     validate_mutation_plan_integrity,
@@ -49,6 +52,15 @@ AuditTargetState = Literal[
 ]
 _F = TypeVar("_F", bound=Callable[..., object])
 _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
+
+
+#: Terminal reasons that deliberately keep a finished run open to bounded
+#: operator adjudication.  ``recovery_unknown`` is the wedge a blocked
+#: classification installs; ``recovered_applied`` is the duplicate-effect
+#: barrier a confirmed-applied classification installs.  Neither may become
+#: unrecoverable: without an adjudication route a single misclassification
+#: would permanently refuse every later attempt on the same targets.
+_ADJUDICABLE_TERMINAL_REASONS = frozenset({"recovery_unknown", "recovered_applied"})
 
 
 def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
@@ -516,17 +528,35 @@ class AuditRepository:
                 "unknown_reason": values.get("unknown_reason"),
                 "now_ms": int(time.time() * 1000),
             }
-        if kind == "reconcile_attempt":
-            operation_id = cast(str, args[0])
-            return {
-                "operation_id": operation_id,
-                "outcome": cast(str, values["outcome"]),
-                "domain_receipt_ref": values.get("domain_receipt_ref"),
-                "reason": values.get("reason"),
-                "now_ms": int(time.time() * 1000),
-            }
         if kind == "recover_abandoned_attempts":
             return {"now_ms": int(time.time() * 1000)}
+        if kind == "record_recovery_disposition":
+            operation_id = cast(str, args[0])
+            disposition = cast(RecoveryDisposition, args[1])
+            return {
+                "operation_id": operation_id,
+                "kind": disposition.kind,
+                "action": disposition.action,
+                "detail": disposition.detail,
+                "target_dispositions": [
+                    {
+                        "target_ref": item.target_ref,
+                        "state": item.state,
+                        "action": item.action,
+                        "detail": item.detail,
+                    }
+                    for item in disposition.target_dispositions
+                ],
+                "evidence_ref": disposition.evidence_ref,
+                "now_ms": int(time.time() * 1000),
+            }
+        if kind == "adjudicate_recovery":
+            return {
+                "operation_id": cast(str, args[0]),
+                "target_outcomes": cast(Mapping[str, str], values["target_outcomes"]),
+                "reason": cast(str, values["reason"]),
+                "now_ms": int(time.time() * 1000),
+            }
         raise RuntimeError(f"unregistered audit continuity mutation {kind!r}")
 
     def _replay_pending_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
@@ -579,16 +609,37 @@ class AuditRepository:
                     error_summary=cast(str | None, payload.get("error_summary")),
                     unknown_reason=cast(str | None, payload.get("unknown_reason")),
                 )
-            if mutation.kind == "reconcile_attempt":
-                return cast(Any, self.reconcile_attempt).__wrapped__(
-                    self,
-                    cast(str, payload["operation_id"]),
-                    outcome=cast(Literal["applied", "absent", "unknown"], payload["outcome"]),
-                    domain_receipt_ref=cast(str | None, payload.get("domain_receipt_ref")),
-                    reason=cast(str | None, payload.get("reason")),
-                )
             if mutation.kind == "recover_abandoned_attempts":
                 return cast(Any, self._recover_abandoned_attempts).__wrapped__(self)
+            if mutation.kind == "record_recovery_disposition":
+                return cast(Any, self.record_recovery_disposition).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    RecoveryDisposition(
+                        kind=cast(Any, payload["kind"]),
+                        action=cast(Any, payload["action"]),
+                        detail=cast(str | None, payload.get("detail")),
+                        target_dispositions=tuple(
+                            RecoveryTargetDisposition(
+                                target_ref=cast(str, item["target_ref"]),
+                                state=cast(Any, item["state"]),
+                                action=cast(Any, item["action"]),
+                                detail=cast(str | None, item.get("detail")),
+                            )
+                            for item in cast(list[dict[str, object]], payload.get("target_dispositions", []))
+                        ),
+                        evidence_ref=cast(str | None, payload.get("evidence_ref")),
+                    ),
+                )
+            if mutation.kind == "adjudicate_recovery":
+                return cast(Any, self.adjudicate_recovery).__wrapped__(
+                    self,
+                    cast(str, payload["operation_id"]),
+                    target_outcomes=cast(
+                        Mapping[str, Literal["applied", "not-applied", "unknown"]], payload["target_outcomes"]
+                    ),
+                    reason=cast(str, payload["reason"]),
+                )
             raise RuntimeError(f"unregistered audit continuity mutation {mutation.kind!r}")
         finally:
             self._coordinated_mutation = None
@@ -1193,6 +1244,465 @@ class AuditRepository:
             return ()
         return self._recover_abandoned_attempts()
 
+    def nonterminal_operations_overlapping(self, target_refs: tuple[str, ...]) -> tuple[RecoveryOperation, ...]:
+        """Return durable nonterminal operations touching an exact target set.
+
+        This deliberately discovers both running and already-interrupted work.
+        Callers must inspect the returned domain targets before issuing a new
+        authorization.  Audit rows provide identity and plan binding only;
+        they never stand in for target-state inspection.
+        """
+
+        if not target_refs:
+            return ()
+        placeholders = ", ".join("?" for _ in target_refs)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.operation_id, r.operation_name, r.operation_version,
+                       r.plan_hash, r.target_digest
+                FROM operation_runs AS r
+                JOIN operation_targets AS t ON t.operation_id = r.operation_id
+                WHERE (r.status IN ('running', 'interrupted') OR r.terminal_reason = 'recovery_unknown')
+                  AND t.target_ref IN ({placeholders})
+                ORDER BY r.started_at_ms, r.operation_id
+                """,
+                target_refs,
+            ).fetchall()
+            operations = [self._recovery_operation(conn, row) for row in rows]
+        return tuple(operations)
+
+    def attempt_owner_liveness(self, operation_id: str) -> Literal["dead", "live", "unknown"]:
+        """Classify whether a nonterminal operation may be recovered.
+
+        Unknown is intentionally distinct from dead.  A legacy owner string or
+        unreadable process witness blocks recovery and overlap just like a live
+        worker, because either can still own an in-flight target mutation.
+        """
+
+        with self._connection() as conn:
+            owners = conn.execute(
+                "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                (operation_id,),
+            ).fetchall()
+        states = {_attempt_owner_liveness(cast(str | None, row[0])) for row in owners}
+        if "live" in states:
+            return "live"
+        if "unknown" in states:
+            return "unknown"
+        return "dead"
+
+    def orphaned_operations(self) -> tuple[RecoveryOperation, ...]:
+        """Discover nonterminal operations whose owner is conclusively absent.
+
+        A legacy/unreadable owner is intentionally not an orphan.  This is the
+        liveness barrier that prevents recovery startup from stealing live
+        work before a domain inspector sees it.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT operation_id FROM operation_runs
+                WHERE status IN ('running', 'interrupted') ORDER BY started_at_ms, operation_id
+                """
+            ).fetchall()
+            operation_ids: list[str] = []
+            for row in rows:
+                operation_id = str(row[0])
+                owners = conn.execute(
+                    "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                    (operation_id,),
+                ).fetchall()
+                if owners and not all(
+                    _attempt_owner_liveness(cast(str | None, owner[0])) == "dead" for owner in owners
+                ):
+                    continue
+                operation_ids.append(operation_id)
+        recovered: list[RecoveryOperation] = []
+        for operation_id in operation_ids:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT operation_id, operation_name, operation_version, plan_hash, target_digest
+                    FROM operation_runs WHERE operation_id = ? AND status IN ('running', 'interrupted')
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if row is None:
+                    continue
+                recovered.append(self._recovery_operation(conn, row))
+        return tuple(recovered)
+
+    @staticmethod
+    def _recovery_operation(conn: sqlite3.Connection, row: sqlite3.Row | tuple[object, ...]) -> RecoveryOperation:
+        """Reconstruct recovery targets without silently dropping damaged evidence.
+
+        ``operation_targets`` is the durable effect identity. Preview rows add
+        policy detail, but a missing preview target must make recovery unknown,
+        never erase a target and turn a partial delete into a false success.
+        """
+
+        operation_id, operation, version, plan_hash, target_digest = row[:5]
+        expected = int(
+            conn.execute("SELECT target_count FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()[
+                0
+            ]
+        )
+        target_rows = conn.execute(
+            """
+            SELECT t.target_kind, t.target_ref, t.identity_digest, t.effect_identity,
+                   p.durability, p.recovery_policy
+            FROM operation_targets AS t
+            LEFT JOIN operation_preview_targets AS p
+              ON p.preview_id = (SELECT preview_id FROM operation_runs WHERE operation_id = t.operation_id)
+             AND p.ordinal = t.ordinal
+            WHERE t.operation_id = ? ORDER BY t.ordinal
+            """,
+            (operation_id,),
+        ).fetchall()
+        context: Mapping[str, object] = {}
+        preview = conn.execute(
+            """
+            SELECT p.plan_json
+            FROM operation_previews AS p
+            JOIN operation_runs AS r ON r.preview_id = p.preview_id
+            WHERE r.operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if preview is not None:
+            try:
+                plan_payload = json.loads(str(preview[0]))
+            except (TypeError, json.JSONDecodeError):
+                plan_payload = None
+            if isinstance(plan_payload, dict) and isinstance(plan_payload.get("context"), dict):
+                context = cast(Mapping[str, object], plan_payload["context"])
+        complete = (
+            expected > 0
+            and len(target_rows) == expected
+            and all(target[4] is not None and target[5] is not None for target in target_rows)
+        )
+        targets = (
+            tuple(
+                MutationTarget(
+                    kind=str(target[0]),
+                    ref=str(target[1]),
+                    policy_key="audit-recovery",
+                    identity_digest=str(target[2]),
+                    effect_identity=str(target[3]),
+                    durability=cast(Any, str(target[4])),
+                    recovery=cast(Any, str(target[5])),
+                )
+                for target in target_rows
+            )
+            if complete
+            else ()
+        )
+        return RecoveryOperation(
+            operation_id=str(operation_id),
+            operation=str(operation),
+            operation_version=int(cast(Any, version)),
+            plan_hash=str(plan_hash),
+            target_digest=str(target_digest),
+            targets=targets,
+            expected_target_count=expected,
+            reconstructed_target_count=len(target_rows),
+            target_evidence_complete=complete,
+            context=context,
+        )
+
+    @_continuity_mutation("record_recovery_disposition")
+    def record_recovery_disposition(self, operation_id: str, disposition: RecoveryDisposition) -> None:
+        """Finalize one orphaned operation from domain-provided target evidence."""
+
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
+        with self._connection() as conn:
+            self._begin(conn)
+            run = conn.execute(
+                "SELECT actor_ref, status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None:
+                raise ValueError(f"unknown operation {operation_id!r}")
+            status = str(run[1])
+            # A run startup already terminalized as ``recovery_unknown`` is
+            # still adjudicable evidence: a later adoption call (a rerun of a
+            # committed recovery with matching intent/postflight/receipt) must
+            # be able to finalize it, not just a freshly-dead ``interrupted``
+            # run (polylogue-39pdi).
+            if status not in {"running", "interrupted"} and not (
+                status == "failed" and str(run[2] or "") == "recovery_unknown"
+            ):
+                return
+            live_owner = conn.execute(
+                "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'", (operation_id,)
+            ).fetchall()
+            owner_liveness = {_attempt_owner_liveness(cast(str | None, row[0])) for row in live_owner}
+            # A live or unverifiable owner may still be mutating its targets,
+            # so it cannot be terminalized.  Refuse silently: the run stays
+            # nonterminal, so it remains visible to overlap detection and to
+            # ``recovery_status``/``adjudicate_recovery``.  Appending an event
+            # here instead would grow the durable log on every restart and
+            # every overlapping request without changing any state.
+            if owner_liveness & {"live", "unknown"}:
+                return
+            target_rows = conn.execute(
+                "SELECT target_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
+            ).fetchall()
+            expected_refs = {str(row[0]) for row in target_rows}
+            per_target = {item.target_ref: item for item in disposition.target_dispositions}
+            if disposition.kind != "unknown" and (
+                not per_target
+                or len(per_target) != len(disposition.target_dispositions)
+                or set(per_target) != expected_refs
+            ):
+                raise ValueError("confirmed recovery disposition must classify every durable target exactly once")
+            conn.execute(
+                """
+                UPDATE operation_attempts SET state = ?, finished_at_ms = ?, unknown_reason = ?
+                WHERE operation_id = ? AND state IN ('running', 'unknown')
+                """,
+                (
+                    "unknown" if disposition.kind == "unknown" else "reconciled",
+                    now_ms,
+                    disposition.detail,
+                    operation_id,
+                ),
+            )
+            if disposition.kind != "unknown":
+                for target in per_target.values():
+                    state = {"applied": "applied", "not-applied": "failed", "unknown": "unknown"}[target.state]
+                    conn.execute(
+                        """
+                        UPDATE operation_targets
+                        SET state = ?, completed_at_ms = ?, unknown_reason = ?, domain_receipt_ref = ?, domain_receipt_kind = ?
+                        WHERE operation_id = ? AND target_ref = ? AND state IN ('pending', 'running', 'unknown')
+                        """,
+                        (
+                            state,
+                            now_ms if state != "unknown" else None,
+                            target.detail or disposition.detail,
+                            disposition.evidence_ref,
+                            "recovery-evidence" if disposition.evidence_ref else None,
+                            operation_id,
+                            target.target_ref,
+                        ),
+                    )
+            else:
+                conn.execute(
+                    """
+                    UPDATE operation_targets SET state = ?, completed_at_ms = ?, unknown_reason = ?
+                    WHERE operation_id = ? AND state IN ('pending', 'running', 'unknown')
+                    """,
+                    ("unknown", None, disposition.detail, operation_id),
+                )
+            states = [
+                str(row[0])
+                for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
+            ]
+            if disposition.kind == "unknown" or "unknown" in states:
+                run_state, reason = "failed", "recovery_unknown"
+            elif disposition.kind == "confirmed-applied":
+                run_state, reason = "completed", "recovered_applied"
+            elif disposition.kind == "confirmed-not-applied":
+                run_state, reason = "failed", "recovered_not_applied"
+            else:
+                run_state, reason = "failed", f"recovered_partial:{disposition.action}"
+            conn.execute(
+                """
+                UPDATE operation_runs
+                SET status = ?, terminal_reason = ?, updated_at_ms = ?, completed_at_ms = ?,
+                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
+                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'applied'),
+                    failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
+                    unknown_reason = ?
+                WHERE operation_id = ?
+                """,
+                (
+                    run_state,
+                    reason,
+                    now_ms,
+                    now_ms,
+                    operation_id,
+                    operation_id,
+                    operation_id,
+                    disposition.detail,
+                    operation_id,
+                ),
+            )
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="recovery_classified",
+                from_state=str(run[1]),
+                to_state=run_state,
+                actor_ref=str(run[0]),
+                occurred_at_ms=now_ms,
+                detail={
+                    "kind": disposition.kind,
+                    "action": disposition.action,
+                    "detail": (disposition.detail or "")[:512],
+                    "evidence_ref": disposition.evidence_ref,
+                    "targets": [
+                        {"target_ref": item.target_ref, "state": item.state, "action": item.action}
+                        for item in disposition.target_dispositions
+                    ],
+                },
+            )
+
+    def has_recovered_effect(self, plan: MutationPlan) -> str | None:
+        """Return the durable recovery barrier for this exact semantic effect."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id FROM operation_runs
+                WHERE operation_name = ? AND operation_version = ?
+                  AND archive_instance_id = ? AND archive_identity_digest = ?
+                  AND parameter_digest = ? AND target_digest = ?
+                  AND target_count > 0
+                  AND terminal_reason = 'recovered_applied'
+                ORDER BY completed_at_ms, operation_id LIMIT 1
+                """,
+                (
+                    plan.operation,
+                    plan.operation_version,
+                    plan.archive_instance_id,
+                    plan.archive_identity_digest,
+                    plan.parameter_digest,
+                    plan.target_digest,
+                ),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    @_continuity_mutation("adjudicate_recovery")
+    def adjudicate_recovery(
+        self,
+        operation_id: str,
+        *,
+        target_outcomes: Mapping[str, Literal["applied", "not-applied", "unknown"]],
+        reason: str,
+        adjudicator: str | None = None,
+    ) -> None:
+        """Apply an authorized, bounded per-target decision to an unknown run.
+
+        ``adjudicator`` identifies who made this decision. It is recorded as
+        the ``recovery_adjudicated`` event's actor -- the original mutation's
+        ``actor_ref`` must never be reused there, since that would misattribute
+        the adjudication decision to whoever ran the *original* mutation in
+        the append-only audit trail (polylogue-39pdi). Leave unset only when
+        no adjudicator identity is available.
+        """
+
+        if not reason.strip():
+            raise ValueError("recovery adjudication requires a reason")
+        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
+        with self._connection() as conn:
+            self._begin(conn)
+            run = conn.execute(
+                "SELECT actor_ref, status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if run is None:
+                raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
+            status = str(run[1])
+            adjudicable = status in {"running", "interrupted"} or (
+                status in {"failed", "completed"} and str(run[2] or "") in _ADJUDICABLE_TERMINAL_REASONS
+            )
+            if not adjudicable:
+                raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
+            if status == "running":
+                # polylogue-39pdi: unlike the automatic recovery paths
+                # (``orphaned_operations``/``recover_abandoned_attempts``),
+                # adjudicating a ``running`` operation used to accept it
+                # unconditionally. A live standalone executor (MCP or another
+                # process with no daemon pidfile involved) could still be
+                # applying the mutation while this call marks targets
+                # reconciled and removes the overlap barrier -- permitting
+                # concurrent/duplicate effects. Require the same conclusive
+                # dead-owner evidence the automatic paths already demand.
+                live_owner = conn.execute(
+                    "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'",
+                    (operation_id,),
+                ).fetchall()
+                owner_liveness = {_attempt_owner_liveness(cast(str | None, row[0])) for row in live_owner}
+                if owner_liveness & {"live", "unknown"}:
+                    raise ValueError(
+                        f"operation {operation_id!r} attempt owner is not conclusively dead; "
+                        "cannot adjudicate a running operation"
+                    )
+            targets = conn.execute(
+                "SELECT ordinal, target_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
+                (operation_id,),
+            ).fetchall()
+            if len(targets) > 256:
+                raise ValueError("recovery adjudication exceeds the 256-target command budget")
+            expected = {str(target[1]) for target in targets}
+            if set(target_outcomes) != expected:
+                raise ValueError("recovery adjudication must name every durable target exactly once")
+            for ordinal, target_ref in targets:
+                outcome = target_outcomes[str(target_ref)]
+                if outcome not in {"applied", "not-applied", "unknown"}:
+                    raise ValueError("recovery adjudication outcomes must be applied, not-applied, or unknown")
+                state = {"applied": "applied", "not-applied": "failed", "unknown": "unknown"}[outcome]
+                conn.execute(
+                    "UPDATE operation_targets SET state = ?, completed_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND ordinal = ?",
+                    (state, now_ms if state != "unknown" else None, reason[:512], operation_id, int(ordinal)),
+                )
+            states = [
+                str(row[0])
+                for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
+            ]
+            run_state, terminal_reason = _run_state_for_targets(states)
+            if states and all(state == "applied" for state in states):
+                # An operator's applied decision is still recovery evidence.
+                # Keep the duplicate-effect barrier that an automatic
+                # confirmed-applied classification would have installed.
+                run_state, terminal_reason = "completed", "recovered_applied"
+            if "unknown" in states:
+                # An adjudicated unknown is still unknown: keep the run
+                # terminal-but-adjudicable rather than reopening it as
+                # interrupted, which a later startup would reclassify.
+                run_state, terminal_reason = "failed", "recovery_unknown"
+            conn.execute(
+                """
+                UPDATE operation_attempts SET state = ?, finished_at_ms = ?, unknown_reason = ?
+                WHERE operation_id = ? AND state IN ('running', 'unknown')
+                """,
+                ("unknown" if "unknown" in states else "reconciled", now_ms, reason[:512], operation_id),
+            )
+            conn.execute(
+                """
+                UPDATE operation_runs SET status = ?, terminal_reason = ?, updated_at_ms = ?,
+                    completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'interrupted') THEN ? ELSE completed_at_ms END,
+                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
+                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'applied'),
+                    failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
+                    unknown_reason = ? WHERE operation_id = ?
+                """,
+                (
+                    run_state,
+                    terminal_reason,
+                    now_ms,
+                    run_state,
+                    now_ms,
+                    operation_id,
+                    operation_id,
+                    operation_id,
+                    reason[:512],
+                    operation_id,
+                ),
+            )
+            self._append_event(
+                conn,
+                operation_id=operation_id,
+                event_type="recovery_adjudicated",
+                from_state=str(run[1]),
+                to_state=run_state,
+                actor_ref=adjudicator,
+                occurred_at_ms=now_ms,
+                detail={"reason": reason[:512], "targets": dict(target_outcomes)},
+            )
+
     @_continuity_mutation("recover_abandoned_attempts")
     def _recover_abandoned_attempts(self) -> tuple[str, ...]:
         """Mark only attempts whose recorded owner is no longer live as unknown."""
@@ -1230,96 +1740,28 @@ class AuditRepository:
                 )
         return operation_ids
 
-    @_continuity_mutation("reconcile_attempt")
-    def reconcile_attempt(
-        self,
-        operation_id: str,
-        *,
-        outcome: Literal["applied", "absent", "unknown"],
-        domain_receipt_ref: str | None = None,
-        reason: str | None = None,
-    ) -> None:
-        """Persist an explicit applied/absent/unknown reconciliation decision."""
-
-        now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
-        with self._connection() as conn:
-            self._begin(conn)
-            rows = conn.execute(
-                "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state = 'unknown' ORDER BY ordinal",
-                (operation_id,),
-            ).fetchall()
-            if not rows:
-                raise ValueError(f"operation {operation_id!r} has no unknown target to reconcile")
-            ordinal = int(rows[0][0])
-            target_state = "applied" if outcome == "applied" else "pending" if outcome == "absent" else "unknown"
-            conn.execute(
-                "UPDATE operation_attempts SET state = 'reconciled', finished_at_ms = ?, unknown_reason = ? WHERE operation_id = ? AND state = 'unknown'",
-                (now_ms, reason, operation_id),
-            )
-            conn.execute(
-                "UPDATE operation_targets SET state = ?, domain_receipt_ref = ?, domain_receipt_kind = ?, completed_at_ms = ? WHERE operation_id = ? AND state = 'unknown'",
-                (
-                    target_state,
-                    domain_receipt_ref,
-                    "domain" if domain_receipt_ref else None,
-                    now_ms if target_state == "applied" else None,
-                    operation_id,
-                ),
-            )
-            states = [
-                str(row[0])
-                for row in conn.execute("SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,))
-            ]
-            run_state, terminal_reason = _run_state_for_targets(states)
-            conn.execute(
-                """
-                UPDATE operation_runs
-                SET status = ?, terminal_reason = ?, updated_at_ms = ?,
-                    completed_at_ms = CASE WHEN ? IN ('completed', 'failed', 'interrupted') THEN ? ELSE completed_at_ms END,
-                    rejected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'rejected'),
-                    failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
-                    unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
-                    affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state IN ('applied', 'already_satisfied'))
-                WHERE operation_id = ?
-                """,
-                (
-                    run_state,
-                    terminal_reason,
-                    now_ms,
-                    run_state,
-                    now_ms,
-                    operation_id,
-                    operation_id,
-                    operation_id,
-                    operation_id,
-                    operation_id,
-                ),
-            )
-            self._append_event(
-                conn,
-                operation_id=operation_id,
-                target_ordinal=ordinal,
-                event_type=f"reconciliation_{outcome}",
-                from_state="unknown",
-                to_state=target_state,
-                occurred_at_ms=now_ms,
-                detail={"reason": (reason or "")[:512], "target_count": len(rows)},
-            )
-
     def get_operation(self, operation_id: str) -> dict[str, object] | None:
         with self._connection() as conn:
             row = conn.execute("SELECT * FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
             return dict(row) if row is not None else None
 
     def find_interrupted_operation(self, *, operation_name: str, parameter_digest: str) -> str | None:
-        """Return the one interrupted operation bound to an exact durable parameter digest."""
+        """Return one dead audit attempt bound to an exact recovery plan.
+
+        Matches both a freshly-dead ``interrupted`` run and one startup has
+        already terminalized as ``recovery_unknown`` -- the latter is still
+        adjudicable evidence, and a rerun of a committed raw recovery with
+        matching intent/postflight/receipt evidence must be able to adopt it
+        rather than staying wedged because startup got there first
+        (polylogue-39pdi).
+        """
 
         with self._connection() as conn:
             rows = conn.execute(
                 """
-                SELECT operation_id
-                FROM operation_runs
-                WHERE operation_name = ? AND parameter_digest = ? AND status = 'interrupted'
+                SELECT operation_id FROM operation_runs
+                WHERE operation_name = ? AND parameter_digest = ?
+                  AND (status = 'interrupted' OR (status = 'failed' AND terminal_reason = 'recovery_unknown'))
                 ORDER BY started_at_ms, operation_id
                 """,
                 (operation_name, parameter_digest),
@@ -1327,6 +1769,46 @@ class AuditRepository:
         if len(rows) > 1:
             raise RuntimeError("multiple interrupted operations share the same durable parameter digest")
         return None if not rows else str(rows[0][0])
+
+    def recovery_operation(self, operation_id: str) -> RecoveryOperation:
+        """Load one interrupted (or recovery-unknown) operation with its durable target evidence."""
+
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT operation_id, operation_name, operation_version, plan_hash, target_digest
+                FROM operation_runs
+                WHERE operation_id = ?
+                  AND (status = 'interrupted' OR (status = 'failed' AND terminal_reason = 'recovery_unknown'))
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"operation {operation_id!r} is not interrupted")
+            return self._recovery_operation(conn, row)
+
+    def list_targets(self, operation_id: str) -> tuple[dict[str, object], ...]:
+        """Return one operation's ordered target dispositions (ref + current state).
+
+        Used by ``operation-recovery`` status/inspection output (CLI and MCP)
+        so an operator can see exactly which targets exist and what state
+        each is in -- the information needed to construct a bounded
+        ``--target-outcome target_ref=applied|not-applied|unknown``
+        adjudication call without going to ``audit.db`` by hand
+        (polylogue-39pdi). Unlike ``recovery_operation``, this is not
+        restricted to ``interrupted``/``recovery_unknown`` runs: it is read-only
+        status, valid for any operation id that exists.
+        """
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT ordinal, target_ref, state, completed_at_ms, unknown_reason
+                FROM operation_targets WHERE operation_id = ? ORDER BY ordinal
+                """,
+                (operation_id,),
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
 
     def list_events(self, operation_id: str) -> tuple[dict[str, object], ...]:
         with self._connection() as conn:

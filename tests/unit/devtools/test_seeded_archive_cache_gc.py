@@ -4,18 +4,19 @@ import dataclasses
 import io
 import json
 import os
-import stat
 from pathlib import Path
 
 import pytest
 
 from devtools import seeded_archive_cache_gc as command
+from tests.infra import workload_artifacts
 from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     SeededArchiveReachabilityInventory,
     build_seeded_archive,
     c03_semantic_corpus_spec,
     current_seeded_archive_reachability,
+    gc_seeded_archive_artifacts,
 )
 
 
@@ -108,67 +109,6 @@ def test_route_preview_apply_and_repeat_apply_use_generated_keys(tmp_path: Path)
     assert current.root.exists()
 
 
-def test_route_explicitly_deletes_only_unreachable_aged_corrupt_artifacts(tmp_path: Path) -> None:
-    cache_root = tmp_path / "cache"
-    current = build_seeded_archive(cache_root=cache_root)
-    stale_specs = (dataclasses.replace(c03_semantic_corpus_spec(), seed=999),)
-    stale = build_seeded_archive(stale_specs, cache_root=cache_root)
-    for artifact in (current, stale):
-        manifest = artifact.root / "manifest.json"
-        artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
-        manifest.chmod(manifest.stat().st_mode | stat.S_IWUSR)
-        manifest.write_text("not-json", encoding="utf-8")
-        manifest.chmod(manifest.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        artifact.root.chmod(artifact.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-    _age_artifact(current.root)
-    _age_artifact(stale.root)
-
-    preview_output = io.StringIO()
-    assert (
-        command.main(
-            [
-                "--cache-root",
-                str(cache_root),
-                "--grace-period-s",
-                "1",
-                "--delete-corrupt",
-                "--json",
-            ],
-            stdout=preview_output,
-        )
-        == 0
-    )
-    preview = json.loads(preview_output.getvalue())
-    current_entry = next(entry for entry in preview["entries"] if entry["name"] == current.root.name)
-    stale_entry = next(entry for entry in preview["entries"] if entry["name"] == stale.root.name)
-    assert current_entry["disposition"] == ArtifactGcDisposition.CORRUPT.value
-    assert current_entry["detail"].startswith("reachable artifact is corrupt")
-    assert stale_entry["disposition"] == ArtifactGcDisposition.STALE.value
-    assert stale_entry["detail"].startswith("unreachable corrupt artifact")
-    assert current.root.exists() and stale.root.exists()
-
-    applied_output = io.StringIO()
-    assert (
-        command.main(
-            [
-                "--cache-root",
-                str(cache_root),
-                "--grace-period-s",
-                "1",
-                "--delete-corrupt",
-                "--apply",
-                "--json",
-            ],
-            stdout=applied_output,
-        )
-        == 0
-    )
-    applied = json.loads(applied_output.getvalue())
-    assert applied["delete_corrupt"] is True
-    assert current.root.exists()
-    assert not stale.root.exists()
-
-
 def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     import tomllib
 
@@ -180,4 +120,91 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     assert operation["exclusive_keys"] == ["polylogue:seeded-archive-cache-gc"]
     assert operation["timeout_seconds"] == 900
     assert operation["parameters"]["apply"]["flag"] == "--apply"
-    assert operation["parameters"]["delete_corrupt"]["flag"] == "--delete-corrupt"
+
+
+def test_declared_agentctl_operation_shares_its_exclusive_key_with_verification() -> None:
+    """Applied GC and a verify run that consumes the same cache must not overlap.
+
+    Anti-vacuity: dropping ``polylogue:seeded-archive-cache-gc`` from either
+    ``verify_affected`` or ``verify_all``'s exclusive_keys makes this fail.
+    """
+    import tomllib
+
+    descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
+    gc_key = "polylogue:seeded-archive-cache-gc"
+    assert gc_key in descriptor["operations"]["seeded_archive_cache_gc"]["exclusive_keys"]
+    assert gc_key in descriptor["operations"]["verify_affected"]["exclusive_keys"]
+    assert gc_key in descriptor["operations"]["verify_all"]["exclusive_keys"]
+
+
+def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:
+    """A NaN grace period must never bypass the age gate.
+
+    Anti-vacuity: removing the ``math.isfinite`` check (leaving only
+    ``grace_period_s < 0``) makes this pass ``nan`` straight through, since
+    every comparison against NaN is False, and this test would then fail.
+    """
+    cache_root = tmp_path / "cache"
+    current = build_seeded_archive(cache_root=cache_root)
+
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            gc_seeded_archive_artifacts(
+                cache_root=cache_root,
+                reachable_keys=(current.manifest.key,),
+                grace_period_s=bad,
+                dry_run=False,
+            )
+
+
+def test_route_returns_nonzero_when_deletion_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deletion failure must fail the operation, not silently succeed.
+
+    Anti-vacuity: reverting the CLI's ``return`` to unconditional ``0`` makes
+    this fail, since dispositions still contain ``deletion-failed`` but the
+    command would report success.
+    """
+    cache_root = tmp_path / "cache"
+    current = build_seeded_archive(cache_root=cache_root)
+    stale_specs = (dataclasses.replace(c03_semantic_corpus_spec(), seed=999),)
+    stale = build_seeded_archive(stale_specs, cache_root=cache_root)
+    _age_artifact(stale.root)
+
+    def _boom(path: Path, **kwargs: object) -> None:
+        raise OSError("simulated deletion failure")
+
+    monkeypatch.setattr(workload_artifacts, "_remove_tree", _boom)
+    output = io.StringIO()
+
+    exit_code = command.main(
+        ["--cache-root", str(cache_root), "--grace-period-s", "1", "--apply", "--json"],
+        stdout=output,
+    )
+
+    payload = json.loads(output.getvalue())
+    assert payload["dispositions"].get(ArtifactGcDisposition.DELETION_FAILED.value) == 1
+    assert exit_code == 1
+    assert stale.root.exists()
+    assert current.root.exists()
+
+
+def test_route_emits_json_error_payload_for_refusals_in_json_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--json`` refusals must stay parsable JSON, not a plain-text line.
+
+    Anti-vacuity: reverting to the unconditional ``print(f"refused: {exc}")``
+    makes ``json.loads`` on the output raise, and this test would fail.
+    """
+
+    def _explode() -> SeededArchiveReachabilityInventory:
+        raise RuntimeError("simulated inventory failure")
+
+    monkeypatch.setattr(command, "current_seeded_archive_reachability", _explode)
+    output = io.StringIO()
+
+    exit_code = command.main(["--cache-root", str(tmp_path), "--json"], stdout=output)
+
+    assert exit_code == 1
+    payload = json.loads(output.getvalue())
+    assert "simulated inventory failure" in payload["refused"]
