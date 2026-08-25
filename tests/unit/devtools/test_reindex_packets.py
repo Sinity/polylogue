@@ -297,6 +297,8 @@ def test_prep_operation_access_cannot_become_ordinary_by_wave_and_kind_edit() ->
 @pytest.mark.parametrize(
     "access",
     [
+        "explicit-operator-authorized-apply",
+        "explicit-operator-authorized--apply",
         " EXPLICIT-OPERATOR-AUTHORIZED-index-apply ",
         "explicit-operator-authorized-audit-apply",
         "explicit-operator-authorized-future-derived-tier-apply",
@@ -690,13 +692,15 @@ def test_enforcement_selects_phase_while_diagnostic_remains_nonfailing() -> None
 
 def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> None:
     calls: list[tuple[str, ...]] = []
+    call_options: list[dict[str, Any]] = []
 
     class Completed:
         def __init__(self, stdout: str) -> None:
             self.stdout = stdout
 
-    def run(command: list[str], **_: Any) -> Completed:
+    def run(command: list[str], **options: Any) -> Completed:
         calls.append(tuple(command))
+        call_options.append(options)
         if command[0] == "git":
             return Completed("0" * 40 + "\n")
         return Completed(
@@ -719,6 +723,8 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
         ("git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "--verify", "HEAD"),
         ("bd", "--readonly", "export", "--all"),
     ]
+    assert all(options["timeout"] == 5 for options in call_options)
+    assert all(options["env"]["GIT_OPTIONAL_LOCKS"] == "0" for options in call_options)
     assert json.loads(output.getvalue())["read_only"] is True
 
 

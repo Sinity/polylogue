@@ -62,7 +62,7 @@ PROHIBITED_OPERATION_POLICY_FIELDS = frozenset(
     {"plan_id", "plan_digest", "rehearsal_id", "authorization_id", "job_id", "phase_state"}
 )
 INTEGRATION_HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-PREP_OPERATION_ACCESS_PATTERN = re.compile(r"^explicit-operator-authorized-.+-apply$")
+PREP_OPERATION_ACCESS_PATTERN = re.compile(r"^explicit-operator-authorized-(?:.*-)?apply$")
 SUBPROCESS_TIMEOUT_SECONDS = 5
 
 
@@ -313,14 +313,17 @@ def _integration_head_argument(value: str) -> str:
 
 def _checkout_integration_head() -> str:
     repository_root = Path(__file__).resolve().parents[1]
-    result = subprocess.run(
-        ["git", "-C", str(repository_root), "rev-parse", "--verify", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "--verify", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ReindexPacketValidationError("unable to resolve exact checkout HEAD") from exc
     return _validated_integration_head_syntax(result.stdout.strip())
 
 
@@ -976,7 +979,10 @@ def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = Non
             operation_evidence=args.operation_evidence_json,
             selected_phase=args.phase,
         )
-    except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+    except ReindexPacketValidationError as exc:
+        print(f"reindex-packets: validation failed: {exc}", file=output)
+        return 2
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         print(f"reindex-packets: unable to read external Beads: {exc}", file=output)
         return 2
     if args.json:
