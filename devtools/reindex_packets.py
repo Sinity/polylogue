@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,7 +18,13 @@ ROOT_ID = "polylogue-reindex-2026"
 CAMPAIGN_ID = "reindex-2026"
 CORE = "execution_wave execution_lane lane_packet lane_order affected_paths conflict_keys write_scope verification_commands model_policy live_data_access decision_closure necessity_class judgment_class tdd_mode tdd_packet packet_intent integration_intent".split()  # noqa: SIM905
 LAUNCH = "packet_execution_contract deadline_policy".split()  # noqa: SIM905
-WAVES = {"reindex-prep-a": 1, "reindex-prep-b": 2, "reindex-prep-c": 3, "reindex-window": 4}
+WAVES = {
+    "reindex-prep-a": 1,
+    "reindex-prep-b": 2,
+    "reindex-prep-c": 3,
+    "reindex-window": 4,
+    "post-reindex": 5,
+}
 TASK_REVISION_PREFIX = "sha256:"
 TASK_REVISION_BOOKKEEPING_FIELDS = frozenset(
     {"created_at", "updated_at", "created_by", "comment_count", "dependency_count", "dependent_count"}
@@ -286,6 +293,38 @@ def _checkout_integration_head() -> str:
     return _integration_head_argument(result.stdout.strip())
 
 
+def _validate_integration_head(value: str) -> str:
+    """Require an existing commit reachable from this checkout's current HEAD."""
+    head = _integration_head_argument(value)
+    repository_root = Path(__file__).resolve().parents[1]
+    environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        resolved = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "--verify", f"{head}^{{commit}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=environment,
+        )
+        if resolved.stdout.strip() != head:
+            raise ValueError(f"integration head {head} does not name an actual commit in this checkout")
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"integration head {head} does not name an existing commit in this checkout") from exc
+    try:
+        subprocess.run(
+            ["git", "-C", str(repository_root), "merge-base", "--is-ancestor", head, "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=environment,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"integration head {head} is not an ancestor of this checkout HEAD") from exc
+    return head
+
+
 def _parse_phase_evidence(value: object, fields: frozenset[str], *, name: str) -> PhaseEvidence | None:
     if value is None:
         return None
@@ -338,8 +377,13 @@ def _execution_kind_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
         errors.append(f"{bead_id}: unknown execution_wave {wave!r}")
     if kind is not None and kind not in EXECUTION_KINDS:
         errors.append(f"{bead_id}: unknown execution_kind {kind!r}")
-    if wave in PREP_OPERATION_WAVES and access in PREP_OPERATION_ACCESS and kind != "authorized-prep-operation":
-        errors.append(f"{bead_id}: {wave}/{access} requires execution_kind authorized-prep-operation")
+    if access in PREP_OPERATION_ACCESS and kind != "authorized-prep-operation":
+        if wave in PREP_OPERATION_WAVES:
+            errors.append(f"{bead_id}: {wave}/{access} requires execution_kind authorized-prep-operation")
+        else:
+            errors.append(
+                f"{bead_id}: live_data_access {access} requires execution_kind authorized-prep-operation in a prep wave"
+            )
     if kind == "authorized-prep-operation":
         if wave not in PREP_OPERATION_WAVES:
             errors.append(f"{bead_id}: authorized prep operation requires a declared prep execution_wave")
@@ -554,7 +598,7 @@ def validate(
 ) -> dict[str, Any]:
     if selected_phase not in PHASES:
         raise ValueError(f"selected phase must be one of {sorted(PHASES)}")
-    effective_head = _integration_head_argument(integration_head or _checkout_integration_head())
+    effective_head = _validate_integration_head(integration_head or _checkout_integration_head())
     evidence_by_operation = dict(operation_evidence or {})
     beads = {bead["id"]: bead for bead in reader.read() if _is_task(bead)}
     if root_id not in beads:
@@ -679,7 +723,11 @@ def validate(
                             error = f"{bead_id}: packet blocker is in a later packet"
                             errors.append(error)
                             launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
-                        if WAVES.get(predecessor[0], 0) > WAVES.get(current[0], 0):
+                        if (
+                            predecessor[0] in WAVES
+                            and current[0] in WAVES
+                            and WAVES[predecessor[0]] > WAVES[current[0]]
+                        ):
                             error = f"{bead_id}: earlier wave blocks on later wave"
                             errors.append(error)
                             launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
@@ -703,29 +751,27 @@ def validate(
                     error = f"{bead_id}: non-leader carries {field}"
                     errors.append(error)
                     launch_failures.append(_failure("non-leader-launch-field", error, bead_id=bead_id, field=field))
-        ordinary_failures = [
-            *launch_failures,
-            *(_failure("blocks", "open", bead_id=bead_id) for bead_id in sorted(set(external_blockers))),
-        ]
         operation_members = [
             bead_id for bead_id in members if _value(beads[bead_id], "execution_kind") == "authorized-prep-operation"
         ]
+        operation_membership_failures: list[dict[str, str]] = []
         operation_member: Mapping[str, Any] | None = None
         if operation_members:
             if len(operation_members) != 1:
                 error = f"{'/'.join(group)}: operation packet has multiple authorized-prep-operation members"
                 errors.append(error)
-                launch_failures.append(_failure("operation-membership", error))
+                operation_membership_failures.append(_failure("operation-membership", "multiple-operation-membership"))
             elif len(members) != 1:
                 error = f"{'/'.join(group)}: operation packet mixes an authorized-prep-operation with ordinary members"
                 errors.append(error)
-                launch_failures.append(_failure("operation-membership", error))
-            elif operation_members[0] != leader:
-                error = f"{'/'.join(group)}: operation member must be packet leader"
-                errors.append(error)
-                launch_failures.append(_failure("operation-membership", error, bead_id=operation_members[0]))
+                operation_membership_failures.append(_failure("operation-membership", "mixed-operation-membership"))
             else:
                 operation_member = beads[operation_members[0]]
+        ordinary_failures = [
+            *launch_failures,
+            *operation_membership_failures,
+            *(_failure("blocks", "open", bead_id=bead_id) for bead_id in sorted(set(external_blockers))),
+        ]
         phases = ("initial", "apply") if operation_members else ("ordinary",)
         packet_context_digest = _packet_context_digest(group, members, beads, effective_head)
         launches = []

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from io import StringIO
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from devtools.reindex_packets import APPLY_AUTHORITY_MODE, ROOT_ID, _record, _task_revision, main, validate
+from devtools.reindex_packets import APPLY_AUTHORITY_MODE, ROOT_ID, WAVES, _record, _task_revision, main, validate
 
-HEAD = "0123456789abcdef0123456789abcdef01234567"
+HEAD = "9c57a99e8de29ee6d215e4508e8723060644e168"
 
 
 class FakeReader:
@@ -235,7 +236,6 @@ def test_candidate_and_final_window_authority_keep_their_existing_serialization_
         "a: candidate writer is not serialized"
         in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
     )
-
     beads = graph()
     for item in beads[2:]:
         item["metadata"]["execution_wave"] = "reindex-window"
@@ -246,6 +246,122 @@ def test_candidate_and_final_window_authority_keep_their_existing_serialization_
     assert any("requires operator-authorized live_data_access" in error for error in report["structural_errors"])
     assert any("requires a declared prep execution_wave" in error for error in report["structural_errors"])
     assert any("operator-authorized writer is not serialized" in error for error in report["structural_errors"])
+
+
+def test_prep_operation_access_cannot_become_ordinary_by_wave_and_kind_edit() -> None:
+    beads = graph()
+    for item in beads[2:]:
+        item["metadata"]["execution_wave"] = "reindex-window"
+    beads[2]["metadata"].update(
+        execution_kind="implementation",
+        live_data_access="explicit-operator-authorized-source-apply",
+        lane_mode="serialized-writer",
+    )
+    ordinary = launch(validate(FakeReader(beads), integration_head=HEAD), "ordinary")
+    assert ordinary["launch_failures"] == [
+        {
+            "kind": "execution-kind",
+            "reason": (
+                "a: live_data_access explicit-operator-authorized-source-apply requires "
+                "execution_kind authorized-prep-operation in a prep wave"
+            ),
+        }
+    ]
+    assert not ordinary["ready"]
+    assert ordinary["effective_authority"]["live_authority"] == ("explicit-operator-authorized-source-apply")
+
+
+@pytest.mark.parametrize(
+    ("membership", "structural_error", "reason"),
+    [
+        (
+            "mixed",
+            "operation packet mixes an authorized-prep-operation with ordinary members",
+            "mixed-operation-membership",
+        ),
+        (
+            "multiple",
+            "operation packet has multiple authorized-prep-operation members",
+            "multiple-operation-membership",
+        ),
+    ],
+)
+def test_invalid_operation_membership_is_in_each_launch_and_cli_diagnosis(
+    membership: str, structural_error: str, reason: str
+) -> None:
+    beads = graph()
+    if membership == "mixed":
+        beads[3]["metadata"] = operation_metadata(lane_order="2")
+        for field in ("packet_execution_contract", "deadline_policy"):
+            beads[3]["metadata"].pop(field)
+    else:
+        beads[2]["metadata"] = operation_metadata(packet_size_exception="authorized-operation-singleton")
+        beads[3]["metadata"] = operation_metadata(
+            lane_order="2", packet_size_exception="authorized-operation-singleton"
+        )
+        beads[4]["metadata"] = operation_metadata(
+            lane_order="3", packet_size_exception="authorized-operation-singleton"
+        )
+        for item in beads[3:]:
+            for field in ("packet_execution_contract", "deadline_policy"):
+                item["metadata"].pop(field)
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any(structural_error in error for error in report["structural_errors"])
+    expected_failure = {"kind": "operation-membership", "reason": reason}
+    initial = launch(report, "initial")
+    apply = launch(report, "apply")
+    assert initial["launch_failures"] == [expected_failure]
+    assert apply["launch_failures"][0] == expected_failure
+    assert not initial["ready"] and not apply["ready"]
+    assert initial["phase_token"] == f"{initial['version']}:initial:{initial['context_digest']}"
+    assert apply["phase_token"] == f"{apply['version']}:apply:{apply['context_digest']}"
+
+    output = StringIO()
+    assert main(["--diagnostic", "--integration-head", HEAD], reader=FakeReader(beads), stdout=output) == 0
+    assert f"NOT READY [initial] reindex-prep-a/lane/1: operation-membership:{reason}" in output.getvalue()
+    assert f"ERROR: reindex-prep-a/lane/1: {structural_error}" in output.getvalue()
+
+
+def test_integration_head_must_be_an_existing_commit_bound_to_this_checkout(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="does not name an existing commit"):
+        validate(FakeReader(graph()), integration_head="f" * 40)
+
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    (tmp_path / "foreign.txt").write_text("foreign\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "foreign.txt"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "--quiet", "-m", "foreign"], check=True)
+    foreign_head = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    with pytest.raises(ValueError, match="does not name an existing commit"):
+        validate(FakeReader(graph()), integration_head=foreign_head)
+
+
+def test_wave_order_accepts_post_reindex_only_after_live_window_and_unknown_is_not_earliest() -> None:
+    assert WAVES["post-reindex"] > WAVES["reindex-window"]
+    beads = graph()
+    for item in beads[2:]:
+        item["metadata"]["packet_size_exception"] = "bounded"
+    beads[2]["metadata"].update(execution_wave="reindex-window", lane_packet="1", lane_order="1")
+    beads[3]["metadata"].update(execution_wave="post-reindex", lane_packet="2", lane_order="1")
+    beads[4]["metadata"].update(execution_wave="post-reindex", lane_packet="2", lane_order="2")
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert not any("earlier wave blocks on later wave" in error for error in report["structural_errors"])
+
+    beads[2]["metadata"]["execution_wave"] = "post-reindex"
+    beads[3]["metadata"]["execution_wave"] = "reindex-window"
+    beads[4]["metadata"]["execution_wave"] = "reindex-window"
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any("earlier wave blocks on later wave" in error for error in report["structural_errors"])
+
+    beads[2]["metadata"]["execution_wave"] = "unknown-wave"
+    beads[3]["metadata"]["execution_wave"] = "post-reindex"
+    beads[4]["metadata"]["execution_wave"] = "post-reindex"
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any("unknown execution_wave" in error for error in report["structural_errors"])
+    assert not any("earlier wave blocks on later wave" in error for error in report["structural_errors"])
 
 
 def test_legacy_readiness_census_remains_diagnostic_only() -> None:
@@ -503,6 +619,23 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
     assert main(["--json"], stdout=output) == 0
     assert calls == [
         ("git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "--verify", "HEAD"),
+        (
+            "git",
+            "-C",
+            str(Path(__file__).resolve().parents[3]),
+            "rev-parse",
+            "--verify",
+            "0000000000000000000000000000000000000000^{commit}",
+        ),
+        (
+            "git",
+            "-C",
+            str(Path(__file__).resolve().parents[3]),
+            "merge-base",
+            "--is-ancestor",
+            "0000000000000000000000000000000000000000",
+            "HEAD",
+        ),
         ("bd", "--readonly", "export", "--all"),
     ]
     assert json.loads(output.getvalue())["read_only"] is True
