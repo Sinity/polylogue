@@ -481,18 +481,35 @@ def _blob_hash_text(value: object) -> str | None:
 
 
 def _legacy_source_hashes(conn: sqlite3.Connection) -> list[str]:
-    """Read old, non-current fixtures without claiming canonical authority."""
-    if not _table_exists(conn, "raw_sessions") or not _column_exists(conn, "raw_sessions", "blob_hash"):
-        return []
-    return sorted(
-        value.hex()
-        for (value,) in conn.execute("SELECT DISTINCT blob_hash FROM raw_sessions WHERE blob_hash IS NOT NULL")
-        if isinstance(value, bytes) and len(value) == 32
-    )
+    """Read every known historical source carrier conservatively.
+
+    Before the current descriptor/liveness schema existed, a backup still had
+    to preserve every blob named by the old durable tables.  We deliberately
+    retain stale ``blob_refs`` too: a historical snapshot lacks the modern
+    typed referent proof, and an extra copied blob is safer than inventing an
+    absence.  This is only available for an explicit numbered historical
+    schema; current production schemas remain fail-closed below.
+    """
+    hashes: set[str] = set()
+    for table in ("raw_sessions", "raw_hook_events", "history_sidecars", "blob_refs"):
+        if not _table_exists(conn, table) or not _column_exists(conn, table, "blob_hash"):
+            continue
+        try:
+            rows = conn.execute(f"SELECT DISTINCT blob_hash FROM {table} WHERE blob_hash IS NOT NULL")
+            hashes.update(value.hex() for (value,) in rows if isinstance(value, bytes) and len(value) == 32)
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"historical source blob carrier {table}.blob_hash is unreadable: {exc}") from exc
+    return sorted(hashes)
 
 
 def _current_source_schema(conn: sqlite3.Connection) -> bool:
-    return _table_exists(conn, "blob_publication_reservations")
+    # A present reservation table is not enough: source v4-v33 are supported
+    # historical schemas and predate portions of the modern liveness
+    # descriptor.  Their backup path is the conservative carrier projection
+    # above, while a malformed current v34 source remains a hard blocker.
+    from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+
+    return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0) >= SOURCE_SCHEMA_VERSION
 
 
 def project_source_blob_liveness(
@@ -510,9 +527,15 @@ def project_source_blob_liveness(
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
                 projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
-    if projection.blockers:
-        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
-    return projection
+        if projection.blockers:
+            if _current_source_schema(source_conn):
+                raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+            hashes = frozenset(_legacy_source_hashes(source_conn))
+            return BlobLivenessProjection(
+                hashes,
+                owner_hashes=(("source.db.historical_blob_carriers", hashes),),
+            )
+        return projection
 
 
 def _referenced_blob_hashes(

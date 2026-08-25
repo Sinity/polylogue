@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,7 @@ def _backdate(store: BlobStore, blob_hash: str) -> None:
 def _member_rows(source_db: Path) -> list[tuple[object, ...]]:
     with sqlite3.connect(source_db) as conn:
         return conn.execute(
-            "SELECT generation_id, hex(blob_hash), candidate_liveness, outcome "
-            "FROM gc_generation_members ORDER BY generation_id, blob_hash"
+            "SELECT generation_id, hex(blob_hash), outcome FROM gc_generation_members ORDER BY generation_id, blob_hash"
         ).fetchall()
 
 
@@ -67,9 +67,7 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
     assert report.deleted_count == 1
-    assert _member_rows(tmp_path / "source.db") == [
-        (report.generation_id, blob_hash.upper(), "unreferenced", "removed")
-    ]
+    assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "removed")]
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -104,7 +102,7 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
 
     pending = _member_rows(tmp_path / "source.db")
     assert len(pending) == 1
-    assert pending[0][1:] == (blob_hash.upper(), "unreferenced", "pending")
+    assert pending[0][1:] == (blob_hash.upper(), "pending")
     assert store.exists(blob_hash)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
@@ -146,10 +144,7 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
     monkeypatch.setattr(blob_gc, "_commit_gc_member_outcome", original_outcome)
     reconciled = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
     assert reconciled.deleted_count == 0
-    assert any(
-        row[1:] == (second_hash.upper(), "unreferenced", "reconciled_removed")
-        for row in _member_rows(tmp_path / "source.db")
-    )
+    assert any(row[1:] == (second_hash.upper(), "reconciled_removed") for row in _member_rows(tmp_path / "source.db"))
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -168,10 +163,9 @@ def test_gc_does_not_terminalize_a_generation_with_an_unknown_member(tmp_path: P
         )
         conn.execute(
             "INSERT INTO gc_generation_members "
-            "(generation_id, blob_hash, candidate_liveness, candidate_mtime_ns, candidate_size_bytes, source_schema_version, "
-            "index_schema_version, index_generation, archive_identity_digest, code_identity, intent_committed_at_ms, outcome) "
-            "VALUES ('pending-generation', ?, 'unreferenced', 1, 1, 1, 1, 'index', ?, 'test', 1, 'pending')",
-            (b"p" * 32, "0" * 64),
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES ('pending-generation', ?, 1, 1, 'pending')",
+            (b"p" * 32,),
         )
         conn.commit()
 
@@ -183,6 +177,188 @@ def test_gc_does_not_terminalize_a_generation_with_an_unknown_member(tmp_path: P
         assert conn.execute(
             "SELECT completed_at_ms FROM gc_generations WHERE generation_id = 'pending-generation'"
         ).fetchone() == (None,)
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_finalizer_refuses_terminal_summary_while_a_member_outcome_is_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production execution reaches finalization but cannot skip a pending guard.
+
+    Anti-vacuity twin: deleting the pending-member predicate in
+    ``_finalize_gc_generation`` makes this generation terminal even though the
+    patched outcome writer deliberately leaves one exact member unexplained.
+    """
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    first_hash, _ = store.write_from_bytes(b"first finalization guard")
+    second_hash, _ = store.write_from_bytes(b"second finalization guard")
+    _backdate(store, first_hash)
+    _backdate(store, second_hash)
+    original_outcome = blob_gc._commit_gc_member_outcome
+
+    def leave_second_pending(
+        source_conn: sqlite3.Connection,
+        *,
+        generation_id: str,
+        blob_hash: str,
+        outcome: str,
+        detail: str | None = None,
+    ) -> None:
+        if blob_hash == second_hash:
+            return
+        original_outcome(
+            source_conn,
+            generation_id=generation_id,
+            blob_hash=blob_hash,
+            outcome=outcome,
+            detail=detail,
+        )
+
+    monkeypatch.setattr(blob_gc, "_commit_gc_member_outcome", leave_second_pending)
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
+
+    assert report.generation_completed is False
+    assert report.generation_id is not None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (report.generation_id,)
+        ).fetchone() == (None,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM gc_generation_members WHERE generation_id = ? AND outcome = 'pending'",
+            (report.generation_id,),
+        ).fetchone() == (1,)
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_pending_member_blocks_on_unreadable_shard_not_object_absence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A required shard failure leaves durable intent pending and names its blocker."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"unreadable shard")
+    _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+
+    def crash_after_intent(*args: object, **kwargs: object) -> tuple[BlobLiveness, BlobLiveness]:
+        raise RuntimeError("leave exact intent pending")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with pytest.raises(RuntimeError, match="leave exact intent pending"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+
+    original_scandir = os.scandir
+
+    def deny_required_shard(path: str | os.PathLike[str]) -> Iterator[os.DirEntry[str]]:
+        if Path(path) == store.root / blob_hash[:2]:
+            raise PermissionError("simulated unreadable shard")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", deny_required_shard)
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert report.blocked_reason is not None
+    assert "blob namespace shard" in report.blocked_reason
+    assert _member_rows(tmp_path / "source.db") == [(report.generation_id, blob_hash.upper(), "pending")]
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_direct_unlink_resumes_pending_generation_before_planning_new_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Raw-retention's direct entry point shares recurring GC's pending gate."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    pending_hash, _ = store.write_from_bytes(b"pending direct gate")
+    _backdate(store, pending_hash)
+    original_final = blob_gc._final_gc_member_liveness
+
+    def crash_after_intent(*args: object, **kwargs: object) -> tuple[BlobLiveness, BlobLiveness]:
+        raise RuntimeError("pending direct gate")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with pytest.raises(RuntimeError, match="pending direct gate"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+    next_hash, _ = store.write_from_bytes(b"next direct gate")
+    _backdate(store, next_hash)
+
+    deleted, _bytes, errors = blob_gc.unlink_unreferenced_blob_hashes_under_exclusion(
+        tmp_path / "source.db", tmp_path / "index.db", store.root, {next_hash}
+    )
+
+    assert (deleted, errors) == (1, ())
+    assert not store.exists(pending_hash)
+    assert store.exists(next_hash)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone() == (1,)
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_empty_intent_is_terminal_in_its_commit_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-member plan cannot wedge restart recovery between intent and finalization."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, size = store.write_from_bytes(b"referenced means empty plan")
+    _backdate(store, blob_hash)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES ('empty-plan-ref', 'codex-session', '/fixture', ?, ?, 1)",
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("empty intent must already be terminal")
+
+    monkeypatch.setattr(blob_gc, "_finalize_gc_generation", fail_if_called)
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert report.generation_written is True
+    assert report.generation_completed is True
+    restarted = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    assert restarted.blocked_reason is None
+    assert restarted.generation_written is True
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+def test_report_counts_this_resume_while_generation_counts_all_durable_outcomes(tmp_path: Path) -> None:
+    """A restart cannot present a generation total as this invocation's deletion count."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    pending_hash, pending_size = store.write_from_bytes(b"pending report counter")
+    _backdate(store, pending_hash)
+    generation_id = "mixed-outcome-generation"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES (?, 1, NULL, 0, 0)",
+            (generation_id,),
+        )
+        conn.execute(
+            "INSERT INTO gc_generation_members "
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome, outcome_at_ms) "
+            "VALUES (?, ?, 7, 1, 'removed', 1)",
+            (generation_id, b"r" * 32),
+        )
+        conn.execute(
+            "INSERT INTO gc_generation_members "
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES (?, ?, ?, 1, 'pending')",
+            (generation_id, bytes.fromhex(pending_hash), pending_size),
+        )
+        conn.commit()
+
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert report.deleted_count == 1
+    assert report.reclaimed_bytes == pending_size
+    assert report.generation_completed is True
+    assert report.generation_reclaimed_count == 2
+    assert report.generation_reclaimed_bytes == pending_size + 7
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -217,7 +393,7 @@ def test_intent_commit_failure_and_absent_without_intent_never_become_success(
 def test_partial_generation_restarts_only_its_exact_pending_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A partial batch keeps its denominator and does not allocate a new plan."""
+    """A partial batch keeps its denominator and resumes exact pending members."""
     initialize_active_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     first_hash, _ = store.write_from_bytes(b"partial first")
@@ -247,8 +423,8 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
 
     rows = _member_rows(tmp_path / "source.db")
     assert {row[1:] for row in rows} == {
-        (first_hash.upper(), "unreferenced", "removed"),
-        (second_hash.upper(), "unreferenced", "pending"),
+        (first_hash.upper(), "pending"),
+        (second_hash.upper(), "pending"),
     }
     generation_id = rows[0][0]
     assert not store.exists(first_hash)
@@ -263,7 +439,7 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
             conn.execute(
                 "SELECT completed_at_ms, reclaimed_count FROM gc_generations WHERE generation_id = ?", (generation_id,)
             ).fetchone()[1]
-            == 2
+            == 1
         )
 
 
@@ -306,7 +482,7 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
 
     assert report.deleted_count == 0
     assert store.exists(blob_hash)
-    assert _member_rows(tmp_path / "source.db")[0][3] == "skipped_still_live"
+    assert _member_rows(tmp_path / "source.db")[0][2] == "skipped_still_live"
 
 
 def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path) -> None:
@@ -327,6 +503,15 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
         assert conn.execute("PRAGMA user_version").fetchone() == (34,)
         assert conn.execute("SELECT generation_id FROM gc_generations").fetchone() == ("before-v34",)
         assert conn.execute("SELECT COUNT(*) FROM gc_generation_members").fetchone() == (0,)
+        assert [row[1] for row in conn.execute("PRAGMA table_info(gc_generation_members)")] == [
+            "generation_id",
+            "blob_hash",
+            "candidate_size_bytes",
+            "intent_committed_at_ms",
+            "outcome",
+            "outcome_at_ms",
+            "outcome_detail",
+        ]
 
 
 def test_gc_refuses_a_missing_source_tier_before_planning(tmp_path: Path) -> None:

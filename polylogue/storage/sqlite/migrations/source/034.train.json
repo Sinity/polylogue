@@ -12,7 +12,7 @@
     "slot": 34,
     "path": "034_gc_generation_member_intent.sql",
     "owner_ref": "polylogue-piyqz",
-    "sql_sha256": "24dcf24ea896a4760528d63d21c75365d53d1693ed26a29ddbbceb347e3c50b8",
+    "sql_sha256": "5677335764d54267bfcd77b61c187697c7500d2b4dc2370ded8a0d7ea1759d4e",
     "requires_backup": false
   },
   "riders": [
@@ -61,5 +61,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "548a718abea69fdc55339b46115141aea293251d508dfc2a5d3a1ab152bc32e8"
+  "manifest_sha256": "87bd78ec63708afbb8267df665a15e0c9dbe70be2949a18c27a2f7efa98b0beb"
 }

@@ -140,6 +140,7 @@ def test_final_gc_stage_build_is_constant_for_10k_candidates_and_large_ledger(
 
     source_db = tmp_path / "source.db"
     conn = _make_source_db(source_db)
+    (tmp_path / "blobs").mkdir()
     candidates = {f"{index:064x}" for index in range(10_000)}
     conn.executemany(
         """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
@@ -177,6 +178,50 @@ def test_final_gc_stage_build_is_constant_for_10k_candidates_and_large_ledger(
     # The initial absent-stage check and post-build attestation are the only
     # full readiness passes. A per-hash anti-join validation is 10,002 here.
     assert readiness_checks == 2
+
+
+def test_final_gc_synthetic_batch_uses_one_writer_connection_and_one_final_match_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measure the selected bounded-batch design against the old per-member shape.
+
+    The synthetic store is local to this test.  The selected design has one
+    final writer connection/stage for 32 candidates; the retired per-member
+    transaction design would make both counts 32.  This count-based
+    measurement is stable where a wall-clock threshold would not be.
+    """
+    import polylogue.storage.hook_payload_ref_reconciliation as reconciliation
+    from polylogue.storage import blob_gc
+
+    source_db = tmp_path / "source.db"
+    _make_source_db(source_db).close()
+    store = BlobStore(tmp_path / "blobs")
+    hashes = {store.write_from_bytes(f"synthetic gc {number}".encode())[0] for number in range(32)}
+    final_connection_ids: set[int] = set()
+    final_stage_builds = 0
+    original_final = blob_gc._final_gc_member_liveness
+    original_stage_build = reconciliation._build_match_stage
+
+    def observe_final(source_conn, *args, **kwargs):  # type: ignore[no-untyped-def]
+        final_connection_ids.add(id(source_conn))
+        return original_final(source_conn, *args, **kwargs)
+
+    def observe_stage(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal final_stage_builds
+        final_stage_builds += 1
+        return original_stage_build(*args, **kwargs)
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", observe_final)
+    monkeypatch.setattr(reconciliation, "_build_match_stage", observe_stage)
+    deleted, _bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(
+        source_db, source_db.with_name("index.db"), store.root, hashes
+    )
+
+    assert (deleted, errors) == (32, ())
+    assert len(final_connection_ids) == 1
+    # One matcher stage is needed for non-destructive planning and one for the
+    # final writer batch; neither grows with the member count.
+    assert final_stage_builds == 2
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +264,9 @@ def test_candidate_blobs_respects_older_than(tmp_path: Path) -> None:
 
 
 def test_candidate_blobs_empty_dir(tmp_path: Path) -> None:
-    """Empty blob directory returns empty list."""
-    candidates = _candidate_blobs(tmp_path / "nonexistent", older_than=0)
-    assert candidates == []
+    """A missing root is a namespace blocker, not an empty candidate census."""
+    with pytest.raises(RuntimeError, match="blob namespace"):
+        _candidate_blobs(tmp_path / "nonexistent", older_than=0)
 
 
 def test_candidate_blobs_skips_dotfiles(tmp_path: Path) -> None:

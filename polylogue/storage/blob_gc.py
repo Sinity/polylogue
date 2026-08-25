@@ -68,7 +68,6 @@ from polylogue.storage.blob_liveness import (
 from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
-from polylogue.version import VERSION_INFO
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,6 @@ class GCRunEvidence:
     """
 
     inspected: int = 0
-    deleted: int = 0
     skipped_referenced: int = 0
     skipped_reserved: int = 0
     skipped_missing: int = 0
@@ -110,6 +108,13 @@ class BlobGCResult:
     skipped_reserved: int = 0
     skipped_missing: int = 0
     skipped_unlink_error: int = 0
+    # These are deliberately distinct from ``deleted_count`` and
+    # ``reclaimed_bytes``, which describe this invocation only.  The durable
+    # generation counters are derived from every terminal member outcome and
+    # therefore include work completed before a crash/restart.
+    generation_reclaimed_count: int = 0
+    generation_reclaimed_bytes: int = 0
+    generation_completed: bool = False
     generation_id: str | None = None
     generation_written: bool = False
     older_than_s: float = 0.0
@@ -130,6 +135,9 @@ class BlobGCResult:
             "skipped_reserved": self.skipped_reserved,
             "skipped_missing": self.skipped_missing,
             "skipped_unlink_error": self.skipped_unlink_error,
+            "generation_reclaimed_count": self.generation_reclaimed_count,
+            "generation_reclaimed_bytes": self.generation_reclaimed_bytes,
+            "generation_completed": self.generation_completed,
             "generation_id": self.generation_id,
             "generation_written": self.generation_written,
             "older_than_s": self.older_than_s,
@@ -198,6 +206,53 @@ def _reference_tier_blockers(tier_paths: dict[str, Path]) -> tuple[str, ...]:
     return tuple(blockers)
 
 
+class _BlobNamespaceUnavailableError(RuntimeError):
+    """The blob namespace cannot prove that an object is absent."""
+
+
+def _namespace_error(blob_root: Path, exc: OSError) -> _BlobNamespaceUnavailableError:
+    return _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} is unavailable or unreadable: {exc}")
+
+
+def _read_blob_object(blob_root: Path, blob_hash: str) -> tuple[int | None, tuple[str, ...]]:
+    """Read one object only after establishing its containing namespace.
+
+    ``None, ()`` means an object is absent from a readable namespace.  That is
+    the only shape a pending exact intent may reconcile as already removed.
+    A missing root, a non-directory root, or an unreadable shard is a blocker
+    because it does not identify the namespace that the old plan observed.
+    """
+    try:
+        with os.scandir(blob_root) as entries:
+            shard_entry = next((entry for entry in entries if entry.name == blob_hash[:2]), None)
+    except OSError as exc:
+        return None, (str(_namespace_error(blob_root, exc)),)
+    if shard_entry is None:
+        return None, ()
+    if not shard_entry.is_dir(follow_symlinks=False):
+        return None, (f"blob namespace shard {shard_entry.path} is not a readable directory",)
+    try:
+        with os.scandir(shard_entry.path):
+            pass
+    except OSError as exc:
+        return None, (f"blob namespace shard {shard_entry.path} is unavailable or unreadable: {exc}",)
+    try:
+        return _sharded_blob_path(blob_root, blob_hash).stat().st_size, ()
+    except FileNotFoundError:
+        return None, ()
+    except OSError as exc:
+        return None, (f"blob object {blob_hash} could not be inspected in its readable namespace: {exc}",)
+
+
+def _assert_blob_namespace_readable(blob_root: Path) -> None:
+    """Require that the root namespace itself can be enumerated."""
+    try:
+        with os.scandir(blob_root):
+            pass
+    except OSError as exc:
+        raise _namespace_error(blob_root, exc) from exc
+
+
 def _candidate_blobs(
     blob_dir: Path,
     *,
@@ -209,9 +264,6 @@ def _candidate_blobs(
     Walks all prefix subdirectories (00–ff) to find actual blob files.
     Returns list of ``(blob_hash, mtime)`` tuples sorted by mtime ascending.
     """
-    if not blob_dir.is_dir():
-        return []
-
     candidates: list[tuple[str, float]] = []
     now = time.time()
     try:
@@ -229,12 +281,10 @@ def _candidate_blobs(
                     ):
                         blob_hash = prefix_dir.name + entry.name
                         candidates.append((blob_hash, entry.stat().st_mtime))
-            except PermissionError:
-                logger.warning("Permission denied scanning blob prefix: %s", prefix_dir.path)
-                continue
-    except PermissionError:
-        logger.warning("Permission denied scanning blob directory: %s", blob_dir)
-        return []
+            except OSError as exc:
+                raise _namespace_error(Path(prefix_dir.path), exc) from exc
+    except OSError as exc:
+        raise _namespace_error(blob_dir, exc) from exc
 
     candidates.sort(key=lambda pair: pair[1])
     return candidates
@@ -255,34 +305,14 @@ class _GCMemberIntent:
     """One exact, already-planned filesystem deletion candidate."""
 
     blob_hash: str
-    mtime_ns: int
+    # This is the durable denominator for the generation's reclaimed-byte
+    # summary.  It is not a freshness binding: hash-path identity and the
+    # locked liveness/reservation recheck decide whether unlink may proceed.
     size_bytes: int
 
 
 def _gc_member_table_available(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "gc_generation_members")
-
-
-def _gc_identity_snapshot(
-    source_conn: sqlite3.Connection,
-    index_conn: sqlite3.Connection,
-    *,
-    archive_root: Path,
-) -> tuple[int, int, str, str, str]:
-    """Return the current canonical identities GC can actually observe.
-
-    Source has no independent generation token.  Its schema version and the
-    archive identity digest bind it to its durable file.  Index exposes both
-    its schema version and the active archive generation identity.  The build
-    version is the only code identity available at this substrate layer.
-    """
-    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
-
-    source_version = int(source_conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-    index_version = int(index_conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-    identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(archive_root))
-    code_identity = f"{VERSION_INFO.version}:{VERSION_INFO.commit or 'unknown'}"
-    return source_version, index_version, identity.active_generation, identity.authority_identity_digest, code_identity
 
 
 def _commit_gc_generation_intent(
@@ -291,10 +321,8 @@ def _commit_gc_generation_intent(
     generation_id: str,
     started_at_ms: int,
     members: tuple[_GCMemberIntent, ...],
-    identity: tuple[int, int, str, str, str],
 ) -> None:
     """Commit a generation and all exact member intents before any unlink."""
-    source_schema_version, index_schema_version, index_generation, archive_digest, code_identity = identity
     with sqlite3.connect(control_db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not _gc_member_table_available(conn):
@@ -302,26 +330,21 @@ def _commit_gc_generation_intent(
         conn.execute(
             "INSERT INTO gc_generations "
             "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES (?, ?, NULL, 0, 0)",
-            (generation_id, started_at_ms),
+            "VALUES (?, ?, ?, 0, 0)",
+            # An empty plan has no physical operation to recover.  Make it a
+            # terminal, zero-summary generation in this same durable intent
+            # transaction so a crash cannot turn it into a legacy unknown.
+            (generation_id, started_at_ms, started_at_ms if not members else None),
         )
         conn.executemany(
             "INSERT INTO gc_generation_members "
-            "(generation_id, blob_hash, candidate_liveness, candidate_mtime_ns, candidate_size_bytes, "
-            "source_schema_version, index_schema_version, index_generation, archive_identity_digest, "
-            "code_identity, intent_committed_at_ms, outcome) "
-            "VALUES (?, ?, 'unreferenced', ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+            "(generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES (?, ?, ?, ?, 'pending')",
             (
                 (
                     generation_id,
                     bytes.fromhex(member.blob_hash),
-                    member.mtime_ns,
                     member.size_bytes,
-                    source_schema_version,
-                    index_schema_version,
-                    index_generation,
-                    archive_digest,
-                    code_identity,
                     started_at_ms,
                 )
                 for member in members
@@ -338,7 +361,13 @@ def _commit_gc_member_outcome(
     outcome: str,
     detail: str | None = None,
 ) -> None:
-    """Commit one post-recheck member result after its filesystem action."""
+    """Stage one post-recheck result under the generation's writer lock.
+
+    The enclosing bounded batch commits these rows once all fresh liveness
+    rechecks and unlinks are complete.  A crash before that commit leaves the
+    pre-existing exact intents pending; a restart then distinguishes a
+    readable object absence from namespace loss.
+    """
     cursor = source_conn.execute(
         "UPDATE gc_generation_members SET outcome = ?, outcome_at_ms = ?, outcome_detail = ? "
         "WHERE generation_id = ? AND blob_hash = ? AND outcome = 'pending'",
@@ -346,7 +375,6 @@ def _commit_gc_member_outcome(
     )
     if cursor.rowcount != 1:
         raise RuntimeError("blob GC member outcome lost its exact pending intent")
-    source_conn.commit()
 
 
 def _finalize_gc_generation(control_db_path: Path, generation_id: str) -> bool:
@@ -395,11 +423,6 @@ def _pending_gc_generation(control_db_path: Path) -> tuple[str | None, str | Non
         if len(rows) != 1:
             return None, "multiple incomplete blob GC generations require operator investigation"
         generation_id = str(rows[0][0])
-        member_count = conn.execute(
-            "SELECT COUNT(*) FROM gc_generation_members WHERE generation_id = ?", (generation_id,)
-        ).fetchone()[0]
-        if member_count == 0:
-            return None, "incomplete legacy blob GC generation has no exact member intent"
         return generation_id, None
 
 
@@ -423,6 +446,50 @@ def _final_gc_member_liveness(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _GCProtection:
+    """The one typed liveness/reservation decision consumed by GC paths."""
+
+    liveness: BlobLiveness
+    reservation: BlobLiveness
+
+    @property
+    def blockers(self) -> tuple[str, ...]:
+        return self.liveness.blockers + self.reservation.blockers
+
+    @property
+    def is_live(self) -> bool:
+        return self.liveness.state is LivenessState.LIVE or self.reservation.state is LivenessState.LIVE
+
+
+def _inspect_gc_protection(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection | None,
+    blob_hash: str,
+    *,
+    legacy_hook_stage: HookPayloadRefMatchStage,
+    final_recheck: bool,
+) -> _GCProtection:
+    """Project canonical liveness and reservation from one caller-owned lock state."""
+    if final_recheck:
+        liveness, reservation = _final_gc_member_liveness(
+            source_conn,
+            index_conn,
+            blob_hash,
+            legacy_hook_stage=legacy_hook_stage,
+        )
+    else:
+        liveness = inspect_blob_liveness(
+            source_conn,
+            blob_hash,
+            index_conn=index_conn,
+            require_index=True,
+            legacy_hook_stage=legacy_hook_stage,
+        )
+        reservation = inspect_blob_reservation(source_conn, blob_hash)
+    return _GCProtection(liveness, reservation)
+
+
 def _execute_gc_generation_members(
     *,
     control_db_path: Path,
@@ -432,12 +499,13 @@ def _execute_gc_generation_members(
     report: BlobGCResult,
     evidence: GCRunEvidence,
 ) -> tuple[int, int]:
-    """Run pending members with locked rechecks and per-member outcomes.
+    """Run a bounded pending batch under one source/index writer window.
 
-    Each member gets a fresh source transaction.  That keeps the exact
-    ordering durable intent -> final locked liveness -> unlink -> durable
-    outcome, while a crash after an unlink leaves the committed intent pending
-    for restart reconciliation rather than inventing a successful deletion.
+    Intent is committed before this function starts.  Outcomes are staged only
+    after every locked recheck/unlink has completed, which keeps the legacy
+    liveness matcher current without rebuilding it after bookkeeping writes.
+    A crash before the single outcome commit leaves exact pending intents for
+    idempotent restart reconciliation.
     """
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as history:
         members = [
@@ -450,110 +518,148 @@ def _execute_gc_generation_members(
         ]
     deleted_now = 0
     reclaimed_bytes_now = 0
-    for blob_hash in members:
-        source_conn = sqlite3.connect(control_db_path)
-        index_conn: sqlite3.Connection | None = None
+    staged_outcomes: list[tuple[str, str, str | None]] = []
+    source_conn = sqlite3.connect(control_db_path)
+    index_conn: sqlite3.Connection | None = None
+    try:
+        source_conn.execute("BEGIN IMMEDIATE")
+        if control_db_path != sibling_index_db:
+            index_conn = sqlite3.connect(sibling_index_db)
+            index_conn.execute("BEGIN IMMEDIATE")
+        recheck_index = index_conn or (source_conn if control_db_path == sibling_index_db else None)
+        preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
+        if preflight.state is LivenessState.BLOCKED:
+            report.blocked_reason = "; ".join(preflight.blockers)
+            return deleted_now, reclaimed_bytes_now
         try:
-            source_conn.execute("BEGIN IMMEDIATE")
-            if control_db_path != sibling_index_db:
-                index_conn = sqlite3.connect(sibling_index_db)
-                index_conn.execute("BEGIN IMMEDIATE")
-            recheck_index = index_conn or (source_conn if control_db_path == sibling_index_db else None)
-            preflight = inspect_blob_liveness(source_conn, "", index_conn=recheck_index, require_index=True)
-            if preflight.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(preflight.blockers)
-                return deleted_now, reclaimed_bytes_now
-            try:
-                legacy_hook_stage = prepare_match_stage(source_conn)
-            except Exception as exc:
-                report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
-                return deleted_now, reclaimed_bytes_now
-            decision, reservation = _final_gc_member_liveness(
+            legacy_hook_stage = prepare_match_stage(source_conn)
+        except Exception as exc:
+            report.blocked_reason = f"legacy hook rekey matcher failed: {exc}"
+            return deleted_now, reclaimed_bytes_now
+        for blob_hash in members:
+            protection = _inspect_gc_protection(
                 source_conn,
                 recheck_index,
                 blob_hash,
                 legacy_hook_stage=legacy_hook_stage,
+                final_recheck=True,
             )
-            if decision.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(decision.blockers)
+            if protection.blockers:
+                report.blocked_reason = "; ".join(protection.blockers)
                 return deleted_now, reclaimed_bytes_now
-            if reservation.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(reservation.blockers)
-                return deleted_now, reclaimed_bytes_now
-            if decision.state is LivenessState.LIVE or reservation.state is LivenessState.LIVE:
-                _commit_gc_member_outcome(
-                    source_conn,
-                    generation_id=generation_id,
-                    blob_hash=blob_hash,
-                    outcome="skipped_still_live",
-                    detail="canonical liveness or publication reservation became live",
+            if protection.is_live:
+                staged_outcomes.append(
+                    (blob_hash, "skipped_still_live", "canonical liveness or publication reservation became live")
                 )
-                evidence.skipped_referenced += decision.state is LivenessState.LIVE
-                evidence.skipped_reserved += reservation.state is LivenessState.LIVE
+                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
+                continue
+            freed_bytes, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+            if namespace_blockers:
+                report.blocked_reason = "; ".join(namespace_blockers)
+                return deleted_now, reclaimed_bytes_now
+            if freed_bytes is None:
+                # The root and (where present) shard were freshly readable, so
+                # this is a per-object absence rather than namespace loss.
+                staged_outcomes.append((blob_hash, "reconciled_removed", "blob absent in readable namespace"))
+                evidence.skipped_missing += 1
                 continue
             target = _sharded_blob_path(blob_root, blob_hash)
             try:
-                freed_bytes = target.stat().st_size
-            except FileNotFoundError:
-                # Only an already-pending exact member can attribute absence.
-                _commit_gc_member_outcome(
-                    source_conn,
-                    generation_id=generation_id,
-                    blob_hash=blob_hash,
-                    outcome="reconciled_removed",
-                    detail="blob absent during fresh final liveness recheck",
-                )
-                evidence.skipped_missing += 1
-                continue
-            except OSError:
-                freed_bytes = 0
-            try:
                 target.unlink()
             except FileNotFoundError:
-                _commit_gc_member_outcome(
-                    source_conn,
-                    generation_id=generation_id,
-                    blob_hash=blob_hash,
-                    outcome="reconciled_removed",
-                    detail="blob disappeared after final liveness recheck",
-                )
+                # Re-establish the namespace before attributing a race as a
+                # legitimate object-only disappearance.
+                replacement_size, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+                if namespace_blockers:
+                    report.blocked_reason = "; ".join(namespace_blockers)
+                    return deleted_now, reclaimed_bytes_now
+                if replacement_size is not None:
+                    staged_outcomes.append((blob_hash, "failed", "blob changed during final unlink"))
+                    evidence.skipped_unlink_error += 1
+                    continue
+                staged_outcomes.append((blob_hash, "reconciled_removed", "blob disappeared in readable namespace"))
                 evidence.skipped_missing += 1
                 continue
             except OSError as exc:
-                _commit_gc_member_outcome(
-                    source_conn,
-                    generation_id=generation_id,
-                    blob_hash=blob_hash,
-                    outcome="failed",
-                    detail=str(exc),
-                )
+                staged_outcomes.append((blob_hash, "failed", str(exc)))
                 evidence.skipped_unlink_error += 1
                 continue
-            # The next call commits an outcome in the same transaction that
-            # held every liveness writer lock across the unlink.  If it fails,
-            # rollback leaves this exact intent pending for a restart to
-            # reconcile the now-absent file.
+            staged_outcomes.append((blob_hash, "removed", None))
+            deleted_now += 1
+            reclaimed_bytes_now += freed_bytes
+        for blob_hash, outcome, detail in staged_outcomes:
             _commit_gc_member_outcome(
                 source_conn,
                 generation_id=generation_id,
                 blob_hash=blob_hash,
-                outcome="removed",
+                outcome=outcome,
+                detail=detail,
             )
-            deleted_now += 1
-            reclaimed_bytes_now += freed_bytes
-            evidence.deleted += 1
-        except Exception:
-            if source_conn.in_transaction:
-                source_conn.rollback()
-            raise
-        finally:
-            if index_conn is not None:
-                if index_conn.in_transaction:
-                    index_conn.rollback()
-                index_conn.close()
-            source_conn.close()
+        source_conn.commit()
+    except Exception:
+        if source_conn.in_transaction:
+            source_conn.rollback()
+        raise
+    finally:
+        if index_conn is not None:
+            if index_conn.in_transaction:
+                index_conn.rollback()
+            index_conn.close()
+        source_conn.close()
     _finalize_gc_generation(control_db_path, generation_id)
     return deleted_now, reclaimed_bytes_now
+
+
+def _populate_generation_summary(report: BlobGCResult, control_db_path: Path, generation_id: str) -> None:
+    """Attach durable, all-attempt counters without relabeling run counters."""
+    with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
+        row = conn.execute(
+            "SELECT completed_at_ms, reclaimed_count, reclaimed_bytes FROM gc_generations WHERE generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("blob GC generation disappeared before report summary")
+    report.generation_completed = row[0] is not None
+    report.generation_reclaimed_count = int(row[1])
+    report.generation_reclaimed_bytes = int(row[2])
+
+
+def _resume_pending_gc_generation(
+    *,
+    control_db_path: Path,
+    sibling_index_db: Path,
+    blob_root: Path,
+    report: BlobGCResult,
+    max_batch: int,
+) -> bool:
+    """Run the sole pending generation and report whether the gate was used."""
+    pending_generation, pending_blocker = _pending_gc_generation(control_db_path)
+    if pending_blocker is not None:
+        report.blocked_reason = pending_blocker
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        return True
+    if pending_generation is None:
+        return False
+    evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
+    deleted, reclaimed_bytes = _execute_gc_generation_members(
+        control_db_path=control_db_path,
+        sibling_index_db=sibling_index_db,
+        blob_root=blob_root,
+        generation_id=pending_generation,
+        report=report,
+        evidence=evidence,
+    )
+    report.generation_id = pending_generation
+    report.generation_written = True
+    report.deleted_count = deleted
+    report.reclaimed_bytes = reclaimed_bytes
+    report.skipped_referenced = evidence.skipped_referenced
+    report.skipped_reserved = evidence.skipped_reserved
+    report.skipped_missing = evidence.skipped_missing
+    report.skipped_unlink_error = evidence.skipped_unlink_error
+    _populate_generation_summary(report, control_db_path, pending_generation)
+    return True
 
 
 def unlink_unreferenced_blob_hashes_under_exclusion(
@@ -570,13 +676,44 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     the final canonical-owner/reservation recheck all happen immediately
     before unlink.
     """
-    if not blob_hashes:
-        return 0, 0, ()
     from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
     with exclude_archive_blob_publishers(source_db_path):
         if not _database_has_table(source_db_path, "gc_generation_members"):
             return 0, 0, ("blob GC durable member-intent schema is unavailable",)
+        tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
+        if tier_blockers:
+            return 0, 0, tier_blockers
+        report = BlobGCResult(str(source_db_path), str(blob_root), False, len(blob_hashes))
+        try:
+            _assert_blob_namespace_readable(blob_root)
+        except _BlobNamespaceUnavailableError as exc:
+            return 0, 0, (str(exc),)
+        # This direct writer entry point must obey the exact same one-pending
+        # generation gate as recurring GC.  In particular, it cannot create a
+        # second incomplete plan after raw retention has independently removed
+        # rows but before a prior physical deletion has been explained.
+        if _resume_pending_gc_generation(
+            control_db_path=source_db_path,
+            sibling_index_db=index_db_path,
+            blob_root=blob_root,
+            report=report,
+            max_batch=max(len(blob_hashes), 1),
+        ):
+            if report.blocked_reason is not None:
+                return report.deleted_count, report.reclaimed_bytes, (report.blocked_reason,)
+            with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+                errors = tuple(
+                    f"{str(row[0])[:16]}: {row[1]}"
+                    for row in source_conn.execute(
+                        "SELECT hex(blob_hash), outcome_detail FROM gc_generation_members "
+                        "WHERE generation_id = ? AND outcome = 'failed' ORDER BY blob_hash",
+                        (report.generation_id,),
+                    )
+                )
+            return report.deleted_count, report.reclaimed_bytes, errors
+        if not blob_hashes:
+            return 0, 0, ()
         members: list[_GCMemberIntent] = []
         try:
             with (
@@ -588,29 +725,26 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     return 0, 0, preflight.blockers
                 legacy_hook_stage = prepare_match_stage(source_conn)
                 for blob_hash in sorted(blob_hashes):
-                    try:
-                        stat = _sharded_blob_path(blob_root, blob_hash).stat()
-                    except OSError:
-                        # A caller may hand us a stale candidate set.  No
-                        # file means no possible unlink and therefore no
-                        # member intent or success attribution.
+                    size_bytes, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+                    if namespace_blockers:
+                        return 0, 0, namespace_blockers
+                    if size_bytes is None:
+                        # A caller may hand us a stale candidate set.  A
+                        # readable object absence has no unlink and no member
+                        # intent/success attribution.
                         continue
-                    decision = inspect_blob_liveness(
+                    protection = _inspect_gc_protection(
                         source_conn,
-                        blob_hash,
                         index_conn=index_conn,
-                        require_index=True,
                         legacy_hook_stage=legacy_hook_stage,
+                        blob_hash=blob_hash,
+                        final_recheck=False,
                     )
-                    reservation = inspect_blob_reservation(source_conn, blob_hash)
-                    if decision.state is LivenessState.BLOCKED:
-                        return 0, 0, decision.blockers
-                    if reservation.state is LivenessState.BLOCKED:
-                        return 0, 0, reservation.blockers
-                    if decision.state is LivenessState.LIVE or reservation.state is LivenessState.LIVE:
+                    if protection.blockers:
+                        return 0, 0, protection.blockers
+                    if protection.is_live:
                         continue
-                    members.append(_GCMemberIntent(blob_hash, stat.st_mtime_ns, stat.st_size))
-                identity = _gc_identity_snapshot(source_conn, index_conn, archive_root=source_db_path.parent)
+                    members.append(_GCMemberIntent(blob_hash, size_bytes))
         except Exception as exc:
             return 0, 0, (f"blob GC planning failed: {exc}",)
         if not members:
@@ -621,7 +755,6 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             generation_id=generation_id,
             started_at_ms=int(time.time() * 1000),
             members=tuple(members),
-            identity=identity,
         )
         report = BlobGCResult(str(source_db_path), str(blob_root), False, len(members), generation_id=generation_id)
         evidence = GCRunEvidence(max_batch=len(members))
@@ -635,6 +768,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
         )
         if report.blocked_reason is not None:
             return deleted, deleted_bytes, (report.blocked_reason,)
+        _populate_generation_summary(report, source_db_path, generation_id)
         with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
             errors = tuple(
                 f"{str(row[0])[:16]}: {row[1]}"
@@ -752,35 +886,22 @@ def run_blob_gc_report(
         logger.error("Blob GC refused to run: %s", report.blocked_reason)
         return report
 
-    if not dry_run:
-        pending_generation, pending_blocker = _pending_gc_generation(control_db_path)
-        if pending_blocker is not None:
-            report.blocked_reason = pending_blocker
-            logger.error("Blob GC refused to run: %s", report.blocked_reason)
-            return report
-        if pending_generation is not None:
-            evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
-            deleted, reclaimed_bytes = _execute_gc_generation_members(
-                control_db_path=control_db_path,
-                sibling_index_db=sibling_index_db,
-                blob_root=blob_path,
-                generation_id=pending_generation,
-                report=report,
-                evidence=evidence,
-            )
-            report.generation_id = pending_generation
-            report.generation_written = True
-            report.deleted_count = deleted
-            report.reclaimed_bytes = reclaimed_bytes
-            report.skipped_referenced = evidence.skipped_referenced
-            report.skipped_reserved = evidence.skipped_reserved
-            report.skipped_missing = evidence.skipped_missing
-            report.skipped_unlink_error = evidence.skipped_unlink_error
-            return report
-
-    if not blob_path.is_dir():
-        logger.debug("Blob directory %s does not exist, skipping GC", blob_dir)
+    try:
+        _assert_blob_namespace_readable(blob_path)
+    except _BlobNamespaceUnavailableError as exc:
+        report.blocked_reason = str(exc)
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
         return report
+
+    if not dry_run and _resume_pending_gc_generation(
+        control_db_path=control_db_path,
+        sibling_index_db=sibling_index_db,
+        blob_root=blob_path,
+        report=report,
+        max_batch=max_batch,
+    ):
+        return report
+
     # Filesystem enumeration is deliberately outside the destructive source
     # lock. The lock protects only the bounded final recheck+unlink window.
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as planning_conn:
@@ -789,7 +910,12 @@ def run_blob_gc_report(
     if prev_completed_at is not None:
         older_than = max(older_than, time.time() - prev_completed_at)
     report.older_than_s = older_than
-    candidates = _candidate_blobs(blob_path, older_than=older_than)
+    try:
+        candidates = _candidate_blobs(blob_path, older_than=older_than)
+    except _BlobNamespaceUnavailableError as exc:
+        report.blocked_reason = str(exc)
+        logger.error("Blob GC refused to run: %s", report.blocked_reason)
+        return report
     report.candidate_count = len(candidates)
     if not candidates:
         return report
@@ -842,27 +968,20 @@ def run_blob_gc_report(
             if len(shortlist) >= max_batch:
                 break
             evidence.inspected += 1
-            decision = inspect_blob_liveness(
+            protection = _inspect_gc_protection(
                 planning_source,
-                blob_hash,
                 index_conn=planning_index,
-                require_index=True,
                 legacy_hook_stage=planning_legacy_hook_stage,
+                blob_hash=blob_hash,
+                final_recheck=False,
             )
-            if decision.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(decision.blockers)
+            if protection.blockers:
+                report.blocked_reason = "; ".join(protection.blockers)
                 logger.error("Blob GC refused to run: %s", report.blocked_reason)
                 return report
-            if decision.state is LivenessState.LIVE:
-                evidence.skipped_referenced += 1
-                continue
-            reservation = inspect_blob_reservation(planning_source, blob_hash)
-            if reservation.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(reservation.blockers)
-                logger.error("Blob GC refused to run: %s", report.blocked_reason)
-                return report
-            if reservation.state is LivenessState.LIVE:
-                evidence.skipped_reserved += 1
+            if protection.is_live:
+                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                 continue
             shortlist.append((blob_hash, mtime))
     finally:
@@ -875,20 +994,16 @@ def run_blob_gc_report(
     if not dry_run:
         members: list[_GCMemberIntent] = []
         for blob_hash, _mtime in shortlist:
-            try:
-                stat = _sharded_blob_path(blob_path, blob_hash).stat()
-            except OSError:
-                # No intent means no deletion attribution.  A vanished
-                # planning candidate is neither an unlink nor a success.
+            size_bytes, namespace_blockers = _read_blob_object(blob_path, blob_hash)
+            if namespace_blockers:
+                report.blocked_reason = "; ".join(namespace_blockers)
+                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                return report
+            if size_bytes is None:
+                # A readable vanished planning candidate is neither an unlink
+                # nor a success attribution.
                 continue
-            members.append(_GCMemberIntent(blob_hash, stat.st_mtime_ns, stat.st_size))
-        with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as identity_source:
-            if control_db_path == sibling_index_db:
-                identity_index = identity_source
-                identity = _gc_identity_snapshot(identity_source, identity_index, archive_root=db_path_obj.parent)
-            else:
-                with closing(sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)) as identity_index:
-                    identity = _gc_identity_snapshot(identity_source, identity_index, archive_root=db_path_obj.parent)
+            members.append(_GCMemberIntent(blob_hash, size_bytes))
         generation_id = f"gc-{uuid4().hex}"
         started_at_ms = int(time.time() * 1000)
         _commit_gc_generation_intent(
@@ -896,12 +1011,11 @@ def run_blob_gc_report(
             generation_id=generation_id,
             started_at_ms=started_at_ms,
             members=tuple(members),
-            identity=identity,
         )
         if not members:
-            _finalize_gc_generation(control_db_path, generation_id)
             report.generation_id = generation_id
             report.generation_written = True
+            _populate_generation_summary(report, control_db_path, generation_id)
             report.inspected_count = evidence.inspected
             report.skipped_referenced = evidence.skipped_referenced
             report.skipped_reserved = evidence.skipped_reserved
@@ -923,6 +1037,7 @@ def run_blob_gc_report(
         report.skipped_reserved = evidence.skipped_reserved
         report.skipped_missing = evidence.skipped_missing
         report.skipped_unlink_error = evidence.skipped_unlink_error
+        _populate_generation_summary(report, control_db_path, generation_id)
         return report
 
     if not shortlist:
@@ -954,27 +1069,20 @@ def run_blob_gc_report(
             return report
 
         for blob_hash, _mtime in shortlist:
-            decision = inspect_blob_liveness(
+            protection = _inspect_gc_protection(
                 conn,
-                blob_hash,
                 index_conn=recheck_index,
-                require_index=True,
                 legacy_hook_stage=recheck_legacy_hook_stage,
+                blob_hash=blob_hash,
+                final_recheck=False,
             )
-            if decision.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(decision.blockers)
+            if protection.blockers:
+                report.blocked_reason = "; ".join(protection.blockers)
                 logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
                 return report
-            if decision.state is LivenessState.LIVE:
-                evidence.skipped_referenced += 1
-                continue
-            reservation = inspect_blob_reservation(conn, blob_hash)
-            if reservation.state is LivenessState.BLOCKED:
-                report.blocked_reason = "; ".join(reservation.blockers)
-                logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
-                return report
-            if reservation.state is LivenessState.LIVE:
-                evidence.skipped_reserved += 1
+            if protection.is_live:
+                evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
+                evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                 continue
 
             target = _sharded_blob_path(blob_path, blob_hash)
