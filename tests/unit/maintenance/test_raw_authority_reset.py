@@ -17,6 +17,7 @@ from polylogue.maintenance.raw_authority_recovery import (
     PruneOrphanedIndexRevisionSeedsActuator,
     RawAuthorityRecoveryError,
     RawAuthorityRecoveryOperation,
+    ResetRawAuthorityCensusActuator,
     _canonical_bytes,
     _index_seed_digest,
     _RecoveryArgs,
@@ -26,7 +27,9 @@ from polylogue.maintenance.raw_authority_recovery import (
     resume_raw_authority_recovery,
     write_recovery_plan,
 )
-from polylogue.operations.mutation_transaction import OperationExecutor
+from polylogue.operations.audit import AuditRepository
+from polylogue.operations.bindings import runtime_operation_binding
+from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor, RecoveryBlockedError
 from polylogue.storage.archive_identity import ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -286,6 +289,120 @@ def test_census_reset_preserves_recovery_evidence_when_final_receipt_write_fails
             "applied",
             str(receipt_path),
         )
+
+
+def test_raw_recovery_overlap_does_not_treat_an_empty_census_as_a_prior_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted reset needs its own intent and receipt, not ambient emptiness.
+
+    Anti-vacuity: replacing the receipt lookup with the old empty-table
+    postflight check confirms this never-applied reset and consumes the new
+    operation's authority.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    prior_plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup
+    )
+    prior_args = _RecoveryArgs(
+        archive_root=tmp_path,
+        operation=RawAuthorityRecoveryOperation.RESET_CENSUS,
+        operation_id=prior_plan.operation_id,
+        expected_plan_digest=prior_plan.plan_digest,
+        backup_manifest=backup,
+        receipt_path=Path(prior_plan.receipt_path),
+        recovery_plan=prior_plan,
+    )
+    actuator = ResetRawAuthorityCensusActuator()
+    binding = runtime_operation_binding(actuator)
+    principal = MutationPrincipal(
+        "test:raw-authority", frozenset({"archive.raw_authority_recovery"}), "maintenance", "maintenance"
+    )
+    audit = AuditRepository.for_archive_root(tmp_path, attempt_owner_id="pid:999999999:0")
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "empty-census-prior")
+    prior_preview = executor.prepare_bound_for_archive(binding, prior_args, principal, archive_root=tmp_path)
+    prior_authorization = executor.authorize_bound(binding, prior_preview, principal)
+    prior_operation_id = audit.consume_authorization_and_start(prior_preview, prior_authorization)
+
+    new_plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup
+    )
+    new_args = _RecoveryArgs(
+        archive_root=tmp_path,
+        operation=RawAuthorityRecoveryOperation.RESET_CENSUS,
+        operation_id=new_plan.operation_id,
+        expected_plan_digest=new_plan.plan_digest,
+        backup_manifest=backup,
+        receipt_path=Path(new_plan.receipt_path),
+        recovery_plan=new_plan,
+    )
+    new_executor = OperationExecutor(audit=audit, token_factory=lambda: "empty-census-new")
+    new_preview = new_executor.prepare_bound_for_archive(binding, new_args, principal, archive_root=tmp_path)
+    new_authorization = new_executor.authorize_bound(binding, new_preview, principal)
+
+    with pytest.raises(RecoveryBlockedError, match="operator-blocking"):
+        new_executor.execute_bound(binding, new_preview, new_authorization, new_args)
+
+    assert not Path(new_plan.receipt_path).exists()
+    with sqlite3.connect(tmp_path / "audit.db") as audit_db:
+        assert audit_db.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (prior_operation_id,)
+        ).fetchone() == ("failed", "recovery_unknown")
+        assert audit_db.execute(
+            "SELECT domain_receipt_ref FROM operation_targets WHERE operation_id = ?", (prior_operation_id,)
+        ).fetchone() == (None,)
+
+
+def test_raw_recovery_overlap_cites_the_interrupted_runs_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An overlapping reset adopts the old committed receipt, never its new path.
+
+    Anti-vacuity: using the current arguments for evidence records the new
+    operation's nonexistent receipt instead of the committed run's receipt.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    _seed_ledger(tmp_path / "source.db")
+    _seed_raw(tmp_path / "source.db", "r-keep")
+    backup = _backup_authority(tmp_path, monkeypatch, tier="source")
+    prior_plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup
+    )
+    original_finalize = AuditRepository.finalize_attempt
+
+    def lose_audit_finalization(self: AuditRepository, *args: object, **kwargs: object) -> None:
+        raise RuntimeError("crash after raw recovery receipt")
+
+    monkeypatch.setattr(AuditRepository, "finalize_attempt", lose_audit_finalization)
+    with pytest.raises(RawAuthorityRecoveryError, match="not reported completed"):
+        apply_raw_authority_recovery(prior_plan)
+    monkeypatch.setattr(AuditRepository, "finalize_attempt", original_finalize)
+
+    with sqlite3.connect(tmp_path / "audit.db") as audit_db:
+        prior_operation_id = str(audit_db.execute("SELECT operation_id FROM operation_runs").fetchone()[0])
+        audit_db.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (prior_operation_id,)
+        )
+        audit_db.commit()
+    assert Path(prior_plan.receipt_path).is_file()
+
+    new_plan = inspect_raw_authority_recovery(
+        tmp_path, RawAuthorityRecoveryOperation.RESET_CENSUS, backup_manifest=backup
+    )
+    with pytest.raises(RawAuthorityRecoveryError, match="already applied"):
+        apply_raw_authority_recovery(new_plan)
+
+    assert not Path(new_plan.receipt_path).exists()
+    with sqlite3.connect(tmp_path / "audit.db") as audit_db:
+        assert audit_db.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (prior_operation_id,)
+        ).fetchone() == ("completed", "recovered_applied")
+        assert audit_db.execute(
+            "SELECT domain_receipt_ref FROM operation_targets WHERE operation_id = ?", (prior_operation_id,)
+        ).fetchone() == (prior_plan.receipt_path,)
 
 
 def test_persisted_recovery_plan_ignores_process_scoped_archive_metadata(

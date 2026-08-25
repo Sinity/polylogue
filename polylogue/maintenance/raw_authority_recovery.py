@@ -1386,6 +1386,16 @@ def _recovery_affected_tiers(operation: RawAuthorityRecoveryOperation) -> tuple[
     return ("source",) if operation is RawAuthorityRecoveryOperation.RESET_CENSUS else ("index",)
 
 
+def _recovery_plan_context(plan: RawAuthorityRecoveryPlan) -> dict[str, str]:
+    """Return the durable intent coordinates preserved in an audit preview."""
+
+    return {
+        "recovery_plan_digest": plan.plan_digest,
+        "operation_id": plan.operation_id,
+        "recovery_receipt_path": plan.receipt_path,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class _RecoveryActuator:
     operation: str
@@ -1407,7 +1417,7 @@ class _RecoveryActuator:
             target_refs=(_recovery_target_ref(args.operation),),
             affected_tiers=_recovery_affected_tiers(args.operation),
             reversible=False,
-            context={"recovery_plan_digest": live.plan_digest, "operation_id": args.operation_id},
+            context=_recovery_plan_context(live),
         )
 
     def apply(self, plan: MutationPlan, args: _RecoveryArgs) -> MutationReceipt:
@@ -1441,19 +1451,49 @@ class _RecoveryActuator:
         )
 
     def inspect_recovery(self, operation: RecoveryOperation, args: _RecoveryArgs) -> RecoveryDisposition:
-        """Adopt only an exact committed postflight with durable target evidence."""
+        """Adopt only the interrupted run's own receipted domain commit."""
 
         if not operation.target_evidence_complete or len(operation.targets) != 1:
             return RecoveryDisposition("unknown", "operator-blocking", operation.target_evidence_detail)
         target_ref = _recovery_target_ref(args.operation)
-        if operation.targets[0].ref != target_ref or _committed_postflight(args.recovery_plan) is None:
-            return RecoveryDisposition("unknown", "operator-blocking", "raw-authority postflight is not exact")
+        if operation.targets[0].ref != target_ref:
+            return RecoveryDisposition("unknown", "operator-blocking", "raw-authority target identity is not exact")
+        prior_operation_id = operation.context.get("operation_id")
+        prior_plan_digest = operation.context.get("recovery_plan_digest")
+        prior_receipt_path = operation.context.get("recovery_receipt_path")
+        if (
+            not isinstance(prior_operation_id, str)
+            or not isinstance(prior_plan_digest, str)
+            or not isinstance(prior_receipt_path, str)
+        ):
+            return RecoveryDisposition(
+                "unknown", "operator-blocking", "interrupted raw-authority intent is unavailable"
+            )
+        try:
+            prior_plan = _plan_from_intent(
+                args.archive_root,
+                args.operation,
+                operation_id=prior_operation_id,
+                receipt_path=Path(prior_receipt_path),
+            )
+            receipt = _receipt_for_plan(prior_plan)
+            if (
+                prior_plan.plan_digest != prior_plan_digest
+                or prior_plan.receipt_path != prior_receipt_path
+                or receipt is None
+            ):
+                return RecoveryDisposition(
+                    "unknown", "operator-blocking", "interrupted raw-authority receipt is unavailable"
+                )
+            _validate_existing_receipt(prior_plan, receipt)
+        except RawAuthorityRecoveryError:
+            return RecoveryDisposition("unknown", "operator-blocking", "interrupted raw-authority receipt is not exact")
         return RecoveryDisposition(
             "confirmed-applied",
             "forward",
-            "exact raw-authority postflight proved the prior domain commit",
+            "the interrupted raw-authority intent and receipt prove the prior domain commit",
             (RecoveryTargetDisposition(target_ref, "applied", "forward"),),
-            evidence_ref=str(args.receipt_path),
+            evidence_ref=prior_plan.receipt_path,
         )
 
 
@@ -1497,7 +1537,7 @@ def _adopt_committed_recovery(
         target_refs=(_recovery_target_ref(args.operation),),
         affected_tiers=_recovery_affected_tiers(args.operation),
         reversible=False,
-        context={"recovery_plan_digest": plan.plan_digest, "operation_id": plan.operation_id},
+        context=_recovery_plan_context(plan),
     )
     operation_id = audit.find_interrupted_operation(
         operation_name=actuator.operation,
