@@ -396,6 +396,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         f"blob/{blob_hash[:2]}",
         f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
         "blob-inventory.json",
+        "blob-reference-evidence.json",
         "embeddings.db",
         "audit.db",
         "manifest.json",
@@ -510,6 +511,102 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
     inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
     item = next(row for row in inventory if row["blob_hash"] == blob_hash)
     assert item["protection"] == ["committed"]
+
+
+def test_full_evidence_backup_preserves_index_attachment_for_historical_source_schema(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A v21 source fallback must retain the readable index attachment owner.
+
+    Anti-vacuity: removing ``raw_hook_events.blob_hash`` makes the current
+    source capability projection non-authoritative.  The attachment exists
+    only in index.db, so a fallback that substitutes source carriers for the
+    complete projection produces a verified-looking backup with missing bytes.
+    """
+    archive_root = workspace_env["archive_root"]
+    payload = b"historical-source index-only attachment evidence"
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="backup-historical-index-attachment",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="a1",
+                message_provider_id="m1",
+                inline_bytes=payload,
+            )
+        ],
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        archive.write_parsed(session)
+
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    with sqlite3.connect(archive_root / "source.db") as source:
+        source.execute("DROP INDEX idx_raw_hook_events_source_hash")
+        source.execute("ALTER TABLE raw_hook_events DROP COLUMN blob_hash")
+        source.execute("PRAGMA user_version = 21")
+        assert source.execute(
+            "SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
+        ).fetchone() == (0,)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["reference_evidence_resolved"] is True
+    backup_root = Path(result.output_path or "")
+    assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
+    evidence = json.loads((backup_root / "blob-reference-evidence.json").read_text(encoding="utf-8"))
+    assert evidence["index_attachment_hashes"] == [blob_hash]
+
+
+def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index_owner(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Independent attachment evidence must be able to contradict copying.
+
+    Anti-vacuity: a copy/verification pair derived solely from the same
+    liveness projection would accept this deliberately incomplete copy plan.
+    """
+    archive_root = workspace_env["archive_root"]
+    payload = b"independent backup attachment oracle"
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="backup-attachment-oracle",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="a1",
+                message_provider_id="m1",
+                inline_bytes=payload,
+            )
+        ],
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        archive.write_parsed(session)
+
+    original_inventory = backup_mod._inventory_from_liveness
+
+    def omit_attachment(
+        projection: backup_mod.BlobLivenessProjection,
+        reservations: set[str],
+    ) -> dict[str, set[str]]:
+        inventory = original_inventory(projection, reservations)
+        inventory.pop(hashlib.sha256(payload).hexdigest(), None)
+        return inventory
+
+    monkeypatch.setattr(backup_mod, "_inventory_from_liveness", omit_attachment)
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert result.verification["reference_evidence_resolved"] is True
+    assert result.verification["canonical_blobs_resolved"] is False
+    assert result.verification["missing_canonical_blob_count"] == 1
 
 
 def test_backup_archive_full_evidence_profile_treats_ops_as_optional(

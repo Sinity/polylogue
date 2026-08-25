@@ -53,6 +53,7 @@ BACKUP_PROFILES: tuple[BackupProfile, ...] = (
 )
 _MISSING_BLOB_WARNING_SAMPLE_LIMIT = 10
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
+_BLOB_REFERENCE_EVIDENCE_FILE = "blob-reference-evidence.json"
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
@@ -451,12 +452,18 @@ def _source_blob_liveness_projection(
     """Read complete source evidence or refuse the backup before copying blobs."""
 
     projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
+    return projection, _source_blob_reservations(source_db)
+
+
+def _source_blob_reservations(source_db: Path) -> set[str]:
+    """Read pending publication receipts independently of committed liveness."""
+
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as source_conn:
         has_reservations = source_conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
         ).fetchone()
         if has_reservations is None:
-            return projection, set()
+            return set()
         columns = {str(row[1]) for row in source_conn.execute("PRAGMA table_info(blob_publication_reservations)")}
         if "blob_hash" not in columns:
             raise RuntimeError("source.blob_publication_reservations is missing columns: blob_hash")
@@ -465,7 +472,7 @@ def _source_blob_liveness_projection(
             if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
                 raise RuntimeError("source.blob_publication_reservations has invalid blob_hash evidence")
             reservations.add(blob_hash.hex())
-        return projection, reservations
+        return reservations
 
 
 def _inventory_from_liveness(projection: BlobLivenessProjection, reservations: set[str]) -> dict[str, set[str]]:
@@ -475,11 +482,76 @@ def _inventory_from_liveness(projection: BlobLivenessProjection, reservations: s
     return inventory
 
 
-def _source_blob_inventory(source_db: Path, *, index_db: Path | None = None) -> dict[str, set[str]]:
-    """Read committed references and pending publication reservations distinctly."""
+def _index_attachment_hashes(index_db: Path | None) -> set[str]:
+    """Resolve attachment ownership independently of the liveness projection."""
 
-    projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
-    return _inventory_from_liveness(projection, reservations)
+    if index_db is None:
+        return set()
+    try:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro&immutable=1", uri=True)) as index_conn:
+            columns = {str(row[1]) for row in index_conn.execute("PRAGMA table_info(attachments)")}
+            if "blob_hash" not in columns:
+                raise RuntimeError("index.attachments is missing columns: blob_hash")
+            hashes: set[str] = set()
+            for (blob_hash,) in index_conn.execute(
+                "SELECT DISTINCT blob_hash FROM attachments WHERE blob_hash IS NOT NULL"
+            ):
+                if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
+                    raise RuntimeError("index.attachments has invalid blob_hash evidence")
+                hashes.add(blob_hash.hex())
+            return hashes
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"index attachment ownership is unreadable: {exc}") from exc
+
+
+def _blob_reference_evidence(
+    projection: BlobLivenessProjection,
+    *,
+    index_db: Path | None,
+) -> dict[str, object]:
+    """Persist source resolution plus an independent index-attachment oracle.
+
+    Blob copying follows the canonical liveness projection. The attachment
+    query is deliberately separate so backup verification can contradict a
+    projection that accidentally omits a readable index-only owner.
+    """
+
+    source_owners = {
+        owner: sorted(hashes) for owner, hashes in projection.owner_hashes if owner.startswith("source.db.")
+    }
+    attachment_hashes = _index_attachment_hashes(index_db)
+    expected_hashes = set().union(*(set(hashes) for hashes in source_owners.values()), attachment_hashes)
+    omitted = expected_hashes - set(projection.live_hashes)
+    if omitted:
+        sample = ", ".join(sorted(omitted)[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])
+        raise RuntimeError(f"canonical blob liveness projection omitted independent attachment evidence: {sample}")
+    return {
+        "format": "polylogue-blob-reference-evidence-v1",
+        "source_owner_hashes": source_owners,
+        "index_attachment_hashes": sorted(attachment_hashes),
+    }
+
+
+def _write_blob_reference_evidence(backup_root: Path, evidence: dict[str, object]) -> Path:
+    path = backup_root / _BLOB_REFERENCE_EVIDENCE_FILE
+    path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
+    if not isinstance(evidence, dict) or evidence.get("format") != "polylogue-blob-reference-evidence-v1":
+        raise RuntimeError("backup blob reference evidence is missing or has an unknown format")
+    source_owners = evidence.get("source_owner_hashes")
+    attachment_hashes = evidence.get("index_attachment_hashes")
+    if not isinstance(source_owners, dict) or not isinstance(attachment_hashes, list):
+        raise RuntimeError("backup blob reference evidence has invalid owner payloads")
+    values = [
+        *attachment_hashes,
+        *(blob_hash for hashes in source_owners.values() if isinstance(hashes, list) for blob_hash in hashes),
+    ]
+    if any(not isinstance(blob_hash, str) or len(blob_hash) != 64 for blob_hash in values):
+        raise RuntimeError("backup blob reference evidence has invalid blob hashes")
+    return set(values)
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -497,6 +569,8 @@ def _copy_referenced_blobs(
     warnings: list[str],
 ) -> tuple[int, int, BlobReferenceDebtReport]:
     projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
+    reference_evidence = _blob_reference_evidence(projection, index_db=index_db)
+    _write_blob_reference_evidence(backup_root, reference_evidence)
     inventory = _inventory_from_liveness(projection, reservations)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
@@ -588,6 +662,7 @@ def _write_manifest(
         "blob_count": blob_count,
         "blob_size_bytes": blob_size,
         "blob_inventory_file": "blob-inventory.json",
+        "blob_reference_evidence_file": _BLOB_REFERENCE_EVIDENCE_FILE,
         "archive_root_source_identity": archive_root_source_identity,
         "tier_source_fingerprints": tier_source_fingerprints,
         "warnings": warnings,
@@ -715,6 +790,8 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
     backed_up_files.append(str(backup_root / "manifest.json"))
     if (backup_root / "blob-inventory.json").exists():
         backed_up_files.append(str(backup_root / "blob-inventory.json"))
+    if (backup_root / _BLOB_REFERENCE_EVIDENCE_FILE).exists():
+        backed_up_files.append(str(backup_root / _BLOB_REFERENCE_EVIDENCE_FILE))
     if blob_reference_debt is not None and blob_reference_debt.missing_referenced_blobs:
         backed_up_files.append(str(backup_root / "blob-reference-debt.json"))
 
@@ -849,7 +926,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         else:
             inventory = []
-        expected_blobs = {
+        inventory_blobs = {
             str(item["blob_hash"]): int(item["size_bytes"])
             for item in inventory
             if isinstance(item, dict) and "blob_hash" in item and "size_bytes" in item
@@ -868,20 +945,32 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             verified_blob_file_hashes[str(blob_path.relative_to(restored))] = (len(payload), payload_hash)
         blobs_ok = (
             restored_blob_count == blob_count
-            and len(expected_blobs) == blob_count
-            and restored_hashes == expected_blobs
+            and len(inventory_blobs) == blob_count
+            and restored_hashes == inventory_blobs
             and hashes_valid
         )
         restored_hash_set = set(restored_hashes)
         source_included = (restored / "source.db").exists()
         index_path = restored / "index.db"
-        canonical_blob_hashes = (
-            set(_source_blob_inventory(restored / "source.db", index_db=index_path if index_path.exists() else None))
-            if source_included
-            else set()
-        )
-        missing_canonical_blobs = canonical_blob_hashes - restored_hash_set
-        canonical_blobs_resolved = not source_included or not missing_canonical_blobs
+        reference_evidence_ok = True
+        expected_reference_blobs: set[str] = set()
+        expected_attachment_hashes: set[str] = set()
+        observed_attachment_hashes: set[str] = set()
+        if source_included:
+            evidence_path = restored / str(manifest.get("blob_reference_evidence_file", _BLOB_REFERENCE_EVIDENCE_FILE))
+            if not evidence_path.exists() and not evidence_path.is_symlink():
+                raise RuntimeError("backup blob reference evidence is missing")
+            _require_regular_backup_artifact(
+                evidence_path, backup_root=restored, label="backup blob reference evidence"
+            )
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            expected_reference_blobs = _expected_blob_hashes_from_evidence(evidence)
+            expected_attachment_hashes = set(evidence["index_attachment_hashes"])
+            observed_attachment_hashes = _index_attachment_hashes(index_path if index_path.exists() else None)
+            reference_evidence_ok = observed_attachment_hashes == expected_attachment_hashes
+            expected_reference_blobs.update(_source_blob_reservations(restored / "source.db"))
+        missing_canonical_blobs = expected_reference_blobs - restored_hash_set
+        canonical_blobs_resolved = not source_included or (not missing_canonical_blobs and reference_evidence_ok)
         ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and canonical_blobs_resolved
         receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {
@@ -895,6 +984,9 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "blob_inventory_exact": blobs_ok,
             "canonical_blobs_resolved": canonical_blobs_resolved,
             "missing_canonical_blob_count": len(missing_canonical_blobs),
+            "reference_evidence_resolved": reference_evidence_ok,
+            "expected_index_attachment_count": len(expected_attachment_hashes),
+            "observed_index_attachment_count": len(observed_attachment_hashes),
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
             "receipt_evidence": receipt_evidence,

@@ -35,7 +35,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
-from polylogue.storage.blob_liveness import BlobLivenessProjection, project_live_blob_hashes
+from polylogue.storage.blob_liveness import BlobLivenessProjection, project_index_blob_hashes, project_live_blob_hashes
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -602,8 +602,11 @@ def _legacy_source_owner_hashes(conn: sqlite3.Connection) -> dict[str, frozenset
 def _historical_projection(
     conn: sqlite3.Connection,
     projection: BlobLivenessProjection,
+    *,
+    index_conn: sqlite3.Connection | None = None,
+    require_index: bool = False,
 ) -> BlobLivenessProjection:
-    """Convert only non-current, readable schemas to a conservative projection."""
+    """Complete a historical source fallback with readable index ownership."""
 
     if not projection.blockers:
         return projection
@@ -612,6 +615,19 @@ def _historical_projection(
         blockers = capabilities.blockers or projection.blockers
         raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(blockers)}")
     owner_hashes = _legacy_source_owner_hashes(conn)
+    if index_conn is None:
+        if require_index:
+            raise RuntimeError("canonical blob liveness projection blocked: index tier is unavailable")
+    else:
+        index_projection = project_index_blob_hashes(index_conn)
+        if index_projection.blockers:
+            if require_index:
+                raise RuntimeError(
+                    "canonical blob liveness projection blocked: "
+                    f"historical source fallback cannot resolve index ownership: {'; '.join(index_projection.blockers)}"
+                )
+        else:
+            owner_hashes.update(dict(index_projection.owner_hashes))
     return BlobLivenessProjection(
         frozenset().union(*owner_hashes.values()) if owner_hashes else frozenset(),
         owner_hashes=tuple(sorted(owner_hashes.items())),
@@ -630,10 +646,12 @@ def project_source_blob_liveness(
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as source_conn:
         if index_db is None:
             projection = project_live_blob_hashes(source_conn)
+            index_conn = None
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
                 projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
-        return _historical_projection(source_conn, projection)
+                return _historical_projection(source_conn, projection, index_conn=index_conn, require_index=True)
+        return _historical_projection(source_conn, projection, index_conn=index_conn)
 
 
 def _referenced_blob_hashes(
@@ -655,7 +673,7 @@ def _referenced_blob_hashes(
                     logger.warning(
                         "blob integrity using non-current fixture schema: %s", "; ".join(projection.blockers)
                     )
-                    historical = _historical_projection(source_conn, projection)
+                    historical = _historical_projection(source_conn, projection, index_conn=conn)
                     return sorted(historical.live_hashes)
                 return sorted(projection.live_hashes)
             finally:
@@ -674,6 +692,11 @@ def _referenced_blob_hashes(
         try:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
                 projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
+                if projection.blockers:
+                    logger.warning(
+                        "blob integrity using non-current fixture schema: %s", "; ".join(projection.blockers)
+                    )
+                    return sorted(_historical_projection(conn, projection, index_conn=index_conn).live_hashes)
         except sqlite3.Error as exc:
             raise RuntimeError(f"source tier referenced-hash query failed for {db_path}: {exc}") from exc
     else:
@@ -698,7 +721,7 @@ def _reference_source_counts(
                 projection = project_live_blob_hashes(source_conn, index_conn=conn, require_index=True)
                 if not projection.blockers:
                     return {owner: len(hashes) for owner, hashes in projection.owner_hashes}
-                historical = _historical_projection(source_conn, projection)
+                historical = _historical_projection(source_conn, projection, index_conn=conn)
                 return {owner: len(hashes) for owner, hashes in historical.owner_hashes}
             finally:
                 source_conn.close()
@@ -716,6 +739,9 @@ def _reference_source_counts(
     if db_path.name == "source.db" and index_db.exists():
         with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
             projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
+            if projection.blockers:
+                historical = _historical_projection(conn, projection, index_conn=index_conn)
+                return {owner: len(hashes) for owner, hashes in historical.owner_hashes}
     else:
         projection = project_live_blob_hashes(conn, require_index=True)
     if projection.blockers:

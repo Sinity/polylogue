@@ -433,6 +433,36 @@ def project_live_blob_hashes(
     )
 
 
+def project_index_blob_hashes(index_conn: sqlite3.Connection) -> BlobLivenessProjection:
+    """Project the active index's direct blob owners without source evidence.
+
+    Historical source fallback uses this narrow descriptor-owned projection to
+    retain readable index attachments. It intentionally cannot decide source
+    ledger ownership, which remains with :func:`project_live_blob_hashes`.
+    """
+
+    blockers = _schema_blockers(index_conn, tier="index", required=True)
+    if blockers:
+        return BlobLivenessProjection(frozenset(), tuple(dict.fromkeys(blockers)))
+    hashes: set[str] = set()
+    owner_hashes: dict[str, set[str]] = {}
+    try:
+        for owner in _owners(tier="index", ledger=False):
+            assert owner.blob_column is not None
+            owner_name = f"index.db.{owner.table}"
+            for row in index_conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
+                if isinstance(row[0], bytes) and len(row[0]) == 32:
+                    blob_hash = row[0].hex()
+                    hashes.add(blob_hash)
+                    owner_hashes.setdefault(owner_name, set()).add(blob_hash)
+    except sqlite3.Error as exc:
+        return BlobLivenessProjection(frozenset(), (f"index blob liveness query is unreadable: {exc}",))
+    return BlobLivenessProjection(
+        frozenset(hashes),
+        owner_hashes=tuple((owner, frozenset(values)) for owner, values in sorted(owner_hashes.items())),
+    )
+
+
 __all__ = [
     "BLOB_OWNERS",
     "BlobLiveness",
@@ -442,6 +472,7 @@ __all__ = [
     "blob_refs_has_ref_type_column",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
+    "project_index_blob_hashes",
     "project_live_blob_hashes",
     "validated_blob_ref_liveness_joins",
 ]
