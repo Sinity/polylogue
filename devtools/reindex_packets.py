@@ -19,6 +19,25 @@ CORE = "execution_wave execution_lane lane_packet lane_order affected_paths conf
 LAUNCH = "packet_execution_contract deadline_policy readiness_contract".split()  # noqa: SIM905
 WAVES = {"reindex-prep-a": 1, "reindex-prep-b": 2, "reindex-prep-c": 3, "reindex-window": 4}
 READINESS_VERSION = "packet-readiness-v1"
+TASK_REVISION_FIELDS = (
+    "_type",
+    "id",
+    "issue_type",
+    "status",
+    "priority",
+    "title",
+    "description",
+    "design",
+    "acceptance_criteria",
+    "notes",
+    "owner",
+    "assignee",
+    "external_ref",
+    "labels",
+    "metadata",
+    "dependencies",
+)
+TASK_REVISION_PREFIX = "sha256:"
 OPERATION_PHASE_VERSION = "prep-operation-phase-v1"
 PREP_OPERATION_ACCESS = frozenset(
     {"explicit-operator-authorized-source-apply", "explicit-operator-authorized-blob-apply"}
@@ -108,6 +127,49 @@ def _record(value: Mapping[str, Any]) -> dict[str, Any]:
     record["metadata"] = _metadata(record.get("metadata"))
     record["dependencies"] = tuple(dep for dep in dependencies if isinstance(dep, Mapping))
     return record
+
+
+def _canonical_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _canonical_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_value(item) for item in value]
+    return value
+
+
+def _task_revision(bead: Mapping[str, Any]) -> str:
+    """Return the stable Beads export token bound by readiness contracts.
+
+    The export has no top-level revision. This digest covers task content and
+    routing state, omits export timestamps and counters, and removes the
+    embedded contract so authoring or refreshing that contract is not
+    self-referential. Dependency timestamps and bookkeeping are omitted while
+    dependency targets, relation types, and relation metadata remain bound.
+    """
+    metadata = _metadata(bead.get("metadata"))
+    metadata.pop("readiness_contract", None)
+    dependencies = tuple(
+        {
+            "depends_on_id": dependency.get("depends_on_id"),
+            "type": dependency.get("type"),
+            "metadata": _metadata(dependency.get("metadata")),
+        }
+        for dependency in bead.get("dependencies", ())
+        if isinstance(dependency, Mapping)
+    )
+    payload = {
+        field: {
+            "labels": sorted(map(str, bead.get("labels", ()) or ())),
+            "metadata": metadata,
+            "dependencies": sorted(
+                dependencies,
+                key=lambda dependency: json.dumps(_canonical_value(dependency), sort_keys=True, separators=(",", ":")),
+            ),
+        }.get(field, bead.get(field))
+        for field in TASK_REVISION_FIELDS
+    }
+    encoded = json.dumps(_canonical_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return f"{TASK_REVISION_PREFIX}{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _value(bead: Mapping[str, Any], name: str) -> object:
@@ -378,7 +440,7 @@ def _projection(
 ) -> dict[str, Any]:
     unsatisfied: list[dict[str, str]] = []
     if contract is not None:
-        expected_members = {bead_id: str(beads[bead_id].get("revision") or "") for bead_id in members}
+        expected_members = {bead_id: _task_revision(beads[bead_id]) for bead_id in members}
         contract_members = {identity.bead_id: identity.revision for identity in contract.members}
         for bead_id in sorted(set(expected_members) | set(contract_members)):
             if expected_members.get(bead_id) != contract_members.get(bead_id):

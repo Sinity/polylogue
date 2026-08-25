@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from devtools.reindex_packets import ROOT_ID, main, validate
+from devtools.reindex_packets import ROOT_ID, _record, _task_revision, main, validate
 
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 
@@ -21,7 +21,7 @@ class FakeReader:
         self.beads = tuple(beads)
 
     def read(self) -> tuple[dict[str, Any], ...]:
-        return self.beads
+        return tuple(_record(bead) for bead in self.beads)
 
 
 def dep(target: str, kind: str = "blocks") -> dict[str, str]:
@@ -65,6 +65,7 @@ def predicate(kind: str, evidence_id: str, state: str = "accepted", **changes: A
 
 def readiness(
     *,
+    records: tuple[dict[str, Any], ...],
     members: tuple[str, ...] = ("a", "b", "c"),
     predicates: tuple[dict[str, Any], ...] = (),
     head: str = HEAD,
@@ -73,7 +74,10 @@ def readiness(
         "version": "packet-readiness-v1",
         "integration_head": head,
         "evaluated_at": "2026-08-25T06:00:00+00:00",
-        "members": [{"id": bead_id, "revision": f"{bead_id}-v1"} for bead_id in members],
+        "members": [
+            {"id": bead_id, "revision": _task_revision(next(record for record in records if record["id"] == bead_id))}
+            for bead_id in members
+        ],
         "predicates": list(predicates),
     }
 
@@ -82,33 +86,42 @@ def bead(
     bead_id: str, metadata: dict[str, Any], dependencies: tuple[dict[str, str], ...] = (), status: str = "open"
 ) -> dict[str, Any]:
     return {
+        "_type": "issue",
         "id": bead_id,
-        "revision": f"{bead_id}-v1",
+        "issue_type": "task",
         "status": status,
-        "labels": ("campaign:reindex-2026",),
+        "priority": 1,
+        "title": f"Task {bead_id}",
+        "description": f"Description for task {bead_id}",
+        "design": "",
+        "acceptance_criteria": "",
+        "notes": "",
+        "created_at": "2026-08-25T05:00:00Z",
+        "updated_at": "2026-08-25T06:00:00Z",
+        "created_by": "Sinity",
+        "owner": "Sinity",
+        "labels": ["campaign:reindex-2026"],
         "metadata": metadata,
-        "dependencies": dependencies,
+        "dependencies": list(dependencies),
+        "comment_count": 0,
+        "dependency_count": len(dependencies),
+        "dependent_count": 0,
     }
 
 
 def graph() -> list[dict[str, Any]]:
     root = bead(ROOT_ID, {"campaign_id": "reindex-2026", "execution_shape": "gate"}, (dep("gate"),))
     gate = bead("gate", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, tuple(dep(item) for item in "abc"))
-    leader = bead(
-        "a",
-        meta(
-            packet_execution_contract="packet-v1",
-            deadline_policy="bounded",
-            readiness_contract=readiness(),
+    members = [
+        bead(
+            "a",
+            meta(packet_execution_contract="packet-v1", deadline_policy="bounded"),
         ),
-    )
-    return [
-        root,
-        gate,
-        leader,
         bead("b", meta(lane_order="2"), (dep("a"),)),
         bead("c", meta(lane_order="3"), (dep("b"),)),
     ]
+    members[0]["metadata"]["readiness_contract"] = readiness(records=tuple(members))
+    return [root, gate, *members]
 
 
 def test_blocks_closure_excludes_mixed_and_reports_labelled_difference() -> None:
@@ -164,7 +177,7 @@ def test_gate_cannot_carry_packet_membership() -> None:
 def test_packet_order_and_leader_placement_fail_independently() -> None:
     beads = graph()
     beads[2]["metadata"]["lane_order"] = "2"
-    beads[3]["metadata"] = meta(lane_order="1", readiness_contract=readiness())
+    beads[3]["metadata"] = meta(lane_order="1", readiness_contract=readiness(records=tuple(beads[2:5])))
     report = validate(FakeReader(beads))
     assert any("internal blocker is not earlier" in error for error in report["structural_errors"])
     assert any("non-leader carries readiness_contract" in error for error in report["structural_errors"])
@@ -174,7 +187,7 @@ def test_cross_packet_blocker_must_not_point_backwards() -> None:
     beads = graph()
     beads[2]["metadata"].update(packet_size_exception="bounded", lane_packet="1")
     beads[3]["metadata"].update(packet_size_exception="bounded", lane_packet="2", lane_order="1")
-    beads[3]["dependencies"] = ()
+    beads[3]["dependencies"] = []
     assert any(
         "packet blocker is in a later packet" in error for error in validate(FakeReader(beads))["structural_errors"]
     )
@@ -246,7 +259,7 @@ def test_authorized_prep_operations_have_kind_phase_authority_and_serialization(
         for error in validate(FakeReader(beads))["structural_errors"]
     )
     beads[2]["metadata"] = operation_metadata()
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=operation_predicates())
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]), predicates=operation_predicates())
     assert not any("authorized prep operation" in error for error in validate(FakeReader(beads))["structural_errors"])
 
 
@@ -275,7 +288,7 @@ def test_authorized_prep_operations_have_kind_phase_authority_and_serialization(
 def test_authorized_prep_operation_phase_and_apply_are_separate(changes: dict[str, Any], expected: str) -> None:
     beads = graph()
     beads[2]["metadata"] = operation_metadata(**changes)
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=operation_predicates())
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]), predicates=operation_predicates())
     assert any(expected in error for error in validate(FakeReader(beads))["structural_errors"])
 
 
@@ -292,8 +305,8 @@ def test_authorized_prep_operation_shapes_and_ordinary_prep_leaves_are_allowed(a
         live_data_access=access,
         operation_phase_contract=operation_contract(shape),
     )
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=operation_predicates())
     beads[3]["metadata"].update(execution_kind="evidence", live_data_access="read-only")
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]), predicates=operation_predicates())
     report = validate(FakeReader(beads))
     assert report["ok"]
     assert report["packets"][0]["ready"]
@@ -349,7 +362,7 @@ def test_final_window_authority_is_not_reclassified_as_prep_operation() -> None:
 def test_predicates_compile_to_typed_unsatisfied_reasons() -> None:
     beads = graph()
     beads[2]["metadata"]["readiness_contract"] = readiness(
-        predicates=(predicate("calibration-receipt", "calibration-1", "stale"),)
+        records=tuple(beads[2:5]), predicates=(predicate("calibration-receipt", "calibration-1", "stale"),)
     )
     report = validate(FakeReader(beads))
     assert report["ok"] and report["counts"]["non_ready_packets"] == 1
@@ -362,7 +375,9 @@ def test_predicates_compile_to_typed_unsatisfied_reasons() -> None:
 @pytest.mark.parametrize("kind", ("external-gate", "source-carrier-receipt", "terminal-campaign-proof"))
 def test_acceptance_predicates_are_typed_and_fail_closed(kind: str) -> None:
     beads = graph()
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=(predicate(kind, f"{kind}-1", "pending"),))
+    beads[2]["metadata"]["readiness_contract"] = readiness(
+        records=tuple(beads[2:5]), predicates=(predicate(kind, f"{kind}-1", "pending"),)
+    )
     projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
     assert projection["ready"] is False
     assert projection["unsatisfied_predicates"] == [{"evidence_id": f"{kind}-1", "kind": kind, "reason": "pending"}]
@@ -372,6 +387,7 @@ def test_launch_projection_is_the_single_ready_authority_for_structural_failures
     beads = graph()
     beads[2]["metadata"].pop("packet_execution_contract")
     beads[2]["metadata"].pop("deadline_policy")
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]))
     projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
     assert projection["ready"] is False
     assert {failure["field"] for failure in projection["launch_failures"]} == {
@@ -390,7 +406,7 @@ def test_phase_plan_and_authorization_errors_are_launch_failures() -> None:
             "plan_digest": "sha256:other",
         }
     )
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=operation_predicates())
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]), predicates=operation_predicates())
     packet = validate(FakeReader(beads))["packets"][0]
     assert packet["ready"] is False
     assert any(failure["kind"] == "operation-phase" for failure in packet["launch_projection"]["launch_failures"])
@@ -398,7 +414,7 @@ def test_phase_plan_and_authorization_errors_are_launch_failures() -> None:
 
 def test_enforcement_binds_actual_head_and_diagnostic_is_explicitly_nonfailing() -> None:
     beads = graph()
-    beads[2]["metadata"]["readiness_contract"] = readiness(head="f" * 40)
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]), head="f" * 40)
     reader = FakeReader(beads)
     assert main(["--enforce-readiness", "--integration-head", "e" * 40], reader=reader, stdout=StringIO()) == 1
     assert main(["--diagnostic", "--integration-head", "e" * 40], reader=reader, stdout=StringIO()) == 0
@@ -406,19 +422,18 @@ def test_enforcement_binds_actual_head_and_diagnostic_is_explicitly_nonfailing()
 
 def test_task_and_head_drift_are_both_launch_failures() -> None:
     beads = graph()
-    beads[2]["revision"] = "a-v2"
+    beads[2]["title"] = "Task a with a semantic mutation"
     projection = validate(FakeReader(beads), integration_head="f" * 40)["packets"][0]["launch_projection"]
     assert {failure["kind"] for failure in projection["launch_failures"]} == {"task-identity", "integration-head"}
 
 
 def test_launch_projection_binds_identity_head_capability_and_deadline() -> None:
-    projection = validate(FakeReader(graph()))["packets"][0]["launch_projection"]
+    beads = graph()
+    projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
     assert projection["version"] == "packet-launch-projection-v1"
     assert projection["integration_head"] == HEAD
     assert projection["task_identities"] == [
-        {"bead_id": "a", "revision": "a-v1"},
-        {"bead_id": "b", "revision": "b-v1"},
-        {"bead_id": "c", "revision": "c-v1"},
+        {"bead_id": bead["id"], "revision": _task_revision(bead)} for bead in beads[2:5]
     ]
     assert projection["launch_contract"] == {
         "packet_execution_contract": "packet-v1",
@@ -435,7 +450,7 @@ def test_launch_projection_binds_identity_head_capability_and_deadline() -> None
 def test_closed_predicate_states_fail_closed_except_accepted(state: str) -> None:
     beads = graph()
     beads[2]["metadata"]["readiness_contract"] = readiness(
-        predicates=(predicate("calibration-receipt", "calibration-1", state),)
+        records=tuple(beads[2:5]), predicates=(predicate("calibration-receipt", "calibration-1", state),)
     )
     projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
     assert projection["ready"] is (state == "accepted")
@@ -444,20 +459,24 @@ def test_closed_predicate_states_fail_closed_except_accepted(state: str) -> None
 def test_missing_rejected_unknown_and_stale_evidence_fail_closed() -> None:
     beads = graph()
     beads[2]["metadata"]["readiness_contract"] = readiness(
-        predicates=(predicate("exact-head-review", "review-1", "rejected", head=HEAD),)
+        records=tuple(beads[2:5]), predicates=(predicate("exact-head-review", "review-1", "rejected", head=HEAD),)
     )
     assert not validate(FakeReader(beads))["packets"][0]["ready"]
 
     beads[2]["metadata"]["readiness_contract"] = readiness(
-        predicates=(predicate("exact-head-review", "review-1", head="other-head"),)
+        records=tuple(beads[2:5]), predicates=(predicate("exact-head-review", "review-1", head="other-head"),)
     )
     stale = validate(FakeReader(beads))["packets"][0]["launch_projection"]
     assert stale["unsatisfied_predicates"][0]["reason"] == "stale"
 
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=(predicate("exact-head-review", "", head=HEAD),))
+    beads[2]["metadata"]["readiness_contract"] = readiness(
+        records=tuple(beads[2:5]), predicates=(predicate("exact-head-review", "", head=HEAD),)
+    )
     assert any("missing evidence_id" in error for error in validate(FakeReader(beads))["structural_errors"])
 
-    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=(predicate("phrase-from-a-note", "note-1"),))
+    beads[2]["metadata"]["readiness_contract"] = readiness(
+        records=tuple(beads[2:5]), predicates=(predicate("phrase-from-a-note", "note-1"),)
+    )
     assert any("unknown predicate kind" in error for error in validate(FakeReader(beads))["structural_errors"])
 
 
@@ -468,6 +487,7 @@ def test_authorization_expiry_and_revocation_fail_closed() -> None:
         ("revoked", "2026-08-25T07:00:00+00:00", "revoked"),
     ):
         beads[2]["metadata"]["readiness_contract"] = readiness(
+            records=tuple(beads[2:5]),
             predicates=(
                 predicate(
                     "operator-authorization",
@@ -476,7 +496,7 @@ def test_authorization_expiry_and_revocation_fail_closed() -> None:
                     plan_digest="sha256:plan-1",
                     expires_at=expires_at,
                 ),
-            )
+            ),
         )
         projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
         assert projection["unsatisfied_predicates"][0]["reason"] == reason
@@ -485,7 +505,8 @@ def test_authorization_expiry_and_revocation_fail_closed() -> None:
 def test_blocks_prerequisites_are_packet_unit_readiness() -> None:
     beads = graph()
     beads.append(bead("outside", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, status="closed"))
-    beads[2]["dependencies"] = (dep("outside"),)
+    beads[2]["dependencies"] = [dep("outside")]
+    beads[2]["metadata"]["readiness_contract"] = readiness(records=tuple(beads[2:5]))
     assert validate(FakeReader(beads))["packets"][0]["ready"]
 
     beads[-1]["status"] = "open"
@@ -495,9 +516,15 @@ def test_blocks_prerequisites_are_packet_unit_readiness() -> None:
     assert projection["unsatisfied_predicates"] == [{"bead_id": "outside", "kind": "blocks", "reason": "open"}]
 
 
-def test_contract_member_revision_and_head_drift_are_not_launchable() -> None:
+def test_real_export_shape_contract_becomes_ready_and_semantic_mutation_stales() -> None:
     beads = graph()
-    beads[2]["revision"] = "a-v2"
+    assert all("revision" not in bead for bead in beads)
+    assert validate(FakeReader(beads))["packets"][0]["ready"]
+
+    beads[2]["updated_at"] = "2026-08-25T07:00:00Z"
+    assert validate(FakeReader(beads))["packets"][0]["ready"]
+
+    beads[2]["description"] = "Description changed after readiness was authored"
     report = validate(FakeReader(beads))
     assert not report["packets"][0]["ready"]
     assert report["packets"][0]["launch_projection"]["unsatisfied_predicates"] == [
