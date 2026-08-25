@@ -327,7 +327,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Convergence Law Deletion Ledger",
         "convergence-laws-deletion-ledger.md",
-        "Deletion candidates and exact 04r9f mutation-parity conditions for convergence-law machinery.",
+        "Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery.",
         "design",
     ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),

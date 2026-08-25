@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
+import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
@@ -32,7 +33,6 @@ from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_st
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.services.ingest_batch._core import _write_session
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.scenarios import WorkloadEnvelopeSpec, partial_convergence_canary_spec
 from polylogue.sources.parsers.base import (
@@ -317,7 +317,7 @@ def ingest_convergence_pathology(
         ):
             index_conn.row_factory = sqlite3.Row
             with index_conn, source_conn:
-                changed, counts = _write_session(
+                changed, counts = ingest_batch_core._write_session(
                     index_conn,
                     payload_model,
                     blob_publisher=blob_publisher,
@@ -553,6 +553,15 @@ def _parsed_session(
                     tool_name="Task",
                     tool_id=dispatch_tool_id,
                     tool_input={"prompt": message.text, "model": "gpt-4.1-mini"},
+                )
+            )
+            blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    text="fixture tool completed",
+                    tool_id=dispatch_tool_id,
+                    is_error=False,
+                    exit_code=0,
                 )
             )
         messages.append(
