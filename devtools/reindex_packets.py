@@ -10,7 +10,7 @@ from typing import Any
 
 ROOT_ID = "polylogue-reindex-2026"
 CAMPAIGN_ID = "reindex-2026"
-CORE = "execution_wave execution_lane lane_packet lane_order conflict_keys write_scope verification_commands model_policy live_data_access decision_closure necessity_class tdd_mode".split()  # noqa: SIM905
+CORE = "execution_wave execution_lane lane_packet lane_order affected_paths conflict_keys write_scope verification_commands model_policy live_data_access decision_closure necessity_class judgment_class tdd_mode tdd_packet packet_intent integration_intent".split()  # noqa: SIM905
 LAUNCH = "packet_execution_contract effort expected_duration_evidence deadline_policy dispatch_readiness".split()  # noqa: SIM905
 WAVES = {"reindex-prep-a": 1, "reindex-prep-b": 2, "reindex-prep-c": 3, "reindex-window": 4}
 

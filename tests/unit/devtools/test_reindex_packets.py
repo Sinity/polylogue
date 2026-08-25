@@ -29,6 +29,7 @@ def meta(**changes: Any) -> dict[str, Any]:
         "execution_lane": "lane",
         "lane_packet": "1",
         "lane_order": "1",
+        "affected_paths": "polylogue/example.py; tests/unit/test_example.py",
         "conflict_keys": "one; two",
         "write_scope": "free-form scope",
         "verification_commands": "devtools test",
@@ -38,7 +39,11 @@ def meta(**changes: Any) -> dict[str, Any]:
         "live_data_access": "synthetic",
         "decision_closure": "closed-by-spec",
         "necessity_class": "required",
+        "judgment_class": "mechanical",
         "tdd_mode": "focused",
+        "tdd_packet": "focused-v1",
+        "packet_intent": "implement the example packet",
+        "integration_intent": "one coherent example batch",
     }
     value.update(changes)
     return value
