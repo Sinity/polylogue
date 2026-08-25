@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from io import StringIO
 from pathlib import Path
@@ -10,9 +11,31 @@ from typing import Any, cast
 
 import pytest
 
-from devtools.reindex_packets import APPLY_AUTHORITY_MODE, ROOT_ID, WAVES, _record, _task_revision, main, validate
+from devtools.reindex_packets import (
+    APPLY_AUTHORITY_MODE,
+    ROOT_ID,
+    WAVES,
+    ReindexPacketValidationError,
+    _record,
+    _task_revision,
+    main,
+    validate,
+)
 
-HEAD = "9c57a99e8de29ee6d215e4508e8723060644e168"
+
+def checkout_head() -> str:
+    return subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "--verify", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    ).stdout.strip()
+
+
+HEAD = checkout_head()
+GIT_ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 
 
 class FakeReader:
@@ -268,7 +291,30 @@ def test_prep_operation_access_cannot_become_ordinary_by_wave_and_kind_edit() ->
         }
     ]
     assert not ordinary["ready"]
-    assert ordinary["effective_authority"]["live_authority"] == ("explicit-operator-authorized-source-apply")
+    assert ordinary["effective_authority"]["live_authority"] == "none"
+
+
+@pytest.mark.parametrize(
+    "access",
+    [
+        " EXPLICIT-OPERATOR-AUTHORIZED-index-apply ",
+        "explicit-operator-authorized-audit-apply",
+        "explicit-operator-authorized-future-derived-tier-apply",
+    ],
+)
+def test_every_reserved_apply_access_token_requires_the_prep_operation_regime(access: str) -> None:
+    beads = graph()
+    beads[2]["metadata"].update(execution_kind="implementation", live_data_access=access)
+    ordinary = launch(validate(FakeReader(beads), integration_head=HEAD), "ordinary")
+    assert not ordinary["ready"]
+    assert any(failure["kind"] == "execution-kind" for failure in ordinary["launch_failures"])
+    assert ordinary["effective_authority"]["live_authority"] == "none"
+
+    beads = graph(operation=True)
+    beads[2]["metadata"]["live_data_access"] = access
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert not report["structural_errors"]
+    assert launch(report, "initial")["effective_authority"]["live_authority"] == "none"
 
 
 @pytest.mark.parametrize(
@@ -322,21 +368,45 @@ def test_invalid_operation_membership_is_in_each_launch_and_cli_diagnosis(
     assert f"ERROR: reindex-prep-a/lane/1: {structural_error}" in output.getvalue()
 
 
-def test_integration_head_must_be_an_existing_commit_bound_to_this_checkout(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="does not name an existing commit"):
+def test_integration_head_is_exact_current_checkout_head_and_is_typed(tmp_path: Path) -> None:
+    assert validate(FakeReader(graph()), integration_head=HEAD)["packets"][0]["ready"]
+    stale_ancestor = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "HEAD^"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=GIT_ENV,
+    ).stdout.strip()
+    with pytest.raises(ReindexPacketValidationError, match="stale ancestor"):
+        validate(FakeReader(graph()), integration_head=stale_ancestor)
+
+    with pytest.raises(ReindexPacketValidationError, match="does not name an existing commit"):
         validate(FakeReader(graph()), integration_head="f" * 40)
 
-    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True, timeout=5, env=GIT_ENV)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True, timeout=5, env=GIT_ENV
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Test"], check=True, timeout=5, env=GIT_ENV)
     (tmp_path / "foreign.txt").write_text("foreign\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "foreign.txt"], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "--quiet", "-m", "foreign"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "foreign.txt"], check=True, timeout=5, env=GIT_ENV)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "--quiet", "-m", "foreign"], check=True, timeout=5, env=GIT_ENV
+    )
     foreign_head = subprocess.run(
-        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=GIT_ENV,
     ).stdout.strip()
-    with pytest.raises(ValueError, match="does not name an existing commit"):
+    with pytest.raises(ReindexPacketValidationError, match="does not name an existing commit"):
         validate(FakeReader(graph()), integration_head=foreign_head)
+
+    with pytest.raises(ReindexPacketValidationError, match="40-character lowercase"):
+        validate(FakeReader(graph()), integration_head="not-a-head")
 
 
 def test_wave_order_accepts_post_reindex_only_after_live_window_and_unknown_is_not_earliest() -> None:
@@ -401,6 +471,23 @@ def test_initial_phase_token_cannot_authorize_apply() -> None:
     assert ":initial:" in initial["phase_token"] and ":apply:" in apply["phase_token"]
     assert initial["effective_authority"]["may_apply"] is False
     assert apply["effective_authority"]["may_apply"] is False
+
+
+def test_caller_evidence_cannot_change_any_initial_projection_field() -> None:
+    beads = graph(operation=True)
+    baseline = launch(validate(FakeReader(beads), integration_head=HEAD), "initial")
+    valid_evidence = bound_operation_evidence(beads)
+    for caller_evidence in (
+        valid_evidence,
+        {"arbitrary": "valid-json", "nested": [1, None, True]},
+        None,
+    ):
+        report = validate(
+            FakeReader(beads),
+            integration_head=HEAD,
+            operation_evidence={"a": caller_evidence},
+        )
+        assert launch(report, "initial") == baseline
 
 
 def test_apply_phase_token_binds_the_runtime_plan_digest() -> None:
@@ -513,6 +600,17 @@ def test_legacy_static_readiness_is_rejected_for_operations_without_mutating_bea
     assert beads[2]["metadata"]["readiness_contract"] == {"old": "runtime state"}
 
 
+@pytest.mark.parametrize("field", ["operation_phase_contract", "initial_job_authority", "apply_authority"])
+def test_legacy_v1_string_operation_contracts_require_structured_v2(field: str) -> None:
+    beads = graph(operation=True)
+    beads[2]["metadata"][field] = "legacy-v1-value"
+    report = validate(FakeReader(beads), integration_head=HEAD)
+    assert any(
+        "structured-v2-required/legacy-field" in error and field in error for error in report["structural_errors"]
+    )
+    assert not any(field in error and "missing" in error for error in report["structural_errors"])
+
+
 def test_task_revision_binds_unknown_semantic_metadata_but_not_operational_bookkeeping() -> None:
     beads = graph()
     baseline = launch(validate(FakeReader(beads), integration_head=HEAD), "ordinary")
@@ -619,23 +717,6 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
     assert main(["--json"], stdout=output) == 0
     assert calls == [
         ("git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "--verify", "HEAD"),
-        (
-            "git",
-            "-C",
-            str(Path(__file__).resolve().parents[3]),
-            "rev-parse",
-            "--verify",
-            "0000000000000000000000000000000000000000^{commit}",
-        ),
-        (
-            "git",
-            "-C",
-            str(Path(__file__).resolve().parents[3]),
-            "merge-base",
-            "--is-ancestor",
-            "0000000000000000000000000000000000000000",
-            "HEAD",
-        ),
         ("bd", "--readonly", "export", "--all"),
     ]
     assert json.loads(output.getvalue())["read_only"] is True
@@ -837,7 +918,7 @@ def test_task_revision_binds_top_level_semantics_and_has_no_self_oracle() -> Non
 
 
 def test_invalid_integration_head_and_phase_explicit_text_report_fail_closed() -> None:
-    with pytest.raises(Exception, match="40-character lowercase"):
+    with pytest.raises(ReindexPacketValidationError, match="40-character lowercase"):
         validate(FakeReader(graph()), integration_head="not-a-head")
     output = StringIO()
     assert (

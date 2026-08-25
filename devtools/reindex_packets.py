@@ -30,9 +30,6 @@ TASK_REVISION_BOOKKEEPING_FIELDS = frozenset(
     {"created_at", "updated_at", "created_by", "comment_count", "dependency_count", "dependent_count"}
 )
 OPERATION_PHASE_VERSION = "prep-operation-phase-v2"
-PREP_OPERATION_ACCESS = frozenset(
-    {"explicit-operator-authorized-source-apply", "explicit-operator-authorized-blob-apply"}
-)
 FINAL_CANDIDATE_ACCESS = frozenset({"candidate-only"})
 EXECUTION_KINDS = frozenset({"implementation", "evidence", "authorized-prep-operation"})
 PHASES = frozenset({"initial", "apply"})
@@ -65,6 +62,12 @@ PROHIBITED_OPERATION_POLICY_FIELDS = frozenset(
     {"plan_id", "plan_digest", "rehearsal_id", "authorization_id", "job_id", "phase_state"}
 )
 INTEGRATION_HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PREP_OPERATION_ACCESS_PATTERN = re.compile(r"^explicit-operator-authorized-.+-apply$")
+SUBPROCESS_TIMEOUT_SECONDS = 5
+
+
+class ReindexPacketValidationError(ValueError):
+    """Typed validation failure for an unlaunchable reindex packet."""
 
 
 @dataclass(frozen=True)
@@ -98,7 +101,12 @@ class BdExportReader:
 
     def read(self) -> tuple[dict[str, Any], ...]:
         result = subprocess.run(
-            [self.executable, "--readonly", "export", "--all"], check=True, capture_output=True, text=True
+            [self.executable, "--readonly", "export", "--all"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         )
         return tuple(
             _record(record)
@@ -126,7 +134,10 @@ def _record(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Bead dependencies must be an array")
     record["id"] = str(record.get("id", ""))
     record["labels"] = tuple(map(str, labels))
-    record["metadata"] = _metadata(record.get("metadata"))
+    metadata = _metadata(record.get("metadata"))
+    if isinstance(metadata.get("live_data_access"), str):
+        metadata["live_data_access"] = metadata["live_data_access"].strip().casefold()
+    record["metadata"] = metadata
     record["dependencies"] = tuple(dep for dep in dependencies if isinstance(dep, Mapping))
     return record
 
@@ -240,28 +251,39 @@ def _serialized(bead: Mapping[str, Any]) -> bool:
     return str(_value(bead, "lane_mode") or "").startswith("serialized-")
 
 
+def _is_access(value: object, *allowed: str) -> bool:
+    return isinstance(value, str) and value in allowed
+
+
+def _is_prep_operation_access(value: object) -> bool:
+    return isinstance(value, str) and PREP_OPERATION_ACCESS_PATTERN.fullmatch(value) is not None
+
+
 def _authority_writer(bead: Mapping[str, Any]) -> bool:
-    access = str(_value(bead, "live_data_access") or "").lower()
+    access = _value(bead, "live_data_access")
     return (
-        access in {"active-authorized", "authorized-inactive-generation-writer"}
-        or "explicit-operator-authorized" in access
-        or access in FINAL_CANDIDATE_ACCESS
-        or ("candidate" in access and "write" in access)
+        _is_access(access, "active-authorized", "authorized-inactive-generation-writer")
+        or _is_prep_operation_access(access)
+        or _is_access(access, *FINAL_CANDIDATE_ACCESS)
+        or isinstance(access, str)
+        and "candidate" in access
+        and "write" in access
     )
 
 
 def _serialization_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
     if not _authority_writer(bead) or _serialized(bead):
         return []
-    access = str(_value(bead, "live_data_access") or "").lower()
+    access = _value(bead, "live_data_access")
     if wave.startswith("reindex-prep-") and _value(bead, "execution_kind") == "authorized-prep-operation":
         return [f"{bead['id']}: authorized prep operation must be serialized"]
-    if (
-        access in {"active-authorized", "authorized-inactive-generation-writer"}
-        or "explicit-operator-authorized" in access
+    if _is_access(access, "active-authorized", "authorized-inactive-generation-writer") or _is_prep_operation_access(
+        access
     ):
         return [f"{bead['id']}: operator-authorized writer is not serialized"]
-    if access in FINAL_CANDIDATE_ACCESS or ("candidate" in access and "write" in access):
+    if _is_access(access, *FINAL_CANDIDATE_ACCESS) or (
+        isinstance(access, str) and "candidate" in access and "write" in access
+    ):
         return [f"{bead['id']}: candidate writer is not serialized"]
     return []
 
@@ -276,10 +298,17 @@ def _parse_datetime(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _integration_head_argument(value: str) -> str:
-    if not INTEGRATION_HEAD_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError("integration head must be a 40-character lowercase commit SHA")
+def _validated_integration_head_syntax(value: object) -> str:
+    if not isinstance(value, str) or INTEGRATION_HEAD_PATTERN.fullmatch(value) is None:
+        raise ReindexPacketValidationError("integration head must be a 40-character lowercase commit SHA")
     return value
+
+
+def _integration_head_argument(value: str) -> str:
+    try:
+        return _validated_integration_head_syntax(value)
+    except ReindexPacketValidationError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _checkout_integration_head() -> str:
@@ -289,40 +318,76 @@ def _checkout_integration_head() -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
-    return _integration_head_argument(result.stdout.strip())
+    return _validated_integration_head_syntax(result.stdout.strip())
 
 
-def _validate_integration_head(value: str) -> str:
-    """Require an existing commit reachable from this checkout's current HEAD."""
-    head = _integration_head_argument(value)
+def _validate_integration_head(value: str | None) -> str:
+    """Require an exact commit identity for this checkout's current HEAD."""
     repository_root = Path(__file__).resolve().parents[1]
     environment = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    checkout_head = _checkout_integration_head()
+    if value is None:
+        return checkout_head
+    head = _validated_integration_head_syntax(value)
+    if head == checkout_head:
+        return head
     try:
         resolved = subprocess.run(
             ["git", "-C", str(repository_root), "rev-parse", "--verify", f"{head}^{{commit}}"],
             check=True,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
             env=environment,
         )
         if resolved.stdout.strip() != head:
-            raise ValueError(f"integration head {head} does not name an actual commit in this checkout")
+            raise ReindexPacketValidationError(
+                f"integration head {head} does not name an actual commit in this checkout"
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(f"integration head {head} does not name an existing commit in this checkout") from exc
+        raise ReindexPacketValidationError(
+            f"integration head {head} does not name an existing commit in this checkout"
+        ) from exc
     try:
         subprocess.run(
             ["git", "-C", str(repository_root), "merge-base", "--is-ancestor", head, "HEAD"],
             check=True,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
             env=environment,
         )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(f"integration head {head} is not an ancestor of this checkout HEAD") from exc
-    return head
+    except subprocess.CalledProcessError as exc:
+        try:
+            subprocess.run(
+                ["git", "-C", str(repository_root), "merge-base", "--is-ancestor", "HEAD", head],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                env=environment,
+            )
+        except subprocess.CalledProcessError:
+            raise ReindexPacketValidationError(
+                f"integration head {head} does not equal exact checkout HEAD {checkout_head}"
+            ) from exc
+        except (OSError, subprocess.TimeoutExpired) as descendant_exc:
+            raise ReindexPacketValidationError(
+                f"unable to classify integration head {head} against exact checkout HEAD {checkout_head}"
+            ) from descendant_exc
+        raise ReindexPacketValidationError(
+            f"integration head {head} is a descendant of exact checkout HEAD {checkout_head}"
+        ) from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReindexPacketValidationError(
+            f"unable to classify integration head {head} against exact checkout HEAD {checkout_head}"
+        ) from exc
+    raise ReindexPacketValidationError(
+        f"integration head {head} is a stale ancestor of exact checkout HEAD {checkout_head}"
+    )
 
 
 def _parse_phase_evidence(value: object, fields: frozenset[str], *, name: str) -> PhaseEvidence | None:
@@ -371,13 +436,13 @@ def _parse_operation_evidence(value: object) -> OperationEvidence:
 
 
 def _execution_kind_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
-    bead_id, access, kind = bead["id"], str(_value(bead, "live_data_access") or ""), _value(bead, "execution_kind")
+    bead_id, access, kind = bead["id"], _value(bead, "live_data_access"), _value(bead, "execution_kind")
     errors = []
     if wave not in WAVES:
         errors.append(f"{bead_id}: unknown execution_wave {wave!r}")
     if kind is not None and kind not in EXECUTION_KINDS:
         errors.append(f"{bead_id}: unknown execution_kind {kind!r}")
-    if access in PREP_OPERATION_ACCESS and kind != "authorized-prep-operation":
+    if _is_prep_operation_access(access) and kind != "authorized-prep-operation":
         if wave in PREP_OPERATION_WAVES:
             errors.append(f"{bead_id}: {wave}/{access} requires execution_kind authorized-prep-operation")
         else:
@@ -387,7 +452,7 @@ def _execution_kind_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
     if kind == "authorized-prep-operation":
         if wave not in PREP_OPERATION_WAVES:
             errors.append(f"{bead_id}: authorized prep operation requires a declared prep execution_wave")
-        if access not in PREP_OPERATION_ACCESS:
+        if not _is_prep_operation_access(access):
             errors.append(f"{bead_id}: authorized prep operation requires operator-authorized live_data_access")
     return errors
 
@@ -397,7 +462,9 @@ def _operation_phase_errors(bead: Mapping[str, Any]) -> list[str]:
         return []
     bead_id, phase = bead["id"], _value(bead, "operation_phase_contract")
     errors = []
-    if not isinstance(phase, Mapping):
+    if isinstance(phase, str) and phase.strip():
+        errors.append(f"{bead_id}: operation_phase_contract requires structured-v2-required/legacy-field")
+    elif not isinstance(phase, Mapping):
         errors.append(f"{bead_id}: authorized prep operation missing operation_phase_contract")
     else:
         fields = {"version", "shape"}
@@ -406,13 +473,17 @@ def _operation_phase_errors(bead: Mapping[str, Any]) -> list[str]:
         elif phase.get("shape") not in OPERATION_SHAPES:
             errors.append(f"{bead_id}: authorized prep operation has invalid phase shape")
     initial, apply = _value(bead, "initial_job_authority"), _value(bead, "apply_authority")
-    if (
+    if isinstance(initial, str) and initial.strip():
+        errors.append(f"{bead_id}: initial_job_authority requires structured-v2-required/legacy-field")
+    elif (
         not isinstance(initial, Mapping)
         or set(initial) != {"mode"}
         or initial.get("mode") not in INITIAL_AUTHORITY_MODES
     ):
         errors.append(f"{bead_id}: authorized prep operation has invalid initial_job_authority")
-    if not isinstance(apply, Mapping) or set(apply) != {"mode"} or apply.get("mode") != APPLY_AUTHORITY_MODE:
+    if isinstance(apply, str) and apply.strip():
+        errors.append(f"{bead_id}: apply_authority requires structured-v2-required/legacy-field")
+    elif not isinstance(apply, Mapping) or set(apply) != {"mode"} or apply.get("mode") != APPLY_AUTHORITY_MODE:
         errors.append(f"{bead_id}: authorized prep operation has invalid apply_authority")
     if _present(_value(bead, "readiness_contract")):
         errors.append(f"{bead_id}: authorized prep operation must not store runtime readiness_contract")
@@ -520,15 +591,14 @@ def _projection(
     operation_member: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     leader = beads[members[0]]
-    operation = phase in PHASES
     if phase == "initial":
         initial_authority = _value(operation_member, "initial_job_authority") if operation_member else None
         initial_mode = initial_authority.get("mode") if isinstance(initial_authority, Mapping) else None
         initial_valid = initial_mode in INITIAL_AUTHORITY_MODES
         authority = {
-            "mode": initial_mode if operation and initial_valid else "invalid",
-            "allowed_actions": ["read-only-plan", "isolated-rehearsal"] if operation else ["packet-execution"],
-            "live_authority": "none" if operation else _value(leader, "live_data_access"),
+            "mode": initial_mode if operation_member and initial_valid else "invalid",
+            "allowed_actions": ["read-only-plan", "isolated-rehearsal"] if operation_member else ["packet-execution"],
+            "live_authority": "none",
             "may_apply": False,
         }
     elif phase == "apply":
@@ -539,10 +609,11 @@ def _projection(
             "may_apply": False,
         }
     else:
+        live_data_access = _value(leader, "live_data_access")
         authority = {
             "mode": "ordinary-launch",
             "allowed_actions": ["packet-execution"],
-            "live_authority": _value(leader, "live_data_access"),
+            "live_authority": "none" if _is_prep_operation_access(live_data_access) else live_data_access,
             "may_apply": False,
         }
     projection: dict[str, Any] = {
@@ -598,7 +669,7 @@ def validate(
 ) -> dict[str, Any]:
     if selected_phase not in PHASES:
         raise ValueError(f"selected phase must be one of {sorted(PHASES)}")
-    effective_head = _validate_integration_head(integration_head or _checkout_integration_head())
+    effective_head = _validate_integration_head(integration_head)
     evidence_by_operation = dict(operation_evidence or {})
     beads = {bead["id"]: bead for bead in reader.read() if _is_task(bead)}
     if root_id not in beads:
@@ -901,7 +972,7 @@ def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = Non
         report = validate(
             reader or BdExportReader(),
             root_id=args.root_id,
-            integration_head=args.integration_head or _checkout_integration_head(),
+            integration_head=args.integration_head,
             operation_evidence=args.operation_evidence_json,
             selected_phase=args.phase,
         )
