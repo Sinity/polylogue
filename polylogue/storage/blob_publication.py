@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import IO, BinaryIO
 from uuid import uuid4
 
-from polylogue.storage.blob_liveness import inspect_blob_liveness
+from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -43,7 +43,12 @@ class BlobPublicationInspection:
     publisher_id: str
     reserved_at_ms: int
     blob_present: bool
-    referenced: bool
+    liveness: BlobLiveness
+
+    @property
+    def referenced(self) -> bool:
+        """Presentation adapter for receipt listings, never a clear authorization."""
+        return self.liveness.state is LivenessState.LIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +58,8 @@ class BlobPublicationReconciliation:
     retained_referenced: int = 0
     retained_missing: int = 0
     unresolved: int = 0
+    retained_blocked: int = 0
+    blockers: tuple[str, ...] = ()
     scanned: int = 0
     last_scanned_publication_id: str | None = None
 
@@ -258,11 +265,11 @@ def consume_blob_publication_receipt(
     )
 
 
-def _is_referenced(
+def _liveness_decision(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
     blob_hash: bytes,
-) -> bool:
+) -> BlobLiveness:
     """Delegate to the canonical blob-liveness relation.
 
     Uses the same union GC and integrity consume: direct row-level
@@ -277,7 +284,7 @@ def _is_referenced(
         index_conn=index_conn,
         require_index=True,
         include_reservations=False,
-    ).protected
+    )
 
 
 def inspect_blob_publication_receipts(
@@ -341,7 +348,7 @@ def inspect_blob_publication_receipts(
                 publisher_id=str(row["publisher_id"]),
                 reserved_at_ms=int(row["reserved_at_ms"]),
                 blob_present=store.exists(bytes(row["blob_hash"]).hex()),
-                referenced=_is_referenced(source_conn, index_conn, bytes(row["blob_hash"])),
+                liveness=_liveness_decision(source_conn, index_conn, bytes(row["blob_hash"])),
             )
             for row in rows
         )
@@ -378,14 +385,18 @@ def reconcile_blob_publication_reservations(
     retained_referenced = 0
     retained_missing = 0
     unresolved = 0
+    retained_blocked = 0
+    blockers: list[str] = []
     clear_ids: list[str] = []
     for item in inspections:
-        if item.referenced:
-            if may_clear:
-                clear_ids.append(item.publication_id)
-                cleared_referenced += 1
-            else:
-                retained_referenced += 1
+        if item.liveness.state is LivenessState.BLOCKED:
+            retained_blocked += 1
+            blockers.extend(item.liveness.blockers)
+        elif item.liveness.state is LivenessState.LIVE:
+            # A hash-level owner proves retention, not which publication made
+            # it durable. Only the matching reference transaction consumes a
+            # reservation, so two same-hash receipts cannot clear each other.
+            retained_referenced += 1
         elif not item.blob_present:
             if may_clear:
                 clear_ids.append(item.publication_id)
@@ -414,6 +425,8 @@ def reconcile_blob_publication_reservations(
         retained_referenced=retained_referenced,
         retained_missing=retained_missing,
         unresolved=unresolved,
+        retained_blocked=retained_blocked,
+        blockers=tuple(dict.fromkeys(blockers)),
         scanned=len(inspections),
         last_scanned_publication_id=inspections[-1].publication_id if inspections else None,
     )
@@ -474,7 +487,7 @@ def abandon_blob_publication_receipts(
             item = by_id.get(publication_id)
             if item is None:
                 continue
-            if item.referenced:
+            if item.liveness.state is not LivenessState.UNREFERENCED:
                 skipped_referenced += 1
                 continue
             abandoned.append(publication_id)

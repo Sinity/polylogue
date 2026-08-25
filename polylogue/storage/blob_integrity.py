@@ -35,7 +35,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
-from polylogue.storage.blob_liveness import live_blob_ref_hashes
+from polylogue.storage.blob_liveness import project_live_blob_hashes
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -489,52 +489,28 @@ def _archive_source_blob_hashes(conn: sqlite3.Connection) -> list[str]:
 
 
 def _archive_source_blob_hashes_by_table(conn: sqlite3.Connection) -> dict[str, list[str]]:
-    hashes_by_table: dict[str, list[str]] = {}
-    if _table_exists(conn, "raw_sessions"):
-        rows = conn.execute("SELECT blob_hash FROM raw_sessions").fetchall()
-        raw_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
-        if raw_hashes:
-            hashes_by_table["raw_sessions"] = sorted(raw_hashes)
-    if _table_exists(conn, "blob_refs"):
-        # A blob_refs row is only "referenced" here when its ref_type still
-        # joins to a live referent (polylogue-0v4tn) -- a dangling row alone
-        # is evidence, not liveness, and must not suppress an orphan finding.
-        ref_hashes = live_blob_ref_hashes(conn)
-        if ref_hashes:
-            hashes_by_table["blob_refs"] = sorted(ref_hashes)
-    for table in ("attachments", "blob_publication_reservations", "verified_blob_receipts"):
-        if not _table_exists(conn, table) or not _column_exists(conn, table, "blob_hash"):
-            continue
-        rows = conn.execute(f"SELECT blob_hash FROM {table}").fetchall()
-        table_hashes = {hash_text for row in rows if (hash_text := _blob_hash_text(row[0])) is not None}
-        if table_hashes:
-            hashes_by_table[table] = sorted(table_hashes)
-    return hashes_by_table
-
-
-def _raw_session_hashes(conn: sqlite3.Connection) -> list[str]:
-    if not _table_exists(conn, "raw_sessions"):
-        return []
-    # No ORDER BY: the result is consumed unordered into a set
-    # (scan_blob_integrity builds ``set(referenced)``), so sorting the full
-    # raw_sessions scan on unindexed ``acquired_at`` was pure overhead.
-    rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
-    return [str(row[0]) for row in rows if row[0]]
+    projection = project_live_blob_hashes(conn)
+    if projection.blockers:
+        logger.warning("blob integrity liveness projection blocked: %s", "; ".join(projection.blockers))
+        return {}
+    return {"canonical_owners": sorted(projection.live_hashes)} if projection.live_hashes else {}
 
 
 def _referenced_blob_hashes(
     db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
 ) -> list[str]:
-    direct_archive_hashes = _archive_source_blob_hashes(conn)
-
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
-                source_archive_hashes = _archive_source_blob_hashes(source_conn)
-                if source_archive_hashes:
-                    return sorted(set(direct_archive_hashes) | set(source_archive_hashes))
+                projection = project_live_blob_hashes(
+                    source_conn, index_conn=conn if _table_exists(conn, "attachments") else None
+                )
+                if projection.blockers:
+                    logger.warning("blob integrity liveness projection blocked: %s", "; ".join(projection.blockers))
+                    return []
+                return sorted(projection.live_hashes)
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
@@ -546,26 +522,38 @@ def _referenced_blob_hashes(
                 "blob integrity: source.db referenced-hash query failed for %s: %s", source_db, exc, exc_info=True
             )
 
-    if direct_archive_hashes:
-        return direct_archive_hashes
-    return _raw_session_hashes(conn)
+    if configured_root is not None:
+        index_db = configured_root / "index.db"
+    else:
+        from polylogue.storage.archive_identity import ArchiveLocation
+
+        index_db = ArchiveLocation.resolve(db_path.parent).active_index_path
+    if db_path.name == "source.db" and index_db.exists():
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
+            projection = project_live_blob_hashes(
+                conn, index_conn=index_conn if _table_exists(index_conn, "attachments") else None
+            )
+    else:
+        projection = project_live_blob_hashes(conn)
+    if projection.blockers:
+        logger.warning("blob integrity liveness projection blocked: %s", "; ".join(projection.blockers))
+        return []
+    return sorted(projection.live_hashes)
 
 
 def _reference_source_counts(
     db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
 ) -> dict[str, int]:
-    direct = _archive_source_blob_hashes_by_table(conn)
-
     source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
-                source = _archive_source_blob_hashes_by_table(source_conn)
-                if source:
-                    counts = {table: len(hashes) for table, hashes in direct.items()}
-                    counts.update({f"source.db:{table}": len(hashes) for table, hashes in source.items()})
-                    return counts
+                projection = project_live_blob_hashes(
+                    source_conn, index_conn=conn if _table_exists(conn, "attachments") else None
+                )
+                if not projection.blockers:
+                    return {"canonical_owners": len(projection.live_hashes)} if projection.live_hashes else {}
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
@@ -573,11 +561,10 @@ def _reference_source_counts(
                 "blob integrity: source.db reference-count query failed for %s: %s", source_db, exc, exc_info=True
             )
 
-    if direct:
-        return {table: len(hashes) for table, hashes in direct.items()}
-
-    fallback_count = len(_raw_session_hashes(conn))
-    return {"raw_sessions.raw_id": fallback_count} if fallback_count else {}
+    projection = project_live_blob_hashes(conn)
+    return (
+        {"canonical_owners": len(projection.live_hashes)} if not projection.blockers and projection.live_hashes else {}
+    )
 
 
 def referenced_blob_hashes(db_path: str | Path, *, immutable: bool = False) -> list[str]:

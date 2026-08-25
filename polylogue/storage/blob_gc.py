@@ -55,12 +55,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from polylogue.storage.blob_liveness import BLOB_REF_LIVENESS_JOIN, inspect_blob_liveness
-from polylogue.storage.blob_liveness import blob_hash_is_referenced as _still_referenced
-from polylogue.storage.blob_liveness import blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column
-from polylogue.storage.blob_liveness import has_publication_reservation as _has_publication_reservation
-from polylogue.storage.blob_liveness import legacy_hook_liveness_status as _legacy_hook_liveness_status
-from polylogue.storage.blob_liveness import reference_surfaces as _reference_surfaces
+from polylogue.storage.blob_liveness import (
+    BLOB_REF_LIVENESS_JOIN,
+    LivenessState,
+    inspect_blob_liveness,
+    inspect_blob_reservation,
+)
+from polylogue.storage.blob_liveness import (
+    blob_refs_has_ref_type_column as _blob_refs_has_ref_type_column,
+)
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -392,9 +395,6 @@ def run_blob_gc_report(
     planning_conn.row_factory = sqlite3.Row
     planning_source_conn: sqlite3.Connection | None = None
     planning_index_conn: sqlite3.Connection | None = None
-    planning_legacy_hook_status = "not_applicable"
-    planning_source_legacy_hook_status = "not_applicable"
-    planning_index_legacy_hook_status = "not_applicable"
     try:
         # The source sibling is optional: for a single-file set the control
         # database is itself the source surface. The index sibling is not --
@@ -404,23 +404,20 @@ def run_blob_gc_report(
             planning_source_conn = sqlite3.connect(f"file:{sibling_source_db}?mode=ro", uri=True)
         if control_db_path != sibling_index_db:
             planning_index_conn = sqlite3.connect(f"file:{sibling_index_db}?mode=ro", uri=True)
-        planning_legacy_hook_status = _legacy_hook_liveness_status(planning_conn)
-        if planning_source_conn is not None:
-            planning_source_legacy_hook_status = _legacy_hook_liveness_status(planning_source_conn)
-        if planning_index_conn is not None:
-            planning_index_legacy_hook_status = _legacy_hook_liveness_status(planning_index_conn)
         # Fail the entire destructive pass closed before candidate selection
         # when a current owner surface cannot be evaluated.  Per-hash calls
         # below retain their long-standing aliases for testable snapshot and
         # final-recheck orchestration; the schema contract itself has one
         # owner in blob_liveness.
+        planning_source = planning_source_conn or planning_conn
+        planning_index = planning_index_conn or (planning_conn if control_db_path == sibling_index_db else None)
         preflight = inspect_blob_liveness(
-            planning_conn,
+            planning_source,
             "0" * 64,
-            index_conn=planning_index_conn,
+            index_conn=planning_index,
             require_index=True,
         )
-        if preflight.blockers:
+        if preflight.state is LivenessState.BLOCKED:
             report.blocked_reason = "; ".join(preflight.blockers)
             logger.error("Blob GC refused to run: %s", report.blocked_reason)
             return report
@@ -428,19 +425,20 @@ def run_blob_gc_report(
             if len(shortlist) >= max_batch:
                 break
             evidence.inspected += 1
-            if _reference_surfaces(
-                planning_conn,
-                blob_hash,
-                source_db_path=(sibling_source_db if planning_source_conn is not None else None),
-                source_conn=planning_source_conn,
-                index_conn=planning_index_conn,
-                legacy_hook_status=planning_legacy_hook_status,
-                source_legacy_hook_status=planning_source_legacy_hook_status,
-                index_legacy_hook_status=planning_index_legacy_hook_status,
-            ):
+            decision = inspect_blob_liveness(planning_source, blob_hash, index_conn=planning_index, require_index=True)
+            if decision.state is LivenessState.BLOCKED:
+                report.blocked_reason = "; ".join(decision.blockers)
+                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                return report
+            if decision.state is LivenessState.LIVE:
                 evidence.skipped_referenced += 1
                 continue
-            if _has_publication_reservation(planning_conn, blob_hash):
+            reservation = inspect_blob_reservation(planning_source, blob_hash)
+            if reservation.state is LivenessState.BLOCKED:
+                report.blocked_reason = "; ".join(reservation.blockers)
+                logger.error("Blob GC refused to run: %s", report.blocked_reason)
+                return report
+            if reservation.state is LivenessState.LIVE:
                 evidence.skipped_reserved += 1
                 continue
             shortlist.append((blob_hash, mtime))
@@ -480,9 +478,6 @@ def run_blob_gc_report(
     conn.row_factory = sqlite3.Row
     source_conn: sqlite3.Connection | None = None
     index_conn: sqlite3.Connection | None = None
-    legacy_hook_status = "not_applicable"
-    source_legacy_hook_status = "not_applicable"
-    index_legacy_hook_status = "not_applicable"
     affected = 0
     reclaimed_bytes = 0
     started_at_ms = int(time.time() * 1000)
@@ -500,26 +495,31 @@ def run_blob_gc_report(
             source_conn = _open_recheck_connection(sibling_source_db, dry_run=dry_run)
         if control_db_path != sibling_index_db:
             index_conn = _open_recheck_connection(sibling_index_db, dry_run=dry_run)
-        legacy_hook_status = _legacy_hook_liveness_status(conn)
-        if source_conn is not None:
-            source_legacy_hook_status = _legacy_hook_liveness_status(source_conn)
-        if index_conn is not None:
-            index_legacy_hook_status = _legacy_hook_liveness_status(index_conn)
+        recheck_source = source_conn or conn
+        recheck_index = index_conn or (conn if control_db_path == sibling_index_db else None)
+        recheck_preflight = inspect_blob_liveness(
+            recheck_source, "0" * 64, index_conn=recheck_index, require_index=True
+        )
+        if recheck_preflight.state is LivenessState.BLOCKED:
+            report.blocked_reason = "; ".join(recheck_preflight.blockers)
+            logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+            return report
 
         for blob_hash, _mtime in shortlist:
-            if _reference_surfaces(
-                conn,
-                blob_hash,
-                source_db_path=(sibling_source_db if source_conn is not None else None),
-                source_conn=source_conn,
-                index_conn=index_conn,
-                legacy_hook_status=legacy_hook_status,
-                source_legacy_hook_status=source_legacy_hook_status,
-                index_legacy_hook_status=index_legacy_hook_status,
-            ):
+            decision = inspect_blob_liveness(recheck_source, blob_hash, index_conn=recheck_index, require_index=True)
+            if decision.state is LivenessState.BLOCKED:
+                report.blocked_reason = "; ".join(decision.blockers)
+                logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+                return report
+            if decision.state is LivenessState.LIVE:
                 evidence.skipped_referenced += 1
                 continue
-            if _has_publication_reservation(conn, blob_hash):
+            reservation = inspect_blob_reservation(recheck_source, blob_hash)
+            if reservation.state is LivenessState.BLOCKED:
+                report.blocked_reason = "; ".join(reservation.blockers)
+                logger.error("Blob GC refused final recheck: %s", report.blocked_reason)
+                return report
+            if reservation.state is LivenessState.LIVE:
                 evidence.skipped_reserved += 1
                 continue
 
@@ -722,10 +722,8 @@ __all__ = [
     "GCRunEvidence",
     "OrphanedBlobRefCensus",
     "census_orphaned_blob_refs",
+    "inspect_blob_liveness",
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",
-    "_legacy_hook_liveness_status",
-    "_reference_surfaces",
-    "_still_referenced",
 ]

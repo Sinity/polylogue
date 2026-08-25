@@ -1385,10 +1385,11 @@ def test_superseded_raw_snapshot_cleanup_keeps_newest_per_source(tmp_path: Path)
 
         result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
         assert result.deleted_raw_count == 3
-        assert result.deleted_blob_count == 3
-        assert not blob_store.exists(full_old)
-        assert not blob_store.exists(append_old)
-        assert not blob_store.exists(leased_old)
+        assert result.deleted_blob_count == 0
+        assert all("index tier is unavailable" in error for error in result.errors)
+        assert blob_store.exists(full_old)
+        assert blob_store.exists(append_old)
+        assert blob_store.exists(leased_old)
         assert blob_store.exists(full_new)
         assert blob_store.exists(append_current)
         assert blob_store.exists(missing_old)
@@ -1704,7 +1705,7 @@ def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_pat
 
     result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
     assert result.deleted_raw_count == 1
-    assert not blob_store.exists(old_raw)
+    assert blob_store.exists(old_raw)
     assert blob_store.exists(current_raw)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = ?", (old_raw,)).fetchone() is None
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = ?", (old_raw,)).fetchone() is None
@@ -2837,8 +2838,9 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
     result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
 
     assert result.deleted_raw_count == 1
-    assert result.deleted_blob_count == 1
-    assert not blob_store.exists(old_blob)
+    assert result.deleted_blob_count == 0
+    assert result.errors == ("index tier is unavailable",)
+    assert blob_store.exists(old_blob)
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = 'raw-old-not-a-blob-hash'").fetchone() is None

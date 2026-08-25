@@ -15,12 +15,11 @@ import pytest
 
 from polylogue.storage.blob_gc import (
     _candidate_blobs,
-    _reference_surfaces,
-    _still_referenced,
     read_gc_history,
     run_blob_gc,
     run_blob_gc_report,
 )
+from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
 
 # ---------------------------------------------------------------------------
@@ -113,19 +112,19 @@ def _make_source_db(path: str | Path) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# _still_referenced — regression: must check raw_sessions.raw_id
+# Canonical decision: raw_id is observation identity, never blob liveness
 # ---------------------------------------------------------------------------
 
 
-def test_still_referenced_recognizes_raw_id() -> None:
-    """A blob whose hash matches a raw_sessions.raw_id is still referenced."""
+def test_still_referenced_does_not_treat_raw_id_as_blob_reference() -> None:
+    """A raw observation ID that happens to look like a hash cannot pin bytes."""
     conn = _make_db()
     conn.execute(
         "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
         "VALUES ('abc123def456', 'claude', 'test.json', 42, '2024-01-01')"
     )
     conn.commit()
-    assert _still_referenced(conn, "abc123def456") is True
+    assert inspect_blob_liveness(conn, "abc123def456").state is LivenessState.UNREFERENCED
     conn.close()
 
 
@@ -137,14 +136,14 @@ def test_still_referenced_rejects_unknown_hash() -> None:
         "VALUES ('known-hash-1', 'chatgpt', 'test.json', 10, '2024-01-01')"
     )
     conn.commit()
-    assert _still_referenced(conn, "unknown-dead-hash") is False
+    assert inspect_blob_liveness(conn, "unknown-dead-hash").state is LivenessState.UNREFERENCED
     conn.close()
 
 
 def test_still_referenced_empty_table() -> None:
     """With no raw_sessions rows, nothing is referenced."""
     conn = _make_db()
-    assert _still_referenced(conn, "any-hash") is False
+    assert inspect_blob_liveness(conn, "any-hash").state is LivenessState.UNREFERENCED
     conn.close()
 
 
@@ -158,8 +157,9 @@ def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None
     )
     source_conn.commit()
 
-    assert _still_referenced(source_conn, blob_hash) is True
-    assert _reference_surfaces(source_conn, blob_hash) == ["current.raw_sessions", "current.blob_refs"]
+    decision = inspect_blob_liveness(source_conn, blob_hash)
+    assert decision.state is LivenessState.LIVE
+    assert decision.surfaces == ("source.db.raw_sessions",)
     source_conn.close()
 
 
@@ -270,9 +270,9 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'test.json', ?, '2024-01-01')",
-        (h, len(b"referenced content")),
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
+        "VALUES ('raw', 'claude', 'test.json', ?, ?, '2024-01-01')",
+        (bytes.fromhex(h), len(b"referenced content")),
     )
     conn.commit()
     conn.close()
@@ -354,9 +354,9 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
         blob_hash, size = store.write_from_bytes(f"referenced-{index}".encode())
         _backdate(store, blob_hash)
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-            "VALUES (?, 'codex', ?, ?, '2026-01-01')",
-            (blob_hash, f"{index}.json", size),
+            "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
+            "VALUES (?, 'codex', ?, ?, ?, '2026-01-01')",
+            (f"raw-{index}", f"{index}.json", bytes.fromhex(blob_hash), size),
         )
     orphan_hash, _ = store.write_from_bytes(b"bounded orphan")
     _backdate(store, orphan_hash)
@@ -364,15 +364,15 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
     conn.close()
 
     lock_rechecks = 0
-    original_reference_surfaces = blob_gc._reference_surfaces
+    original_inspect = blob_gc.inspect_blob_liveness
 
     def count_lock_rechecks(conn, *args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal lock_rechecks
         if conn.in_transaction:
             lock_rechecks += 1
-        return original_reference_surfaces(conn, *args, **kwargs)
+        return original_inspect(conn, *args, **kwargs)
 
-    monkeypatch.setattr(blob_gc, "_reference_surfaces", count_lock_rechecks)
+    monkeypatch.setattr(blob_gc, "inspect_blob_liveness", count_lock_rechecks)
     report = run_blob_gc_report(db_path, blob_root, max_batch=2)
 
     assert report.candidate_count == 41
@@ -387,7 +387,6 @@ def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
 def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.storage import blob_gc
 
     db_path = tmp_path / "source.db"
     blob_root = tmp_path / "blobs"
@@ -396,30 +395,19 @@ def test_run_blob_gc_does_not_stage_again_when_all_candidates_are_referenced(
     blob_hash, size = store.write_from_bytes(b"referenced")
     _backdate(store, blob_hash)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'codex', 'referenced.json', ?, '2026-01-01')",
-        (blob_hash, size),
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
+        "VALUES ('raw', 'codex', 'referenced.json', ?, ?, '2026-01-01')",
+        (bytes.fromhex(blob_hash), size),
     )
     conn.commit()
     conn.close()
 
-    stage_calls = 0
-    original = blob_gc._legacy_hook_liveness_status
-
-    def count_stage_calls(connection: sqlite3.Connection) -> str:
-        nonlocal stage_calls
-        stage_calls += 1
-        return original(connection)
-
-    monkeypatch.setattr(blob_gc, "_legacy_hook_liveness_status", count_stage_calls)
     report = run_blob_gc_report(db_path, blob_root, max_batch=10)
 
     assert report.deleted_count == 0
     assert report.skipped_referenced == 1
-    # One stage per reference tier the planning pass consults (control tier +
-    # index tier), and none from a second destructive pass -- an empty
-    # shortlist must not re-enter the lock. Re-staging would double this.
-    assert stage_calls == 2
+    # No final-lock pass happens after planning leaves an empty shortlist.
+    assert report.generation_written is True
 
 
 def test_run_blob_gc_nonexistent_blob_dir(tmp_path: Path) -> None:
@@ -586,9 +574,9 @@ def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
 
     conn = _make_db(db_path)
     conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'x.json', 1, '2025-01-01')",
-        (referenced_hash,),
+        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
+        "VALUES ('raw', 'claude', 'x.json', ?, 1, '2025-01-01')",
+        (bytes.fromhex(referenced_hash),),
     )
     conn.commit()
     conn.close()

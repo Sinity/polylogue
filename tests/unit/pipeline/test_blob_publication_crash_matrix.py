@@ -56,6 +56,59 @@ def _reservation_rows(source_db: Path, blob_hash: bytes) -> list[tuple[str]]:
         ).fetchall()
 
 
+def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_transaction(tmp_path: Path) -> None:
+    """A live attachment cannot consume unrelated same-content publications."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    store = BlobStore(archive_root / "blob")
+    blob_hash, size = store.write_from_bytes(b"same retained bytes")
+    with sqlite3.connect(source_db) as source:
+        source.executemany(
+            """INSERT INTO blob_publication_reservations
+            (publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms) VALUES (?, ?, ?, 'test', 1)""",
+            [("publication-a", bytes.fromhex(blob_hash), size), ("publication-b", bytes.fromhex(blob_hash), size)],
+        )
+    with sqlite3.connect(index_db) as index:
+        index.execute(
+            "INSERT INTO attachments (attachment_id, blob_hash, acquisition_status) VALUES ('attachment', ?, 'acquired')",
+            (bytes.fromhex(blob_hash),),
+        )
+
+    with exclude_archive_blob_publishers(source_db) as exclusion:
+        outcome = reconcile_blob_publication_reservations(
+            source_db, store.root, index_db_path=index_db, writer_exclusion=exclusion
+        )
+
+    assert outcome.cleared_referenced == 0
+    assert outcome.retained_referenced == 2
+    assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication-a",), ("publication-b",)]
+
+
+def test_reconciliation_retains_receipts_when_required_index_is_unavailable(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    store = BlobStore(archive_root / "blob")
+    blob_hash, size = store.write_from_bytes(b"awaiting index")
+    with sqlite3.connect(source_db) as source:
+        source.execute(
+            """INSERT INTO blob_publication_reservations
+            (publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms) VALUES ('publication', ?, ?, 'test', 1)""",
+            (bytes.fromhex(blob_hash), size),
+        )
+
+    with exclude_archive_blob_publishers(source_db) as exclusion:
+        outcome = reconcile_blob_publication_reservations(
+            source_db, store.root, index_db_path=archive_root / "missing-index.db", writer_exclusion=exclusion
+        )
+
+    assert outcome.retained_blocked == 1
+    assert any("index tier is unavailable" in blocker for blocker in outcome.blockers)
+    assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication",)]
+
+
 def test_crash_after_reservation_before_blob_write_leaves_missing_classified_reservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -417,8 +470,9 @@ def test_crash_after_index_commit_before_finalization_self_heals_via_reconciliat
             index_db_path=db_path,
             writer_exclusion=exclusion,
         )
-    assert outcome.cleared_referenced == 1
-    assert _reservation_rows(archive_root / "source.db", expected_hash) == []
+    assert outcome.cleared_referenced == 0
+    assert outcome.retained_referenced == 1
+    assert len(_reservation_rows(archive_root / "source.db", expected_hash)) == 1
 
 
 def test_finalization_transaction_is_atomic_across_multiple_receipts(
@@ -519,6 +573,7 @@ def test_finalization_transaction_is_atomic_across_multiple_receipts(
             index_db_path=db_path,
             writer_exclusion=exclusion,
         )
-    assert outcome.cleared_referenced == 2
-    assert _reservation_rows(archive_root / "source.db", hash_a) == []
-    assert _reservation_rows(archive_root / "source.db", hash_b) == []
+    assert outcome.cleared_referenced == 0
+    assert outcome.retained_referenced == 2
+    assert len(_reservation_rows(archive_root / "source.db", hash_a)) == 1
+    assert len(_reservation_rows(archive_root / "source.db", hash_b)) == 1

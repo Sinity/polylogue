@@ -83,8 +83,8 @@ def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_pat
 
     for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
-            (blob_hash, size, "2026-05-24T00:00:00+00:00"),
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
+            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), size, "2026-05-24T00:00:00+00:00"),
         )
     conn.commit()
     conn.close()
@@ -134,8 +134,8 @@ def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_
     hashes = [store.write_from_bytes(f"payload-{idx}".encode())[0] for idx in range(3)]
     for blob_hash in hashes:
         conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_size, acquired_at) VALUES (?, ?, ?)",
-            (blob_hash, 9, "2026-05-24T00:00:00+00:00"),
+            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
+            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), 9, "2026-05-24T00:00:00+00:00"),
         )
     conn.commit()
     conn.close()
@@ -190,10 +190,10 @@ def test_scan_blob_integrity_reads_source_tier_blob_refs(tmp_path: Path) -> None
     report = scan_blob_integrity(source_db, store=store, full=True)
 
     by_kind = {finding.kind: finding for finding in report.findings}
-    assert report.total_references_seen == 2
-    assert by_kind["orphan_blobs"].sample == (orphan_hash,)
+    assert report.total_references_seen == 1
+    assert set(by_kind["orphan_blobs"].sample) == {attachment_hash, orphan_hash}
     assert raw_hash not in by_kind["orphan_blobs"].sample
-    assert attachment_hash not in by_kind["orphan_blobs"].sample
+    assert attachment_hash in by_kind["orphan_blobs"].sample
 
 
 def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tmp_path: Path) -> None:
@@ -229,12 +229,12 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
 
     report = scan_blob_reference_debt(source_db, store=store, sample_size=2)
 
-    assert report.ok is False
-    assert report.total_references_seen == 6
-    assert report.missing_referenced_blobs == 5
-    assert report.sample == tuple(missing_hashes[:2])
-    assert report.reference_sources == {"raw_sessions": 1, "blob_refs": 5}
-    assert referenced_blob_hashes(source_db) == sorted([present_hash, *missing_hashes])
+    assert report.ok is True
+    assert report.total_references_seen == 1
+    assert report.missing_referenced_blobs == 0
+    assert report.sample == ()
+    assert report.reference_sources == {"canonical_owners": 1}
+    assert referenced_blob_hashes(source_db) == [present_hash]
 
 
 def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) -> None:
@@ -264,7 +264,7 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
 
     assert report.ok is True
     assert report.total_references_seen == 1
-    assert report.reference_sources == {"raw_sessions": 1}
+    assert report.reference_sources == {"canonical_owners": 1}
 
 
 def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:

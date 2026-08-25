@@ -6042,7 +6042,11 @@ def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> R
     repair_db_path = archive_root / "source.db"
     if repair_db_path.exists():
         index_db_path = _raw_materialization_index_path(config, archive_root)
-        with closing(open_connection(repair_db_path)) as conn, conn:
+        with (
+            closing(open_connection(repair_db_path)) as conn,
+            closing(open_connection(index_db_path)) as index_conn,
+            conn,
+        ):
             conn.row_factory = sqlite3.Row
             try:
                 retention_authority = active_raw_retention_authority(
@@ -6062,6 +6066,7 @@ def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> R
                 limit=10_000,
                 protected_raw_ids=retention_authority.protected_raw_ids,
                 eligible_raw_ids=retention_authority.eligible_raw_ids,
+                index_conn=index_conn,
             )
     else:
         with closing(open_connection(config.db_path)) as conn, conn:
@@ -6083,6 +6088,7 @@ def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> R
                 limit=10_000,
                 protected_raw_ids=retention_authority.protected_raw_ids,
                 eligible_raw_ids=retention_authority.eligible_raw_ids,
+                index_conn=conn,
             )
     if dry_run:
         skipped_detail = (

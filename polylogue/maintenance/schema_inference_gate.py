@@ -223,11 +223,12 @@ def _source_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
 
 def _referenced_blob_hashes(conn: sqlite3.Connection) -> set[str]:
     """Return the durable source-tier blob universe as canonical hashes."""
+    from polylogue.storage.blob_liveness import project_live_blob_hashes
 
-    sql = "SELECT blob_hash FROM raw_sessions"
-    if table_exists(conn, "blob_refs"):
-        sql += " UNION SELECT blob_hash FROM blob_refs"
-    return {bytes(row[0]).hex() for row in conn.execute(sql) if row[0] is not None}
+    projection = project_live_blob_hashes(conn)
+    if projection.blockers:
+        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+    return set(projection.live_hashes)
 
 
 def _source_blob_denominators(conn: sqlite3.Connection) -> dict[str, int]:

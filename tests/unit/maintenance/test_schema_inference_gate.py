@@ -115,7 +115,7 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
             "raw_id": "raw-1",
             "origin": "codex-session",
             "native_id": "session",
-            "logical_source_key": "codex:session",
+            "logical_source_key": "codex-session:session",
             "source_path": str(ground_truth / "session.jsonl"),
             "blob_hash": expected_hash,
             "blob_size": len(b"actual external codex raw"),

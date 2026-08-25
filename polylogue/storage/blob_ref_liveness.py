@@ -159,24 +159,6 @@ def _referent_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
-    """Return the closed ref-type map, rejecting duplicate meanings."""
-
-    seen: set[str] = set()
-    for ref_type, referent_table, referent_column in BLOB_REF_LIVENESS_JOIN:
-        if ref_type in seen:
-            raise BlobRefLivenessError(
-                f"ambiguous blob_refs ref_type mapping for {ref_type!r}: "
-                f"duplicate referent {referent_table}.{referent_column}"
-            )
-        if not ref_type or not referent_table or not referent_column:
-            raise BlobRefLivenessError(
-                f"invalid blob_refs ref_type mapping: {ref_type!r} -> {referent_table!r}.{referent_column!r}"
-            )
-        seen.add(ref_type)
-    return BLOB_REF_LIVENESS_JOIN
-
-
 def _candidate_from_row(row: sqlite3.Row | tuple[object, ...]) -> BlobRefLivenessCandidate:
     return BlobRefLivenessCandidate(
         blob_hash=cast(bytes, row[0]).hex(),
@@ -200,7 +182,7 @@ def stage_blob_ref_liveness(conn: sqlite3.Connection, *, sample_limit: int = 30)
 
     candidate_table = "blob_ref_liveness_candidates"
     conn.execute(f"DROP TABLE IF EXISTS temp.{candidate_table}")
-    known_joins = validated_blob_ref_liveness_joins()
+    known_joins = BLOB_REF_LIVENESS_JOIN
     if not table_exists(conn, "blob_refs"):
         return BlobRefLivenessStagedPlan(
             BlobRefLivenessClassification(0, {}, {}, (), (), (), 0, (), 0),
@@ -354,5 +336,4 @@ __all__ = [
     "classify_blob_ref_liveness",
     "stage_blob_ref_liveness",
     "BlobRefLivenessStagedPlan",
-    "validated_blob_ref_liveness_joins",
 ]

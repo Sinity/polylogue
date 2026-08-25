@@ -13,7 +13,7 @@ from typing import Literal
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
-from polylogue.storage.blob_liveness import inspect_blob_liveness
+from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -73,24 +73,6 @@ class RawRetentionSafetyError(RuntimeError):
 
 class _RawRevisionAuthorityUnavailableError(RawRetentionSafetyError):
     """Raised when source-tier authority cannot be read, not when it is invalid."""
-
-
-def _blob_hash_still_referenced(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
-    """Return True if any surviving row still points at this CAS payload.
-
-    Blobs are content-addressed, so two raw snapshots of identical bytes share
-    one file. Deleting one snapshot's row must not unlink bytes another row
-    still names. Delegates to the canonical blob-liveness relation
-    (``polylogue.storage.blob_liveness``) so retention cleanup, GC, integrity,
-    and source sealing all agree on what "still referenced" means: a direct
-    row-level ``blob_hash`` reference is protective even without a
-    ``blob_refs`` ledger row, and a ``blob_refs`` row alone is only evidence
-    when its ``ref_type`` still joins to a live referent.
-    """
-    # Retention also supports historical source fixtures that predate newer
-    # owner tables.  It still uses the shared relation, while GC's strict
-    # whole-archive pass is the destructive route that refuses those shapes.
-    return inspect_blob_liveness(conn, blob_hash.hex(), strict=False).protected
 
 
 @dataclass(frozen=True)
@@ -2116,6 +2098,7 @@ def cleanup_superseded_raw_snapshots(
     blob_store: BlobStore | None = None,
     protected_raw_ids: set[str] | frozenset[str] | None = None,
     eligible_raw_ids: set[str] | frozenset[str] | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> RawSnapshotCleanupResult:
     all_candidates = superseded_raw_snapshot_candidates(
         conn,
@@ -2181,7 +2164,11 @@ def cleanup_superseded_raw_snapshots(
             except ValueError as exc:
                 errors.append(str(exc))
                 continue
-            if _blob_hash_still_referenced(conn, blob_hash):
+            decision = inspect_blob_liveness(conn, blob_hash.hex(), index_conn=index_conn, require_index=True)
+            if decision.state is LivenessState.BLOCKED:
+                errors.extend(decision.blockers)
+                continue
+            if decision.state is LivenessState.LIVE:
                 continue
         else:
             # Without a reference catalog, row cleanup cannot prove that this
@@ -2224,6 +2211,7 @@ def compact_paths_superseded_raw_snapshots(
     dry_run: bool = False,
     protected_raw_ids: set[str] | frozenset[str] | None = None,
     eligible_raw_ids: set[str] | frozenset[str] | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> RawSnapshotCleanupResult:
     totals = RawSnapshotCleanupResult(
         candidate_count=0,
@@ -2244,6 +2232,7 @@ def compact_paths_superseded_raw_snapshots(
             dry_run=dry_run,
             protected_raw_ids=protected_raw_ids,
             eligible_raw_ids=eligible_raw_ids,
+            index_conn=index_conn,
         )
         errors.extend(result.errors)
         totals = RawSnapshotCleanupResult(
