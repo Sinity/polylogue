@@ -30,6 +30,7 @@ from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     ArtifactGcReport,
     BenchmarkWorkloadTier,
+    CorpusArtifactManifest,
     SeededArchiveClone,
     SeededArchiveReachabilityInventory,
     WorkloadProfile,
@@ -115,6 +116,17 @@ def test_named_workload_profiles_are_semantic_and_build_deterministic_provider_s
     assert {"completion", "provider-native"}.issubset(set(first[0].profile.profile_tokens))
     with pytest.raises(ValueError, match="unknown named seeded archive workload"):
         named_workload_profile("unknown")
+
+
+def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
+    tmp_path: Path,
+) -> None:
+    """Artifact identity is shared without turning the manifest into an oracle."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+
+    assert isinstance(artifact.manifest, CorpusArtifactManifest)
+    assert artifact.manifest.key == seeded_archive_key((c03_semantic_corpus_spec(),)).value
+    assert not hasattr(artifact.manifest, "expected_sessions")
 
 
 def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:

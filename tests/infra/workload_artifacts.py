@@ -152,7 +152,15 @@ class SeededArchiveKey:
 
 
 @dataclass(frozen=True)
-class SeededArchiveManifest:
+class CorpusArtifactManifest:
+    """Authenticated publication record for a deterministic corpus artifact.
+
+    The manifest describes construction and storage identity only.  It does
+    not carry an expected semantic result, incident classification, or case
+    admission state.  ``SeededArchiveManifest`` remains a compatibility alias
+    for existing fixture consumers.
+    """
+
     protocol_version: int
     key: str
     archive_id: str
@@ -176,10 +184,13 @@ class SeededArchiveManifest:
         return payload
 
 
+SeededArchiveManifest = CorpusArtifactManifest
+
+
 @dataclass(frozen=True)
 class SeededArchiveArtifact:
     root: Path
-    manifest: SeededArchiveManifest
+    manifest: CorpusArtifactManifest
 
     @property
     def facts(self) -> tuple[SyntheticArtifactFacts, ...]:
@@ -3198,6 +3209,7 @@ __all__ = [
     "ArtifactGcEntry",
     "ArtifactGcReport",
     "ImmutableTreeArtifact",
+    "CorpusArtifactManifest",
     "BENCHMARK_WORKLOAD_PROFILES",
     "BenchmarkWorkloadProfile",
     "BenchmarkWorkloadTier",
