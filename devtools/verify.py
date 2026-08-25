@@ -156,6 +156,11 @@ def _native_pytest_steps(
     serial_worker_args: Sequence[str],
     storage_scale_worker_args: Sequence[str],
 ) -> list[tuple[str, list[str]]]:
+    testmon_args = (
+        ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
+        if testmon_mode == "affected"
+        else []
+    )
     base = [
         sys.executable,
         "-m",
@@ -172,9 +177,7 @@ def _native_pytest_steps(
         PROGRESS_PLUGIN_NAME,
         *MANAGED_PLUGIN_ARGS,
         *CLOSED_WORLD_COLLECTION_ARGS,
-        "--testmon",
-        f"--testmon-env={testmon_environment}",
-        "--testmon-noselect" if testmon_mode == "all" else "--testmon-forceselect",
+        *testmon_args,
     ]
 
     def lane_command(lane: str, marker: str, workers: Sequence[str]) -> list[str]:

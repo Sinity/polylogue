@@ -45,6 +45,34 @@ def test_native_selection_partitions_semantic_lanes() -> None:
     ]
 
 
+def test_full_corpus_does_not_duplicate_testmon_tracing_across_workers() -> None:
+    steps = verify.build_verify_steps(
+        quick=False,
+        lab=False,
+        testmon_mode="all",
+        testmon_environment="polylogue-test",
+    )
+
+    for _label, command in steps[-3:]:
+        assert "--testmon" not in command
+        assert "--testmon-noselect" not in command
+        assert not any(argument.startswith("--testmon-env=") for argument in command)
+
+
+def test_affected_corpus_retains_testmon_selection() -> None:
+    steps = verify.build_verify_steps(
+        quick=False,
+        lab=False,
+        testmon_mode="affected",
+        testmon_environment="polylogue-test",
+    )
+
+    for _label, command in steps[-3:]:
+        assert "--testmon" in command
+        assert "--testmon-forceselect" in command
+        assert "--testmon-env=polylogue-test" in command
+
+
 def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SINNIXD_OPERATION", "verify_quick")
 
