@@ -3861,6 +3861,64 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
     assert stopped == [True]
 
 
+def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-39pdi: a version-mismatched audit.db must not crash startup.
+
+    Before the fix, startup called ``recover_interrupted_operations``
+    unconditionally, even when audit.db (an ingestion-blocking durable tier)
+    is missing/version-mismatched -- letting a ``sqlite3.Error`` escape into
+    the ``BaseException`` shutdown path and kill the daemon instead of
+    leaving it degraded.
+
+    Anti-vacuity: removing the ``durable_schema_mismatch`` gate around the
+    recovery call (reverting to the unconditional call) makes this test fail
+    -- the patched ``recover_interrupted_operations`` gets called at least
+    once instead of staying at zero calls.
+
+    A durable-tier mismatch also blocks the live watcher itself
+    (``watcher_creation_blocked``), so startup idles waiting on signals
+    rather than reaching any watcher/browser-capture/API work; this is
+    bounded with ``asyncio.wait_for`` and cancelled rather than run to
+    completion.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    with sqlite3.connect(archive_root_path / "audit.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+
+    recover_mock = Mock()
+
+    with (
+        patch(
+            "polylogue.operations.mutation_transaction.recover_interrupted_operations",
+            recover_mock,
+        ),
+        pytest.raises(TimeoutError),
+    ):
+        asyncio.run(
+            asyncio.wait_for(
+                daemon_cli.run_daemon_services(
+                    sources=(WatchSource(name="codex", root=archive_root_path),),
+                    debounce_s=1.0,
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    browser_capture_spool_path=None,
+                ),
+                timeout=5.0,
+            )
+        )
+
+    recover_mock.assert_not_called()
+
+
 def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
