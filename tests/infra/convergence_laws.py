@@ -154,9 +154,13 @@ def read_semantic_projection(
     """Read search membership through the readiness-gated product search surface."""
     from polylogue.archive.query.predicate import QueryBoolPredicate
     from polylogue.storage.search import search_messages
+    from polylogue.storage.search.runtime import search_messages_cached
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = Path(archive_root).resolve()
+    # Hypothesis rebuilds fixed throwaway roots within one test invocation. The
+    # production cache therefore cannot distinguish successive examples here.
+    search_messages_cached.cache_clear()
     fts_membership = tuple(
         (
             term,

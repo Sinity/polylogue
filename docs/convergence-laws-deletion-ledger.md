@@ -12,4 +12,4 @@ This ledger records replacement candidates for the broad route comparator and du
 
 The following are not deletion candidates in this bead: `tests/infra/corpus_program.py`, `tests/infra/pathology_composer.py`, and the existing production-route harness. They are shared fixture authorities.
 
-Bounded gaps: the projection covers readiness-gated FTS session membership and message-role counts, but not an independent session id/count/title or topology-edge projection. The driver uses only `Provider.CODEX`; source variation remains outside this slice.
+Bounded gaps: the projection covers readiness-gated FTS session membership and message-role counts, but not an independent session id/count/title or topology-edge projection. The driver uses only `Provider.CODEX`; source variation remains outside this slice. BATCHING and IDEMPOTENCE have green executable laws but no dedicated semantic red twins; the existing mutations cover only PERMUTATION and APPEND_PREFIX.
