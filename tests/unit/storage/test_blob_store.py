@@ -242,56 +242,6 @@ def test_verify_all_rejects_foreign_sqlite_sidecars_at_namespace_root(tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# detect_orphans
-# ---------------------------------------------------------------------------
-
-
-def test_detect_orphans_none_when_all_referenced(tmp_path: Path) -> None:
-    blob_store = BlobStore(tmp_path / "blobs")
-    h1, _ = blob_store.write_from_bytes(b"a")
-    h2, _ = blob_store.write_from_bytes(b"b")
-
-    result = blob_store.detect_orphans({h1, h2})
-    assert result.orphan_count == 0
-    assert result.orphan_bytes == 0
-    assert result.orphan_samples == ()
-
-
-def test_detect_orphans_finds_unreferenced(tmp_path: Path) -> None:
-    blob_store = BlobStore(tmp_path / "blobs")
-    h1, _ = blob_store.write_from_bytes(b"referenced")
-    h2, _ = blob_store.write_from_bytes(b"orphan")
-
-    # Only h1 is in the DB
-    result = blob_store.detect_orphans({h1})
-    assert result.orphan_count == 1
-    assert result.orphan_bytes > 0
-    assert result.orphan_samples == (h2,)
-
-
-def test_detect_orphans_all_orphaned(tmp_path: Path) -> None:
-    blob_store = BlobStore(tmp_path / "blobs")
-    blob_store.write_from_bytes(b"x")
-    blob_store.write_from_bytes(b"y")
-
-    # Empty DB — all blobs are orphans
-    result = blob_store.detect_orphans(set())
-    assert result.orphan_count == 2
-    assert result.orphan_bytes > 0
-    assert len(result.orphan_samples) == 2
-
-
-def test_detect_orphans_respects_max_sample(tmp_path: Path) -> None:
-    blob_store = BlobStore(tmp_path / "blobs")
-    for i in range(20):
-        blob_store.write_from_bytes(f"payload-{i}".encode())
-
-    result = blob_store.detect_orphans(set(), max_sample=5)
-    assert result.orphan_count == 20
-    assert len(result.orphan_samples) == 5
-
-
-# ---------------------------------------------------------------------------
 # stats
 # ---------------------------------------------------------------------------
 

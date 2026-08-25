@@ -519,7 +519,8 @@ def _blob_reference_evidence(
     source_owners = {
         owner: sorted(hashes) for owner, hashes in projection.owner_hashes if owner.startswith("source.db.")
     }
-    attachment_hashes = _index_attachment_hashes(index_db)
+    attachment_evidence_state = "consulted" if index_db is not None else "not_consulted"
+    attachment_hashes = _index_attachment_hashes(index_db) if index_db is not None else set()
     expected_hashes = set().union(*(set(hashes) for hashes in source_owners.values()), attachment_hashes)
     omitted = expected_hashes - set(projection.live_hashes)
     if omitted:
@@ -528,6 +529,7 @@ def _blob_reference_evidence(
     return {
         "format": "polylogue-blob-reference-evidence-v1",
         "source_owner_hashes": source_owners,
+        "index_attachment_evidence": attachment_evidence_state,
         "index_attachment_hashes": sorted(attachment_hashes),
     }
 
@@ -543,13 +545,27 @@ def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
         raise RuntimeError("backup blob reference evidence is missing or has an unknown format")
     source_owners = evidence.get("source_owner_hashes")
     attachment_hashes = evidence.get("index_attachment_hashes")
-    if not isinstance(source_owners, dict) or not isinstance(attachment_hashes, list):
+    attachment_evidence = evidence.get("index_attachment_evidence")
+    if (
+        not isinstance(source_owners, dict)
+        or not isinstance(attachment_hashes, list)
+        or attachment_evidence not in {"consulted", "not_consulted"}
+    ):
         raise RuntimeError("backup blob reference evidence has invalid owner payloads")
+    if attachment_evidence == "not_consulted" and attachment_hashes:
+        raise RuntimeError("backup blob reference evidence records unconsulted index attachments as owners")
+    if any(not isinstance(owner, str) or not isinstance(hashes, list) for owner, hashes in source_owners.items()):
+        raise RuntimeError("backup blob reference evidence has invalid source owner payloads")
     values = [
         *attachment_hashes,
         *(blob_hash for hashes in source_owners.values() if isinstance(hashes, list) for blob_hash in hashes),
     ]
-    if any(not isinstance(blob_hash, str) or len(blob_hash) != 64 for blob_hash in values):
+    if any(
+        not isinstance(blob_hash, str)
+        or len(blob_hash) != 64
+        or any(char not in "0123456789abcdef" for char in blob_hash)
+        for blob_hash in values
+    ):
         raise RuntimeError("backup blob reference evidence has invalid blob hashes")
     return set(values)
 
@@ -966,8 +982,13 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             expected_reference_blobs = _expected_blob_hashes_from_evidence(evidence)
             expected_attachment_hashes = set(evidence["index_attachment_hashes"])
-            observed_attachment_hashes = _index_attachment_hashes(index_path if index_path.exists() else None)
-            reference_evidence_ok = observed_attachment_hashes == expected_attachment_hashes
+            if evidence["index_attachment_evidence"] == "consulted":
+                if not index_path.exists():
+                    raise RuntimeError("backup index attachment evidence was consulted but index.db is missing")
+                observed_attachment_hashes = _index_attachment_hashes(index_path)
+                reference_evidence_ok = observed_attachment_hashes == expected_attachment_hashes
+            else:
+                reference_evidence_ok = True
             expected_reference_blobs.update(_source_blob_reservations(restored / "source.db"))
         missing_canonical_blobs = expected_reference_blobs - restored_hash_set
         canonical_blobs_resolved = not source_included or (not missing_canonical_blobs and reference_evidence_ok)

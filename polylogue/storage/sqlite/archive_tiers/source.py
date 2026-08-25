@@ -562,8 +562,7 @@ CREATE TABLE IF NOT EXISTS gc_generations (
     completed_at_ms  INTEGER,
     reclaimed_count  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0),
     reclaimed_bytes  INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0),
-    blob_namespace_device INTEGER,
-    blob_namespace_inode  INTEGER
+    blob_namespace_marker TEXT
 ) STRICT;
 
 -- Each physical blob deletion has an exact durable member intent before GC

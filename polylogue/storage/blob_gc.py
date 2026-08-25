@@ -212,17 +212,21 @@ class _BlobNamespaceUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _BlobNamespaceIdentity:
-    """The filesystem identity that a durable GC plan is allowed to resume."""
+    """A Polylogue-owned, reboot-stable binding for a GC intent."""
 
-    device: int
-    inode: int
+    marker: str
+
+
+_BLOB_NAMESPACE_MARKER = ".polylogue-blob-namespace"
 
 
 def _namespace_error(blob_root: Path, exc: OSError) -> _BlobNamespaceUnavailableError:
     return _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} is unavailable or unreadable: {exc}")
 
 
-def _read_blob_object(blob_root: Path, blob_hash: str) -> tuple[int | None, tuple[str, ...]]:
+def _read_blob_object(
+    blob_root: Path, blob_hash: str, *, namespace_identity: _BlobNamespaceIdentity
+) -> tuple[int | None, tuple[str, ...]]:
     """Read one object only after establishing its containing namespace.
 
     ``None, ()`` means an object is absent from a readable namespace.  That is
@@ -230,6 +234,12 @@ def _read_blob_object(blob_root: Path, blob_hash: str) -> tuple[int | None, tupl
     A missing root, a non-directory root, or an unreadable shard is a blocker
     because it does not identify the namespace that the old plan observed.
     """
+    try:
+        observed = _blob_namespace_identity(blob_root)
+    except _BlobNamespaceUnavailableError as exc:
+        return None, (str(exc),)
+    if observed != namespace_identity:
+        return None, ("blob namespace authority changed since GC intent was committed",)
     try:
         with os.scandir(blob_root) as entries:
             shard_entry = next((entry for entry in entries if entry.name == blob_hash[:2]), None)
@@ -261,15 +271,30 @@ def _assert_blob_namespace_readable(blob_root: Path) -> None:
         raise _namespace_error(blob_root, exc) from exc
 
 
-def _blob_namespace_identity(blob_root: Path) -> _BlobNamespaceIdentity:
-    """Observe the readable namespace identity before committing GC intent."""
+def _blob_namespace_identity(blob_root: Path, *, create_marker: bool = False) -> _BlobNamespaceIdentity:
+    """Read the Polylogue-owned namespace marker, creating it only for a new plan."""
 
     _assert_blob_namespace_readable(blob_root)
+    marker_path = blob_root / _BLOB_NAMESPACE_MARKER
+    if create_marker:
+        try:
+            with marker_path.open("x", encoding="ascii", errors="strict") as marker_file:
+                marker_file.write(uuid4().hex)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise _namespace_error(blob_root, exc) from exc
     try:
-        metadata = blob_root.stat()
+        marker = marker_path.read_text(encoding="ascii", errors="strict")
+    except FileNotFoundError as exc:
+        raise _BlobNamespaceUnavailableError(
+            f"blob namespace at {blob_root} lacks its Polylogue authority marker"
+        ) from exc
     except OSError as exc:
         raise _namespace_error(blob_root, exc) from exc
-    return _BlobNamespaceIdentity(device=metadata.st_dev, inode=metadata.st_ino)
+    if len(marker) != 32 or any(char not in "0123456789abcdef" for char in marker):
+        raise _BlobNamespaceUnavailableError(f"blob namespace at {blob_root} has an invalid Polylogue authority marker")
+    return _BlobNamespaceIdentity(marker=marker)
 
 
 def _candidate_blobs(
@@ -338,7 +363,7 @@ def _gc_namespace_identity_columns_available(conn: sqlite3.Connection) -> bool:
     if not _table_exists(conn, "gc_generations"):
         return False
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(gc_generations)")}
-    return {"blob_namespace_device", "blob_namespace_inode"}.issubset(columns)
+    return {"blob_namespace_marker"}.issubset(columns)
 
 
 def _commit_gc_generation_intent(
@@ -359,7 +384,7 @@ def _commit_gc_generation_intent(
         conn.execute(
             "INSERT INTO gc_generations "
             "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, "
-            "blob_namespace_device, blob_namespace_inode) VALUES (?, ?, ?, 0, 0, ?, ?)",
+            "blob_namespace_marker) VALUES (?, ?, ?, 0, 0, ?)",
             # An empty plan has no physical operation to recover.  Make it a
             # terminal, zero-summary generation in this same durable intent
             # transaction so a crash cannot turn it into a legacy unknown.
@@ -367,8 +392,7 @@ def _commit_gc_generation_intent(
                 generation_id,
                 started_at_ms,
                 started_at_ms if not members else None,
-                namespace_identity.device,
-                namespace_identity.inode,
+                namespace_identity.marker,
             ),
         )
         conn.executemany(
@@ -472,19 +496,19 @@ def _generation_namespace_matches(
 
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as conn:
         row = conn.execute(
-            "SELECT blob_namespace_device, blob_namespace_inode FROM gc_generations WHERE generation_id = ?",
+            "SELECT blob_namespace_marker FROM gc_generations WHERE generation_id = ?",
             (generation_id,),
         ).fetchone()
     if row is None:
         return "blob GC generation disappeared before namespace verification"
-    if row[0] is None or row[1] is None:
+    if row[0] is None:
         return "pending blob GC generation lacks a durable blob namespace identity"
     try:
         observed = _blob_namespace_identity(blob_root)
     except _BlobNamespaceUnavailableError as exc:
         return str(exc)
-    if (int(row[0]), int(row[1])) != (observed.device, observed.inode):
-        return "blob namespace identity changed since GC intent was committed"
+    if str(row[0]) != observed.marker:
+        return "blob namespace authority changed since GC intent was committed"
     return None
 
 
@@ -573,6 +597,11 @@ def _execute_gc_generation_members(
     if namespace_blocker is not None:
         report.blocked_reason = namespace_blocker
         return 0, 0
+    try:
+        namespace_identity = _blob_namespace_identity(blob_root)
+    except _BlobNamespaceUnavailableError as exc:
+        report.blocked_reason = str(exc)
+        return 0, 0
     with closing(sqlite3.connect(f"file:{control_db_path}?mode=ro", uri=True)) as history:
         members = [
             str(row[0]).lower()
@@ -620,7 +649,9 @@ def _execute_gc_generation_members(
                 evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
                 evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                 continue
-            freed_bytes, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+            freed_bytes, namespace_blockers = _read_blob_object(
+                blob_root, blob_hash, namespace_identity=namespace_identity
+            )
             if namespace_blockers:
                 report.blocked_reason = "; ".join(namespace_blockers)
                 return deleted_now, reclaimed_bytes_now
@@ -636,7 +667,9 @@ def _execute_gc_generation_members(
             except FileNotFoundError:
                 # Re-establish the namespace before attributing a race as a
                 # legitimate object-only disappearance.
-                replacement_size, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+                replacement_size, namespace_blockers = _read_blob_object(
+                    blob_root, blob_hash, namespace_identity=namespace_identity
+                )
                 if namespace_blockers:
                     report.blocked_reason = "; ".join(namespace_blockers)
                     return deleted_now, reclaimed_bytes_now
@@ -755,7 +788,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             return 0, 0, tier_blockers
         report = BlobGCResult(str(source_db_path), str(blob_root), False, len(blob_hashes))
         try:
-            namespace_identity = _blob_namespace_identity(blob_root)
+            namespace_identity = _blob_namespace_identity(blob_root, create_marker=True)
         except _BlobNamespaceUnavailableError as exc:
             return 0, 0, (str(exc),)
         # This direct writer entry point must obey the exact same one-pending
@@ -794,7 +827,9 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     return 0, 0, preflight.blockers
                 legacy_hook_stage = prepare_match_stage(source_conn)
                 for blob_hash in sorted(blob_hashes):
-                    size_bytes, namespace_blockers = _read_blob_object(blob_root, blob_hash)
+                    size_bytes, namespace_blockers = _read_blob_object(
+                        blob_root, blob_hash, namespace_identity=namespace_identity
+                    )
                     if namespace_blockers:
                         return 0, 0, namespace_blockers
                     if size_bytes is None:
@@ -962,7 +997,7 @@ def run_blob_gc_report(
             return report
 
     try:
-        namespace_identity = _blob_namespace_identity(blob_path)
+        namespace_identity = _blob_namespace_identity(blob_path, create_marker=True)
     except _BlobNamespaceUnavailableError as exc:
         report.blocked_reason = str(exc)
         logger.error("Blob GC refused to run: %s", report.blocked_reason)
@@ -1069,7 +1104,9 @@ def run_blob_gc_report(
     if not dry_run:
         members: list[_GCMemberIntent] = []
         for blob_hash, _mtime in shortlist:
-            size_bytes, namespace_blockers = _read_blob_object(blob_path, blob_hash)
+            size_bytes, namespace_blockers = _read_blob_object(
+                blob_path, blob_hash, namespace_identity=namespace_identity
+            )
             if namespace_blockers:
                 report.blocked_reason = "; ".join(namespace_blockers)
                 logger.error("Blob GC refused to run: %s", report.blocked_reason)
@@ -1191,6 +1228,80 @@ class GCHistoryRow:
     reclaimed_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class PendingGCGeneration:
+    """Operator-visible state for an incomplete exact GC intent."""
+
+    generation_id: str
+    member_count: int
+    pending_member_count: int
+    namespace_marker: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GCGenerationAdjudication:
+    """The terminal, non-destructive disposition of a blocked generation."""
+
+    generation_id: str
+    abandoned_members: int
+    completed: bool
+
+
+def inspect_pending_gc_generations(control_db_path: str | Path) -> list[PendingGCGeneration]:
+    """List incomplete GC intents without assigning them any new authority."""
+
+    with closing(sqlite3.connect(f"file:{Path(control_db_path)}?mode=ro", uri=True)) as conn:
+        if not _gc_member_table_available(conn) or not _gc_namespace_identity_columns_available(conn):
+            return []
+        rows = conn.execute(
+            "SELECT generation.generation_id, generation.blob_namespace_marker, "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id), "
+            "(SELECT COUNT(*) FROM gc_generation_members AS member "
+            " WHERE member.generation_id = generation.generation_id AND member.outcome = 'pending') "
+            "FROM gc_generations AS generation WHERE generation.completed_at_ms IS NULL "
+            "ORDER BY generation.started_at_ms, generation.generation_id"
+        ).fetchall()
+    return [
+        PendingGCGeneration(str(row[0]), int(row[2]), int(row[3]), str(row[1]) if row[1] is not None else None)
+        for row in rows
+    ]
+
+
+def abandon_pending_gc_generation(
+    control_db_path: str | Path, generation_id: str, *, confirmed: bool
+) -> GCGenerationAdjudication:
+    """Terminally abandon one blocked intent without unlinking or rebinding it.
+
+    This is deliberately the only recovery action for a namespace that cannot
+    prove continuity. A future GC pass creates a new intent from current
+    physical referents and reservations; historical rows never authorize it.
+    """
+
+    if not confirmed:
+        raise ValueError("explicit confirmation is required to abandon a pending blob GC generation")
+    path = Path(control_db_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"blob GC generation does not exist: {generation_id}")
+        if row[0] is not None:
+            raise ValueError(f"blob GC generation is already terminal: {generation_id}")
+        cursor = conn.execute(
+            "UPDATE gc_generation_members SET outcome = 'failed', outcome_at_ms = ?, "
+            "outcome_detail = 'operator abandoned blocked namespace-bound intent; no unlink performed' "
+            "WHERE generation_id = ? AND outcome = 'pending'",
+            (int(time.time() * 1000), generation_id),
+        )
+        abandoned = cursor.rowcount
+        conn.commit()
+    completed = _finalize_gc_generation(path, generation_id)
+    return GCGenerationAdjudication(generation_id, abandoned, completed)
+
+
 def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRow]:
     """Return the most-recent committed GC passes, newest first.
 
@@ -1306,10 +1417,14 @@ __all__ = [
     "BlobGCResult",
     "MIN_AGE_S",
     "GCHistoryRow",
+    "GCGenerationAdjudication",
+    "PendingGCGeneration",
     "GCRunEvidence",
     "OrphanedBlobRefCensus",
+    "abandon_pending_gc_generation",
     "census_orphaned_blob_refs",
     "inspect_blob_liveness",
+    "inspect_pending_gc_generations",
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",

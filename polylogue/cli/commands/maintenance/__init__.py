@@ -200,6 +200,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Inspect (default) or reconcile embeddings.db rows orphaned by an index rebuild.",
     ),
     ("gc-history", "_blob_gc", "gc_history_command", "Show recent blob-GC passes recorded in ``gc_generations``."),
+    (
+        "gc-recover",
+        "_blob_gc",
+        "gc_recover_command",
+        "Inspect or explicitly abandon a blocked pending blob-GC generation without unlinking blobs.",
+    ),
     ("status", "_status", "status_command", "Inspect persisted maintenance operations (#1197)."),
     (
         "verify-archive",

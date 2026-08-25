@@ -12,7 +12,7 @@
     "slot": 35,
     "path": "035_gc_namespace_identity.sql",
     "owner_ref": "polylogue-piyqz",
-    "sql_sha256": "25c929be0865499c33723d257dafb210cac07cda3c1782e2987424c345c16d57",
+    "sql_sha256": "c22d706ae1b659f49ddb87639c8c743a764aaa21898916ff983d062452360f61",
     "requires_backup": false
   },
   "riders": [
@@ -20,8 +20,7 @@
       "rider_id": "rider:gc-namespace-identity",
       "owner_ref": "polylogue-piyqz",
       "schema_objects": [
-        "column:gc_generations.blob_namespace_device",
-        "column:gc_generations.blob_namespace_inode"
+        "column:gc_generations.blob_namespace_marker"
       ],
       "runtime_consumers": [
         {
@@ -44,7 +43,13 @@
   ],
   "ordering_constraints": [],
   "drop_constraints": [],
-  "row_change_allowances": [],
+  "row_change_allowances": [
+    {
+      "table": "gc_generations",
+      "reason_ref": "proof:source-v35:terminalize-memberless-pre035-generations",
+      "expected_delta": 0
+    }
+  ],
   "backup_plan_ref": null,
   "state": "declared",
   "revision": 0,
@@ -61,5 +66,5 @@
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "88d8216ef060b86e81063883a63fa8aa71e8492249d6594aa0ec7972298c04e6"
+  "manifest_sha256": "e4e4a28176d1de6574befb6d1ff8eb42921e1475416ecc60cfb01b1fc721c4dd"
 }

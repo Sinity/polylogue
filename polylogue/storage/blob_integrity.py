@@ -2355,6 +2355,7 @@ def scan_blob_integrity(
     full: bool = False,
     sample_size: int = _DEFAULT_SAMPLE_SIZE,
     configured_root: Path | None = None,
+    active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
 ) -> BlobIntegrityReport:
     """Classify blob-store integrity without mutating disk or database state.
 
@@ -2373,7 +2374,12 @@ def scan_blob_integrity(
     # remain usable while a candidate generation or an older active generation
     # is being inspected, so do not impose the current canonical schema gate.
     with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro", uri=True)) as conn:
-        referenced = _referenced_blob_hashes(resolved_db_path, conn, configured_root=configured_root)
+        referenced = _referenced_blob_hashes(
+            resolved_db_path,
+            conn,
+            configured_root=configured_root,
+            require_index=active_index_context == "required",
+        )
 
     referenced_set = set(referenced)
     disk_sample = _blob_sample(blob_store, full=full, sample_size=sample_size)

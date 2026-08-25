@@ -174,9 +174,119 @@ def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeyp
 
     retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
 
-    assert retry.blocked_reason == "blob namespace identity changed since GC intent was committed"
+    assert retry.blocked_reason == "blob namespace authority changed since GC intent was committed"
     assert (observed_namespace / blob_hash[:2] / blob_hash[2:]).exists()
     assert _member_rows(tmp_path / "source.db")[0][1:] == (blob_hash.upper(), "pending")
+
+
+@pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
+def test_pending_member_recovers_after_device_number_change_with_stable_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remount-style device change cannot wedge a marker-bound intent.
+
+    Anti-vacuity: binding the intent to ``st_dev`` instead of the owned marker
+    makes the patched root stat block the pending generation.
+    """
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"remount stable marker")
+    _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+    monkeypatch.setattr(
+        blob_gc,
+        "_final_gc_member_liveness",
+        lambda _source, _index, _hash, *, legacy_hook_stage: (_ for _ in ()).throw(
+            RuntimeError("leave intent pending")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="leave intent pending"):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
+
+    original_stat = Path.stat
+
+    def remounted_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        result = original_stat(path, follow_symlinks=follow_symlinks)
+        if path == store.root:
+            return os.stat_result((result.st_mode, result.st_ino, result.st_dev + 1, *result[3:]))
+        return result
+
+    monkeypatch.setattr(Path, "stat", remounted_stat)
+    retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert retry.blocked_reason is None
+    assert retry.deleted_count == 1
+    assert not store.exists(blob_hash)
+
+
+@pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
+def test_member_reconciliation_refuses_namespace_swap_after_batch_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every member read revalidates the intent marker after batch admission."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"swap after batch validation")
+    _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+    original_root = tmp_path / "original-namespace"
+    swapped = False
+
+    def swap_after_batch(
+        source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
+        candidate_hash: str,
+        *,
+        legacy_hook_stage: HookPayloadRefMatchStage,
+    ) -> tuple[BlobLiveness, BlobLiveness]:
+        nonlocal swapped
+        result = original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
+        if not swapped:
+            swapped = True
+            store.root.rename(original_root)
+            store.root.mkdir()
+            (store.root / ".polylogue-blob-namespace").write_text("f" * 32, encoding="ascii")
+            replacement = store.blob_path(blob_hash)
+            replacement.parent.mkdir()
+            replacement.write_bytes(b"replacement namespace bytes")
+        return result
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", swap_after_batch)
+    report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+
+    assert report.deleted_count == 0
+    assert report.blocked_reason == "blob namespace authority changed since GC intent was committed"
+    assert (original_root / blob_hash[:2] / blob_hash[2:]).exists()
+    assert store.exists(blob_hash)
+    assert _member_rows(tmp_path / "source.db")[0][2] == "pending"
+
+
+def test_operator_can_abandon_blocked_generation_without_rebinding_or_unlink(tmp_path: Path) -> None:
+    """Recovery terminalizes the exact pending row as failed and leaves bytes alone."""
+    initialize_active_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"operator adjudication")
+    marker = blob_gc._blob_namespace_identity(store.root, create_marker=True).marker
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, blob_namespace_marker) "
+            "VALUES ('blocked', 1, NULL, 0, 0, ?)",
+            (marker,),
+        )
+        conn.execute(
+            "INSERT INTO gc_generation_members (generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome) "
+            "VALUES ('blocked', ?, 1, 1, 'pending')",
+            (bytes.fromhex(blob_hash),),
+        )
+    assert blob_gc.inspect_pending_gc_generations(tmp_path / "source.db") == [
+        blob_gc.PendingGCGeneration("blocked", 1, 1, marker)
+    ]
+    result = blob_gc.abandon_pending_gc_generation(tmp_path / "source.db", "blocked", confirmed=True)
+    assert result.abandoned_members == 1
+    assert result.completed is True
+    assert store.exists(blob_hash)
+    assert _member_rows(tmp_path / "source.db") == [("blocked", blob_hash.upper(), "failed")]
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -365,12 +475,11 @@ def test_report_counts_this_resume_while_generation_counts_all_durable_outcomes(
     _backdate(store, pending_hash)
     generation_id = "mixed-outcome-generation"
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        namespace = store.root.stat()
         conn.execute(
             "INSERT INTO gc_generations "
             "(generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes, "
-            "blob_namespace_device, blob_namespace_inode) VALUES (?, 1, NULL, 0, 0, ?, ?)",
-            (generation_id, namespace.st_dev, namespace.st_ino),
+            "blob_namespace_marker) VALUES (?, 1, NULL, 0, 0, ?)",
+            (generation_id, blob_gc._blob_namespace_identity(store.root, create_marker=True).marker),
         )
         conn.execute(
             "INSERT INTO gc_generation_members "
@@ -537,12 +646,20 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
             "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
             "VALUES ('before-v34', 1, 1, 0, 0)"
         )
+        conn.execute(
+            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
+            "VALUES ('memberless-pre035', 2, NULL, 0, 0)"
+        )
         conn.commit()
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
         assert result.applied_versions == (34, 35)
         assert conn.execute("PRAGMA user_version").fetchone() == (35,)
         assert conn.execute("SELECT generation_id FROM gc_generations").fetchone() == ("before-v34",)
         assert conn.execute("SELECT COUNT(*) FROM gc_generation_members").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = 'memberless-pre035'"
+        ).fetchone() == (2,)
+        assert "blob_namespace_marker" in {row[1] for row in conn.execute("PRAGMA table_info(gc_generations)")}
         assert [row[1] for row in conn.execute("PRAGMA table_info(gc_generation_members)")] == [
             "generation_id",
             "blob_hash",

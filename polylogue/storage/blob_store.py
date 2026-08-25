@@ -46,6 +46,7 @@ _VALID_HEX = re.compile(r"[0-9a-f]{64}")
 _VALID_SHARD = re.compile(r"[0-9a-f]{2}")
 _VALID_LEAF = re.compile(r"[0-9a-f]{62}")
 _STAGING_DIRNAME = ".staging"
+_NAMESPACE_MARKER_FILENAME = ".polylogue-blob-namespace"
 
 Heartbeat = Callable[[], None]
 
@@ -431,6 +432,10 @@ class BlobStore:
             return
 
         for shard_path in root_entries:
+            # GC owns this opaque marker. It binds durable deletion intents to
+            # this namespace across remounts and is not blob content.
+            if shard_path.name == _NAMESPACE_MARKER_FILENAME:
+                continue
             try:
                 shard_mode = shard_path.stat(follow_symlinks=False).st_mode
             except OSError:
@@ -640,41 +645,6 @@ class BlobStore:
             truncated=len(failures) >= max_failures,
         )
 
-    def detect_orphans(
-        self,
-        db_referenced_ids: set[str],
-        *,
-        max_sample: int = 10,
-    ) -> OrphanDetectionResult:
-        """Find blobs on disk that have no corresponding DB reference.
-
-        Walks the blob store directory (one blob at a time, bounded
-        memory) and compares against *db_referenced_ids* (the set of
-        ``raw_id`` values from ``raw_sessions``).
-
-        Returns count, total bytes, and a representative sample of
-        orphan hashes.  Blob files that are temporary (``.blob.*``
-        prefix) are excluded from the walk by ``iter_all()``.
-        """
-        orphan_count = 0
-        orphan_bytes = 0
-        orphan_samples: list[str] = []
-
-        for hash_hex in self.iter_all():
-            if hash_hex in db_referenced_ids:
-                continue
-            orphan_count += 1
-            with suppress(OSError):
-                orphan_bytes += self.blob_path(hash_hex).stat().st_size
-            if len(orphan_samples) < max_sample:
-                orphan_samples.append(hash_hex)
-
-        return OrphanDetectionResult(
-            orphan_count=orphan_count,
-            orphan_bytes=orphan_bytes,
-            orphan_samples=tuple(orphan_samples),
-        )
-
 
 # ---------------------------------------------------------------------------
 # Result types
@@ -707,15 +677,6 @@ class BlobVerifyAllResult:
     @property
     def failed_count(self) -> int:
         return len(self.failures)
-
-
-@dataclass(frozen=True)
-class OrphanDetectionResult:
-    """Result of scanning the blob store for unreferenced blobs."""
-
-    orphan_count: int
-    orphan_bytes: int
-    orphan_samples: tuple[str, ...]  # up to max_sample representative hashes
 
 
 # Avoid shadowing by the method name
@@ -762,7 +723,6 @@ __all__ = [
     "BlobStore",
     "BlobVerifyAllResult",
     "BlobVerifyFailure",
-    "OrphanDetectionResult",
     "PreparedBlob",
     "get_blob_store",
     "load_raw_content",

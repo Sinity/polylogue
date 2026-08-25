@@ -96,8 +96,7 @@ def _make_gc_db(path: Path) -> sqlite3.Connection:
             completed_at_ms INTEGER,
             reclaimed_count INTEGER NOT NULL DEFAULT 0,
             reclaimed_bytes INTEGER NOT NULL DEFAULT 0,
-            blob_namespace_device INTEGER,
-            blob_namespace_inode INTEGER
+            blob_namespace_marker TEXT
         );
         CREATE TABLE gc_generation_members (
             generation_id TEXT NOT NULL,
@@ -301,27 +300,6 @@ def test_dedup_across_write_methods(tmp_path: Path) -> None:
 
     assert h1 == h2 == h3
     assert store.stats()["count"] == 1
-
-
-# ---------------------------------------------------------------------------
-# § "Blob Store Model" → "GC identifies unreferenced blobs via link
-# counting." Combined with detect_orphans semantics.
-# ---------------------------------------------------------------------------
-
-
-def test_orphan_detection_only_surfaces_unreferenced_blobs(tmp_path: Path) -> None:
-    """docs/internals.md § Blob Store Model: orphan detection compares
-    on-disk blobs against the DB-referenced ID set; a blob is an
-    orphan iff it is on disk but absent from the reference set.
-    """
-    store = BlobStore(tmp_path / "blobs")
-    h_referenced, _ = store.write_from_bytes(b"referenced")
-    h_orphan, _ = store.write_from_bytes(b"orphan")
-
-    result = store.detect_orphans({h_referenced})
-    assert result.orphan_count == 1
-    assert h_orphan in result.orphan_samples
-    assert h_referenced not in result.orphan_samples
 
 
 # ---------------------------------------------------------------------------

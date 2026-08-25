@@ -610,6 +610,100 @@ def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index
     assert result.verification["missing_canonical_blob_count"] == 1
 
 
+def test_backup_creation_oracle_rejects_projection_omitting_independent_attachment(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copying side reads index attachments independently before any blob copy."""
+    archive_root = workspace_env["archive_root"]
+    payload = b"creation-side independent attachment oracle"
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="backup-creation-attachment-oracle",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
+        attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1", inline_bytes=payload)],
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        archive.write_parsed(session)
+    omitted_hash = hashlib.sha256(payload).hexdigest()
+    original_projection = backup_mod._source_blob_liveness_projection
+
+    def omit_from_projection(source_db: Path, *, index_db: Path | None) -> tuple[BlobLivenessProjection, set[str]]:
+        projection, reservations = original_projection(source_db, index_db=index_db)
+        return (
+            BlobLivenessProjection(
+                frozenset(blob_hash for blob_hash in projection.live_hashes if blob_hash != omitted_hash),
+                owner_hashes=projection.owner_hashes,
+            ),
+            reservations,
+        )
+
+    monkeypatch.setattr(backup_mod, "_source_blob_liveness_projection", omit_from_projection)
+    with pytest.raises(RuntimeError, match="omitted independent attachment evidence"):
+        backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+
+@pytest.mark.parametrize(
+    "evidence, message",
+    [
+        (None, "missing or has an unknown format"),
+        ({"format": "polylogue-blob-reference-evidence-v1"}, "invalid owner payloads"),
+        (
+            {
+                "format": "polylogue-blob-reference-evidence-v1",
+                "source_owner_hashes": {},
+                "index_attachment_evidence": "not_consulted",
+                "index_attachment_hashes": ["0" * 64],
+            },
+            "unconsulted index attachments",
+        ),
+        (
+            {
+                "format": "polylogue-blob-reference-evidence-v1",
+                "source_owner_hashes": {"source.db.raw_sessions": "not-a-list"},
+                "index_attachment_evidence": "consulted",
+                "index_attachment_hashes": [],
+            },
+            "invalid source owner payloads",
+        ),
+    ],
+)
+def test_backup_reference_evidence_refuses_malformed_payloads(evidence: object, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        backup_mod._expected_blob_hashes_from_evidence(evidence)
+
+
+def test_backup_attachment_oracle_refuses_missing_invalid_and_unreadable_evidence(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.db"
+    with sqlite3.connect(missing) as conn:
+        conn.execute("CREATE TABLE attachments (attachment_id TEXT PRIMARY KEY) STRICT")
+    with pytest.raises(RuntimeError, match="missing columns"):
+        backup_mod._index_attachment_hashes(missing)
+
+    invalid = tmp_path / "invalid.db"
+    with sqlite3.connect(invalid) as conn:
+        conn.execute("CREATE TABLE attachments (blob_hash BLOB) STRICT")
+        conn.execute("INSERT INTO attachments VALUES (X'00')")
+    with pytest.raises(RuntimeError, match="invalid blob_hash"):
+        backup_mod._index_attachment_hashes(invalid)
+
+    unreadable = tmp_path / "unreadable.db"
+    unreadable.mkdir()
+    with pytest.raises(RuntimeError, match="unreadable"):
+        backup_mod._index_attachment_hashes(unreadable)
+
+
+def test_backup_verification_refuses_missing_reference_evidence_artifact(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=False)
+    assert result.ok and result.output_path is not None
+    (Path(result.output_path) / "blob-reference-evidence.json").unlink()
+    backup_mod._verify_backup_result(result)
+    assert result.verified is False
+    assert result.ok is False
+    assert "reference evidence is missing" in str(result.error)
+
+
 def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -886,6 +980,12 @@ def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path
     assert debt.total_references_seen == 0
     assert debt.missing_referenced_blobs == 0
     assert debt.reference_sources == {}
+    assert (
+        json.loads((backup_root / "blob-reference-evidence.json").read_text(encoding="utf-8"))[
+            "index_attachment_evidence"
+        ]
+        == "not_consulted"
+    )
     assert len(warnings) == 1
     assert "reservations missing blob bytes" in warnings[0]
     assert "referenced blobs missing" not in warnings[0]
