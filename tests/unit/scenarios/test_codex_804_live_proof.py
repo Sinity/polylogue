@@ -61,7 +61,7 @@ import pytest
 pytestmark = pytest.mark.storage_scale
 
 from polylogue.config import Config
-from polylogue.product import raw_authority
+from polylogue.maintenance import raw_authority
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadPhaseObservation,

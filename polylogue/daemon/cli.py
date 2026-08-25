@@ -65,12 +65,12 @@ from polylogue.daemon.write_coordinator import (
     daemon_write_coordinator,
 )
 from polylogue.logging import configure_logging, get_logger
-from polylogue.operations.embedding_lifecycle import (
-    ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
-)
-from polylogue.product.raw_authority import (
+from polylogue.maintenance.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+)
+from polylogue.operations.embedding_lifecycle import (
+    ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -81,7 +81,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.daemon.lifecycle import DaemonLifecycle
     from polylogue.daemon.parse_prefetch import DaemonParseStage
-    from polylogue.product.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
+    from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion, RawMaterializationCounts
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.blob_publication import BlobPublicationReconciliation
 
@@ -1185,7 +1185,7 @@ async def _periodic_raw_materialization_convergence(
                         "raw materialization: standing down trickle census/drain -- "
                         "a daemon bulk-rebuild transaction already subsumes this backlog"
                     )
-                    from polylogue.product.raw_authority import RawMaterializationCounts
+                    from polylogue.maintenance.raw_authority import RawMaterializationCounts
 
                     bulk_progressed = await _maybe_route_daemon_bulk_rebuild(RawMaterializationCounts())
                     if not bulk_progressed:
@@ -1380,8 +1380,8 @@ def _drain_raw_materialization_once(
         raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
 
     from polylogue.config import Config
+    from polylogue.maintenance import raw_authority
     from polylogue.paths import render_root
-    from polylogue.product import raw_authority
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
     archive = archive_root()
@@ -1453,7 +1453,7 @@ def _drain_raw_materialization_once(
 
 def _raw_materialization_counts(result: Any, *, executed_plans: int = 0) -> RawMaterializationCounts:
     """Project one typed raw-materialization result into daemon scheduling counts."""
-    from polylogue.product import raw_authority
+    from polylogue.maintenance import raw_authority
 
     metrics = dict(getattr(result, "metrics", {}))
     remaining = int(metrics.get("raw_materialization_remaining_candidate_count", 0))
@@ -1511,8 +1511,8 @@ def _run_raw_materialization_whale_pass_once(
         raise RuntimeError(f"raw whale materialization source-selection gate blocked: {reason}")
 
     from polylogue.config import Config
+    from polylogue.maintenance import raw_authority
     from polylogue.paths import render_root
-    from polylogue.product import raw_authority
 
     archive = archive_root()
     config = Config(archive_root=archive, render_root=render_root(), sources=[])
@@ -1783,8 +1783,8 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
     """
     from polylogue.config import Config
     from polylogue.daemon.events import emit_daemon_event
+    from polylogue.maintenance import raw_authority
     from polylogue.paths import archive_root, render_root
-    from polylogue.product import raw_authority
 
     root = archive_root()
     global _WHALE_RECEIPT_ROOT
@@ -2073,7 +2073,7 @@ def _converge_raw_authority_frontier(config: Config, *, limit: int) -> int:
     bytes, unresolved provenance, and corruption are persisted as obligations;
     only strategies carrying an exact deterministic proof become selectable.
     """
-    from polylogue.product import raw_authority
+    from polylogue.maintenance import raw_authority
 
     census = raw_authority.inspect_frontier(config)
     executable = tuple(item.plan_id for item in census.items if item.executable)[:limit]
@@ -2626,8 +2626,8 @@ async def run_live_watcher(
     debounce_s: float,
 ) -> bool:
     from polylogue.daemon.events import emit_catch_up_cycle
+    from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
-    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2689,8 +2689,8 @@ async def run_daemon_services(
     those routes can run, and the daemon must prevent a rebuild from starting
     until its writer coordinator has drained.
     """
+    from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
-    from polylogue.product.raw_authority import archive_writer_rebuild_exclusion
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)

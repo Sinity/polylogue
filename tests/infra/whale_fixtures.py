@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, BinaryIO, Final, cast
 
-from polylogue.product.raw_authority import (
+from polylogue.maintenance.raw_authority import (
     RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES,
     RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
 )

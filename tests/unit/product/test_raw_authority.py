@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from polylogue.config import Config
-from polylogue.product import raw_authority
+from polylogue.maintenance import raw_authority
 from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport
