@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from hypothesis import strategies as st
 
 from devtools.reindex_packets import ROOT_ID, main, validate
 
-HEAD = "0123456789abcdef"
+HEAD = "0123456789abcdef0123456789abcdef01234567"
 
 
 class FakeReader:
@@ -190,7 +191,9 @@ def test_exact_conflict_keys_ignore_write_scope_but_require_serialization() -> N
     beads[3]["metadata"] = meta(
         execution_lane="other", lane_order="2", conflict_keys="one", write_scope="different prose"
     )
-    assert any("exact conflict-key overlap" in error for error in validate(FakeReader(beads))["structural_errors"])
+    report = validate(FakeReader(beads))
+    assert any("exact conflict-key overlap" in error for error in report["structural_errors"])
+    assert all(not packet["ready"] for packet in report["packets"])
 
 
 def operation_contract(shape: str = "plan-rehearse-review-authorize-apply-verify") -> dict[str, Any]:
@@ -205,6 +208,8 @@ def operation_contract(shape: str = "plan-rehearse-review-authorize-apply-verify
 
 def operation_metadata(**changes: Any) -> dict[str, Any]:
     value = {
+        "packet_execution_contract": "packet-v1",
+        "deadline_policy": "bounded",
         "execution_kind": "authorized-prep-operation",
         "live_data_access": "explicit-operator-authorized-source-apply",
         "lane_mode": "serialized-writer",
@@ -302,6 +307,45 @@ def test_candidate_writers_need_serialization() -> None:
     assert "a: candidate writer is not serialized" not in validate(FakeReader(beads))["structural_errors"]
 
 
+@pytest.mark.parametrize(
+    ("wave", "access"),
+    [
+        (wave, access)
+        for wave in ("reindex-prep-a", "reindex-prep-b", "reindex-prep-c", "reindex-window")
+        for access in (
+            "active-authorized",
+            "authorized-inactive-generation-writer",
+            "explicit-operator-authorized-source-apply",
+            "explicit-operator-authorized-blob-apply",
+            "candidate-only",
+        )
+    ],
+)
+def test_all_authority_writers_are_serialized_in_every_wave(wave: str, access: str) -> None:
+    beads = graph()
+    for item in beads[2:]:
+        item["metadata"]["execution_wave"] = wave
+    beads[2]["metadata"].update(live_data_access=access, lane_mode="parallel")
+    report = validate(FakeReader(beads))
+    assert any("a:" in error and "not serialized" in error for error in report["structural_errors"])
+    assert report["packets"][0]["ready"] is False
+
+
+def test_final_window_authority_is_not_reclassified_as_prep_operation() -> None:
+    beads = graph()
+    for item in beads[2:]:
+        item["metadata"]["execution_wave"] = "reindex-window"
+    beads[2]["metadata"].update(
+        execution_kind="authorized-prep-operation",
+        live_data_access="active-authorized",
+        lane_mode="parallel",
+    )
+    report = validate(FakeReader(beads))
+    assert not any("requires operator-authorized live_data_access" in error for error in report["structural_errors"])
+    assert any("operator-authorized writer is not serialized" in error for error in report["structural_errors"])
+    assert not any("authorized prep operation must be serialized" in error for error in report["structural_errors"])
+
+
 def test_predicates_compile_to_typed_unsatisfied_reasons() -> None:
     beads = graph()
     beads[2]["metadata"]["readiness_contract"] = readiness(
@@ -313,6 +357,58 @@ def test_predicates_compile_to_typed_unsatisfied_reasons() -> None:
     assert projection["unsatisfied_predicates"] == [
         {"evidence_id": "calibration-1", "kind": "calibration-receipt", "reason": "stale"}
     ]
+
+
+@pytest.mark.parametrize("kind", ("external-gate", "source-carrier-receipt", "terminal-campaign-proof"))
+def test_acceptance_predicates_are_typed_and_fail_closed(kind: str) -> None:
+    beads = graph()
+    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=(predicate(kind, f"{kind}-1", "pending"),))
+    projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
+    assert projection["ready"] is False
+    assert projection["unsatisfied_predicates"] == [{"evidence_id": f"{kind}-1", "kind": kind, "reason": "pending"}]
+
+
+def test_launch_projection_is_the_single_ready_authority_for_structural_failures() -> None:
+    beads = graph()
+    beads[2]["metadata"].pop("packet_execution_contract")
+    beads[2]["metadata"].pop("deadline_policy")
+    projection = validate(FakeReader(beads))["packets"][0]["launch_projection"]
+    assert projection["ready"] is False
+    assert {failure["field"] for failure in projection["launch_failures"]} == {
+        "packet_execution_contract",
+        "deadline_policy",
+    }
+    assert projection["ready"] is not bool(projection["launch_failures"])
+
+
+def test_phase_plan_and_authorization_errors_are_launch_failures() -> None:
+    beads = graph()
+    beads[2]["metadata"] = operation_metadata(
+        apply_authority={
+            "mode": "explicit-operator-authorized-apply",
+            "authorization_id": "authorization-1",
+            "plan_digest": "sha256:other",
+        }
+    )
+    beads[2]["metadata"]["readiness_contract"] = readiness(predicates=operation_predicates())
+    packet = validate(FakeReader(beads))["packets"][0]
+    assert packet["ready"] is False
+    assert any(failure["kind"] == "operation-phase" for failure in packet["launch_projection"]["launch_failures"])
+
+
+def test_enforcement_binds_actual_head_and_diagnostic_is_explicitly_nonfailing() -> None:
+    beads = graph()
+    beads[2]["metadata"]["readiness_contract"] = readiness(head="f" * 40)
+    reader = FakeReader(beads)
+    assert main(["--enforce-readiness", "--integration-head", "e" * 40], reader=reader, stdout=StringIO()) == 1
+    assert main(["--diagnostic", "--integration-head", "e" * 40], reader=reader, stdout=StringIO()) == 0
+
+
+def test_task_and_head_drift_are_both_launch_failures() -> None:
+    beads = graph()
+    beads[2]["revision"] = "a-v2"
+    projection = validate(FakeReader(beads), integration_head="f" * 40)["packets"][0]["launch_projection"]
+    assert {failure["kind"] for failure in projection["launch_failures"]} == {"task-identity", "integration-head"}
 
 
 def test_launch_projection_binds_identity_head_capability_and_deadline() -> None:
@@ -435,7 +531,14 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
     calls: list[tuple[str, ...]] = []
 
     class Completed:
-        stdout = (
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def run(command: list[str], **_: Any) -> Completed:
+        calls.append(tuple(command))
+        if command[0] == "git":
+            return Completed("0" * 40 + "\n")
+        return Completed(
             json.dumps(
                 {
                     "id": ROOT_ID,
@@ -448,12 +551,11 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
             + "\n"
         )
 
-    def run(command: list[str], **_: Any) -> Completed:
-        calls.append(tuple(command))
-        return Completed()
-
     monkeypatch.setattr("devtools.reindex_packets.subprocess.run", run)
     output = StringIO()
     assert main(["--json"], stdout=output) == 0
-    assert calls == [("bd", "--readonly", "export", "--all")]
+    assert calls == [
+        ("git", "-C", str(Path(__file__).resolve().parents[3]), "rev-parse", "--verify", "HEAD"),
+        ("bd", "--readonly", "export", "--all"),
+    ]
     assert json.loads(output.getvalue())["read_only"] is True

@@ -234,7 +234,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "Before dispatching reindex work, recompute blocks-only closure, packet topology, conflicts, "
             "capability carriers, and launch readiness from current Beads. The report is read-only."
         ),
-        examples=("devtools verify reindex-packets", "devtools verify reindex-packets --json"),
+        examples=(
+            "devtools verify reindex-packets --enforce-readiness",
+            "devtools verify reindex-packets --diagnostic --json",
+        ),
     ),
     CommandSpec(
         "verify doc-commands",

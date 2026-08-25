@@ -3,12 +3,14 @@
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 ROOT_ID = "polylogue-reindex-2026"
@@ -21,7 +23,7 @@ OPERATION_PHASE_VERSION = "prep-operation-phase-v1"
 PREP_OPERATION_ACCESS = frozenset(
     {"explicit-operator-authorized-source-apply", "explicit-operator-authorized-blob-apply"}
 )
-CANDIDATE_WRITE_ACCESS = frozenset({"isolated-candidate-write", "read-only-sources-and-isolated-candidate-write"})
+FINAL_CANDIDATE_ACCESS = frozenset({"candidate-only"})
 EXECUTION_KINDS = frozenset({"implementation", "evidence", "authorized-prep-operation"})
 PREDICATE_KINDS = frozenset(
     {
@@ -46,6 +48,7 @@ PREDICATE_FIELDS = {
 }
 ACCEPTED_STATES = dict.fromkeys(PREDICATE_KINDS, "accepted")
 ACCEPTED_STATES["operator-authorization"] = "authorized"
+INTEGRATION_HEAD_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,32 @@ def _serialized(bead: Mapping[str, Any]) -> bool:
     return str(_value(bead, "lane_mode") or "").startswith("serialized-")
 
 
+def _authority_writer(bead: Mapping[str, Any]) -> bool:
+    access = str(_value(bead, "live_data_access") or "").lower()
+    return (
+        access in {"active-authorized", "authorized-inactive-generation-writer"}
+        or "explicit-operator-authorized" in access
+        or access in FINAL_CANDIDATE_ACCESS
+        or ("candidate" in access and "write" in access)
+    )
+
+
+def _serialization_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
+    if not _authority_writer(bead) or _serialized(bead):
+        return []
+    access = str(_value(bead, "live_data_access") or "").lower()
+    if wave.startswith("reindex-prep-") and _value(bead, "execution_kind") == "authorized-prep-operation":
+        return [f"{bead['id']}: authorized prep operation must be serialized"]
+    if (
+        access in {"active-authorized", "authorized-inactive-generation-writer"}
+        or "explicit-operator-authorized" in access
+    ):
+        return [f"{bead['id']}: operator-authorized writer is not serialized"]
+    if access in FINAL_CANDIDATE_ACCESS or ("candidate" in access and "write" in access):
+        return [f"{bead['id']}: candidate writer is not serialized"]
+    return []
+
+
 def _parse_datetime(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -169,6 +198,23 @@ def _parse_datetime(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else None
+
+
+def _integration_head_argument(value: str) -> str:
+    if not INTEGRATION_HEAD_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError("integration head must be a 40-character lowercase commit SHA")
+    return value
+
+
+def _checkout_integration_head() -> str:
+    repository_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "--verify", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return _integration_head_argument(result.stdout.strip())
 
 
 def _parse_predicate(value: object) -> EvidencePredicate:
@@ -239,10 +285,6 @@ def _execution_kind_errors(bead: Mapping[str, Any], wave: str) -> list[str]:
         errors.append(f"{bead_id}: {wave}/{access} requires execution_kind authorized-prep-operation")
     if kind == "authorized-prep-operation" and access not in PREP_OPERATION_ACCESS:
         errors.append(f"{bead_id}: authorized prep operation requires operator-authorized live_data_access")
-    if kind == "authorized-prep-operation" and not _serialized(bead):
-        errors.append(f"{bead_id}: authorized prep operation must be serialized")
-    if access in CANDIDATE_WRITE_ACCESS and not _serialized(bead):
-        errors.append(f"{bead_id}: candidate writer is not serialized")
     return errors
 
 
@@ -304,6 +346,10 @@ def _operation_phase_errors(bead: Mapping[str, Any], contract: ReadinessContract
     return errors
 
 
+def _failure(kind: str, reason: str, **details: str) -> dict[str, str]:
+    return {"kind": kind, "reason": reason, **details}
+
+
 def _predicate_status(predicate: EvidencePredicate, contract: ReadinessContract) -> str | None:
     expires_at = _parse_datetime(predicate.expires_at)
     evaluated_at = _parse_datetime(contract.evaluated_at)
@@ -328,11 +374,10 @@ def _projection(
     beads: Mapping[str, Mapping[str, Any]],
     integration_head: str | None,
     external_blockers: list[str],
+    structural_failures: Sequence[dict[str, str]],
 ) -> dict[str, Any]:
     unsatisfied: list[dict[str, str]] = []
-    if contract is None:
-        unsatisfied.append({"kind": "readiness-contract", "reason": "missing"})
-    else:
+    if contract is not None:
         expected_members = {bead_id: str(beads[bead_id].get("revision") or "") for bead_id in members}
         contract_members = {identity.bead_id: identity.revision for identity in contract.members}
         for bead_id in sorted(set(expected_members) | set(contract_members)):
@@ -344,6 +389,7 @@ def _projection(
             if reason := _predicate_status(predicate, contract):
                 unsatisfied.append({"kind": predicate.kind, "evidence_id": predicate.evidence_id, "reason": reason})
     unsatisfied.extend({"kind": "blocks", "bead_id": bead_id, "reason": "open"} for bead_id in external_blockers)
+    launch_failures = [*structural_failures, *unsatisfied]
     leader = beads[members[0]]
     projection: dict[str, Any] = {
         "version": "packet-launch-projection-v1",
@@ -368,8 +414,9 @@ def _projection(
         if contract
         else [],
         "unsatisfied_predicates": unsatisfied,
+        "launch_failures": launch_failures,
     }
-    projection["ready"] = not unsatisfied
+    projection["ready"] = not launch_failures
     payload = json.dumps(projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     projection["context_digest"] = f"sha256:{hashlib.sha256(payload).hexdigest()}"
     projection["projection_id"] = f"{projection['version']}:{projection['context_digest']}"
@@ -430,6 +477,7 @@ def validate(reader: Any, *, root_id: str = ROOT_ID, integration_head: str | Non
                 errors.append(f"{bead_id}: model policy is not provider-neutral")
             leaves.append(bead)
     assignments: dict[str, tuple[str, str, str, int]] = {}
+    packet_structural_failures: dict[str, list[dict[str, str]]] = defaultdict(list)
     for bead in leaves:
         wave, lane, packet, order_text = (str(_value(bead, field) or "").strip() for field in CORE[:4])
         try:
@@ -441,68 +489,17 @@ def validate(reader: Any, *, root_id: str = ROOT_ID, integration_head: str | Non
             errors.append(f"{bead['id']}: invalid packet assignment")
             continue
         assignments[bead["id"]] = assignment
-        errors.extend(_execution_kind_errors(bead, wave))
+        for serialization_error in _serialization_errors(bead, wave):
+            errors.append(serialization_error)
+            packet_structural_failures[bead["id"]].append(_failure("serialization", serialization_error))
+        for execution_error in _execution_kind_errors(bead, wave):
+            errors.append(execution_error)
+            packet_structural_failures[bead["id"]].append(_failure("execution-kind", execution_error))
     groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
     for bead_id, assignment in assignments.items():
         groups[assignment[:3]].append(bead_id)
     graph = {bead_id: _deps(bead, "blocks") for bead_id, bead in beads.items()}
-    packets = []
-    for group, members in sorted(groups.items()):
-        members.sort(key=lambda bead_id: (assignments[bead_id][3], bead_id))
-        leader, reasons = members[0], []
-        if (
-            not any(_present(_value(beads[bead_id], "packet_size_exception")) for bead_id in members)
-            and not 3 <= len(members) <= 5
-        ):
-            errors.append(f"{'/'.join(group)}: ordinary packet has {len(members)} leaves")
-        if len({assignments[bead_id][3] for bead_id in members}) != len(members):
-            errors.append(f"{'/'.join(group)}: duplicate packet order")
-        external_blockers = []
-        for bead_id in members:
-            for target in graph[bead_id]:
-                if target not in members:
-                    if target in beads and beads[target].get("status") != "closed":
-                        external_blockers.append(target)
-                    if target in assignments:
-                        current, predecessor = assignments[bead_id], assignments[target]
-                        if current[:2] == predecessor[:2] and int(current[2]) < int(predecessor[2]):
-                            errors.append(f"{bead_id}: packet blocker is in a later packet")
-                        if WAVES.get(predecessor[0], 0) > WAVES.get(current[0], 0):
-                            errors.append(f"{bead_id}: earlier wave blocks on later wave")
-                    continue
-                current, predecessor = assignments[bead_id], assignments[target]
-                if current[3] <= predecessor[3]:
-                    errors.append(f"{bead_id}: internal blocker is not earlier")
-        for field in LAUNCH:
-            if not _present(_value(beads[leader], field)):
-                reasons.append(f"missing {field}")
-        contract = None
-        if _present(_value(beads[leader], "readiness_contract")):
-            try:
-                contract = _parse_readiness_contract(_value(beads[leader], "readiness_contract"))
-            except ValueError as exc:
-                errors.append(f"{leader}: {exc}")
-        for bead_id in members:
-            errors.extend(_operation_phase_errors(beads[bead_id], contract))
-        for bead_id in members[1:]:
-            for field in LAUNCH:
-                if _present(_value(beads[bead_id], field)):
-                    errors.append(f"{bead_id}: non-leader carries {field}")
-        projection = _projection(group, members, contract, beads, integration_head, sorted(set(external_blockers)))
-        packets.append(
-            {
-                "wave": group[0],
-                "lane": group[1],
-                "packet": group[2],
-                "member_ids": members,
-                "leader_id": leader,
-                "ready": projection["ready"],
-                "non_ready_reasons": list(
-                    dict.fromkeys(reasons + [item["reason"] for item in projection["unsatisfied_predicates"]])
-                ),
-                "launch_projection": projection,
-            }
-        )
+    conflict_failures: dict[str, list[dict[str, str]]] = defaultdict(list)
     for left_id, left in assignments.items():
         for right_id, right in assignments.items():
             if left_id >= right_id or left[0] != right[0] or left[1] == right[1]:
@@ -514,7 +511,96 @@ def validate(reader: Any, *, root_id: str = ROOT_ID, integration_head: str | Non
                 or _serialized(beads[left_id])
                 or _serialized(beads[right_id])
             ):
-                errors.append(f"{left_id}/{right_id}: exact conflict-key overlap is not serialized")
+                error = f"{left_id}/{right_id}: exact conflict-key overlap is not serialized"
+                errors.append(error)
+                for bead_id in (left_id, right_id):
+                    conflict_failures[bead_id].append(_failure("conflict-serialization", error, bead_id=bead_id))
+    packets = []
+    for group, members in sorted(groups.items()):
+        members.sort(key=lambda bead_id: (assignments[bead_id][3], bead_id))
+        leader = members[0]
+        launch_failures = [
+            failure
+            for bead_id in members
+            for failure in (*packet_structural_failures[bead_id], *conflict_failures[bead_id])
+        ]
+        if (
+            not any(_present(_value(beads[bead_id], "packet_size_exception")) for bead_id in members)
+            and not 3 <= len(members) <= 5
+        ):
+            error = f"{'/'.join(group)}: ordinary packet has {len(members)} leaves"
+            errors.append(error)
+            launch_failures.append(_failure("packet-shape", error))
+        if len({assignments[bead_id][3] for bead_id in members}) != len(members):
+            error = f"{'/'.join(group)}: duplicate packet order"
+            errors.append(error)
+            launch_failures.append(_failure("packet-order", error))
+        external_blockers = []
+        for bead_id in members:
+            for target in graph[bead_id]:
+                if target not in members:
+                    if target in beads and beads[target].get("status") != "closed":
+                        external_blockers.append(target)
+                    if target in assignments:
+                        current, predecessor = assignments[bead_id], assignments[target]
+                        if current[:2] == predecessor[:2] and int(current[2]) < int(predecessor[2]):
+                            error = f"{bead_id}: packet blocker is in a later packet"
+                            errors.append(error)
+                            launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
+                        if WAVES.get(predecessor[0], 0) > WAVES.get(current[0], 0):
+                            error = f"{bead_id}: earlier wave blocks on later wave"
+                            errors.append(error)
+                            launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
+                    continue
+                current, predecessor = assignments[bead_id], assignments[target]
+                if current[3] <= predecessor[3]:
+                    error = f"{bead_id}: internal blocker is not earlier"
+                    errors.append(error)
+                    launch_failures.append(_failure("blocker-order", error, bead_id=bead_id))
+        for field in LAUNCH:
+            if not _present(_value(beads[leader], field)):
+                reason = f"missing {field}"
+                launch_failures.append(_failure("missing-launch-field", reason, field=field))
+        contract = None
+        if _present(_value(beads[leader], "readiness_contract")):
+            try:
+                contract = _parse_readiness_contract(_value(beads[leader], "readiness_contract"))
+            except ValueError as exc:
+                contract_error = f"{leader}: {exc}"
+                errors.append(contract_error)
+                launch_failures.append(_failure("readiness-contract", contract_error))
+        if group[0].startswith("reindex-prep-"):
+            for bead_id in members:
+                for phase_error in _operation_phase_errors(beads[bead_id], contract):
+                    errors.append(phase_error)
+                    launch_failures.append(_failure("operation-phase", phase_error, bead_id=bead_id))
+        for bead_id in members[1:]:
+            for field in LAUNCH:
+                if _present(_value(beads[bead_id], field)):
+                    error = f"{bead_id}: non-leader carries {field}"
+                    errors.append(error)
+                    launch_failures.append(_failure("non-leader-launch-field", error, bead_id=bead_id, field=field))
+        projection = _projection(
+            group,
+            members,
+            contract,
+            beads,
+            integration_head,
+            sorted(set(external_blockers)),
+            launch_failures,
+        )
+        packets.append(
+            {
+                "wave": group[0],
+                "lane": group[1],
+                "packet": group[2],
+                "member_ids": members,
+                "leader_id": leader,
+                "ready": projection["ready"],
+                "non_ready_reasons": list(dict.fromkeys(item["reason"] for item in projection["launch_failures"])),
+                "launch_projection": projection,
+            }
+        )
     errors = list(dict.fromkeys(errors))
     legacy_readiness_census = {
         field: {
@@ -559,10 +645,29 @@ def validate(reader: Any, *, root_id: str = ROOT_ID, integration_head: str | Non
 def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root-id", default=ROOT_ID)
+    parser.add_argument("--integration-head", type=_integration_head_argument)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--enforce-readiness",
+        "--enforce",
+        dest="enforce_readiness",
+        action="store_true",
+        help="fail when structural errors or any packet is not launch-ready (the default)",
+    )
+    mode.add_argument(
+        "--diagnostic",
+        dest="diagnostic",
+        action="store_true",
+        help="print the read-only projection without failing on structural or readiness findings",
+    )
     parser.add_argument("--json", action="store_true")
     args, output = parser.parse_args(argv), stdout or sys.stdout
     try:
-        report = validate(reader or BdExportReader(), root_id=args.root_id)
+        report = validate(
+            reader or BdExportReader(),
+            root_id=args.root_id,
+            integration_head=args.integration_head or _checkout_integration_head(),
+        )
     except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
         print(f"reindex-packets: unable to read external Beads: {exc}", file=output)
         return 2
@@ -589,4 +694,6 @@ def main(argv: list[str] | None = None, *, reader: Any = None, stdout: Any = Non
         for warning in report["warnings"]:
             print(f"WARNING: {warning}", file=output)
         print("read-only: no Beads or campaign state was written", file=output)
-    return 0 if report["ok"] else 1
+    if args.diagnostic:
+        return 0
+    return 0 if report["ok"] and all(packet["ready"] for packet in report["packets"]) else 1
