@@ -18,6 +18,7 @@ from polylogue.storage.blob_gc import (
     read_gc_history,
     run_blob_gc,
     run_blob_gc_report,
+    unlink_unreferenced_blob_hashes_under_exclusion,
 )
 from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
@@ -182,6 +183,26 @@ def test_still_referenced_recognizes_archive_source_hash(tmp_path: Path) -> None
     assert decision.state is LivenessState.LIVE
     assert decision.surfaces == ("source.db.raw_sessions",)
     source_conn.close()
+
+
+def test_final_gc_recheck_uses_one_connection_when_source_and_index_alias(tmp_path: Path) -> None:
+    """The legacy single-file repair route must not lock its own database twice."""
+
+    db_path = tmp_path / "legacy.db"
+    conn = _make_source_db(db_path)
+    conn.close()
+    store = BlobStore(tmp_path / "blobs")
+    blob_hash, _size = store.write_from_bytes(b"legacy single-file candidate")
+
+    deleted, _bytes, errors = unlink_unreferenced_blob_hashes_under_exclusion(db_path, db_path, store.root, {blob_hash})
+
+    # The one-file legacy schema cannot satisfy current index ownership, so
+    # this route must fail closed. The anti-vacuity condition is that a second
+    # BEGIN IMMEDIATE on db_path would instead report "database is locked".
+    assert deleted == 0
+    assert any("index.attachments is missing" in error for error in errors)
+    assert not any("database is locked" in error for error in errors)
+    assert store.exists(blob_hash)
 
 
 # ---------------------------------------------------------------------------

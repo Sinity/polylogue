@@ -221,13 +221,19 @@ def _source_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     }
 
 
+class _CanonicalBlobLivenessBlockedError(RuntimeError):
+    """The canonical projection could not provide a safe blob universe."""
+
+
 def _referenced_blob_hashes(conn: sqlite3.Connection, *, index_conn: sqlite3.Connection | None) -> set[str]:
     """Return the complete current blob universe; index authority is required."""
     from polylogue.storage.blob_liveness import project_live_blob_hashes
 
     projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
     if projection.blockers:
-        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+        raise _CanonicalBlobLivenessBlockedError(
+            f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}"
+        )
     return set(projection.live_hashes)
 
 
@@ -1593,7 +1599,7 @@ def _validate_schema_inference_gate_payload(
         if isinstance(live_duplicate_gate, Mapping):
             live_query_results["zero-unexplained-byte-duplicates"] = dict(live_duplicate_gate)
         live_full_blob = _full_blob_hash_evidence(expected_root, referenced_hashes=referenced_hashes)
-    except (OSError, sqlite3.Error, ValueError) as exc:
+    except (OSError, sqlite3.Error, ValueError, _CanonicalBlobLivenessBlockedError) as exc:
         raise ValueError(f"unable to recompute schema-inference gate evidence: {exc}") from exc
     if payload.get("schema_identity") != live_schema_identity or payload.get("source_schema_identity") != _as_dict(
         _as_dict(live_schema_identity.get("tiers")).get("source")
@@ -1928,7 +1934,13 @@ def validate_schema_inference_receipt(
                     recorded_blob_snapshot
                 ) != _semantic_referenced_blob_integrity_snapshot(verified_snapshot):
                     errors.append("receipt referenced source blob integrity snapshot changed")
-            except (OSError, SchemaInferenceGateError, sqlite3.Error, ValueError) as exc:
+            except (
+                OSError,
+                SchemaInferenceGateError,
+                sqlite3.Error,
+                ValueError,
+                _CanonicalBlobLivenessBlockedError,
+            ) as exc:
                 errors.append(f"could not verify referenced source blob integrity: {exc}")
         try:
             with open_readonly_connection(root / "source.db") as source:
@@ -2163,7 +2175,7 @@ def _run_schema_inference_gate_locked(
 
     try:
         source_gates = _run_source_gates(root, index_path=index_path, sample_limit=sample_limit)
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, _CanonicalBlobLivenessBlockedError) as exc:
         source_gates = _failed_source_gates(f"source-tier read failed: {exc}")
     blob_denominators = _as_dict(source_gates.get("blob_denominators"))
     try:
@@ -2175,7 +2187,7 @@ def _run_schema_inference_gate_locked(
         with open_readonly_connection(root / "source.db") as source, open_readonly_connection(index_path) as index:
             referenced_hashes = _referenced_blob_hashes(source, index_conn=index)
         full_blob_hash_verification = _full_blob_hash_evidence(root, referenced_hashes=referenced_hashes)
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, _CanonicalBlobLivenessBlockedError) as exc:
         full_blob_hash_verification = {
             "passed": False,
             "errors": [f"full BlobStore verification could not read source evidence: {exc}"],

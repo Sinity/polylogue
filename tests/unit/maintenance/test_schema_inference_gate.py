@@ -134,6 +134,23 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     } == before
 
 
+def test_canonical_liveness_blockage_returns_a_failed_gate_receipt(tmp_path: Path) -> None:
+    """The gate must report a blocked owner projection instead of escaping its result contract."""
+
+    root = tmp_path / "archive"
+    ground_truth = _seed_archive(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("DROP TABLE history_sidecars")
+
+    payload = _run(root, tmp_path, ground_truth=ground_truth)
+
+    assert payload["verdict"] == "FAIL"
+    assert any(
+        "canonical blob liveness projection blocked: source.history_sidecars is missing" in reason
+        for reason in payload["pass_fail_reasons"]
+    )
+
+
 def test_readiness_accepts_equivalent_blob_evidence_from_another_verifier(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     ground_truth = _seed_archive(root)

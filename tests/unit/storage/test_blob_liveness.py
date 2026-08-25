@@ -10,9 +10,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.blob_gc import run_blob_gc_report
+from polylogue.storage.blob_integrity import referenced_blob_hashes
 from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness, project_live_blob_hashes
+from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 
 def _archive(tmp_path: Path) -> tuple[Path, bytes]:
@@ -188,6 +191,62 @@ def test_bulk_projection_excludes_dangling_ledger_rows_and_verification_receipts
         projection = project_live_blob_hashes(source)
 
     assert projection.live_hashes == frozenset()
+
+
+@pytest.mark.uses_real_clock("backdates legacy hook and dangling blobs for the production GC age gate")
+def test_legacy_hook_rekey_proof_is_live_across_liveness_integrity_diagnostics_and_gc(tmp_path: Path) -> None:
+    """Only an exact legacy-hook rekey proof can retain an otherwise dangling ledger ref."""
+
+    root, _unused = _archive(tmp_path)
+    store = BlobStore(root / "blob")
+    legacy_hash, legacy_size = store.write_from_bytes(b'{"event":"PostToolUse","legacy":true}')
+    dangling_hash, dangling_size = store.write_from_bytes(b"arbitrary dangling raw-payload ledger row")
+    old = time.time() - 3_600
+    os.utime(store.blob_path(legacy_hash), (old, old))
+    os.utime(store.blob_path(dangling_hash), (old, old))
+    source_path = "/hooks/legacy.jsonl"
+    native_id = "legacy-native-id"
+    deterministic_raw_id = deterministic_raw_session_id(
+        "codex-session", source_path, 0, bytes.fromhex(legacy_hash), native_id
+    )
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        # This is the pre-v22 shape produced by the historic hook writer: the
+        # hook has no direct blob hash and the raw_payload ref has no raw row.
+        source.execute(
+            """INSERT INTO raw_hook_events
+            (hook_event_id, origin, native_id, session_native_id, source_path, event_type, payload_json, observed_at_ms)
+            VALUES ('legacy-hook', 'codex-session', ?, 'session-1', ?, 'PostToolUse', '{}', 1)""",
+            (native_id, source_path),
+        )
+        source.executemany(
+            """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
+            (
+                (bytes.fromhex(legacy_hash), deterministic_raw_id, source_path, legacy_size),
+                (bytes.fromhex(dangling_hash), "not-a-deterministic-hook-id", "/hooks/dangling.jsonl", dangling_size),
+            ),
+        )
+
+        live = inspect_blob_liveness(source, legacy_hash, index_conn=index, require_index=True)
+        dangling = inspect_blob_liveness(source, dangling_hash, index_conn=index, require_index=True)
+        projection = project_live_blob_hashes(source, index_conn=index, require_index=True)
+        diagnostics = classify_blob_ref_liveness(source)
+
+    assert live.state is LivenessState.LIVE
+    assert live.surfaces == ("source.db.rekeyable_hook_payload",)
+    assert dangling.state is LivenessState.UNREFERENCED
+    assert legacy_hash in projection.live_hashes
+    assert dangling_hash not in projection.live_hashes
+    assert diagnostics.rekeyable_hook_payload_count == 1
+    assert diagnostics.orphaned_by_ref_type == {"raw_payload": 1}
+    assert legacy_hash in referenced_blob_hashes(root / "source.db")
+    assert dangling_hash not in referenced_blob_hashes(root / "source.db")
+
+    report = run_blob_gc_report(root / "source.db", store.root)
+
+    assert report.deleted_count == 1
+    assert store.exists(legacy_hash)
+    assert not store.exists(dangling_hash)
 
 
 @pytest.mark.uses_real_clock("backdates the real blob mtime for GC's production age gate")

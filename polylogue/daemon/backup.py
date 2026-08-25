@@ -487,14 +487,11 @@ def _copy_referenced_blobs(
     size = 0
     copied_inventory: list[dict[str, object]] = []
     missing_reserved: list[str] = []
-    missing_index_attachments: list[str] = []
     for hash_hex in sorted(hashes):
         src = store.blob_path(hash_hex)
         if not src.exists():
             if "reserved" in inventory[hash_hex]:
                 missing_reserved.append(hash_hex)
-            if "index_attachment" in inventory[hash_hex]:
-                missing_index_attachments.append(hash_hex)
             continue
         dst = blob_dst_root / hash_hex[:2] / hash_hex[2:]
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -520,16 +517,6 @@ def _copy_referenced_blobs(
             + (
                 f" (sample: {', '.join(missing_reserved[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"
                 if missing_reserved
-                else ""
-            )
-        )
-    if missing_index_attachments:
-        warnings.append(
-            "index-tier attachment references missing blob bytes: "
-            f"{len(missing_index_attachments)} total"
-            + (
-                f" (sample: {', '.join(missing_index_attachments[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])})"
-                if missing_index_attachments
                 else ""
             )
         )
@@ -865,19 +852,11 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             if (restored / "source.db").exists() and (restored / "index.db").exists()
             else set()
         )
-        missing_source_blobs = canonical_blob_hashes - restored_hash_set
-        source_blobs_resolved = (
-            (restored / "source.db").exists() and (restored / "index.db").exists() and not missing_source_blobs
+        missing_canonical_blobs = canonical_blob_hashes - restored_hash_set
+        canonical_blobs_resolved = (
+            (restored / "source.db").exists() and (restored / "index.db").exists() and not missing_canonical_blobs
         )
-        index_attachment_blobs_resolved = source_blobs_resolved
-        missing_index_attachment_blobs = missing_source_blobs
-        ok = (
-            all(tier_integrity.values())
-            and omitted_absent
-            and blobs_ok
-            and source_blobs_resolved
-            and index_attachment_blobs_resolved
-        )
+        ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and canonical_blobs_resolved
         receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {
             "ok": ok,
@@ -888,10 +867,8 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "manifest_blob_count": blob_count,
             "restored_blob_count": restored_blob_count,
             "blob_inventory_exact": blobs_ok,
-            "source_blobs_resolved": source_blobs_resolved,
-            "missing_source_blob_count": len(missing_source_blobs),
-            "index_attachment_blobs_resolved": index_attachment_blobs_resolved,
-            "missing_index_attachment_blob_count": len(missing_index_attachment_blobs),
+            "canonical_blobs_resolved": canonical_blobs_resolved,
+            "missing_canonical_blob_count": len(missing_canonical_blobs),
             "scratch_restore": "temporary",
             "scratch_parent": str(Path(raw_tmp).parent),
             "receipt_evidence": receipt_evidence,

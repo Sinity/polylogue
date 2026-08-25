@@ -502,12 +502,12 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
 
     assert result.ok
     assert result.verified
-    assert result.verification["index_attachment_blobs_resolved"] is True
+    assert result.verification["canonical_blobs_resolved"] is True
     backup_root = Path(result.output_path or "")
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
     inventory = json.loads((backup_root / "blob-inventory.json").read_text(encoding="utf-8"))
     item = next(row for row in inventory if row["blob_hash"] == blob_hash)
-    assert item["protection"] == ["index_attachment"]
+    assert item["protection"] == ["referenced"]
 
 
 def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
@@ -755,8 +755,8 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
 
     assert result.ok is False
     assert result.verified is False
-    assert result.verification["source_blobs_resolved"] is False
-    assert result.verification["missing_source_blob_count"] == 2
+    assert result.verification["canonical_blobs_resolved"] is False
+    assert result.verification["missing_canonical_blob_count"] == 2
     assert result.verification["blob_inventory_exact"] is True
 
 

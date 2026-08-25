@@ -565,7 +565,7 @@ def _validate_backup(
     if {f"{tier}.db" for tier in _REQUIRED_TIERS} - included:
         raise CursorAuthorityReconciliationError("full-evidence backup lacks source/index/ops/audit rollback evidence")
     verification = receipt.get("verification")
-    required_verification = ("source_blobs_resolved", "index_attachment_blobs_resolved", "blob_inventory_exact")
+    required_verification = ("canonical_blobs_resolved", "blob_inventory_exact")
     if not isinstance(verification, dict) or any(verification.get(key) is not True for key in required_verification):
         raise CursorAuthorityReconciliationError("backup lacks complete blob rollback evidence")
     if not (root / "blob").is_dir() or not (root / "blob-inventory.json").is_file():

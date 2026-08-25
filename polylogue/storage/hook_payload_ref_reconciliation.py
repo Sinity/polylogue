@@ -488,7 +488,7 @@ def _build_match_stage(
     return scanned_count, matched_count, matched_bytes, ambiguous_count
 
 
-def _create_match_stage(
+def _create_match_stage_writable(
     conn: sqlite3.Connection, *, failure_injector: _StageFailureInjector | None = None
 ) -> tuple[int, int, int, int]:
     """Build or verify the complete legacy hook-match stage.
@@ -505,6 +505,7 @@ def _create_match_stage(
     except sqlite3.Error:
         _clear_match_stage(conn)
         raise
+
     if ready is not None:
         return ready
 
@@ -529,6 +530,26 @@ def _create_match_stage(
         finally:
             _clear_match_stage(conn)
         raise
+
+
+def _create_match_stage(
+    conn: sqlite3.Connection, *, failure_injector: _StageFailureInjector | None = None
+) -> tuple[int, int, int, int]:
+    """Build the read-only matcher stage, including query-only readers.
+
+    SQLite's query_only pragma also forbids TEMP tables. Temporarily relaxing
+    it permits this connection-local read model while a mode=ro URI still
+    prevents persistent source-tier writes.
+    """
+
+    query_only = bool(conn.execute("PRAGMA query_only").fetchone()[0])
+    if query_only:
+        conn.execute("PRAGMA query_only = OFF")
+    try:
+        return _create_match_stage_writable(conn, failure_injector=failure_injector)
+    finally:
+        if query_only:
+            conn.execute("PRAGMA query_only = ON")
 
 
 def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloadRefReconciliationPlan:

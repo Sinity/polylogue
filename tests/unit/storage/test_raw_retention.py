@@ -3180,3 +3180,37 @@ def test_superseded_cleanup_keeps_blob_named_by_a_ledgerless_surviving_raw(tmp_p
         "ledgerless-raw",
     }
     conn.close()
+
+
+def test_cleanup_returns_typed_unavailable_result_for_in_memory_database_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank PRAGMA database_list path is not a filesystem database alias."""
+
+    blob_store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = _write_blob(blob_store, b"in-memory cleanup candidate")
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TABLE blob_refs (ref_id TEXT)")
+    conn.execute("INSERT INTO raw_sessions VALUES ('candidate')")
+    monkeypatch.setattr(
+        raw_retention_mod,
+        "superseded_raw_snapshot_candidates",
+        lambda *_args, **_kwargs: [
+            raw_retention_mod.RawSnapshotCleanupCandidate(
+                raw_id="candidate",
+                source_path="/synthetic/source.jsonl",
+                source_index=0,
+                blob_size=blob_size,
+                blob_hash=blob_hash,
+            )
+        ],
+    )
+
+    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store, index_conn=conn)
+
+    assert result.deleted_raw_count == 1
+    assert result.deleted_blob_count == 0
+    assert result.errors == ("source or index tier is unavailable",)
+    assert blob_store.exists(blob_hash)
+    conn.close()

@@ -287,13 +287,20 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     deleted = 0
     deleted_bytes = 0
     errors: list[str] = []
+    try:
+        same_database = source_db_path.resolve(strict=False) == index_db_path.resolve(strict=False)
+    except OSError as exc:
+        return 0, 0, (f"could not resolve blob liveness database paths: {exc}",)
     with exclude_archive_blob_publishers(source_db_path):
         source_conn = sqlite3.connect(source_db_path)
         index_conn: sqlite3.Connection | None = None
         try:
             source_conn.execute("BEGIN IMMEDIATE")
-            index_conn = sqlite3.connect(index_db_path)
-            index_conn.execute("BEGIN IMMEDIATE")
+            if same_database:
+                index_conn = source_conn
+            else:
+                index_conn = sqlite3.connect(index_db_path)
+                index_conn.execute("BEGIN IMMEDIATE")
             preflight = inspect_blob_liveness(source_conn, "0" * 64, index_conn=index_conn, require_index=True)
             if preflight.state is LivenessState.BLOCKED:
                 return 0, 0, preflight.blockers
@@ -324,7 +331,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             source_conn.rollback()
             raise
         finally:
-            if index_conn is not None:
+            if index_conn is not None and index_conn is not source_conn:
                 if index_conn.in_transaction:
                     index_conn.rollback()
                 index_conn.close()

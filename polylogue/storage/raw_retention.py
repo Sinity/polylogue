@@ -2156,17 +2156,24 @@ def cleanup_superseded_raw_snapshots(
     deleted_blob_count = 0
     deleted_blob_bytes = 0
     errors: list[str] = []
-    source_path = next(
-        (Path(str(row[2])) for row in conn.execute("PRAGMA database_list") if str(row[1]) == "main"), None
-    )
-    index_path = (
-        next((Path(str(row[2])) for row in index_conn.execute("PRAGMA database_list") if str(row[1]) == "main"), None)
-        if index_conn is not None
-        else None
-    )
+
+    def main_database_path(connection: sqlite3.Connection | None) -> Path | None:
+        if connection is None:
+            return None
+        for _seq, name, file_name in connection.execute("PRAGMA database_list"):
+            if str(name) != "main":
+                continue
+            path = str(file_name or "")
+            if not path or path == ":memory:" or path.startswith("file::memory:"):
+                return None
+            return Path(path)
+        return None
+
+    source_path = main_database_path(conn)
+    index_path = main_database_path(index_conn)
     candidate_hashes = {candidate.blob_store_hash for candidate in candidates if len(candidate.blob_store_hash) == 64}
-    if source_path is None or not str(source_path) or index_path is None or not str(index_path):
-        errors.append("index tier is unavailable")
+    if source_path is None or index_path is None:
+        errors.append("source or index tier is unavailable")
     else:
         from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
 
