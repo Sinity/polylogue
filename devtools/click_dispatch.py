@@ -257,7 +257,12 @@ def _dispatch(argv: list[str]) -> int:
         return 0
     except SystemExit as e:
         code = e.code
-        return code if isinstance(code, int) else 0
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(code, file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:

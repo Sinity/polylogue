@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -106,6 +108,65 @@ def test_default_command_group_forwards_verify_flags(monkeypatch: pytest.MonkeyP
 
     assert devtools_main.main(["verify", "--quick"]) == 0
     assert captured == [["--quick"]]
+
+
+@pytest.mark.parametrize("code, expected", [(None, 0), (7, 7)])
+def test_system_exit_codes_keep_python_cli_semantics(
+    monkeypatch: pytest.MonkeyPatch, code: object, expected: int
+) -> None:
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit(code)
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == expected
+
+
+def test_non_integer_system_exit_fails_closed_and_preserves_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: removing the dispatch translation makes this return 0 and lose the message."""
+    fake_module = ModuleType("_polylogue_devtools_test_system_exit_message_fake")
+
+    def fake_main(_argv: list[str] | None) -> int:
+        raise SystemExit("command failed")
+
+    fake_module.__dict__["main"] = fake_main
+    monkeypatch.setitem(sys.modules, fake_module.__name__, fake_module)
+    monkeypatch.setitem(
+        COMMANDS,
+        "status",
+        CommandSpec("status", "core", "fake status", fake_module.__name__),
+    )
+
+    assert devtools_main.main(["status"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "command failed\n"
+
+
+def test_why_unreadable_receipt_fails_through_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from devtools import why
+
+    run_json = tmp_path / "run" / "run.json"
+    run_json.parent.mkdir()
+    run_json.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(why, "VERIFY_RUNS_DIR", tmp_path)
+
+    assert devtools_main.main(["why"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"why: cannot read {run_json}" in captured.err
 
 
 def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
