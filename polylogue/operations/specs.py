@@ -1008,16 +1008,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
 
 DECLARED_CONTROL_PLANE_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
-        name="generation-readiness",
-        kind=OperationKind.READINESSCHECK,
-        description="Read archive-owned generation, schema, source, capacity, and lifecycle facts for an immutable transition request.",
-        surfaces=("maintenance", "tests"),
-        previewable=True,
-        effects=("DbRead",),
-        operation_version=1,
-        receipt_schema="polylogue.operation-result/v1",
-    ),
-    OperationSpec(
         name="cli.help",
         kind=OperationKind.CLI,
         description="Render Click help for one command path without mutating archive state.",

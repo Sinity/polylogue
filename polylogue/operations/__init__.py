@@ -19,7 +19,6 @@ if TYPE_CHECKING:
         ArchiveStats,
         CompletionAggregate,
     )
-    from .evidence import EvidenceBinding, EvidenceValidationError, OperationEvidence, OperationFailure, OperationResult
     from .import_contracts import (
         ImportOperation,
         RawFailureSample,
@@ -53,11 +52,6 @@ def __getattr__(name: str) -> object:
         "ImportRequest": (".import_operations", "ImportRequest"),
         "OperationFollowUp": (".operation_contract", "OperationFollowUp"),
         "OperationStatus": (".operation_status", "OperationStatus"),
-        "EvidenceBinding": (".evidence", "EvidenceBinding"),
-        "EvidenceValidationError": (".evidence", "EvidenceValidationError"),
-        "OperationEvidence": (".evidence", "OperationEvidence"),
-        "OperationFailure": (".evidence", "OperationFailure"),
-        "OperationResult": (".evidence", "OperationResult"),
         "OperationCatalog": (".specs", "OperationCatalog"),
         "OperationKind": (".specs", "OperationKind"),
         "OperationSpec": (".specs", "OperationSpec"),
@@ -85,11 +79,6 @@ __all__ = [
     "OperationKind",
     "OperationSpec",
     "OperationStatus",
-    "EvidenceBinding",
-    "EvidenceValidationError",
-    "OperationEvidence",
-    "OperationFailure",
-    "OperationResult",
     "RawFailureSample",
     "SafetyGuard",
     "bounded_failure_samples",
