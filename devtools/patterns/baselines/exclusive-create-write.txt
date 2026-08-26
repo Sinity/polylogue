@@ -1,7 +1,7 @@
 polylogue/daemon/whale_outbox.py:255
 polylogue/maintenance/raw_authority_recovery.py:882
 polylogue/maintenance/receipt_fs.py:191
-polylogue/maintenance/schema_inference_gate.py:2001
+polylogue/maintenance/schema_inference_gate.py:2008
 polylogue/operations/archive_root_relocation.py:847
 polylogue/operations/archive_root_relocation.py:1058
 polylogue/operations/durable_change_train.py:608

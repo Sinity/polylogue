@@ -10,8 +10,8 @@ from typing import TextIO
 
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
-    CORPUS_FIDELITY_CHECKS,
     ArchiveVerificationReport,
+    archive_verification_names_for_route,
     verify_archive,
 )
 from polylogue.paths import archive_root as default_archive_root
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
 
     report = verify_archive(
         root,
-        checks=CORPUS_FIDELITY_CHECKS,
+        checks=archive_verification_names_for_route("corpus-fidelity"),
         sample_limit=args.sample_limit,
     )
     blocking = _is_blocking(report)

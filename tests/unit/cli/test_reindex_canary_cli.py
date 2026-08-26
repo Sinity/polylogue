@@ -16,10 +16,10 @@ import polylogue.cli.commands.maintenance._reindex_canary as reindex_canary_cli
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
-from polylogue.maintenance.archive_verification import (
-    REINDEX_CANARY_ACCEPTANCE_CHECKS,
-    REINDEX_CANARY_ACCEPTANCE_PROFILE,
-)
+from polylogue.maintenance.archive_verification import archive_verification_names_for_route
+
+CANARY_CHECKS = archive_verification_names_for_route("reindex-canary-candidate")
+CANARY_PROFILE = "reindex-canary-v2-domain-coverage"
 from polylogue.maintenance.rebuild_index import (
     RebuildIndexRequest,
     rebuild_index_from_source_sync,
@@ -1212,10 +1212,9 @@ def _canary_acceptance_attestation() -> dict[str, object]:
     """Return the daemon-owned acceptance evidence required of canary receipts."""
 
     return {
-        "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+        "profile": CANARY_PROFILE,
         "results": [
-            {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0}
-            for name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+            {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0} for name in CANARY_CHECKS
         ],
     }
 

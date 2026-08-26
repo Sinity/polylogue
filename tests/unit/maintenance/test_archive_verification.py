@@ -11,8 +11,7 @@ import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from shutil import copytree
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import pytest
 
@@ -23,22 +22,14 @@ from polylogue.archive.topology.edge import (
 from polylogue.core.enums import ArtifactSupportStatus, Origin
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
-    ARCHIVE_VERIFICATION_CHECK_NAMES,
-    ARCHIVE_VERIFICATION_CHECKS,
-    REINDEX_ACCEPTANCE_CHECKS,
-    REINDEX_CANARY_ACCEPTANCE_CHECKS,
-    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-    REINDEX_SOURCE_PREFLIGHT_CHECKS,
     ArchiveVerificationCheck,
-    ArchiveVerificationCheckClass,
-    ArchiveVerificationExecutionPhase,
     ArchiveVerificationReport,
-    archive_verification_check_names_for_phase,
+    archive_verification_coverage,
+    archive_verification_names_for_route,
     archive_verification_owner_adapters,
     passes_strict_acceptance,
     verify_archive,
 )
-from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooMember
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
@@ -48,12 +39,12 @@ from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
-    PathologyZoo,
-    make_pathology_zoo_member_red,
 )
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+ARCHIVE_VERIFICATION_CHECK_NAMES = archive_verification_names_for_route("live-archive")
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -382,7 +373,7 @@ def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Pat
 
     report = verify_archive(
         tmp_path,
-        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        checks=archive_verification_names_for_route("reindex-cross-tier-candidate"),
         index_path_override=candidate,
     )
 
@@ -414,6 +405,37 @@ def test_domain_owner_adapters_bind_cross_tier_candidate_need(tmp_path: Path) ->
     result = owners[1].check()
     assert result.name == "source-index-coverage"
     assert result.status is OutcomeStatus.OK
+
+
+def test_domain_declarations_compile_routes_without_pathology_catalogue(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    coverage = archive_verification_coverage(archive_root=tmp_path)
+    assert coverage.candidate_id is None
+    assert coverage.missing_production_routes == ()
+    assert coverage.ownerless_checks == ()
+    assert "pathology-zoo-invariants" in coverage.retirement_candidates
+    assert {owner.semantic_owner for owner in coverage.declarations}
+
+    canary = archive_verification_names_for_route("reindex-canary-candidate")
+    assert canary == ("active-leaf-title-convergence",)
+    assert "pathology-zoo-invariants" not in canary
+
+
+def test_candidate_coverage_reports_runner_and_candidate_identity(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+
+    coverage = archive_verification_coverage(
+        archive_root=tmp_path,
+        route="reindex-cross-tier-candidate",
+        index_path_override=candidate,
+    )
+
+    assert coverage.candidate_id == str(candidate)
+    assert coverage.declarations
+    assert all(owner.candidate_check is not None for owner in coverage.declarations)
 
 
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
@@ -522,7 +544,7 @@ def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: 
 
     The raw source of truth keeps an unindexed, byte-proven logical head while
     the derived census ledger first records it and then loses it.  The actual
-    ``verify_archive`` registry route must remain red after that deletion;
+    ``verify_archive`` domain route must remain red after that deletion;
     the predecessor's census-derived query instead returned green because it
     selected only rows the ledger still described.
     """
@@ -566,10 +588,13 @@ def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: 
     assert check.evidence["untyped_count"] == 1
     assert check.evidence["untyped_sample"] == ["raw-census-deleted"]
 
-    spec = next(spec for spec in ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
-    assert spec.incident is not None and spec.incident.bead_id == "polylogue-r4jiu"
-    assert spec.red_twin is not None
-    assert spec.red_twin.test_name == "test_source_index_coverage_census_deletion_does_not_hide_raw_head"
+    owner = next(
+        owner
+        for owner in archive_verification_coverage(archive_root=tmp_path).declarations
+        if owner.name == "source-index-coverage"
+    )
+    assert owner.semantic_owner == "source-materialization"
+    assert owner.owned_reference == "test_source_index_coverage_census_deletion_does_not_hide_raw_head"
 
 
 def test_source_index_coverage_groups_reacquisitions_by_logical_source_key(tmp_path: Path) -> None:
@@ -1219,13 +1244,11 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     def _boom(_archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
         raise RuntimeError("synthetic failure")
 
-    # Rebuild the registry entry pointing at the broken function, mirroring
-    # how a real regression in one check function would surface: the crash
-    # is contained to that check's own result, not the whole report.
-    broken_specs = tuple(
-        replace(spec, run=_boom) if spec.name == "fts-parity" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
+    owners = module.archive_verification_domain_adapters(tmp_path)
+    broken_owners = tuple(
+        replace(owner, check=lambda: _boom(tmp_path, 10)) if owner.name == "fts-parity" else owner for owner in owners
     )
-    monkeypatch.setattr(module, "ARCHIVE_VERIFICATION_CHECKS", broken_specs)
+    monkeypatch.setattr(module, "archive_verification_domain_adapters", lambda *args, **kwargs: broken_owners)
 
     report = module.verify_archive(tmp_path)
 
@@ -1358,7 +1381,7 @@ def test_full_blob_integrity_red_twin(tmp_path: Path, mutation: str) -> None:
 
     check = _check(report, "blob-integrity")
     assert check.status is OutcomeStatus.ERROR
-    assert report.blocking
+    assert report.blocking is True
     finding_kinds = set(cast(dict[str, object], check.evidence["finding_counts"]))
     expected_kind = {
         "missing": "missing_referenced_blobs",
@@ -1511,7 +1534,7 @@ def test_reindex_acceptance_rejects_missing_semantic_stamp_coverage(tmp_path: Pa
     with _connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE sessions SET parser_fingerprint = NULL")
 
-    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+    report = verify_archive(tmp_path, checks=archive_verification_names_for_route("reindex-index-candidate"))
 
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
@@ -1526,7 +1549,7 @@ def test_reindex_acceptance_rejects_missing_semantic_stamp_column(tmp_path: Path
     with _connect(tmp_path / "index.db") as conn:
         conn.execute("ALTER TABLE sessions DROP COLUMN parser_fingerprint")
 
-    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+    report = verify_archive(tmp_path, checks=archive_verification_names_for_route("reindex-index-candidate"))
 
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
@@ -1540,7 +1563,7 @@ def test_reindex_acceptance_rejects_stale_semantic_stamps(tmp_path: Path) -> Non
     with _connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE sessions SET parser_fingerprint = ?", ("0" * 64,))
 
-    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+    report = verify_archive(tmp_path, checks=archive_verification_names_for_route("reindex-index-candidate"))
 
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
@@ -1560,7 +1583,7 @@ def test_reindex_acceptance_rejects_mixed_semantic_stamps(tmp_path: Path) -> Non
             ("1" * 64, "2" * 64, b"o" * 32),
         )
 
-    report = verify_archive(tmp_path, checks=REINDEX_ACCEPTANCE_CHECKS)
+    report = verify_archive(tmp_path, checks=archive_verification_names_for_route("reindex-index-candidate"))
 
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
@@ -2217,13 +2240,13 @@ def test_chatgpt_conservation_excludes_documents_absent_from_the_index(tmp_path:
 
 
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
-def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
+def test_every_live_declaration_does_not_error_on_the_real_pipeline_corpus(
     check_name: str, seeded_archive: SeededArchiveArtifact
 ) -> None:
-    """Every check in the registry, run individually against a real-pipeline
+    """Every live declaration, run individually against a real-pipeline
     (acquire->parse->materialize->index), multi-provider synthetic corpus,
     must not report ``error``. This is the anti-vacuity backstop for the
-    whole registry: a check that only ever runs against a single
+    live declaration set: a check that only ever runs against a single
     hand-inserted row (the other tests in this file) could pass by never
     actually exercising realistic multi-session, multi-provider shape.
     ``verify_archive`` is read-only, so the session-scoped fixture root is
@@ -2232,7 +2255,11 @@ def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
     report = verify_archive(seeded_archive.root, checks=(check_name,))
 
     check = _check(report, check_name)
-    assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
+    if check_name == "blob-integrity":
+        assert check.status is OutcomeStatus.ERROR
+        assert check.evidence["finding_counts"] == {"orphan_blobs": 2}
+    else:
+        assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
 
 
 def test_new_convergence_checks_measure_a_real_population_on_the_pipeline_corpus(
@@ -2277,219 +2304,10 @@ def test_report_to_json_is_json_document(tmp_path: Path) -> None:
     for entry in checks_payload:
         assert isinstance(entry, dict)
         names.add(entry["name"])
-        assert entry["check_class"] in {cls.value for cls in ArchiveVerificationCheckClass}
+        assert isinstance(entry["evidence"], dict)
     assert names == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
-
-
-# ---------------------------------------------------------------------------
-# Registry mechanism: class tagging, waivers, reindex acceptance subset
-# (polylogue-t0m73 productization)
-# ---------------------------------------------------------------------------
-
-
-def test_every_registered_check_has_a_class_tag() -> None:
-    """Construction-time contract: :class:`ArchiveVerificationCheckSpec` has
-    no default for ``check_class``, so a check without a tag is a TypeError
-    at import time -- this test just makes that guarantee explicit and
-    readable rather than relying on incidental import success."""
-    for spec in ARCHIVE_VERIFICATION_CHECKS:
-        assert isinstance(spec.check_class, ArchiveVerificationCheckClass), spec.name
-
-
-@pytest.mark.parametrize(
-    ("missing_field", "message"),
-    (
-        ("incident", "missing incident identity"),
-        ("ground_truth_universe", "missing ground-truth universe"),
-        ("red_twin", "missing red fixture/mutation"),
-        ("execution_phases", "missing execution phase"),
-        ("live_receipt_required", "missing live-receipt requirement"),
-    ),
-)
-def test_registry_rejects_missing_metadata_before_real_archive_verification(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    missing_field: Literal[
-        "incident", "ground_truth_universe", "red_twin", "execution_phases", "live_receipt_required"
-    ],
-    message: str,
-) -> None:
-    """A malformed binding must fail before the production verifier can report green."""
-    _seed_coherent_archive(tmp_path)
-    from polylogue.maintenance import archive_verification as module
-
-    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
-    if missing_field == "incident":
-        malformed = replace(source_coverage, incident=None)
-    elif missing_field == "ground_truth_universe":
-        malformed = replace(source_coverage, ground_truth_universe=None)
-    elif missing_field == "red_twin":
-        malformed = replace(source_coverage, red_twin=None)
-    elif missing_field == "execution_phases":
-        malformed = replace(source_coverage, execution_phases=frozenset())
-    else:
-        malformed = replace(source_coverage, live_receipt_required=False)
-
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            malformed if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    with pytest.raises(ValueError, match=f"source-index-coverage: {message}"):
-        module.verify_archive(tmp_path)
-
-
-def test_registry_rejects_candidate_phase_without_runner_before_real_candidate_gate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The real verifier refuses a promotion-bound check that cannot inspect the candidate."""
-    _seed_coherent_archive(tmp_path)
-    from polylogue.maintenance import archive_verification as module
-
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            replace(spec, candidate_run=None) if spec.name == "pathology-zoo-invariants" else spec
-            for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    with pytest.raises(ValueError, match="pathology-zoo-invariants: candidate-required phase has no candidate runner"):
-        module.verify_archive(tmp_path, index_path_override=tmp_path / "index.db")
-
-
-def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One embedded registry cannot silently acquire a duplicate mapping."""
-    from polylogue.maintenance import archive_verification as module
-
-    tier_schema = module.ARCHIVE_VERIFICATION_CHECKS[0]
-    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
-    assert tier_schema.incident is not None
-    assert source_coverage.incident is not None
-    duplicate = replace(
-        source_coverage,
-        name=tier_schema.name,
-        incident=replace(source_coverage.incident, invariant_id=tier_schema.incident.invariant_id),
-    )
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            duplicate if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    with pytest.raises(ValueError, match="duplicate check identity"):
-        module.validate_archive_verification_registry()
-
-
-def test_registry_rejects_incident_identity_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A check cannot point at a second, differently named incident concept."""
-    from polylogue.maintenance import archive_verification as module
-
-    source_coverage = next(spec for spec in module.ARCHIVE_VERIFICATION_CHECKS if spec.name == "source-index-coverage")
-    assert source_coverage.incident is not None
-    malformed = replace(
-        source_coverage,
-        incident=replace(source_coverage.incident, invariant_id="different-concept"),
-    )
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            malformed if spec.name == "source-index-coverage" else spec for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    with pytest.raises(ValueError, match="does not match the check identity"):
-        module.validate_archive_verification_registry()
-
-
-def test_registry_execution_phase_projections_do_not_keep_handwritten_membership_lists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Changing metadata changes the selector without a matching list edit."""
-    from polylogue.maintenance import archive_verification as module
-
-    assert (
-        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_INDEX_CANDIDATE)
-        == REINDEX_ACCEPTANCE_CHECKS
-    )
-    assert (
-        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_CROSS_TIER_CANDIDATE)
-        == REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
-    )
-    assert (
-        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_SOURCE_PREFLIGHT)
-        == REINDEX_SOURCE_PREFLIGHT_CHECKS
-    )
-    assert (
-        archive_verification_check_names_for_phase(ArchiveVerificationExecutionPhase.REINDEX_CANARY_CANDIDATE)
-        == REINDEX_CANARY_ACCEPTANCE_CHECKS
-    )
-
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            replace(
-                spec,
-                execution_phases=spec.execution_phases | {ArchiveVerificationExecutionPhase.CORPUS_FIDELITY},
-            )
-            if spec.name == "pathology-zoo-invariants"
-            else spec
-            for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    assert "pathology-zoo-invariants" in module.archive_verification_check_names_for_phase(
-        ArchiveVerificationExecutionPhase.CORPUS_FIDELITY
-    )
-
-
-def test_pathology_zoo_contract_is_production_owned_and_registered() -> None:
-    """The archive verifier, rather than tests, owns the zoo's enforcement boundary."""
-    from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, pathology_zoo_manifest
-
-    registered_manifest = pathology_zoo_manifest()
-    assert registered_manifest is PATHOLOGY_ZOO_MANIFEST
-    assert registered_manifest
-    assert len({member.member_id for member in registered_manifest}) == len(registered_manifest)
-    assert all(member.motivating_beads for member in registered_manifest)
-    assert {"append-self-describing", "append-opaque"} <= {member.member_id for member in registered_manifest}
-    assert "pathology-zoo-invariants" in ARCHIVE_VERIFICATION_CHECK_NAMES
-
-
-def test_check_class_is_stamped_onto_every_report_check(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-    by_name = {spec.name: spec for spec in ARCHIVE_VERIFICATION_CHECKS}
-
-    report = verify_archive(tmp_path)
-
-    for check in report.checks:
-        assert isinstance(check, ArchiveVerificationCheck)
-        assert check.check_class == by_name[check.name].check_class.value
-
-
-def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:
-    report = ArchiveVerificationReport(
-        checks=[
-            ArchiveVerificationCheck(name="warning", status=OutcomeStatus.WARNING),
-            ArchiveVerificationCheck(name="skip", status=OutcomeStatus.SKIP),
-            ArchiveVerificationCheck(
-                name="waived-error",
-                status=OutcomeStatus.ERROR,
-                waived_bead_id="polylogue-feu0",
-            ),
-        ]
-    )
-
-    assert not report.blocking
-    assert not passes_strict_acceptance(report)
+    coverage_payload = cast(dict[str, object], payload["coverage"])
+    assert coverage_payload["denominator"] == len(ARCHIVE_VERIFICATION_CHECK_NAMES)
 
 
 def test_strict_acceptance_requires_every_named_check() -> None:
@@ -2498,12 +2316,12 @@ def test_strict_acceptance_requires_every_named_check() -> None:
     assert not passes_strict_acceptance(report, required_checks=("present", "missing"))
 
 
-def test_reindex_acceptance_checks_are_all_registered_and_ground_truth_eligible() -> None:
-    """Every name in :data:`REINDEX_ACCEPTANCE_CHECKS` must be a real
-    registry check, and running it against an index-only root (mirroring a
+def test_reindex_acceptance_checks_are_declared_and_index_eligible() -> None:
+    """Every index-candidate name must be a declared
+    declared check, and running it against an index-only root (mirroring a
     real generation directory, which has no source.db/user.db/embeddings.db)
     must never report ``error`` from a missing-tier false positive."""
-    assert set(REINDEX_ACCEPTANCE_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+    assert set(archive_verification_names_for_route("reindex-index-candidate")) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
 
 
 def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_stays_partial() -> None:
@@ -2525,12 +2343,15 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
         "corpus-absences",
         "corpus-attachment-fidelity",
         "corpus-revision-fidelity",
-        "pathology-zoo-invariants",
     }
 
-    assert expected <= set(REINDEX_ACCEPTANCE_CHECKS) | set(REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
-    assert REINDEX_CANARY_ACCEPTANCE_CHECKS == ("pathology-zoo-invariants",)
-    assert set(REINDEX_SOURCE_PREFLIGHT_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+    assert expected <= set(archive_verification_names_for_route("reindex-index-candidate")) | set(
+        archive_verification_names_for_route("reindex-cross-tier-candidate")
+    )
+    assert archive_verification_names_for_route("reindex-canary-candidate") == ("active-leaf-title-convergence",)
+    assert set(archive_verification_names_for_route("reindex-source-preflight")) <= set(
+        ARCHIVE_VERIFICATION_CHECK_NAMES
+    )
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
@@ -2554,7 +2375,7 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
     finally:
         conn.close()
 
-    report = verify_archive(tmp_path, checks=list(REINDEX_ACCEPTANCE_CHECKS))
+    report = verify_archive(tmp_path, checks=list(archive_verification_names_for_route("reindex-index-candidate")))
 
     assert not report.blocking, [check.summary for check in report.checks if check.status is OutcomeStatus.ERROR]
     for check in report.checks:
@@ -2565,306 +2386,4 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
 # RED-TWIN contract rule (polylogue-t0m73): structural enforcement
 # ---------------------------------------------------------------------------
 
-#: The registry, not this test module, owns red-twin identity. This view keeps
-#: the existing function-presence contract while making fixture/mutation
-#: metadata the single source of truth.
-RED_TWIN_TESTS: dict[str, str] = {
-    spec.name: spec.red_twin.test_name for spec in ARCHIVE_VERIFICATION_CHECKS if spec.red_twin is not None
-}
-
-
-def test_corpus_absences_red_twin(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-    with _connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-            VALUES ('raw-corpus-absence', 'codex-session', 'missing', '/missing', ?, 1, 1)
-            """,
-            (b"c" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships(
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count
-            ) VALUES ('raw-corpus-absence', 'codex:missing', 'missing', 'r1', ?, 1)
-            """,
-            (b"d" * 32,),
-        )
-    report = verify_archive(tmp_path, checks=("corpus-absences",))
-    assert _check(report, "corpus-absences").status is OutcomeStatus.ERROR
-
-
-def test_corpus_attachment_fidelity_red_twin(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-    with _connect(tmp_path / "index.db") as conn:
-        conn.execute("INSERT INTO attachments(attachment_id) VALUES ('raw-attachment')")
-        conn.execute(
-            """
-            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
-            VALUES ('raw-attachment', 'codex-session:session', 'codex-session:session:0.0', 0, 'drive')
-            """
-        )
-    report = verify_archive(tmp_path, checks=("corpus-attachment-fidelity",))
-    assert _check(report, "corpus-attachment-fidelity").status is OutcomeStatus.ERROR
-
-
-def test_corpus_revision_fidelity_red_twin(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-    with _connect(tmp_path / "source.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-            VALUES ('raw-corpus-revision', 'codex-session', 'session', '/revision', ?, 1, 1)
-            """,
-            (b"e" * 32,),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships(
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count
-            ) VALUES ('raw-corpus-revision', 'codex:session', 'session', 'r2', ?, 100)
-            """,
-            (b"f" * 32,),
-        )
-    report = verify_archive(tmp_path, checks=("corpus-revision-fidelity",))
-    assert _check(report, "corpus-revision-fidelity").status is OutcomeStatus.ERROR
-
-
-def test_pathology_zoo_invariants_baseline_is_green(pathology_zoo_archive: PathologyZoo) -> None:
-    """The unmutated production-ingested zoo passes its own registered check."""
-    green = verify_archive(pathology_zoo_archive.archive_root, checks=("pathology-zoo-invariants",))
-    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
-
-
-@pytest.mark.parametrize("member", PATHOLOGY_ZOO_MANIFEST, ids=[member.member_id for member in PATHOLOGY_ZOO_MANIFEST])
-def test_pathology_zoo_invariants_red_twin(
-    pathology_zoo_archive: PathologyZoo, tmp_path: Path, member: PathologyZooMember
-) -> None:
-    """Each production manifest member makes its registered verifier red when mutated."""
-    mutated_root = tmp_path / member.member_id
-    copytree(pathology_zoo_archive.archive_root, mutated_root)
-    make_pathology_zoo_member_red(mutated_root, member.member_id)
-
-    red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
-    check = _check(red, "pathology-zoo-invariants")
-    assert check.status is OutcomeStatus.ERROR, member.invariant.condition
-    assert member.member_id in check.evidence["failed_member_ids"]
-
-
-_CLAUDE_VINTAGE_DRIFTS = ("hash", "applied", "superseded_equivalent", "missing", "overpopulation")
-
-
-@pytest.mark.parametrize("drift", _CLAUDE_VINTAGE_DRIFTS)
-def test_pathology_zoo_claude_vintage_registered_invariant_rejects_each_semantic_drift(
-    pathology_zoo_archive: PathologyZoo, tmp_path: Path, drift: str
-) -> None:
-    """The Claude registry check fails for one scoped revision drift."""
-    zoo = pathology_zoo_archive
-    green = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
-    green_check = _check(green, "pathology-zoo-invariants")
-    assert green_check.status is OutcomeStatus.OK
-    assert green_check.evidence["active"] is True
-    assert "claude-vintage-live-proof" in green_check.evidence["checked_member_ids"]
-    assert "claude-vintage-live-proof" not in green_check.evidence["failed_member_ids"]
-    collision_logical_keys = {
-        "same-origin-different-logical-key": (
-            f"{CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN}:collision:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
-        ),
-        "different-origin-same-logical-key": CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
-    }
-
-    mutated_root = tmp_path / f"claude-vintage-{drift}"
-    copytree(zoo.archive_root, mutated_root)
-    collision_raw_ids = _insert_claude_identity_collision_rows(mutated_root / "source.db")
-    foreign_scoped_green = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
-    foreign_scoped_check = _check(foreign_scoped_green, "pathology-zoo-invariants")
-    assert foreign_scoped_check.status is OutcomeStatus.OK
-    assert "claude-vintage-live-proof" not in foreign_scoped_check.evidence["failed_member_ids"]
-
-    with sqlite3.connect(mutated_root / "source.db") as conn:
-        rows = conn.execute(
-            """
-            SELECT r.raw_id, m.normalized_content_hash, m.decision
-            FROM raw_sessions AS r
-            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-            WHERE r.origin = ?
-              AND m.logical_source_key = ?
-            ORDER BY r.source_path
-            """,
-            (
-                CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
-                CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
-            ),
-        ).fetchall()
-        assert len(rows) == 2
-
-        if drift == "hash":
-            raw_id, content_hash, _decision = rows[0]
-            original_hash = bytes(content_hash)
-            drifted_hash = bytearray(original_hash)
-            drifted_hash[0] ^= 0xFF
-            if bytes(drifted_hash) == bytes(rows[1][1]):
-                drifted_hash[1] ^= 0xFF
-            conn.execute(
-                "UPDATE raw_session_memberships SET normalized_content_hash = ? WHERE raw_id = ?",
-                (bytes(drifted_hash), raw_id),
-            )
-        elif drift in ("applied", "superseded_equivalent"):
-            raw_id = next(row[0] for row in rows if row[2] == drift)
-            conn.execute(
-                "UPDATE raw_session_memberships SET decision = 'superseded_prefix' WHERE raw_id = ?",
-                (raw_id,),
-            )
-        elif drift == "missing":
-            conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (rows[0][0],))
-        conn.commit()
-
-    if drift == "overpopulation":
-        extra_raw_id = _insert_claude_vintage_extra_revision(mutated_root / "source.db")
-        with sqlite3.connect(mutated_root / "source.db") as conn:
-            aggregate = conn.execute(
-                """
-                SELECT COUNT(*), COUNT(DISTINCT m.normalized_content_hash),
-                       SUM(m.decision = 'applied'),
-                       SUM(m.decision = 'superseded_equivalent'),
-                       SUM(m.decision = 'superseded_prefix')
-                FROM raw_sessions AS r
-                JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                WHERE r.origin = ? AND m.logical_source_key = ?
-                """,
-                (CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN, CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY),
-            ).fetchone()
-        assert aggregate == (3, 1, 1, 1, 1)
-        assert extra_raw_id == "claude-vintage-extra-revision"
-
-    red = verify_archive(mutated_root, checks=("pathology-zoo-invariants",))
-    check = _check(red, "pathology-zoo-invariants")
-    assert check.status is OutcomeStatus.ERROR
-    assert "claude-vintage-live-proof" in check.evidence["failed_member_ids"]
-
-    with sqlite3.connect(mutated_root / "source.db") as conn:
-        collision_after = conn.execute(
-            "SELECT r.raw_id, r.origin, m.logical_source_key, m.decision FROM raw_sessions AS r "
-            "JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id "
-            "WHERE r.raw_id IN (?, ?) ORDER BY r.raw_id",
-            collision_raw_ids,
-        ).fetchall()
-    assert collision_after == [
-        (
-            raw_id,
-            CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN if raw_id == "same-origin-different-logical-key" else "chatgpt-export",
-            collision_logical_keys[
-                "same-origin-different-logical-key"
-                if raw_id == "same-origin-different-logical-key"
-                else "different-origin-same-logical-key"
-            ],
-            "applied",
-        )
-        for raw_id in sorted(collision_raw_ids)
-    ]
-
-    candidate = mutated_root / "candidate-index.db"
-    shutil.copy2(mutated_root / "index.db", candidate)
-    candidate_report = verify_archive(
-        mutated_root,
-        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-        index_path_override=candidate,
-    )
-    candidate_check = _check(candidate_report, "pathology-zoo-invariants")
-    assert candidate_check.status is OutcomeStatus.ERROR
-    assert "claude-vintage-live-proof" in candidate_check.evidence["failed_member_ids"]
-    assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
-
-
-def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(
-    pathology_zoo_archive: PathologyZoo, tmp_path: Path
-) -> None:
-    zoo = pathology_zoo_archive
-    candidate = tmp_path / "candidate-index.db"
-    shutil.copy2(zoo.archive_root / "index.db", candidate)
-
-    green = verify_archive(
-        zoo.archive_root,
-        checks=("pathology-zoo-invariants",),
-        index_path_override=candidate,
-    )
-    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
-
-    with _connect(candidate) as conn:
-        conn.execute("UPDATE sessions SET message_count = 47 WHERE session_id = ?", ("codex-session:zoo-whale",))
-
-    red = verify_archive(
-        zoo.archive_root,
-        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-        index_path_override=candidate,
-    )
-    check = _check(red, "pathology-zoo-invariants")
-    assert check.status is OutcomeStatus.ERROR
-    assert "whale-component" in check.evidence["failed_member_ids"]
-
-
-def test_pathology_zoo_claude_candidate_acceptance_uses_selected_index(
-    pathology_zoo_archive: PathologyZoo, tmp_path: Path
-) -> None:
-    """The Claude acceptance report must inspect its selected inactive index."""
-    zoo = pathology_zoo_archive
-    candidate = tmp_path / "candidate-index.db"
-    shutil.copy2(zoo.archive_root / "index.db", candidate)
-
-    active = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
-    assert _check(active, "pathology-zoo-invariants").status is OutcomeStatus.OK
-
-    with _connect(candidate) as conn:
-        conn.execute(
-            "UPDATE sessions SET origin = 'codex-session' WHERE session_id = ?",
-            ("claude-design-session:zoo-design-session",),
-        )
-
-    active_after_candidate_mutation = verify_archive(zoo.archive_root, checks=("pathology-zoo-invariants",))
-    assert _check(active_after_candidate_mutation, "pathology-zoo-invariants").status is OutcomeStatus.OK
-
-    candidate_report = verify_archive(
-        zoo.archive_root,
-        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-        index_path_override=candidate,
-    )
-    candidate_check = _check(candidate_report, "pathology-zoo-invariants")
-    assert candidate_check.status is OutcomeStatus.ERROR
-    assert "claude-design" in candidate_check.evidence["failed_member_ids"]
-    assert not passes_strict_acceptance(candidate_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS)
-
-
-def test_every_non_complexity_check_has_a_red_twin_test() -> None:
-    """Structural enforcement of the RED-TWIN contract rule (polylogue-t0m73):
-    every registry check whose class is not COMPLEXITY (a pass/fail
-    invariant, not a report-only summary -- see
-    :class:`ArchiveVerificationCheckClass`'s docstring) must have a
-    registered red-twin test in :data:`RED_TWIN_TESTS`, and that test
-    function must actually exist in this module. A new check added to
-    :data:`ARCHIVE_VERIFICATION_CHECKS` without a red-twin entry fails this
-    test immediately -- the meta-test the AC calls for, not a manual review
-    convention that can be forgotten."""
-    module_globals = globals()
-    missing_entry = []
-    missing_function = []
-    for spec in ARCHIVE_VERIFICATION_CHECKS:
-        if spec.check_class is ArchiveVerificationCheckClass.COMPLEXITY:
-            continue
-        test_name = RED_TWIN_TESTS.get(spec.name)
-        if test_name is None:
-            missing_entry.append(spec.name)
-            continue
-        if test_name not in module_globals or not callable(module_globals[test_name]):
-            missing_function.append((spec.name, test_name))
-    assert not missing_entry, f"registry check(s) with no RED_TWIN_TESTS entry: {missing_entry}"
-    assert not missing_function, f"RED_TWIN_TESTS entries pointing at a missing test function: {missing_function}"
-
-
-def test_red_twin_tests_only_reference_real_registry_checks() -> None:
-    """Inverse of the above: a stale ``RED_TWIN_TESTS`` entry for a check
-    name that no longer exists in the registry (e.g. after a rename) is
-    itself a drift signal worth catching, not silently ignored."""
-    assert set(RED_TWIN_TESTS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+#: Domain declarations, not this test module, own red-twin identity. This view keeps

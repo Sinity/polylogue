@@ -18,10 +18,9 @@ repository, and has already produced four recorded wrong deletions. Several
 registries dispatch by string key or deferred import, so a symbol with no
 inbound import edge may still be live:
 
-* ``REPAIR_HANDLERS`` / ``PREVIEW_HANDLERS`` (``storage/repair.py``) and
-  ``ARCHIVE_VERIFICATION_CHECKS`` (``maintenance/archive_verification.py``)
-  hold DIRECT function references inside a dict/tuple literal, then dispatch
-  through ``TABLE[runtime_name](...)``. The callee expression is an
+* ``REPAIR_HANDLERS`` / ``PREVIEW_HANDLERS`` (``storage/repair.py``) and other
+  literal-container dispatch tables hold DIRECT function references, then
+  dispatch through ``TABLE[runtime_name](...)``. The callee expression is an
   ``ast.Subscript``, which an AST call-graph walker cannot resolve.
 * ``INSIGHT_REGISTRY`` (``insights/registry.py``) stores
   ``operations_method_name`` as a plain string resolved by ``getattr`` at call
@@ -43,10 +42,9 @@ each one a channel that produced a measured false "dead code" verdict:
   both reported dead without it.
 * Ancestor packages -- importing ``pkg.sub`` executes ``pkg/__init__.py``.
   Omitting this reported 53 live parents, ``polylogue.core`` among them.
-* Literal-container registries. Note the walk must RECURSE into call
-  arguments: ``ARCHIVE_VERIFICATION_CHECKS`` is a tuple of ``_registry_spec(...)``
-  calls, so a non-recursive pass saw only ``ast.Call`` nodes and contributed
-  exactly zero roots.
+* Literal-container dispatch tables. The walk must recurse into call
+  arguments, or a non-recursive pass sees only ``ast.Call`` nodes and omits
+  their production references.
 
 A symbol re-exported through an unreachable facade is resolved per SYMBOL to
 its defining module, so a pass-through never reads as dead -- deliberately not
@@ -287,15 +285,20 @@ def _literal_container_roots(modules: Iterable[ast.Module], module_names: Sequen
         bindings = _imports_from_nodes(tree.body, module_name)
         local = {
             node.name: f"{module_name}.{node.name}"
-            for node in tree.body
+            for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        for statement in tree.body:
-            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = statement.value
-            if value is None:
-                continue
+        # Declarations may be assembled in a function and returned as a
+        # literal rather than stored in a module-level assignment. Walk those
+        # containers too: the dispatch call still holds a direct production
+        # reference even though the binding is not global.
+        values = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and node.value is not None
+        ]
+        values.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Return) and node.value is not None)
+        for value in values:
             for element in _walk_literal_references(value):
                 resolved = local.get(element) or bindings.get(element)
                 if resolved is not None and resolved.startswith(f"{PRODUCTION_PACKAGE}."):
@@ -307,10 +310,9 @@ def _walk_literal_references(value: ast.expr) -> tuple[str, ...]:
     """Bare names referenced anywhere inside a literal container.
 
     Recurses through nested containers AND call arguments, because the
-    registry shape that matters is a TUPLE OF CALLS --
-    ``ARCHIVE_VERIFICATION_CHECKS = (_registry_spec("name", "desc", _check_fn,
-    ...), ...)``. A non-recursive pass saw only the ``ast.Call`` elements and
-    never reached ``_check_fn``, so the registry contributed nothing.
+    dispatch shape that matters is a literal container containing calls. A
+    non-recursive pass sees only ``ast.Call`` elements and never reaches the
+    production reference in their arguments.
     """
     names: list[str] = []
     for node in ast.walk(value):

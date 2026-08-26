@@ -288,7 +288,7 @@ def test_activation_refuses_source_metadata_mutation_after_candidate_gate(
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
 
 
-def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
+def test_activation_refuses_embedding_orphan_at_strict_candidate_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
 ) -> None:
     root = _archive(tmp_path)
@@ -306,7 +306,7 @@ def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
         )
         conn.commit()
 
-    with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
+    with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*orphan"):
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
