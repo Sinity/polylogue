@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import uuid
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 
@@ -12,7 +12,7 @@ class DurableFilesystemError(OSError):
     """A durable filesystem operation could not complete its barriers."""
 
 
-def sync_directory(path: Path) -> None:
+def _fsync_directory(path: Path) -> None:
     """Persist directory entries in ``path``."""
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -23,55 +23,52 @@ def sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def sync_directory(path: Path) -> None:
+    """Persist directory entries in ``path``."""
+    _fsync_directory(path)
+
+
 def write_once(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     """Create ``path`` exactly once, persisting its bytes and directory entry."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = -1
     try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
-            mode,
-        )
-        written = 0
-        while written < len(payload):
-            written += os.write(descriptor, payload[written:])
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        sync_directory(path.parent)
+        with path.open("xb") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _fsync_directory(path.parent)
     except OSError as exc:
-        if descriptor >= 0:
-            with suppress(OSError):
-                os.close(descriptor)
         raise DurableFilesystemError(f"cannot durably create: {path}") from exc
 
 
 def atomic_replace(path: Path, payload: bytes, *, mode: int | None = None) -> None:
     """Durably write bytes to a temporary file and replace ``path``."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
     descriptor = -1
+    temporary_path: Path | None = None
     try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
-        written = 0
-        while written < len(payload):
-            written += os.write(descriptor, payload[written:])
-        os.fsync(descriptor)
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary_path = Path(temporary)
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            if mode is not None:
+                os.fchmod(descriptor, mode)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
-        if mode is not None:
-            os.chmod(temporary, mode)
-        os.replace(temporary, path)
-        sync_directory(path.parent)
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
     except OSError as exc:
         if descriptor >= 0:
             with suppress(OSError):
                 os.close(descriptor)
         raise DurableFilesystemError(f"cannot durably replace: {path}") from exc
     finally:
-        with suppress(FileNotFoundError):
-            temporary.unlink()
+        if temporary_path is not None:
+            with suppress(FileNotFoundError):
+                temporary_path.unlink()
 
 
 def append_line(path: Path, line: str | bytes) -> None:
@@ -85,7 +82,7 @@ def append_line(path: Path, line: str | bytes) -> None:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        sync_directory(path.parent)
+        _fsync_directory(path.parent)
     except OSError as exc:
         raise DurableFilesystemError(f"cannot durably append: {path}") from exc
 
