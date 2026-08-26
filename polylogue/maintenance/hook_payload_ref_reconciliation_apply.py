@@ -3,8 +3,7 @@
 See :mod:`polylogue.storage.hook_payload_ref_reconciliation` for the
 classification this module acts on (polylogue-tfzw0). Follows the same
 dry-run-by-default / verified-backup-manifest-gated shape as the other
-source-tier repair actuators (``raw_append_chain_backfill_apply``,
-``raw_membership_writeback_apply``, ``raw_live_source_reconciliation_apply``):
+source-tier repair actuators (now retired one-shot wrappers):
 
 * Dry-run by default; ``dry_run=False`` requires a verified backup manifest
   for the ``source`` tier.
