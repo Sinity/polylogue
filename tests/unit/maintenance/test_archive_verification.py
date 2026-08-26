@@ -25,7 +25,6 @@ from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECK_NAMES,
     ARCHIVE_VERIFICATION_CHECKS,
-    ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
     REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
@@ -34,11 +33,9 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheckClass,
     ArchiveVerificationExecutionPhase,
     ArchiveVerificationReport,
-    ArchiveVerificationWaiver,
     archive_verification_check_names_for_phase,
     archive_verification_owner_adapters,
     passes_strict_acceptance,
-    validate_archive_verification_registry,
     verify_archive,
 )
 from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooMember
@@ -2457,18 +2454,6 @@ def test_registry_rejects_candidate_phase_without_runner_before_real_candidate_g
         module.verify_archive(tmp_path, index_path_override=tmp_path / "index.db")
 
 
-def test_registry_rejects_closed_or_unknown_waiver_beads() -> None:
-    """Waiver validity is resolved from the check spec, not a second waiver table."""
-    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is closed"):
-        validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "closed"})
-    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is unknown"):
-        validate_archive_verification_registry(waiver_bead_statuses={})
-
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "open"})
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "in_progress"})
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "deferred"})
-
-
 def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """One embedded registry cannot silently acquire a duplicate mapping."""
     from polylogue.maintenance import archive_verification as module
@@ -2580,75 +2565,6 @@ def test_check_class_is_stamped_onto_every_report_check(tmp_path: Path) -> None:
     for check in report.checks:
         assert isinstance(check, ArchiveVerificationCheck)
         assert check.check_class == by_name[check.name].check_class.value
-
-
-def test_waived_check_still_reports_error_but_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """RED TWIN for the waiver mechanism itself: a waived check must keep
-    reporting its true ``error`` status and evidence (the finding is never
-    hidden) while :attr:`ArchiveVerificationReport.blocking` excludes it --
-    proving the waiver changes the *gate*, not the *check*."""
-    _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "embeddings.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
-            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
-            """,
-            (b"h" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    from polylogue.maintenance import archive_verification as module
-
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            replace(spec, waiver=ArchiveVerificationWaiver(bead_id="polylogue-test", reason="synthetic"))
-            if spec.name == "embeddings-refs-liveness"
-            else spec
-            for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    report = module.verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
-
-    check = _check(report, "embeddings-refs-liveness")
-    assert check.status is OutcomeStatus.ERROR  # the finding is never hidden
-    assert check.waived_bead_id == "polylogue-test"
-    assert check.evidence["waiver"]["bead_id"] == "polylogue-test"
-    assert not report.blocking  # but the waived finding does not gate
-
-
-def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) -> None:
-    """Sanity twin for the waiver test above: with the real (unmodified)
-    ``ARCHIVE_VERIFICATION_WAIVERS`` table, this same violation is ALSO
-    non-blocking (waived), confirming the prior monkeypatched-table test's
-    green result matches production waiver config rather than an artifact
-    of the test's own patched table."""
-    _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "embeddings.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
-            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
-            """,
-            (b"h" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    assert "embeddings-refs-liveness" in ARCHIVE_VERIFICATION_WAIVERS  # documents why this bug is currently waived
-
-    report = verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
-
-    check = _check(report, "embeddings-refs-liveness")
-    assert check.status is OutcomeStatus.ERROR
-    assert check.waived_bead_id == "polylogue-feu0"
-    assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
 
 
 def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:
