@@ -367,6 +367,9 @@ Usage: polylogue delete [OPTIONS]
 
   Delete matched sessions.
 
+  Output is JSON-only. Mutations emit a machine-consumable
+  ``MutationResultPayload`` envelope.
+
   Cardinality rules:
     --dry-run       Preview what would be deleted (no confirmation needed).
     --yes           Confirm deletion for a single matched session.
