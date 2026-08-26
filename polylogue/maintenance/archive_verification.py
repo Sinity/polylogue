@@ -44,7 +44,7 @@ from typing import Any, Literal
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.outcomes import BoundOutcomeOwner, OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.logging import get_logger
 from polylogue.maintenance.corpus_fidelity import (
     audit_absences,
@@ -774,6 +774,39 @@ def _check_source_index_coverage_at_candidate(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
     return _check_source_index_coverage_at_index_path(archive_root, index_path, sample_limit)
+
+
+def archive_verification_owner_adapters(
+    archive_root: Path,
+    *,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+    index_path_override: Path | None = None,
+) -> tuple[BoundOutcomeOwner, BoundOutcomeOwner]:
+    """Return two domain-owned checks through the shared callable/result seam.
+
+    The index owner is only applicable to the live index path.  The source
+    owner has a cross-tier candidate adapter, so candidate composition can
+    omit the index owner without inventing a universal obligation taxonomy.
+    The legacy registry remains authoritative for normal ``verify_archive``
+    calls; this adapter is the expansion seam for migrating callers.
+    """
+    if index_path_override is not None:
+        index_check = None
+
+        def source_check() -> OutcomeCheck:
+            return _check_source_index_coverage_at_candidate(archive_root, index_path_override, sample_limit)
+    else:
+
+        def index_check() -> OutcomeCheck:
+            return _check_fts_parity(archive_root, sample_limit)
+
+        def source_check() -> OutcomeCheck:
+            return _check_source_index_coverage(archive_root, sample_limit)
+
+    return (
+        BoundOutcomeOwner(name="fts-parity", check=index_check),
+        BoundOutcomeOwner(name="source-index-coverage", check=source_check),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3785,6 +3818,7 @@ __all__ = [
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
+    "archive_verification_owner_adapters",
     "read_raw_failure_lifecycle",
     "passes_strict_acceptance",
     "strict_acceptance_failures",

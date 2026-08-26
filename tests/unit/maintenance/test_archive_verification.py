@@ -36,6 +36,7 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationReport,
     ArchiveVerificationWaiver,
     archive_verification_check_names_for_phase,
+    archive_verification_owner_adapters,
     passes_strict_acceptance,
     validate_archive_verification_registry,
     verify_archive,
@@ -389,6 +390,33 @@ def test_cross_tier_reindex_profile_includes_raw_failure_lifecycle(tmp_path: Pat
     )
 
     assert _check(report, "raw-failure-lifecycle").status is OutcomeStatus.ERROR
+
+
+def test_domain_owner_adapters_share_result_seam(tmp_path: Path) -> None:
+    """Anti-vacuity: either adapter disappearing would remove a real domain result."""
+    _seed_coherent_archive(tmp_path)
+
+    owners = archive_verification_owner_adapters(tmp_path)
+
+    assert [owner.name for owner in owners] == ["fts-parity", "source-index-coverage"]
+    results = [owner.check() for owner in owners if owner.check is not None]
+    assert [result.name for result in results] == ["fts-parity", "source-index-coverage"]
+    assert all(result.status is OutcomeStatus.OK for result in results)
+
+
+def test_domain_owner_adapters_bind_cross_tier_candidate_need(tmp_path: Path) -> None:
+    """The source owner remains callable when the index owner is not applicable."""
+    _seed_coherent_archive(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+
+    owners = archive_verification_owner_adapters(tmp_path, index_path_override=candidate)
+
+    assert owners[0].check is None
+    assert owners[1].check is not None
+    result = owners[1].check()
+    assert result.name == "source-index-coverage"
+    assert result.status is OutcomeStatus.OK
 
 
 def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
