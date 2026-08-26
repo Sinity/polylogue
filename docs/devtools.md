@@ -98,6 +98,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify consumer-reachability` | Require newly added modules, tables, and tools to have production consumers. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
+| `devtools verify definition-closure` | Evaluate representative definition-to-production closure policies as a bounded JSON matrix. |
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
 | `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
