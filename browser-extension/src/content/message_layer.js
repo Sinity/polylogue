@@ -17,7 +17,6 @@
   // Per-message identity comes from the provider adapter. DOM order and text
   // are hints only and can never authorize a captured state.
 
-  const HOST_ATTR = "data-polylogue-message-index";
   const STATE_ATTR = "data-polylogue-state";
 
   const STATE_COLORS = {
@@ -42,28 +41,38 @@
     return VALID_STATES.has(state) ? state : "unknown";
   }
 
-  // Pure state-derivation, exported for direct unit testing. `priorMap` and
-  // the return value are plain `{ [ordinalIndex]: state }` objects.
-  function deriveStateMap({ nodeCount, priorMap = {}, capture = null, pending = false }) {
+  // Pure state-derivation, exported for direct unit testing. Keys are stable
+  // provider/canonical identity keys, never DOM ordinals.
+  function deriveStateMap({ identityKeys = [], priorMap = {}, capture = null, pending = false }) {
     const next = {};
-    for (let index = 0; index < nodeCount; index += 1) {
-      next[index] = normalizeState(priorMap[index] ?? "not-seen");
+    for (const key of identityKeys) {
+      next[key] = normalizeState(priorMap[key] ?? "not-seen");
     }
     if (pending) {
-      for (let index = 0; index < nodeCount; index += 1) next[index] = "pending";
+      for (const key of identityKeys) next[key] = "pending";
       return next;
     }
     if (capture) {
       const ok = Boolean(capture.ok);
-      const turnCount = capture.turnCount;
       if (!ok) {
-        for (let index = 0; index < nodeCount; index += 1) next[index] = "failed";
+        for (const key of identityKeys) next[key] = "failed";
         return next;
       }
-      const correlated = typeof turnCount === "number" && turnCount === nodeCount;
-      for (let index = 0; index < nodeCount; index += 1) next[index] = correlated ? "captured" : "unknown";
+      for (const key of identityKeys) next[key] = "unknown";
     }
     return next;
+  }
+
+  function canonicalMessageRef(observation) {
+    if (!observation?.origin || !observation.provider_conversation_id || !observation.provider_message_id) return null;
+    return `${observation.origin}:${observation.provider_conversation_id}:n:${observation.provider_message_id}`;
+  }
+
+  function acceptedMessageRefs(acceptedIdentities, ok) {
+    if (!ok || !Array.isArray(acceptedIdentities)) return new Map();
+    return new Map(acceptedIdentities
+      .filter((item) => item?.fidelity === "native" && typeof item.message_ref === "string")
+      .map((item) => [item.message_ref, item]));
   }
 
   function ensurePositioned(node) {
@@ -143,6 +152,22 @@
     let stateMap = {};
     let pending = false;
 
+    function observationFor(node) {
+      try {
+        return identityForNode?.(node) || null;
+      } catch {
+        return null;
+      }
+    }
+
+    function keyFor(node) {
+      return canonicalMessageRef(observationFor(node));
+    }
+
+    function identityKeys() {
+      return nodeOrder.map((node, index) => keyFor(node) || `unknown:${index}`);
+    }
+
     function currentNodes() {
       try {
         return [...doc.querySelectorAll(containerSelector)];
@@ -169,10 +194,10 @@
           if (!badge) {
             ensurePositioned(node);
             badge = buildBadge({
-              state: stateMap[index] ?? "not-seen",
+              state: stateMap[keyFor(node) || `unknown:${index}`] ?? "not-seen",
               onActivate: () => {
                 pending = true;
-                stateMap = deriveStateMap({ nodeCount: nodeOrder.length, priorMap: stateMap, pending: true });
+                stateMap = deriveStateMap({ identityKeys: identityKeys(), priorMap: stateMap, pending: true });
                 reconcile();
                 onSave();
               },
@@ -181,8 +206,7 @@
             node.appendChild(badge.host);
             mounted.set(node, badge);
           }
-          badge.host.setAttribute(HOST_ATTR, String(index));
-          badge.setState(stateMap[index] ?? "not-seen");
+          badge.setState(stateMap[keyFor(node) || `unknown:${index}`] ?? "not-seen");
         } catch {
           // Fail closed: an unsupported/foreign node never breaks the host
           // page or the rest of the reconciliation pass.
@@ -192,27 +216,33 @@
 
     function reportPending() {
       pending = true;
-      stateMap = deriveStateMap({ nodeCount: nodeOrder.length, priorMap: stateMap, pending: true });
+      stateMap = deriveStateMap({ identityKeys: identityKeys(), priorMap: stateMap, pending: true });
       reconcile();
     }
 
     function reportOutcome({ ok, acceptedIdentities = [] }) {
       pending = false;
-      // Compatibility for non-provider test/host integrations. Production
-      // adapters always supply identityForNode; only that route may mark a
-      // message captured from an acknowledgement.
       if (!identityForNode) {
-        stateMap = deriveStateMap({ nodeCount: nodeOrder.length, priorMap: stateMap, capture: { ok, turnCount: ok ? nodeOrder.length : null } });
+        stateMap = deriveStateMap({ identityKeys: identityKeys(), priorMap: stateMap, capture: { ok } });
         reconcile();
         return;
       }
-      const accepted = new Set((Array.isArray(acceptedIdentities) ? acceptedIdentities : [])
-        .filter((item) => ok && item?.fidelity === "native" && item.message_ref)
-        .map((item) => item.message_ref.split(":n:").at(-1)));
+      const accepted = acceptedMessageRefs(acceptedIdentities, ok);
+      const keyCounts = new Map();
+      nodeOrder.forEach((node) => {
+        const key = keyFor(node);
+        if (key) keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
+      });
       const next = {};
       nodeOrder.forEach((node, index) => {
-        const messageId = identityForNode?.(node)?.provider_message_id;
-        next[index] = messageId && accepted.has(String(messageId)) ? "captured" : (ok ? "unknown" : "failed");
+        const key = keyFor(node) || `unknown:${index}`;
+        const observation = observationFor(node);
+        const acknowledgement = accepted.get(key);
+        const adapterMatches = acknowledgement &&
+          (!acknowledgement.adapter_version || !observation?.adapter_version ||
+            acknowledgement.adapter_version === observation.adapter_version);
+        next[key] = acknowledgement && keyCounts.get(key) === 1 && adapterMatches
+          ? "captured" : (ok ? "unknown" : "failed");
       });
       stateMap = next;
       reconcile();

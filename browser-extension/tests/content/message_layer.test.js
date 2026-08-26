@@ -31,54 +31,54 @@ afterEach(() => {
 describe("deriveStateMap (pure)", () => {
   it("defaults every index to not-seen with no prior state", () => {
     const dom = freshDom();
-    const map = dom.window.polylogueMessageLayer.deriveStateMap({ nodeCount: 3 });
-    expect(map).toEqual({ 0: "not-seen", 1: "not-seen", 2: "not-seen" });
+    const map = dom.window.polylogueMessageLayer.deriveStateMap({ identityKeys: ["a", "b", "c"] });
+    expect(map).toEqual({ a: "not-seen", b: "not-seen", c: "not-seen" });
   });
 
   it("preserves a known-valid prior state and normalizes an invalid one to unknown", () => {
     const dom = freshDom();
     const map = dom.window.polylogueMessageLayer.deriveStateMap({
-      nodeCount: 2,
-      priorMap: { 0: "captured", 1: "not-a-real-state" },
+      identityKeys: ["a", "b"],
+      priorMap: { a: "captured", b: "not-a-real-state" },
     });
-    expect(map).toEqual({ 0: "captured", 1: "unknown" });
+    expect(map).toEqual({ a: "captured", b: "unknown" });
   });
 
   it("marks every index pending regardless of prior state", () => {
     const dom = freshDom();
     const map = dom.window.polylogueMessageLayer.deriveStateMap({
-      nodeCount: 2,
-      priorMap: { 0: "captured", 1: "failed" },
+      identityKeys: ["a", "b"],
+      priorMap: { a: "captured", b: "failed" },
       pending: true,
     });
-    expect(map).toEqual({ 0: "pending", 1: "pending" });
+    expect(map).toEqual({ a: "pending", b: "pending" });
   });
 
-  it("marks every index captured when the capture turn count matches the DOM node count", () => {
+  it("does not derive captured state from equal turn and DOM counts", () => {
     const dom = freshDom();
     const map = dom.window.polylogueMessageLayer.deriveStateMap({
-      nodeCount: 3,
+      identityKeys: ["a", "b", "c"],
       capture: { ok: true, turnCount: 3 },
     });
-    expect(map).toEqual({ 0: "captured", 1: "captured", 2: "captured" });
+    expect(map).toEqual({ a: "unknown", b: "unknown", c: "unknown" });
   });
 
   it("falls back to unknown (never a false captured claim) when turn/node counts disagree", () => {
     const dom = freshDom();
     const map = dom.window.polylogueMessageLayer.deriveStateMap({
-      nodeCount: 3,
+      identityKeys: ["a", "b", "c"],
       capture: { ok: true, turnCount: 2 },
     });
-    expect(map).toEqual({ 0: "unknown", 1: "unknown", 2: "unknown" });
+    expect(map).toEqual({ a: "unknown", b: "unknown", c: "unknown" });
   });
 
   it("marks every index failed on an unsuccessful capture", () => {
     const dom = freshDom();
     const map = dom.window.polylogueMessageLayer.deriveStateMap({
-      nodeCount: 2,
+      identityKeys: ["a", "b"],
       capture: { ok: false, turnCount: null },
     });
-    expect(map).toEqual({ 0: "failed", 1: "failed" });
+    expect(map).toEqual({ a: "failed", b: "failed" });
   });
 });
 
@@ -136,7 +136,7 @@ describe("mount() DOM behavior", () => {
     handle.stop();
   });
 
-  it("sets pending on click and reflects a matching captured outcome afterwards", () => {
+  it("sets pending on click and stays unknown without an identity acknowledgement", () => {
     const dom = freshDom(
       '<!DOCTYPE html><html><body>' +
         '<article data-message-author-role="user">Hi</article>' +
@@ -164,8 +164,44 @@ describe("mount() DOM behavior", () => {
     handle.reportOutcome({ ok: true, turnCount: 1 });
     expect(handle.isPending()).toBe(false);
     const badgeAfter = [...document.querySelector("article").children].find((child) => child.shadowRoot);
-    expect(badgeAfter.getAttribute("data-polylogue-state")).toBe("captured");
-    expect(badgeAfter.shadowRoot.querySelector("button").getAttribute("aria-pressed")).toBe("true");
+    expect(badgeAfter.getAttribute("data-polylogue-state")).toBe("unknown");
+    expect(badgeAfter.shadowRoot.querySelector("button").getAttribute("aria-pressed")).toBe("false");
+    handle.stop();
+  });
+
+  it("matches the exact receiver canonical ref and survives DOM reorder", () => {
+    const dom = freshDom('<!DOCTYPE html><html><body><article data-message-id="m-a">A</article><article data-message-id="m-b">B</article></body></html>');
+    const { document } = dom.window;
+    const identityForNode = (node) => ({
+      origin: "chatgpt-export",
+      provider_conversation_id: "conversation-1",
+      provider_message_id: node.getAttribute("data-message-id"),
+      fidelity: "native",
+    });
+    const handle = dom.window.polylogueMessageLayer.mount({ containerSelector: "article", identityForNode, onSave: () => {}, doc: document });
+    handle.reportOutcome({ ok: true, acceptedIdentities: [{
+      session_ref: "chatgpt-export:conversation-1",
+      message_ref: "chatgpt-export:conversation-1:n:m-b",
+      fidelity: "native",
+    }] });
+    expect(document.querySelector('[data-message-id="m-a"]').firstElementChild.getAttribute("data-polylogue-state")).toBe("unknown");
+    expect(document.querySelector('[data-message-id="m-b"]').firstElementChild.getAttribute("data-polylogue-state")).toBe("captured");
+    document.body.insertBefore(document.querySelector('[data-message-id="m-b"]'), document.querySelector('[data-message-id="m-a"]'));
+    handle.reconcile();
+    expect(document.querySelector('[data-message-id="m-b"]').firstElementChild.getAttribute("data-polylogue-state")).toBe("captured");
+    handle.stop();
+  });
+
+  it("fails closed for receiver disagreement and duplicate/missing native ids", () => {
+    const dom = freshDom('<!DOCTYPE html><html><body><article data-message-id="same">A</article><article data-message-id="same">A</article><article>B</article></body></html>');
+    const { document } = dom.window;
+    const handle = dom.window.polylogueMessageLayer.mount({
+      containerSelector: "article",
+      identityForNode: (node) => ({ origin: "claude-ai-export", provider_conversation_id: "c-1", provider_message_id: node.getAttribute("data-message-id"), fidelity: node.getAttribute("data-message-id") ? "native" : "unknown" }),
+      onSave: () => {}, doc: document,
+    });
+    handle.reportOutcome({ ok: true, acceptedIdentities: [{ session_ref: "claude-ai-export:c-1", message_ref: "claude-ai-export:c-1:n:same", fidelity: "native" }] });
+    for (const article of document.querySelectorAll("article")) expect(article.firstElementChild.getAttribute("data-polylogue-state")).toBe("unknown");
     handle.stop();
   });
 
