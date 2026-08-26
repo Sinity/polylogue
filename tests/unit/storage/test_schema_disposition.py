@@ -6,11 +6,18 @@ from dataclasses import replace
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers import AUDIT_COLUMN_DISPOSITIONS
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
     audit_column_dispositions,
     canonical_audit_columns,
 )
+
+
+def test_archive_tier_schema_assembly_publishes_complete_disposition() -> None:
+    """The canonical tier map exposes the disposition it validates at import."""
+    assert audit_column_dispositions() == AUDIT_COLUMN_DISPOSITIONS
+    assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
 
 def test_audit_disposition_covers_canonical_ddl_exactly_once() -> None:
