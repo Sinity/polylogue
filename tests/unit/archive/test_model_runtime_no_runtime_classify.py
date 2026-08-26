@@ -43,6 +43,12 @@ def test_model_runtime_does_not_import_classifier() -> None:
 
 def test_is_context_dump_does_not_call_runtime_classifier(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stored message_type is the only source of truth — no runtime classify."""
+    msg = make_msg(
+        id="m1",
+        role="user",
+        text="<environment_context>\n<cwd>/x</cwd>\n</environment_context>",
+    )
+    msg.message_type = MessageType.MESSAGE
     calls: list[str | None] = []
 
     real_classify = artifacts_module.classify_text_message_type
@@ -54,17 +60,14 @@ def test_is_context_dump_does_not_call_runtime_classifier(monkeypatch: pytest.Mo
     monkeypatch.setattr(artifacts_module, "classify_text_message_type", spy)
 
     # Text that the heuristic classifier WOULD label CONTEXT.
-    msg = make_msg(
-        id="m1",
-        role="user",
-        text="<environment_context>\n<cwd>/x</cwd>\n</environment_context>",
-    )
     assert msg.is_context_dump is False
     assert msg.is_protocol_artifact is False
     assert calls == [], "model_runtime must not invoke classify_text_message_type"
 
 
 def test_is_protocol_artifact_does_not_call_runtime_classifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    msg = make_msg(id="m1", role="user", text="<bash-input>ls</bash-input>")
+    msg.message_type = MessageType.MESSAGE
     calls: list[str | None] = []
 
     real_classify = artifacts_module.classify_text_message_type
@@ -75,7 +78,6 @@ def test_is_protocol_artifact_does_not_call_runtime_classifier(monkeypatch: pyte
 
     monkeypatch.setattr(artifacts_module, "classify_text_message_type", spy)
 
-    msg = make_msg(id="m1", role="user", text="<bash-input>ls</bash-input>")
     assert msg.is_protocol_artifact is False
     assert msg.is_context_dump is False
     assert calls == []
@@ -92,6 +94,7 @@ def test_pre_839_row_without_persisted_type_returns_false() -> None:
         role="user",
         text="<system-reminder>old marker</system-reminder>",
     )
+    msg.message_type = MessageType.MESSAGE
     assert msg.message_type == MessageType.MESSAGE
     assert msg.is_context_dump is False
     assert msg.is_protocol_artifact is False

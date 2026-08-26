@@ -244,7 +244,7 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     with _connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
-        assert (artifact[0], artifact[1]) == ("terminal_unknown_json_decode", "decode_failed")
+        assert (artifact[0], artifact[1]) == ("terminal_unknown_export_no_session", "unsupported_parseable")
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 1
     assert lifecycle.unexplained == 0

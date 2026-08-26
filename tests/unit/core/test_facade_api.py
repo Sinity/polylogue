@@ -459,6 +459,7 @@ class TestPolylogueReadSurfaces:
                     payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
                     source_path="/tmp/hooks/codex-session.jsonl",
                     acquired_at_ms=observed_at_ms,
+                    carrier_relative_path=f"/tmp/hooks/codex-session.jsonl:{index}",
                     hook_event=ArchiveHookEvent(
                         hook_event_id=f"hook-{index}",
                         origin=Origin.CODEX_SESSION,

@@ -794,6 +794,13 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
     source_db = tmp_path / "source.db"
     with sqlite3.connect(source_db) as conn:
         conn.executescript(SOURCE_DDL)
+        conn.execute("DROP VIEW source_item_reconciliation")
+        conn.execute("DROP INDEX idx_source_items_disposition")
+        conn.execute("DROP INDEX idx_source_items_raw_id")
+        conn.execute("DROP INDEX idx_hook_event_carriers_event")
+        conn.execute("DROP TABLE source_items")
+        conn.execute("DROP TABLE source_generations")
+        conn.execute("DROP TABLE hook_event_carriers")
         conn.execute("DROP INDEX idx_gc_generation_members_pending")
         conn.execute("DROP TABLE gc_generation_members")
         conn.execute("DROP TABLE gc_generations")
@@ -812,7 +819,7 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
             "VALUES ('memberless-pre035', 2, NULL, 0, 0)"
         )
         conn.commit()
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=35)
         assert result.applied_versions == (34, 35)
         assert conn.execute("PRAGMA user_version").fetchone() == (35,)
         assert conn.execute("SELECT generation_id FROM gc_generations").fetchone() == ("before-v34",)

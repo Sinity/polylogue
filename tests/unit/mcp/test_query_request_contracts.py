@@ -52,7 +52,7 @@ def test_archive_query_filters_forward_max_words() -> None:
 def test_mcp_query_boundary_rejects_unknown_and_allows_only_declared_paste_alias() -> None:
     with pytest.raises(QuerySpecError, match="bogus.*accepted alternatives"):
         build_session_query_request(bogus=True)
-    with pytest.raises(QuerySpecError, match="has_paste.*has_paste_evidence"):
+    with pytest.raises(QuerySpecError, match="has_paste.*filter_has_paste"):
         build_query_spec(has_paste=True)
 
     mcp_spec = build_query_spec(has_paste_evidence=True)

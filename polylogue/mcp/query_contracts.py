@@ -23,17 +23,20 @@ MCPCountBound: TypeAlias = Annotated[int, Field(ge=0)] | None
 
 
 def _mcp_aliases() -> dict[str, str]:
-    """Lower declared MCP names to their canonical SessionQuerySpec fields."""
-    aliases: dict[str, str] = {}
-    from polylogue.archive.query.fields import QUERY_DECLARATIONS
+    """Lower MCP-only aliases to names accepted by ``SessionQuerySpec``.
 
-    for descriptor in QUERY_DECLARATIONS:
-        target = descriptor.spec_attr
-        if target is None:
-            continue
-        for name in descriptor.mcp_names:
-            aliases[name] = target
-    return aliases
+    The declaration registry's ``spec_attr`` names the dataclass field, while
+    ``SessionQuerySpec.from_params`` intentionally accepts the public
+    structured vocabulary (for example ``origin`` and ``repo``). Mapping all
+    MCP names to ``spec_attr`` therefore drops filters whose public and
+    dataclass names differ. Only the three MCP spellings that are aliases at
+    the structured boundary belong here.
+    """
+    return {
+        "has_tool_use": "filter_has_tool_use",
+        "has_thinking": "filter_has_thinking",
+        "has_paste_evidence": "filter_has_paste",
+    }
 
 
 def _validate_origin_filters(params: Mapping[str, object]) -> None:
@@ -77,11 +80,12 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
         accepted = ", ".join(alternatives) if alternatives else ", ".join(sorted(mcp_query_field_names()))
         raise QuerySpecError(field, f"unknown MCP query parameter; accepted alternatives: {accepted}")
     # ``SessionQuerySpec.from_params`` consumes the public query vocabulary
-    # (``origin``, ``repo``, ``contains``, ...).  The descriptor's internal
-    # names are for the compiled spec, not input to that parser.  Converting
-    # them here silently discarded every structured filter because the parser
-    # quite correctly ignored those internal names.
-    normalized = dict(params)
+    # (``origin``, ``repo``, ``contains``, ...) plus the ``filter_has_*``
+    # spellings.  Normalization must therefore lower ONLY the MCP-only
+    # aliases; lowering every declared name to its dataclass field silently
+    # discarded every structured filter, while skipping normalization
+    # entirely dropped the three MCP alias spellings instead.
+    normalized = normalize_query_params(params)
     _validate_origin_filters(normalized)
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value
