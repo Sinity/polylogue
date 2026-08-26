@@ -823,9 +823,8 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
                    source_updated_at, source_sort_key, input_high_water_mark,
                    input_high_water_mark_source, input_row_count, source_name,
                    title, message_count, work_event_count, phase_count,
-                   word_count, tool_use_count, thinking_count, total_cost_usd,
+                   word_count, tool_use_count, thinking_count,
                    total_duration_ms, workflow_shape, terminal_state,
-                   total_input_tokens, total_output_tokens,
                    evidence_payload_json, inference_payload_json,
                    enrichment_payload_json
             FROM session_profiles
