@@ -1420,8 +1420,9 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "write(operation='delete_session') requires session_id", code="invalid_argument"
                 )
-            if not confirm:
-                return hooks.error_json("Safety guard: set confirm=true to delete", session_id=session_id)
+            confirm_error = _require_confirm(hooks, confirm, verb="delete", session_id=session_id)
+            if confirm_error is not None:
+                return confirm_error
             delete_session_result = await poly.delete_session_safe(session_id)
             return hooks.json_payload(
                 MutationResultPayload(
@@ -1841,6 +1842,9 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "write(operation='clear_corrections') requires session_id", code="invalid_argument"
                 )
+            confirm_error = _require_confirm(hooks, confirm, verb="clear corrections", session_id=session_id)
+            if confirm_error is not None:
+                return confirm_error
             kind = _field(fields, "kind")
             kind = kind if isinstance(kind, str) else None
             resolved, err = await resolve_session_or_error(hooks, session_id)
@@ -2211,7 +2215,8 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             Destructive operations require ``confirm=True`` and fail closed
             without it: ``delete_session``, ``remove_tag``, ``remove_mark``,
             ``delete_metadata``, ``delete_annotation``, ``delete_saved_view``,
-            ``delete_recall_pack``, and ``delete_workspace`` (interim
+            ``delete_recall_pack``, ``delete_workspace``, and
+            ``clear_corrections`` (interim
             mitigation, polylogue-jn40).
             """
 

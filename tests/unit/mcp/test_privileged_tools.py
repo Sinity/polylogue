@@ -201,6 +201,23 @@ class TestWriteTool:
             assert "confirm" in result.get("message", "").lower()
 
     @pytest.mark.asyncio
+    async def test_clear_corrections_without_confirm_is_refused(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the guard must run before durable assertion deletion."""
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(write_fn, operation="clear_corrections", session_id=session_id)
+            )
+            assert result.get("is_error") is True
+            assert "confirm" in result.get("message", "").lower()
+
+    @pytest.mark.asyncio
     async def test_save_and_delete_saved_view_round_trips(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
