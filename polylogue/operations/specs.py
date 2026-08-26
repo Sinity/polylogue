@@ -72,6 +72,15 @@ class OperationSpec:
     resumable: bool = False
     receipt_schema: str = "polylogue.mutation-receipt/v1"
     reconstructible: bool = False
+    # Concrete operation-contract model names.  These are strings rather
+    # than imported classes so the catalog remains import-cycle free; the
+    # canonical model module is the value named here.
+    request_contract: str | None = None
+    plan_contract: str | None = None
+    progress_contract: str | None = None
+    result_contract: str | None = None
+    error_contract: str | None = None
+    receipt_contract: str | None = None
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -106,6 +115,12 @@ class OperationSpec:
                 "resumable": self.resumable,
                 "receipt_schema": self.receipt_schema,
                 "reconstructible": self.reconstructible,
+                "request_contract": self.request_contract,
+                "plan_contract": self.plan_contract,
+                "progress_contract": self.progress_contract,
+                "result_contract": self.result_contract,
+                "error_contract": self.error_contract,
+                "receipt_contract": self.receipt_contract,
             }
         )
 
@@ -131,6 +146,30 @@ class OperationCatalog:
 
 
 RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
+    OperationSpec(
+        name="candidate-build",
+        kind=OperationKind.MATERIALIZATION,
+        description=(
+            "Build one source-sealed, resumable, inactive index candidate. The daemon resolves physical roots, "
+            "generation identity, obligations, and budgets; this operation never activates, accepts, or promotes."
+        ),
+        surfaces=("daemon", "cli", "mcp", "api"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="declared-not-routed",
+        resumable=True,
+        affected_tiers=("source", "index"),
+        idempotency="effect_key",
+        request_contract="polylogue.operations.candidate_build.CandidateBuildRequest",
+        plan_contract="polylogue.operations.candidate_build.CandidateBuildPlan",
+        progress_contract="polylogue.operations.candidate_build.CandidateBuildProgress",
+        result_contract="polylogue.operations.candidate_build.CandidateBuildResult",
+        error_contract="polylogue.operations.candidate_build.CandidateBuildError",
+        receipt_contract="polylogue.operations.candidate_build.CandidateBuildReceipt",
+    ),
     OperationSpec(
         name="acquire-raw-sessions",
         kind=OperationKind.MATERIALIZATION,
