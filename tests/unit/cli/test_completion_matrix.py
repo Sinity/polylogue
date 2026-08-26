@@ -15,7 +15,7 @@ runtime completion-handler protocol the script invokes.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,7 +32,13 @@ from polylogue.archive.query.metadata import query_unit_descriptors, terminal_qu
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
 from tests.infra.cli_interaction import SUPPORTED_SHELLS as SUPPORTED_SHELL_NAMES
-from tests.infra.workload_artifacts import SeededArchiveQueryLease
+from tests.infra.workload_artifacts import (
+    SeededArchiveQueryLease,
+    acquire_query_only_seeded_archive,
+    build_seeded_archive,
+    named_corpus_specs,
+    seeded_archive_key,
+)
 
 SUPPORTED_SHELL_CLASSES: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
@@ -60,6 +66,16 @@ DYNAMIC_COMPLETERS: tuple[tuple[str, list[str]], ...] = (
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+@pytest.fixture(scope="module")
+def completion_seeded_archive_ro(request: pytest.FixtureRequest) -> SeededArchiveQueryLease:
+    """Pin one immutable completion archive for the entire shell matrix."""
+    specs = named_corpus_specs("completion")
+    artifact = build_seeded_archive(specs)
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(specs))
+    request.addfinalizer(lease.close)
+    return lease
 
 
 def test_contract_completion_contexts_are_in_shell_matrix() -> None:
@@ -853,7 +869,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
+    completion_seeded_archive_ro: SeededArchiveQueryLease,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.
@@ -868,7 +884,8 @@ def test_dynamic_completers_seeded_archive_per_shell(
     # The named workload is generated through the production pipeline; this
     # read-only consumer points at the shared immutable artifact instead of
     # cloning it into a private archive root.
-    named_seeded_archive_ro("completion")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
+    monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion(shell, comp_cls, cwords)
     # The call must succeed for every completer.
