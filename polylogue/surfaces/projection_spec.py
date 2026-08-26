@@ -179,6 +179,7 @@ that are no longer executable.
 NAMED_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     **READ_VIEW_PROJECTION_FAMILIES,
     "timeline": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
+    "compact": (EvidenceFamily.CHRONICLE, EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS, EvidenceFamily.ACTIONS),
 }
 """All named projection shortcuts accepted by the projection bridge."""
 

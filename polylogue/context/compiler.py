@@ -20,6 +20,7 @@ from polylogue.core.assertions import AssertionContextTrustClass, derive_asserti
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
+from polylogue.surfaces.compaction import estimate_tokens
 from polylogue.surfaces.projection_spec import QueryProjectionSpec
 from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
@@ -429,9 +430,7 @@ def _metadata_value_to_text(value: object) -> str:
 
 
 def _estimate_tokens(text: str | None) -> int:
-    if not text:
-        return 0
-    return max(1, len(text.split()))
+    return estimate_tokens(text or "")
 
 
 def _query_unit_item_summary(item: dict[str, object]) -> str:
