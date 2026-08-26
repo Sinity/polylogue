@@ -1,0 +1,8 @@
+# One line per pattern rule; owner is the verified defect-family bead.
+rules:
+  - {id: sqlite-error-default, rule: sqlite-error-default.yml, baseline: baselines/sqlite-error-default.txt, owner: fesmz, status: enforcing}
+  - {id: exclusive-create-write, rule: exclusive-create-write.yml, baseline: baselines/exclusive-create-write.txt, owner: 0oyqi/ok65v, status: enforcing}
+  - {id: replace-without-parent-fsync, rule: replace-without-parent-fsync.yml, baseline: baselines/replace-without-parent-fsync.txt, owner: fhikb, status: enforcing}
+  - {id: nullable-measurement-coercion, rule: nullable-measurement-coercion.yml, baseline: baselines/nullable-measurement-coercion.txt, owner: trmhh, status: pending}
+  - {id: raw-subprocess-write, rule: raw-subprocess-write.yml, baseline: baselines/raw-subprocess-write.txt, owner: 0oyqi/ok65v/fhikb, status: pending}
+  - {id: connection-lifecycle, rule: connection-lifecycle.yml, baseline: baselines/connection-lifecycle.txt, owner: a7xr.1/zqe52, status: pending}

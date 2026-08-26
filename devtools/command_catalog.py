@@ -690,6 +690,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify layering", "devtools verify layering --json"),
     ),
     CommandSpec(
+        "verify patterns",
+        "verification",
+        "Enforce AST-shape defect-family rules with shrinking grandfathered baselines.",
+        "devtools.verify_patterns",
+        use_when=(
+            "Catch new instances of verified code-shape defect families while allowing only the committed "
+            "file:line debt inventory to remain."
+        ),
+        examples=("devtools verify patterns", "devtools verify patterns --json"),
+    ),
+    CommandSpec(
         "release build-package",
         "release",
         "Build the default Nix package with the out-link under .local/result.",

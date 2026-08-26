@@ -1,0 +1,19 @@
+id: exclusive-create-write
+language: Python
+severity: warning
+message: "raw O_CREAT|O_EXCL write path; use a sanctioned receipt primitive; owners 0oyqi/ok65v"
+rule:
+  all:
+    - pattern: os.open($$$)
+    - has:
+        pattern: O_CREAT
+        stopBy: end
+    - has:
+        pattern: O_EXCL
+        stopBy: end
+    - inside:
+        kind: function_definition
+        has:
+          pattern: $OBJECT.write($$$)
+          stopBy: end
+        stopBy: end

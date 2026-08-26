@@ -1,0 +1,6 @@
+id: connection-lifecycle
+language: Python
+severity: hint
+message: "pending: connection lifecycle requires a verified close/with contract; owners a7xr.1/zqe52"
+rule:
+  pattern: sqlite3.connect($$$)
