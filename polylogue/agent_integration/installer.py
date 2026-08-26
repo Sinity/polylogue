@@ -17,7 +17,6 @@ import os
 import shlex
 import shutil
 import stat
-import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +33,7 @@ from polylogue.agent_integration.spec import (
     AgentClient,
     GuidanceMode,
 )
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.mcp.declarations import MCPCapabilities
 
 #: v2 (polylogue-800m): per-client record carries "capabilities"
@@ -210,19 +210,7 @@ def _empty_state() -> dict[str, object]:
 
 def _atomic_write(path: Path, content: bytes, *, mode: int | None = None) -> None:
     _refuse_symlink(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary_path, mode if mode is not None else 0o600)
-        os.replace(temporary_path, path)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            temporary_path.unlink()
+    atomic_replace(path, content, mode=mode if mode is not None else 0o600)
 
 
 def _refuse_symlink(path: Path) -> None:

@@ -17,7 +17,6 @@ import shlex
 import shutil
 import sqlite3
 import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +24,7 @@ from typing import Literal, cast
 
 import tomllib
 
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -462,19 +462,8 @@ def _render_json(document: dict[str, object]) -> str:
 
 
 def _atomic_write(path: Path, body: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temporary)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.chmod(mode)
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    atomic_replace(path, body.encode("utf-8"), mode=mode)
 
 
 def _unified_diff(path: Path, before: str, after: str) -> str:
