@@ -913,6 +913,69 @@ def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     assert debt_payload["sample"] == list(hashes[:10])
 
 
+def test_full_evidence_backup_scopes_blob_attestation_to_latest_sealed_generation(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Frozen-generation references are declared expected, not backup debt.
+
+    Anti-vacuity: removing the generation predicate makes the old missing blob
+    participate in the copied inventory and causes verification to fail.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    clean_payload = b"reacquired source generation"
+    clean_hash = hashlib.sha256(clean_payload).digest()
+    frozen_hash = hashlib.sha256(b"deliberately pruned frozen source").digest()
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(clean_payload)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            "INSERT INTO source_generations VALUES ('frozen', ?, 'path', 1, 10, 1)",
+            ("a" * 64,),
+        )
+        conn.execute(
+            "INSERT INTO source_generations VALUES ('reacquired', ?, 'path', 1, 20, 2)",
+            ("b" * 64,),
+        )
+        for generation, raw_id, blob_hash in (
+            ("frozen", "old-raw", frozen_hash),
+            ("reacquired", "clean-raw", clean_hash),
+        ):
+            conn.execute(
+                """INSERT INTO raw_sessions
+                   (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+                   VALUES (?, 'codex-session', ?, 0, ?, ?, 1)""",
+                (raw_id, f"/{raw_id}.jsonl", blob_hash, len(clean_payload)),
+            )
+            conn.execute(
+                """INSERT INTO source_items
+                   (source_generation_id, source_item_id, logical_coordinate, addressing_mode,
+                    disposition, outcome_code, stage, raw_id, observed_at_ms, updated_at_ms)
+                   VALUES (?, ?, ?, 'path', 'admitted', 'success', 'done', ?, 1, 1)""",
+                (generation, f"item-{generation}", f"{generation}.jsonl", raw_id),
+            )
+            conn.execute(
+                """INSERT INTO blob_refs
+                   (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                   VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
+                (blob_hash, raw_id, f"/{raw_id}.jsonl", len(clean_payload)),
+            )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok
+    assert result.verified
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    manifest = json.loads((backup_root / "manifest.json").read_text())
+    assert manifest["source_generation_id"] == "reacquired"
+    assert manifest["blob_reference_debt"]["missing_referenced_blobs"] == 0
+    assert (backup_root / "blob" / clean_hash.hex()[:2] / clean_hash.hex()[2:]).exists()
+    assert not (backup_root / "blob" / frozen_hash.hex()[:2] / frozen_hash.hex()[2:]).exists()
+
+
 def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     workspace_env: dict[str, Path],
     tmp_path: Path,

@@ -447,12 +447,40 @@ def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
 
 
 def _source_blob_liveness_projection(
-    source_db: Path, *, index_db: Path | None = None
+    source_db: Path, *, index_db: Path | None = None, source_generation_id: str | None = None
 ) -> tuple[BlobLivenessProjection, set[str]]:
     """Read complete source evidence or refuse the backup before copying blobs."""
 
-    projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
+    projection = project_source_blob_liveness(
+        source_db,
+        index_db=index_db,
+        immutable=True,
+        source_generation_id=source_generation_id,
+    )
     return projection, _source_blob_reservations(source_db)
+
+
+def _latest_sealed_source_generation(source_db: Path) -> str | None:
+    """Return the newest complete source generation, if this tier has them."""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+        tables = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('source_generations', 'source_items')"
+        ).fetchall()
+        if len(tables) != 2:
+            return None
+        row = conn.execute(
+            """SELECT g.source_generation_id
+               FROM source_generations AS g
+              WHERE g.sealed_at_ms IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM source_item_reconciliation AS r
+                     WHERE r.source_generation_id = g.source_generation_id
+                       AND NOT r.sealable
+                )
+              ORDER BY g.sealed_at_ms DESC, g.source_generation_id DESC
+              LIMIT 1"""
+        ).fetchone()
+        return str(row[0]) if row is not None else None
 
 
 def _source_blob_reservations(source_db: Path) -> set[str]:
@@ -508,6 +536,7 @@ def _blob_reference_evidence(
     projection: BlobLivenessProjection,
     *,
     index_db: Path | None,
+    source_generation_id: str | None = None,
 ) -> dict[str, object]:
     """Persist source resolution plus an independent index-attachment oracle.
 
@@ -528,6 +557,7 @@ def _blob_reference_evidence(
         raise RuntimeError(f"canonical blob liveness projection omitted independent attachment evidence: {sample}")
     return {
         "format": "polylogue-blob-reference-evidence-v1",
+        "source_generation_id": source_generation_id,
         "source_owner_hashes": source_owners,
         "index_attachment_evidence": attachment_evidence_state,
         "index_attachment_hashes": sorted(attachment_hashes),
@@ -583,9 +613,17 @@ def _copy_referenced_blobs(
     index_db: Path | None,
     backup_root: Path,
     warnings: list[str],
+    source_generation_id: str | None = None,
 ) -> tuple[int, int, BlobReferenceDebtReport]:
-    projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
-    reference_evidence = _blob_reference_evidence(projection, index_db=index_db)
+    if source_generation_id is None:
+        projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
+    else:
+        projection, reservations = _source_blob_liveness_projection(
+            source_db, index_db=index_db, source_generation_id=source_generation_id
+        )
+    reference_evidence = _blob_reference_evidence(
+        projection, index_db=index_db, source_generation_id=source_generation_id
+    )
     _write_blob_reference_evidence(backup_root, reference_evidence)
     inventory = _inventory_from_liveness(projection, reservations)
     hashes = set(inventory)
@@ -666,6 +704,7 @@ def _write_manifest(
     archive_root_source_identity: dict[str, object],
     tier_source_fingerprints: dict[str, dict[str, object]],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
+    source_generation_id: str | None = None,
 ) -> None:
     manifest = {
         "format": "polylogue-backup-v1",
@@ -682,6 +721,7 @@ def _write_manifest(
         "archive_root_source_identity": archive_root_source_identity,
         "tier_source_fingerprints": tier_source_fingerprints,
         "warnings": warnings,
+        "source_generation_id": source_generation_id,
     }
     if blob_reference_debt is not None:
         manifest["blob_reference_debt"] = blob_reference_debt.to_dict()
@@ -774,6 +814,9 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
             backed_up_files.append(str(dst))
 
         blob_reference_debt: BlobReferenceDebtReport | None = None
+        source_generation_id = (
+            _latest_sealed_source_generation(backup_root / "source.db") if "source" in included_tiers else None
+        )
         if "source" in included_tiers:
             blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
                 source_db=backup_root / "source.db",
@@ -781,6 +824,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
                 index_db=(backup_root / "index.db" if "index" in included_tiers else None),
                 backup_root=backup_root,
                 warnings=warnings,
+                source_generation_id=source_generation_id,
             )
         else:
             blob_count = 0
@@ -802,6 +846,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         archive_root_source_identity=_archive_root_source_identity(root),
         tier_source_fingerprints=tier_source_fingerprints,
         blob_reference_debt=blob_reference_debt,
+        source_generation_id=source_generation_id,
     )
     backed_up_files.append(str(backup_root / "manifest.json"))
     if (backup_root / "blob-inventory.json").exists():
