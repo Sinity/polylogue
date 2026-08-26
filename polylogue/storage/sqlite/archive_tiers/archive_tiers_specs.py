@@ -1676,6 +1676,7 @@ WORK_EVIDENCE_NODES_SPEC = _make_table_spec(
         ),
         _raw_column("actor_ref", """actor_ref                      TEXT"""),
         _raw_column("execution_context_id", """execution_context_id           TEXT"""),
+        _raw_column("role", """role                           TEXT NOT NULL DEFAULT 'unknown'"""),
         _raw_column("execution_context_known_json", """execution_context_known_json   TEXT NOT NULL DEFAULT '[]'"""),
         _raw_column("execution_context_unknown_json", """execution_context_unknown_json TEXT NOT NULL DEFAULT '[]'"""),
         _raw_column(

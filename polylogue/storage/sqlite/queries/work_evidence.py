@@ -16,6 +16,7 @@ from polylogue.insights.work_evidence import (
     WorkEvidenceGraph,
     WorkEvidenceNode,
     WorkEvidenceNodeKind,
+    WorkEvidenceRole,
     WorkEvidenceTraversal,
     parse_work_evidence_source_ref,
 )
@@ -54,6 +55,7 @@ def _node_from_row(row: aiosqlite.Row) -> WorkEvidenceNode:
         occurred_at_ms=int(row["occurred_at_ms"]) if row["occurred_at_ms"] is not None else None,
         actor_ref=ActorRef.parse(str(row["actor_ref"])) if row["actor_ref"] is not None else None,
         execution_context_ref=context,
+        role=cast(WorkEvidenceRole, str(row["role"])),
         association_state=cast(WorkEvidenceAssociationState, str(row["association_state"])),
         claim_text=str(row["claim_text"]) if row["claim_text"] is not None else None,
     )
@@ -91,9 +93,9 @@ async def replace_work_evidence_graph(
         INSERT INTO work_evidence_nodes(
             graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
             authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
-            execution_context_known_json, execution_context_unknown_json,
+            execution_context_known_json, execution_context_unknown_json, role,
             execution_context_addressed, association_state, claim_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -110,6 +112,7 @@ async def replace_work_evidence_graph(
                 node.execution_context_ref.context_id if node.execution_context_ref else None,
                 json.dumps(list(node.execution_context_ref.known_fields)) if node.execution_context_ref else "[]",
                 json.dumps(list(node.execution_context_ref.unknown_fields)) if node.execution_context_ref else "[]",
+                node.role,
                 int(node.execution_context_ref.content_addressed) if node.execution_context_ref else None,
                 node.association_state,
                 node.claim_text,

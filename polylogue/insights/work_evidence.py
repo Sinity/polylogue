@@ -12,7 +12,7 @@ from typing import Final, Literal, TypeAlias
 
 from pydantic import Field, model_validator
 
-from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
+from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef, WorkerProfileRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.run_projection import ObservedEvent, ProjectedRun
 
@@ -43,6 +43,7 @@ WorkEvidenceEdgeKind = Literal[
 ]
 WorkEvidenceAuthority = Literal["provider", "operator", "inferred", "unknown"]
 WorkEvidenceAssociationState = Literal["resolved", "unresolved", "ambiguous", "contradicted", "superseded"]
+WorkEvidenceRole = Literal["main", "subagent", "judge", "unknown"]
 WorkEvidenceSourceRef: TypeAlias = EvidenceRef | ObjectRef
 
 
@@ -98,6 +99,7 @@ class WorkEvidenceNode(ArchiveInsightModel):
     occurred_at_ms: int | None = Field(default=None, ge=0)
     actor_ref: ActorRef | None = None
     execution_context_ref: ExecutionContextRef | None = None
+    role: WorkEvidenceRole = "unknown"
     association_state: WorkEvidenceAssociationState = "resolved"
     claim_text: str | None = None
 
@@ -120,6 +122,18 @@ class WorkEvidenceNode(ArchiveInsightModel):
         ):
             raise ValueError("execution-context nodes must carry their matching ExecutionContextRef")
         return self
+
+    @property
+    def worker_profile_ref(self) -> WorkerProfileRef | None:
+        """Return the declared actor/context/role grouping when available."""
+
+        if self.actor_ref is None or self.execution_context_ref is None:
+            return None
+        return WorkerProfileRef(
+            actor=self.actor_ref,
+            execution_context=self.execution_context_ref,
+            role=self.role,
+        )
 
 
 class WorkEvidenceEdge(ArchiveInsightModel):
@@ -199,6 +213,7 @@ def node_from_projected_run(
         confidence=1.0 if run.confidence == "raw" else 0.5,
         actor_ref=actor_ref,
         execution_context_ref=execution_context_ref,
+        role=run.role,
     )
 
 
@@ -226,6 +241,7 @@ def session_segment_from_observed_events(
 __all__ = [
     "WorkEvidenceAssociationState",
     "WorkEvidenceAuthority",
+    "WorkEvidenceRole",
     "WorkEvidenceEdge",
     "WorkEvidenceEdgeKind",
     "WorkEvidenceGraph",
