@@ -31,6 +31,7 @@ from typing import get_args, get_origin
 from pydantic import BaseModel
 
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.command_shapes import COMMAND_SHAPES_INSIGHT_VERSION
 from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
@@ -595,6 +596,41 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                     )
                 ),
             ),
+        ),
+    ),
+    RigorContract(
+        insight_name="command_shapes",
+        display_name="Command Shape Usage",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "Command shapes are deterministic normalizations of command strings in the canonical actions view. "
+            "An empty result means no matching execution was observed in the selected window, not that the command is unused."
+        ),
+        consumer_fields=(
+            "origin",
+            "repository",
+            "command_shape",
+            "execution_count",
+            "session_count",
+            "last_used_at",
+            "window_since",
+            "window_until",
+        ),
+        version_fields=(
+            RigorVersionField(name="materializer_version", current_version=COMMAND_SHAPES_INSIGHT_VERSION),
+        ),
+        field_exemptions=_true_zero_fields(
+            "Execution and session counts are direct counts of observed action rows; zero is a measured empty aggregate.",
+            "execution_count",
+            "session_count",
+            "materializer_version",
+        )
+        + _true_zero_fields(
+            "The epoch sort key is a timestamp projection and is nullable when no provider or session time exists.",
+            "last_used_sort_key",
         ),
     ),
     RigorContract(
