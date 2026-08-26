@@ -12,6 +12,12 @@ class MutationCampaign(NamedScenarioSource):
     paths_to_mutate: tuple[str, ...]
     tests: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    # A policy belongs to the obligation-owned campaign, not to the
+    # freshness verifier.  ``None`` means that the campaign is evidence-only
+    # until its owner declares a risk-shaped floor.
+    min_kill_rate: float | None = None
+    consequence: str = "standard"
+    budget_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if self.origin == "authored":
@@ -272,6 +278,74 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "Repair is a maintenance-critical path; preview/dry-run/execute contracts must hold.",
             "Keep timeout generous - repair tests may perform full FTS5 rebuilds.",
         ),
+    ),
+    "blob-liveness-delete": MutationCampaign(
+        name="blob-liveness-delete",
+        description="Blob liveness, durable GC intent, and irreversible deletion safety",
+        paths_to_mutate=("polylogue/storage/blob_gc.py", "polylogue/storage/blob_liveness.py"),
+        tests=(
+            "tests/unit/storage/test_blob_gc.py",
+            "tests/unit/storage/test_blob_gc_durable_intent.py",
+            "tests/unit/storage/test_blob_liveness.py",
+        ),
+        min_kill_rate=0.8,
+        consequence="irreversible-delete",
+        budget_seconds=900,
+    ),
+    "cursor-publication": MutationCampaign(
+        name="cursor-publication",
+        description="Cursor publication only after the owning durable work commits",
+        paths_to_mutate=("polylogue/sources/live/cursor.py", "polylogue/sources/live/batch.py"),
+        tests=(
+            "tests/unit/sources/test_live_cursor_locking.py",
+            "tests/unit/sources/test_live_cursor_persistence.py",
+            "tests/unit/sources/test_cursor_lifecycle.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="durable-cursor",
+        budget_seconds=900,
+    ),
+    "lineage-identity-publication": MutationCampaign(
+        name="lineage-identity-publication",
+        description="Lineage and identity publication through the parsed-session write seam",
+        paths_to_mutate=("polylogue/storage/sqlite/archive_tiers/write.py",),
+        tests=(
+            "tests/unit/storage/test_write_path_state_machine.py",
+            "tests/unit/storage/test_archive_identity.py",
+            "tests/unit/sources/test_revision_backfill.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="identity-lineage",
+        budget_seconds=900,
+    ),
+    "durable-transition": MutationCampaign(
+        name="durable-transition",
+        description="Durable source-item and change-train transitions under interruption",
+        paths_to_mutate=(
+            "polylogue/storage/sqlite/archive_tiers/source_items.py",
+            "polylogue/storage/sqlite/durable_change_train.py",
+        ),
+        tests=(
+            "tests/unit/storage/test_source_items.py",
+            "tests/unit/storage/test_durable_change_train.py",
+            "tests/unit/storage/test_write_path_state_machine.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="durable-transition",
+        budget_seconds=900,
+    ),
+    "authored-cost-accounting": MutationCampaign(
+        name="authored-cost-accounting",
+        description="Authoredness-preserving usage and cost aggregation",
+        paths_to_mutate=("polylogue/storage/usage.py", "polylogue/storage/sqlite/archive_tiers/write.py"),
+        tests=(
+            "tests/unit/storage/test_session_usage_reconciliation.py",
+            "tests/unit/storage/test_session_profile_model_usage_consistency.py",
+            "tests/unit/storage/test_archive_tiers_write.py",
+        ),
+        min_kill_rate=0.8,
+        consequence="accounting",
+        budget_seconds=900,
     ),
 }
 

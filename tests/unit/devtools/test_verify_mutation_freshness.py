@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from devtools import mutmut_campaign, verify_mutation_freshness
+from devtools.mutation_scenario_catalog import MUTATION_CAMPAIGNS
 
 
 def _write_artifact(
@@ -160,3 +161,42 @@ def test_non_enforced_missing_mutation_evidence_is_not_reported_as_passed(
     payload = json.loads(capsys.readouterr().out)
     assert payload["required_gate"]["status"] == "not_enforced"
     assert payload["required_gate"]["gate_passed"] is None
+
+
+def test_high_consequence_campaigns_declare_distinct_policy_and_faithful_tests() -> None:
+    required = {
+        "blob-liveness-delete": "irreversible-delete",
+        "cursor-publication": "durable-cursor",
+        "lineage-identity-publication": "identity-lineage",
+        "durable-transition": "durable-transition",
+        "authored-cost-accounting": "accounting",
+    }
+
+    for name, consequence in required.items():
+        campaign = MUTATION_CAMPAIGNS[name]
+        assert campaign.consequence == consequence
+        assert campaign.min_kill_rate is not None
+        assert campaign.budget_seconds is not None
+        assert campaign.paths_to_mutate
+        assert campaign.tests
+
+
+def test_main_uses_catalog_policy_when_enforcing_kill_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _use_catalog(monkeypatch, "blob-liveness-delete")
+    _write_artifact(
+        tmp_path,
+        "blob-liveness-delete",
+        created_at=datetime(2099, 1, 1, tzinfo=UTC),
+        counts={"killed": 7, "survived": 3},
+    )
+    monkeypatch.setattr(
+        verify_mutation_freshness,
+        "MUTATION_CAMPAIGNS",
+        {"blob-liveness-delete": MUTATION_CAMPAIGNS["blob-liveness-delete"]},
+    )
+    monkeypatch.setattr(verify_mutation_freshness, "ROOT", tmp_path)
+
+    assert verify_mutation_freshness.main(["--enforce-kill-rate"]) == 1
+    assert "floor 80.0%" in capsys.readouterr().out
