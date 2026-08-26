@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS
+from polylogue.core.schema_subjects import CORE_SCHEMA_ORIGINS
 
 __all__ = [
     "ALL_SOURCES",
@@ -444,11 +444,3 @@ def source_name_to_origin(source_name: object) -> str:
         return origin_from_provider(Provider.from_string(value)).value
     except ValueError:
         return Origin.UNKNOWN_EXPORT.value
-
-
-# Compatibility export for older callers. Public filter/completion choices
-# belong to ``sources.origin_specs``; this legacy provider-derived tuple remains
-# intentionally limited to the historical schema-provider projection.
-CORE_SCHEMA_ORIGINS: Final[tuple[str, ...]] = tuple(
-    dict.fromkeys(origin_from_provider(Provider.from_string(token)).value for token in CORE_SCHEMA_PROVIDERS)
-)

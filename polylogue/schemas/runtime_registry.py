@@ -17,6 +17,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.core.provider_identity import normalize_provider_token
+from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
 from polylogue.paths import data_home
 from polylogue.schemas.observation import (
     derive_bundle_scope,
@@ -121,6 +122,28 @@ def canonical_schema_provider(provider: str | Provider) -> SchemaProvider:
         if provider_token is not Provider.UNKNOWN:
             return provider_token
     return normalized
+
+
+def schema_subject_diagnostics(root: Path | None = None) -> tuple[str, ...]:
+    """Return declaration/package drift diagnostics for the committed tree."""
+    package_root = root or SCHEMA_DIR
+    actual = (
+        tuple(
+            sorted(path.name for path in package_root.iterdir() if path.is_dir() and (path / "catalog.json").exists())
+        )
+        if package_root.exists()
+        else ()
+    )
+    declared = tuple(sorted(SCHEMA_PACKAGE_DIRECTORIES))
+    diagnostics: list[str] = []
+    for name in sorted(set(declared) - set(actual)):
+        diagnostics.append(f"declared schema package is missing: {name}")
+    for name in sorted(set(actual) - set(declared)):
+        diagnostics.append(f"undeclared schema package directory: {name}")
+    for subject in SCHEMA_SUBJECTS:
+        if subject.requires_package and canonical_schema_provider(subject.token) != subject.token:
+            diagnostics.append(f"schema subject is not canonically reachable: {subject.token}")
+    return tuple(diagnostics)
 
 
 @dataclass(frozen=True)
@@ -1157,4 +1180,4 @@ class SchemaRegistry:
         return resolution.package_version if resolution is not None else None
 
 
-__all__ = ["SCHEMA_DIR", "SchemaProvider", "SchemaRegistry", "canonical_schema_provider"]
+__all__ = ["SCHEMA_DIR", "SchemaProvider", "SchemaRegistry", "canonical_schema_provider", "schema_subject_diagnostics"]

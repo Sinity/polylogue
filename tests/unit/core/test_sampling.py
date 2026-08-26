@@ -144,6 +144,8 @@ class TestProvidersConfig:
             "hermes",
             "antigravity",
             "codex",
+            "claude-design",
+            "grok",
         }
         assert {provider.value for provider in PROVIDERS} == expected
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 
+from polylogue.schemas.registry import schema_subject_diagnostics
 from polylogue.sources.provider_completeness import accepted_blockers, provider_package_completeness
 from polylogue.surfaces.payloads import ProviderPackageCompletenessPayload
 
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _print_table(report)
     blockers = accepted_blockers(report)
+    blockers = (*blockers, *schema_subject_diagnostics())
     if args.check and blockers:
         if not args.json:
             print("\naccepted provider-package blockers:", file=sys.stderr)

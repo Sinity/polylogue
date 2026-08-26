@@ -123,6 +123,16 @@ PROVIDERS: dict[Provider, ProviderConfig] = {
         record_type_key="type",
         schema_sample_cap=128,
     ),
+    Provider.CLAUDE_DESIGN: ProviderConfig(
+        name=Provider.CLAUDE_DESIGN,
+        description="Claude Design session format",
+        db_source_name=Provider.CLAUDE_DESIGN,
+    ),
+    Provider.GROK: ProviderConfig(
+        name=Provider.GROK,
+        description="Grok export format",
+        db_source_name=Provider.GROK,
+    ),
 }
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.schemas.observation import fingerprint_hash as _fingerprint_hash
-from polylogue.schemas.runtime_registry import SCHEMA_DIR, canonical_schema_provider
+from polylogue.schemas.runtime_registry import SCHEMA_DIR, canonical_schema_provider, schema_subject_diagnostics
 from polylogue.schemas.runtime_registry import SchemaRegistry as RuntimeSchemaRegistry
 from polylogue.schemas.tooling_registry import (
     ClusterManifest,
@@ -27,4 +27,5 @@ __all__ = [
     "SchemaRegistry",
     "_fingerprint_hash",
     "canonical_schema_provider",
+    "schema_subject_diagnostics",
 ]

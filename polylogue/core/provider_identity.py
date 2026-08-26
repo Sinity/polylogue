@@ -64,6 +64,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from polylogue.core.schema_subjects import CORE_SCHEMA_PROVIDERS, schema_subject
+
 CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "chatgpt",
     "claude-ai",
@@ -78,19 +80,6 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "grok",
     "drive",
     "unknown",
-)
-
-CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
-    "chatgpt",
-    "claude-ai",
-    "claude-design",
-    "claude-code",
-    "codex",
-    "gemini",
-    "gemini-cli",
-    "hermes",
-    "antigravity",
-    "grok",
 )
 
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
@@ -139,8 +128,11 @@ def canonical_schema_provider(
     default: str = "unknown",
 ) -> str:
     """Normalize provider names to canonical schema identifiers."""
+    normalized = normalize_provider_token(value)
     canonical = canonical_runtime_provider(value, default=default)
-    if canonical in CORE_SCHEMA_PROVIDERS:
+    if schema_subject(normalized) is not None:
+        return normalized
+    if schema_subject(canonical) is not None:
         return canonical
     return default
 
