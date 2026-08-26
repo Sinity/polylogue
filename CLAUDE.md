@@ -140,6 +140,11 @@ explicit-and-retryable or a typed permanent refusal.
   graph (refuses without one); `--quick` static gates; `--all` the true full
   corpus, run at merge-train/master boundaries, not per-lane.
 - `devtools why` — explain the last run before reading receipts by hand.
+- `devtools verify portfolio-frontier <complete-export>` — classify full ambition,
+  broad active leaves, dependency readiness, blockers/unlocks, and a smaller
+  claims/resource-aware execution focus. “Active” is broader than “executable”;
+  dependency-ready means all blockers are closed. Soft bands near 30/50 are
+  diagnostics only and never hide or demote work.
 - `devtools render all --check` can print per-surface `sync OK` yet exit 1 —
   grep for `out of sync`.
 
