@@ -27,6 +27,10 @@ verification_operations = ["verify_affected", "verify_quick", "verify_all"]
 
 [workspace.provision]
 copy = [".cache/testmon/testmondata"]
+# Prove the lane venv is complete at provision time (dev extras included);
+# rides the sinnixd exec hook. Failure rolls the workspace back typed.
+exec = ["uv", "sync", "--extra", "dev", "--frozen"]
+exec_timeout_seconds = 600
 
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]
