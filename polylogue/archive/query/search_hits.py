@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval_search import search_query_text as plan_search_query_text
+from polylogue.archive.query.search_contract import SearchExecution, resolve_vector_provider
 from polylogue.archive.query.support import session_to_summary
 from polylogue.storage.archive_identity import archive_file_set_root
 
@@ -54,6 +55,14 @@ class SessionSearchHit:
 
     def with_message_count(self, message_count: int | None) -> SessionSearchHit:
         return replace(self, summary=self.summary.model_copy(update={"message_count": message_count}))
+
+
+class SearchHitResults(list[SessionSearchHit]):
+    """List-compatible hits carrying canonical lane execution evidence."""
+
+    def __init__(self, hits: list[SessionSearchHit], execution: SearchExecution) -> None:
+        super().__init__(hits)
+        self.execution = execution
 
 
 def search_query_text(query_terms: tuple[str, ...]) -> str:
@@ -305,12 +314,27 @@ async def search_hits_for_plan(
     # polylogue-yla8.1 split-root contract: config.db_path always names a
     # concrete index.db (explicit override or resolved active generation).
     archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    needs_vector = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane == "hybrid")
+    vector_provider, vector_failure = (
+        resolve_vector_provider(config, archive_root=archive_root, provider=plan.vector_provider)
+        if needs_vector
+        else (None, None)
+    )
+    if vector_failure is not None and plan.retrieval_lane != "hybrid":
+        from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+        raise EmbeddingRetrievalNotReadyError(
+            "semantic retrieval is unavailable: no configured/constructible vector backend; "
+            "configure Voyage/sqlite-vec and retry",
+            readiness_status="disabled" if vector_failure.kind == "unavailable" else "failed",
+        )
+    executable_plan = replace(plan, vector_provider=vector_provider)
     paired, resolved_lane = await run_archive_read(
         archive_root,
         operation="archive.query.search-hits-for-plan",
-        arguments={"plan": plan, "default_limit": plan.limit or search_limit(plan)},
+        arguments={"plan": executable_plan, "default_limit": plan.limit or search_limit(plan)},
         work=lambda archive: archive_search_hits(
-            plan,
+            executable_plan,
             archive_root=archive_root,
             config=config,
             default_limit=plan.limit or search_limit(plan),
@@ -334,9 +358,25 @@ async def search_hits_for_plan(
                 message_id=native_hit.message_id,
                 snippet=native_hit.snippet,
                 matched_terms=terms,
+                score_components={
+                    f"{lane}_rank": float(rank_value)
+                    for lane, rank_value in (native_hit.lane_ranks or {}).items()
+                    if rank_value is not None
+                },
+                lane_rank=min(
+                    rank_value for rank_value in (native_hit.lane_ranks or {}).values() if rank_value is not None
+                )
+                if native_hit.lane_ranks and any(value is not None for value in native_hit.lane_ranks.values())
+                else None,
             )
         )
-    return hits
+    execution = SearchExecution(
+        requested_lanes=("text", "action", "vector") if plan.retrieval_lane == "hybrid" else ("vector",),
+        executed_lanes=("text",) if plan.retrieval_lane == "hybrid" and vector_failure else ("vector",),
+        unavailable_lanes=("vector",) if vector_failure and vector_failure.kind == "unavailable" else (),
+        failed_lanes=(vector_failure,) if vector_failure and vector_failure.kind != "unavailable" else (),
+    )
+    return SearchHitResults(hits, execution)
 
 
 def _archive_summary_to_domain(summary: object) -> SessionSummary:
@@ -353,6 +393,7 @@ __all__ = [
     "DEFAULT_SEARCH_SNIPPET_MAX_CHARS",
     "DEFAULT_TITLE_MAX_CHARS",
     "SessionSearchHit",
+    "SearchHitResults",
     "bound_display_text",
     "bound_display_title",
     "bound_search_snippet",

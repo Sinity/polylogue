@@ -4,7 +4,7 @@ polylogue/api/archive.py:1152
 polylogue/api/archive.py:1431
 polylogue/api/archive.py:1474
 polylogue/api/archive.py:1554
-polylogue/api/archive.py:6949
+polylogue/api/archive.py:6970
 polylogue/api/user_state_resolver.py:63
 polylogue/api/user_state_resolver.py:82
 polylogue/api/user_state_resolver.py:129
@@ -72,7 +72,7 @@ polylogue/storage/fts/drift_sampling.py:96
 polylogue/storage/fts/drift_sampling.py:141
 polylogue/storage/repair.py:5448
 polylogue/storage/repair.py:5849
-polylogue/storage/sqlite/archive_tiers/archive.py:965
+polylogue/storage/sqlite/archive_tiers/archive.py:966
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:127
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:131
 polylogue/storage/sqlite/archive_tiers/bootstrap.py:186

@@ -423,6 +423,7 @@ class ArchiveSessionSearchHit:
     origin: str
     title: str | None
     snippet: str
+    lane_ranks: dict[str, int | None] | None = None
 
 
 # polylogue-qsb4: both traversals recurse natively over the `delegations`

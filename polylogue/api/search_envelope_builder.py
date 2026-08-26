@@ -75,6 +75,24 @@ async def build_search_envelope_for_spec(
         )
 
     hits = await facade.search_session_hits(fetch_spec)
+    execution = getattr(hits, "execution", None)
+    if not hits and fetch_spec.boolean_predicate is not None:
+        # Filter-only expressions have no ranked-search evidence, but they are
+        # still valid envelope queries.  Keep this fallback in the canonical
+        # builder rather than reintroducing a surface-local execution branch.
+        from polylogue.archive.query.search_hits import session_search_hit_from_session
+
+        sessions = await facade.list_sessions_for_spec(fetch_spec)
+        hits = [
+            session_search_hit_from_session(
+                session,
+                query_terms=(),
+                rank=display_offset + index,
+                retrieval_lane="auto",
+                match_surface="session",
+            )
+            for index, session in enumerate(sessions, start=1)
+        ]
     total = await spec.count(facade.config)
     diagnostics_payload: QueryMissDiagnosticsPayload | None = None
     if not hits and spec.has_filters():
@@ -95,6 +113,7 @@ async def build_search_envelope_for_spec(
         sort=spec.sort,
         diagnostics=diagnostics_payload,
         cursor=decoded_cursor,
+        execution=execution,
     )
 
 

@@ -60,6 +60,11 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "query_hash",
         "result_fingerprint",
         "exactness",
+        "requested_lanes",
+        "executed_lanes",
+        "unavailable_lanes",
+        "failed_lanes",
+        "advisories",
     }
 )
 
