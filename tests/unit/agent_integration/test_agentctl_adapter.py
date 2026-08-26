@@ -40,9 +40,11 @@ def disposable_archive(tmp_path: Path) -> Generator[Path]:
 def adapter_command() -> tuple[str, ...]:
     installed = Path(sys.executable).with_name("polylogue-agentctl-adapter")
     interpreter = (
-        installed.read_text(encoding="utf-8").splitlines()[0].removeprefix("#!") if installed.is_file() else ""
+        installed.read_text(encoding="utf-8").splitlines()[0].removeprefix("#!")
+        if installed.is_file() and installed.stat().st_size
+        else None
     )
-    if installed.is_file() and os.access(installed, os.X_OK) and Path(interpreter).exists():
+    if installed.is_file() and os.access(installed, os.X_OK) and interpreter is not None and Path(interpreter).exists():
         return (str(installed),)
     return (sys.executable, "-m", "polylogue.agent_integration.agentctl_adapter")
 
