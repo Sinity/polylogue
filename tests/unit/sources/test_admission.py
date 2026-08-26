@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionDisposition,
+    AdmissionReceipt,
     AdmissionState,
     AdmissionUnit,
     ArtifactIdentity,
@@ -30,7 +31,7 @@ def _attempt() -> AdmissionAttempt:
 
 
 def test_acceptance_requires_frontier_and_releases_ownership() -> None:
-    receipts = []
+    receipts: list[AdmissionReceipt] = []
     state = AdmissionState(_attempt(), receipts.append)
     frontier = SemanticFrontier("rev-1", 12, "jsonl-v1", "evidence-1")
     accepted = state.finish(AdmissionDisposition.ACCEPTED, frontier=frontier)
