@@ -9,8 +9,11 @@ import pytest
 from polylogue.storage.sqlite.archive_tiers import AUDIT_COLUMN_DISPOSITIONS
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
+    assert_complete_schema_dispositions,
     audit_column_dispositions,
     canonical_audit_columns,
+    schema_disposition_report,
+    schema_dispositions,
 )
 
 
@@ -25,7 +28,7 @@ def test_audit_disposition_covers_canonical_ddl_exactly_once() -> None:
     assert_complete_audit_disposition(rows)
     assert len(rows) == len(canonical_audit_columns()) == 134
     assert len({row.ref for row in rows}) == len(rows)
-    assert {row.disposition for row in rows} == {"KEEP-WIRED"}
+    assert {row.disposition for row in rows} == {"KEEP"}
     for row in rows:
         assert all(
             value
@@ -61,3 +64,34 @@ def test_audit_disposition_rejects_purge_without_copy_forward_owner() -> None:
     row = replace(audit_column_dispositions()[0], disposition="PURGE")
     with pytest.raises(ValueError, match="60i5 copy-forward owner"):
         assert_complete_audit_disposition([row, *audit_column_dispositions()[1:]])
+
+
+def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> None:
+    rows = schema_dispositions()
+    assert_complete_schema_dispositions(rows)
+    assert len(rows) == len({row.object_ref for row in rows})
+    assert {row.disposition for row in rows} <= {"KEEP", "COMPLETE", "PURGE", "DERIVE", "TRANSITION"}
+    by_ref = {row.object_ref: row for row in rows}
+
+    assert by_ref["source:column:raw_unknown_export_reclassification_receipts.raw_id"].disposition == "PURGE"
+    assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
+    assert by_ref["index:column:threads.dominant_repo_id"].disposition == "PURGE"
+    assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
+    assert all(row.semantic_owner and row.implementation_bead for row in rows)
+
+
+def test_six_tier_disposition_rejects_undeclared_object() -> None:
+    rows = list(schema_dispositions())
+    rows.append(replace(rows[0], object_ref="source:table:undeclared"))
+
+    with pytest.raises(ValueError, match="undeclared schema objects"):
+        assert_complete_schema_dispositions(rows)
+
+
+def test_six_tier_report_is_generated_from_the_complete_disposition() -> None:
+    report = schema_disposition_report()
+
+    assert report["complete"] is True
+    assert report["object_count"] == len(schema_dispositions())
+    assert sum(report["disposition_counts"].values()) == report["object_count"]  # type: ignore[union-attr]
+    assert len(report["objects"]) == report["object_count"]  # type: ignore[arg-type]
