@@ -1310,6 +1310,9 @@ def test_exact_read_summaries_resolves_id_without_query_enumeration(tmp_path: Pa
         git_repository_url=None,
         provider_project_ref=None,
         message_count=42,
+        terminal_state=None,
+        total_cost_usd=None,
+        cost_provenance=None,
         tags=(),
     )
     archive = MagicMock()

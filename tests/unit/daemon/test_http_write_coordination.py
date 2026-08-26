@@ -353,7 +353,7 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 ) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    session_ids = _seed_delete_authority_archive(archive_root, 257)
+    session_ids = _seed_delete_authority_archive(archive_root, 256)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         token = _prepare_authorize(client, session_ids)
@@ -361,7 +361,7 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
             "POST", "/api/cli/delete", {"authorization_token": token}
         )
 
-    assert result == {"status": "deleted", "operation": "delete", "session_count": 257, "affected_count": 257}
+    assert result == {"status": "deleted", "operation": "delete", "session_count": 256, "affected_count": 256}
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
