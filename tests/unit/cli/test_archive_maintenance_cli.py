@@ -1635,18 +1635,46 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["ok"] is True
-    assert payload["tier"] == "user"
-    assert payload["from_version"] == 3
-    assert payload["to_version"] == USER_SCHEMA_VERSION
-    assert payload["applied_versions"] == list(range(4, USER_SCHEMA_VERSION + 1))
-    assert payload["backup_receipt"] == str(manifest.with_name("verification-receipt.json"))
+    # The legacy climb to the adoption floor commits, then the v11 train
+    # refuses the now-stale manifest with an actionable instruction instead
+    # of a bare fingerprint mismatch.
+    assert result.exit_code == 1
+    assert "Take a fresh verified backup" in result.output
     with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 10
         assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
+        ).fetchone()
+
+    fresh_manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup-post-floor", profile="user_overlays")
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "migrate-tier",
+            "user",
+            "--backup-manifest",
+            str(fresh_manifest),
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["tier"] == "user"
+    assert payload["from_version"] == 10
+    assert payload["to_version"] == USER_SCHEMA_VERSION
+    assert payload["applied_versions"] == list(range(11, USER_SCHEMA_VERSION + 1))
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='query_excision_ledger'"
         ).fetchone()
 
 

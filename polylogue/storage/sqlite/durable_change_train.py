@@ -2085,6 +2085,30 @@ def _runtime_consumer_results(
                     from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 
                     detail = AuditContinuityCoordinator(archive_root).runtime_probe()
+                elif reference.endswith(":publish_source_generation"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_generation_publish(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":source_generation_census"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_generation_census(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":promote_query"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_query_promotion(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":apply_query_excision"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_query_excision(cast(Callable[..., object], value), train.target_version)
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -2279,6 +2303,135 @@ def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
     initialize_archive_tier(connection, ArchiveTier.SOURCE)
     _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target_version)
     return connection
+
+
+def _probe_source_generation_publish(publish: Callable[..., object], target_version: int) -> str:
+    """Exercise manifest-coordinate publication against the train's projected source schema."""
+    generation_id = "durable-change-train-source-generation"
+    with _runtime_probe_source_connection(target_version) as probe:
+        ids = publish(
+            probe,
+            source_generation_id=generation_id,
+            manifest_digest="0" * 64,
+            addressing_mode="path",
+            coordinates=("probe/one.jsonl", "probe/two.jsonl"),
+            observed_at_ms=1_780_000_000_000,
+        )
+        generation_row = probe.execute(
+            "SELECT item_count FROM source_generations WHERE source_generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+        item_count = probe.execute(
+            "SELECT COUNT(*) FROM source_items WHERE source_generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if not isinstance(ids, tuple) or len(ids) != 2 or generation_row != (2,) or item_count != (2,):
+        raise DurableChangeTrainError("source generation probe did not publish every manifest coordinate")
+    return f"published probe source generation with {len(ids)} pending items"
+
+
+def _probe_source_generation_census(census: Callable[..., object], target_version: int) -> str:
+    """Exercise reconciliation census against the train's projected source schema."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+
+    generation_id = "durable-change-train-census-generation"
+    with _runtime_probe_source_connection(target_version) as probe:
+        publish_source_generation(
+            probe,
+            source_generation_id=generation_id,
+            manifest_digest="1" * 64,
+            addressing_mode="path",
+            coordinates=("probe/census.jsonl",),
+            observed_at_ms=1_780_000_000_000,
+        )
+        report = census(probe, generation_id)
+    if not isinstance(report, dict) or report.get("source_generation_id") != generation_id:
+        raise DurableChangeTrainError("source generation census probe did not report the published generation")
+    if report.get("sealable"):
+        raise DurableChangeTrainError("source generation census probe reported a pending manifest as sealable")
+    return "census reported the probe generation as pending and unsealable"
+
+
+def _runtime_probe_user_connection(target_version: int) -> sqlite3.Connection:
+    """Create a user-tier probe projected to the train's schema slot."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    connection = sqlite3.connect(":memory:")
+    initialize_archive_tier(connection, ArchiveTier.USER)
+    _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.USER, target_version)
+    return connection
+
+
+def _probe_query_promotion(promote: Callable[..., object], target_version: int) -> str:
+    """Exercise privacy-contracted promotion against the train's projected user schema."""
+    from polylogue.storage.sqlite.query_objects import get_query, put_query
+
+    with _runtime_probe_user_connection(target_version) as probe:
+        query = put_query(
+            probe,
+            {"field": "body", "value": "durable-change-train promotion probe"},
+            grain="session",
+            lane="dialogue",
+            rank_policy="mixed",
+            created_at_ms=1_780_000_000_000,
+        )
+        promote(
+            probe,
+            query_hash=query.query_hash,
+            privacy_class="secret",
+            retention_policy={"days": 1},
+            excision_link="excision:durable-change-train-probe",
+            promoted_at_ms=1_780_000_000_001,
+        )
+        promoted = get_query(probe, query.query_hash)
+    if (
+        promoted is None
+        or promoted.privacy_class != "secret"
+        or promoted.retention_policy != {"days": 1}
+        or promoted.excision_link != "excision:durable-change-train-probe"
+    ):
+        raise DurableChangeTrainError("query promotion probe did not persist the privacy contract")
+    return f"promoted probe query {query.query_hash[:12]} under a complete privacy contract"
+
+
+def _probe_query_excision(apply_excision: Callable[..., object], target_version: int) -> str:
+    """Exercise excise-and-tombstone against the train's projected user schema."""
+    from polylogue.security.query_excision import plan_query_excision
+    from polylogue.storage.sqlite.query_objects import get_query, promote_query, put_query
+
+    with _runtime_probe_user_connection(target_version) as probe:
+        query = put_query(
+            probe,
+            {"field": "body", "value": "durable-change-train excision probe"},
+            grain="session",
+            lane="dialogue",
+            rank_policy="mixed",
+            created_at_ms=1_780_000_000_000,
+        )
+        promote_query(
+            probe,
+            query_hash=query.query_hash,
+            privacy_class="secret",
+            retention_policy={"days": 1},
+            excision_link="excision:durable-change-train-probe",
+            promoted_at_ms=1_780_000_000_001,
+        )
+        plan = plan_query_excision(probe, query.ref)
+        receipt = apply_excision(
+            probe,
+            plan,
+            reason="durable-change-train probe",
+            actor="agent:durable-change-train",
+            now_ms=1_780_000_000_002,
+        )
+        remaining = get_query(probe, query.query_hash)
+        ledger_row = probe.execute(
+            "SELECT ledger_id FROM query_excision_ledger WHERE query_hash = ?",
+            (query.query_hash,),
+        ).fetchone()
+    if getattr(receipt, "status", None) != "applied" or remaining is not None or ledger_row is None:
+        raise DurableChangeTrainError("query excision probe did not excise the promoted query into the ledger")
+    return f"excised probe query {query.query_hash[:12]} with a non-resurrection ledger row"
 
 
 def _seed_hook_reconciliation_probe(connection: sqlite3.Connection) -> tuple[str, bytes, str]:
@@ -3087,6 +3240,18 @@ def execute_durable_change_train(
             )
         current_version = legacy_result.to_version
     sidecar = durable_migration_sidecar_for_slot(tier, current_version + 1)
+    if sidecar is not None and legacy_result is not None and legacy_result.applied_versions:
+        # The legacy climb just rewrote the live tier, so the supplied manifest
+        # now fingerprints bytes that no longer exist.  Backup authorization
+        # deliberately binds the exact pre-apply bytes; reusing the pre-climb
+        # manifest here would weaken train recovery to "restore and replay".
+        # The climb is committed and safe — require a fresh backup for the train.
+        raise DurableChangeTrainError(
+            f"legacy migrations advanced {tier.value} to v{current_version}; the supplied backup manifest "
+            f"covers the pre-migration tier and cannot authorize train v{sidecar.slot} "
+            f"({sidecar.train.train_id}). Take a fresh verified backup of the migrated tier and rerun "
+            "maintenance migrate-tier."
+        )
     if sidecar is None:
         if current_version != runtime_target_version:
             raise DurableChangeTrainError(
