@@ -3717,8 +3717,8 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
     Without a live ``ArchiveWriterExclusion``, ``reconcile_blob_publication_reservations``'s
     ``may_clear`` gate is always false and every classified row is only ever
     retained -- a durable reservation leak. This proves the daemon startup
-    call actually acquires the exclusion and clears the two terminal buckets
-    (referenced, missing-bytes) it already knows how to classify safely.
+    call actually acquires the exclusion and clears the missing-bytes terminal
+    bucket while retaining the referenced receipt for explicit abandonment.
     """
     from polylogue.core.enums import Origin
     from polylogue.daemon import cli as daemon_cli
@@ -3754,7 +3754,9 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
     asyncio.run(daemon_cli._reconcile_blob_publications())
 
     with sqlite3.connect(source_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
+        # A live referenced blob is retained for explicit abandonment; only
+        # the missing-bytes terminal receipt is safe to clear automatically.
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
 
 
 def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(

@@ -2230,16 +2230,31 @@ async def _rebuild_index_from_source_owned(
                     else cross_tier_checks
                 )
             )
+            # polylogue-f1vg: an inactive generation has only index.db, so
+            # corpus fidelity combines that candidate with the durable
+            # source tier at the archive root before promotion.
+            candidate_report = verify_archive(
+                root,
+                checks=candidate_acceptance_checks,
+                index_path_override=Path(generation.index_path),
+            )
+            # ChatGPT conservation is deliberately non-vacuous when ChatGPT
+            # source rows exist, but a provider-neutral archive may have no
+            # ChatGPT population at all.  Do not turn that legitimate
+            # non-applicability into a failed candidate admission.
+            candidate_required_checks = tuple(
+                name
+                for name in candidate_acceptance_checks
+                if not any(
+                    check.name == name
+                    and check.status.value == "skip"
+                    and getattr(check, "evidence", {}).get("outcome_reason") == "no_chatgpt_population"
+                    for check in candidate_report.checks
+                )
+            )
             acceptance_reports = (
                 verify_archive(generation_root, checks=reindex_checks),
-                # polylogue-f1vg: an inactive generation has only index.db, so
-                # corpus fidelity combines that candidate with the durable
-                # source tier at the archive root before promotion.
-                verify_archive(
-                    root,
-                    checks=candidate_acceptance_checks,
-                    index_path_override=Path(generation.index_path),
-                ),
+                candidate_report,
             )
             owner_gate_evidence = _require_message_owner_scope_backfill(
                 root,
@@ -2257,7 +2272,7 @@ async def _rebuild_index_from_source_owned(
             )
             acceptance_requirements = (
                 reindex_checks,
-                candidate_acceptance_checks,
+                candidate_required_checks,
             )
             acceptance_failures = tuple(
                 failure

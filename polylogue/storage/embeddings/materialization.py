@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
+from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.embeddings.identity import (
     EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
     EMBEDDING_SOURCE_HASH_SQL_FUNCTION,
@@ -71,7 +72,7 @@ def resolve_embedding_failure_with_lifecycle(
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding, EmbeddingGenerationStore
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
     from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingFailure
