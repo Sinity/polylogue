@@ -11,7 +11,6 @@ from hypothesis.stateful import RuleBasedStateMachine, rule
 
 from tests.infra.convergence_harness import (
     assert_archive_verification_green,
-    assert_archives_equivalent,
     build_converged_archive,
     converge_convergence_archive,
     ingest_convergence_pathology,
@@ -23,6 +22,8 @@ from tests.infra.convergence_harness import (
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
+    build_convergence_run_plan,
+    execute_convergence_plan,
     generated_convergence_workload,
     read_semantic_projection,
     semantic_oracle,
@@ -42,7 +43,8 @@ def test_convergence_property_ingestion_order_invariance(tmp_path: Path, shift: 
     order = rotated_session_order(pathology, shift)
     canonical = build_converged_archive(tmp_path / "canonical", pathology)
     permuted = build_converged_archive(tmp_path / "permuted", pathology, session_order=order)
-    assert_archives_equivalent(canonical, permuted)
+    plan = build_convergence_run_plan(workload)
+    execute_convergence_plan(plan, (canonical.root, permuted.root), law=ConvergenceLaw.PERMUTATION)
     expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive in (canonical, permuted):
         assert_projection_matches_oracle(
@@ -93,7 +95,11 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
             self._pathology,
             session_indexes=tuple(self._ingest_indexes),
         )
-        assert_archives_equivalent(canonical, self._archive)
+        # The state machine may stop at a prefix with repeated writes; compare
+        # the typed derived readiness owned by this route, not schema rows.
+        from tests.infra.convergence_harness import assert_derived_readiness_equivalent
+
+        assert_derived_readiness_equivalent(canonical.root, self._root)
         self._dirty = False
 
     def teardown(self) -> None:

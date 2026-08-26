@@ -8,7 +8,6 @@ from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
-    assert_archives_equivalent,
     build_converged_archive,
     converge_convergence_archive,
     ingest_convergence_pathology,
@@ -17,6 +16,8 @@ from tests.infra.convergence_harness import (
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
+    build_convergence_run_plan,
+    execute_convergence_plan,
     generated_convergence_workload,
     read_semantic_projection,
     semantic_oracle,
@@ -44,7 +45,11 @@ def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int)
         converge_after_each=False,
     )
     converge_convergence_archive(reingested)
-    assert_archives_equivalent(baseline, reingested)
+    execute_convergence_plan(
+        build_convergence_run_plan(workload),
+        (baseline.root, reingested.root),
+        law=ConvergenceLaw.IDEMPOTENCE,
+    )
     expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive_root in (baseline.root, reingested.root):
         assert_projection_matches_oracle(

@@ -49,15 +49,6 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
-from tests.infra.archive_canonical_snapshot import (
-    CanonicalArchiveSnapshot as ArchiveSnapshot,
-)
-from tests.infra.archive_canonical_snapshot import (
-    archive_snapshot,
-)
-from tests.infra.archive_canonical_snapshot import (
-    assert_archives_equivalent as _assert_canonical_archives_equivalent,
-)
 from tests.infra.pathology_composer import (
     ComposedPathology,
     compose_append_revision_chain,
@@ -379,12 +370,6 @@ def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
     if non_green:
         raise AssertionError(f"archive verification registry is not green: {non_green}")
     return report
-
-
-def assert_archives_equivalent(left: ConvergenceArchive, right: ConvergenceArchive) -> None:
-    """Compare property archives through the shared canonical comparator."""
-
-    _assert_canonical_archives_equivalent(left, right)
 
 
 def derived_readiness_snapshot(root: Path) -> DerivedReadinessSnapshot:
@@ -1005,15 +990,12 @@ def _stable_json(value: object, root: Path) -> str:
 
 
 __all__ = [
-    "ArchiveSnapshot",
     "ConvergenceArchive",
     "DebtLedgerRow",
     "DerivedReadinessSnapshot",
     "PartialConvergenceArchive",
     "SessionMaterializationFacts",
-    "archive_snapshot",
     "assert_archive_verification_green",
-    "assert_archives_equivalent",
     "assert_derived_readiness_equivalent",
     "build_converged_archive",
     "converge_convergence_archive",
