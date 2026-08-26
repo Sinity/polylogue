@@ -545,6 +545,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         assert_owns_archive_location,
     )
     from polylogue.storage.sqlite.durable_change_train import (
+        _durable_train_manifest_paths,
         _record_fresh_durable_bootstrap,
         _record_fresh_durable_bootstrap_intent,
         _validate_fresh_durable_bootstrap_intent,
@@ -590,11 +591,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
         pending_audit_adoption = audit_adoption_receipt_path(root).exists()
-        has_durable_train_state = any(
-            path.name not in {"audit-adoption.json", "audit-continuity.json"}
-            and not path.name.startswith("audit-restore.")
-            for path in manifest_root.glob("*.json")
-        )
+        has_durable_train_state = bool(_durable_train_manifest_paths(manifest_root))
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
