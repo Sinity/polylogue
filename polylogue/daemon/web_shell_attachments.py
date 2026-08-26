@@ -31,8 +31,8 @@ State derivation (from ``docs/design/mk3/docs/08-state-matrix.md:89``):
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import asdict, dataclass, is_dataclass
+from typing import Any, cast
 
 # Preview budget for inline attachment cards. Anything larger renders
 # as ``too-large`` (metadata still shown, body suppressed). Tuned to
@@ -74,11 +74,22 @@ def _attachment_name(attachment: Any) -> str:
     return str(aid or "")
 
 
+def _availability_payload(availability: Any) -> object:
+    if availability is None:
+        return None
+    if hasattr(availability, "model_dump"):
+        return cast(Any, availability).model_dump(mode="json")
+    if is_dataclass(availability):
+        return asdict(cast(Any, availability))
+    return availability
+
+
 def classify_state(
     *,
-    path: str | None,
+    path: str | None = None,
     size_bytes: int | None,
     mime_type: str | None,
+    availability: Any = None,
 ) -> str:
     """Return the MK3 attachment state token for an attachment.
 
@@ -87,7 +98,16 @@ def classify_state(
     too-large preview.
     """
 
-    if not path:
+    if availability is not None:
+        state = getattr(availability, "state", availability)
+        state = getattr(state, "value", state)
+        if state in {"missing", "unfetched", "unknown", "hash-mismatch", "unauthorized"}:
+            # Preserve the reader's established CSS/filter token; the typed
+            # ``availability`` object carries the more precise reason.
+            return "missing-blob"
+        if state != "available":
+            return str(state)
+    elif not path:
         return "missing-blob"
     if isinstance(mime_type, str):
         mime_lower = mime_type.lower()
@@ -117,11 +137,13 @@ def attachment_to_envelope(
     aid = str(getattr(attachment, "id", None) or getattr(attachment, "attachment_id", "") or "")
     mime_type = getattr(attachment, "mime_type", None)
     size_bytes = getattr(attachment, "size_bytes", None)
-    path = getattr(attachment, "path", None)
+    path = None
+    availability = getattr(attachment, "availability", None)
     state = classify_state(
         path=path,
         size_bytes=size_bytes,
         mime_type=mime_type,
+        availability=availability,
     )
     return {
         "attachment_id": aid,
@@ -130,8 +152,10 @@ def attachment_to_envelope(
         "name": _attachment_name(attachment),
         "mime_type": mime_type if isinstance(mime_type, str) else None,
         "size_bytes": int(size_bytes) if isinstance(size_bytes, int) else None,
-        "path": path if isinstance(path, str) else None,
+        "path": None,
         "state": state,
+        "availability": _availability_payload(availability),
+        "can_fetch": bool(getattr(availability, "can_fetch", False)),
     }
 
 
