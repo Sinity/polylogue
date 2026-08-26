@@ -557,6 +557,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify consumer-reachability",
+        "verification",
+        "Require newly added modules, tables, and tools to have production consumers.",
+        "devtools.consumer_reachability",
+        use_when="Run the fail-closed incremental surface-consumer gate used by quick verification and pre-push.",
+        examples=(
+            "devtools verify consumer-reachability",
+            "devtools verify consumer-reachability --base SHA --head SHA",
+        ),
+    ),
+    CommandSpec(
         "verify timestamp-doctrine",
         "verification",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
