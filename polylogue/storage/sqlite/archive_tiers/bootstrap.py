@@ -1,4 +1,7 @@
-"""Fresh bootstrap helpers for archive databases."""
+"""Fresh bootstrap helpers for archive databases.
+
+Writer module: ops.
+"""
 
 from __future__ import annotations
 
