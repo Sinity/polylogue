@@ -301,7 +301,7 @@ def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
     send_error, _ = capture_responses(handler)
     handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
-    handler._serve_webui_session_read = lambda _session_id: None  # type: ignore[method-assign]
+    handler._serve_webui_session_read = lambda session_id: None  # type: ignore[method-assign]
     handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
     handler._serve_attachment_library_page = lambda: None  # type: ignore[method-assign]
 
