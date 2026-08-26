@@ -120,6 +120,9 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+    limit: int | None = None
+    offset: int = 0
+    next_offset: int | None = None
 
 
 class MCPContextDeliveryPayload(SurfacePayloadModel):

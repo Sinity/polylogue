@@ -388,7 +388,7 @@ def _workspace_payload(row: dict[str, str]) -> Any:
     )
 
 
-async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limit: int | None) -> str:
+async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limit: int | None, offset: int = 0) -> str:
     """``query(projection=<personal-state kind>, ...)`` -- list durable personal-state records.
 
     Thin dispatch onto the already-live, already-tested ``Polylogue`` list
@@ -425,7 +425,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                 )
                 for row in rows
             )
-            mark_page, mark_total, mark_offset, mark_next_offset = page_items(mark_items, limit=clamped_limit, offset=0)
+            mark_page, mark_total, mark_offset, mark_next_offset = page_items(
+                mark_items, limit=clamped_limit, offset=offset
+            )
             return hooks.json_payload(
                 MCPUserMarkListPayload(
                     items=mark_page,
@@ -452,7 +454,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                 for row in rows
             )
             annotation_page, annotation_total, annotation_offset, annotation_next_offset = page_items(
-                annotation_items, limit=clamped_limit, offset=0
+                annotation_items, limit=clamped_limit, offset=offset
             )
             return hooks.json_payload(
                 MCPUserAnnotationListPayload(
@@ -467,7 +469,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         if projection == "saved_views":
             rows = await poly.list_views()
             view_items = tuple(_saved_view_payload(row) for row in rows)
-            view_page, view_total, view_offset, view_next_offset = page_items(view_items, limit=clamped_limit, offset=0)
+            view_page, view_total, view_offset, view_next_offset = page_items(
+                view_items, limit=clamped_limit, offset=offset
+            )
             return hooks.json_payload(
                 MCPSavedViewListPayload(
                     items=view_page,
@@ -481,7 +485,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         if projection == "recall_packs":
             rows = await poly.list_recall_packs()
             pack_items = tuple(_recall_pack_payload(row) for row in rows)
-            pack_page, pack_total, pack_offset, pack_next_offset = page_items(pack_items, limit=clamped_limit, offset=0)
+            pack_page, pack_total, pack_offset, pack_next_offset = page_items(
+                pack_items, limit=clamped_limit, offset=offset
+            )
             return hooks.json_payload(
                 MCPRecallPackListPayload(
                     items=pack_page,
@@ -496,7 +502,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
             rows = await poly.list_workspaces()
             workspace_items = tuple(_workspace_payload(row) for row in rows)
             workspace_page, workspace_total, workspace_offset, workspace_next_offset = page_items(
-                workspace_items, limit=clamped_limit, offset=0
+                workspace_items, limit=clamped_limit, offset=offset
             )
             return hooks.json_payload(
                 MCPReaderWorkspaceListPayload(
@@ -520,24 +526,31 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                 }
                 for correction in corrections
             ]
-            correction_page = all_correction_items[:clamped_limit]
-            correction_next_offset = len(correction_page) if len(correction_page) < len(all_correction_items) else None
+            correction_page, correction_total, correction_offset, correction_next_offset = page_items(
+                all_correction_items, limit=clamped_limit, offset=offset
+            )
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
                         "corrections": correction_page,
-                        "total": len(all_correction_items),
+                        "total": correction_total,
                         "limit": clamped_limit,
-                        "offset": 0,
+                        "offset": correction_offset,
                         "next_offset": correction_next_offset,
                     }
                 )
             )
 
         assert projection == "blackboard", f"unhandled personal-state projection: {projection}"
-        notes = await poly.list_blackboard_notes(limit=clamped_limit)
-        note_items = tuple(blackboard_note_payload(note) for note in notes)
-        return hooks.json_payload(MCPBlackboardNoteListPayload(items=note_items, total=len(note_items)))
+        notes = await poly.list_blackboard_notes(limit=1_000_000)
+        note_page, note_total, note_offset, note_next_offset = page_items(
+            tuple(blackboard_note_payload(note) for note in notes), limit=clamped_limit, offset=offset
+        )
+        return hooks.json_payload(
+            MCPBlackboardNoteListPayload(
+                items=note_page, total=note_total, limit=clamped_limit, offset=note_offset, next_offset=note_next_offset
+            )
+        )
 
 
 async def _query_insight_projection(
@@ -647,6 +660,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         limit: int | None = None,
         projection: str = "default",
         continuation: str | None = None,
+        offset: int | None = None,
         origin: str | None = None,
         tag: str | None = None,
         repo: str | None = None,
@@ -677,7 +691,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``projection`` also accepts durable personal-state kinds --
         ``"marks"``, ``"annotations"``, ``"saved_views"``, ``"recall_packs"``,
         ``"workspaces"``, ``"corrections"``, ``"blackboard"`` -- each listing
-        that record kind (unfiltered, ``limit``-bounded, offset fixed at 0).
+        that record kind (unfiltered, ``limit``-bounded, offset-paginated).
 
         ``projection="postmortem"``/``"pathologies"`` compile a distilled
         postmortem bundle / pathology-finding report over the session scope
@@ -687,8 +701,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
         by the same origin/since/until filters.
 
-        Continuation is not yet implemented for any of these non-default
-        projections.
+        Personal-state continuations are decimal offsets, matching the
+        ``next_offset`` returned in each page.
         """
 
         async def run() -> str:
@@ -745,13 +759,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
             if projection in _PERSONAL_STATE_PROJECTIONS:
-                if continuation is not None:
+                try:
+                    page_offset = int(continuation) if continuation is not None else (offset or 0)
+                except ValueError:
                     return hooks.error_json(
-                        f"query(projection={projection!r}) does not support continuation yet",
-                        code="invalid_continuation",
-                        tool="query",
+                        "personal-state continuation must be an offset", code="invalid_continuation"
                     )
-                return await _query_personal_state(hooks, projection, limit=limit)
+                if page_offset < 0:
+                    return hooks.error_json("offset must be non-negative", code="invalid_argument")
+                return await _query_personal_state(hooks, projection, limit=limit, offset=page_offset)
 
             if projection in _INSIGHT_PROJECTIONS:
                 if continuation is not None:

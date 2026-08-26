@@ -1766,7 +1766,11 @@ def _emit_daemon_list_payload(
         if isinstance(item, Mapping)
     ]
     total = _object_int(payload.get("total") or len(items))
-    next_offset = offset + limit if total > offset + limit else None
+    # The daemon may clamp the requested limit.  Continue from the number it
+    # actually returned, otherwise a request for 5000 against a 1000 cap can
+    # incorrectly render the first page as complete.
+    effective_limit = _object_int(payload.get("limit") or len(items) or limit)
+    next_offset = offset + len(items) if total > offset + len(items) else None
     total_unit = payload.get("total_unit")
     envelope: dict[str, object] = {
         "mode": "list",
@@ -1774,7 +1778,7 @@ def _emit_daemon_list_payload(
         "items": items,
         "total": total,
         "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
-        "limit": limit,
+        "limit": effective_limit,
         "offset": offset,
         "next_offset": next_offset,
         "next_cursor": None,
