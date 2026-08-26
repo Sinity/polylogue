@@ -809,7 +809,9 @@ class PolylogueInsightsMixin:
     async def find_abandoned_sessions(
         self,
         *,
+        origin: str | None = None,
         since: str | None = None,
+        until: str | None = None,
         repo_path: str | None = None,
         min_severity: str = "question_left",
         limit: int = 20,
@@ -820,7 +822,9 @@ class PolylogueInsightsMixin:
         """
         from polylogue.insights.archive_rollups import abandoned_session_items
 
-        profiles = await self.list_session_profile_insights(SessionProfileInsightQuery(since=since, limit=None))
+        profiles = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        )
         items = abandoned_session_items(profiles, min_severity=min_severity, repo_path=repo_path)
         return {"total": len(items), "items": items[:limit]}
 

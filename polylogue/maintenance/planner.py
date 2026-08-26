@@ -557,6 +557,22 @@ def execute_backfill(
                 break
 
     started_at = datetime.now(timezone.utc).isoformat()
+    from polylogue.maintenance.registry import persist_operation_snapshot
+
+    persist_operation_snapshot(
+        config,
+        BackfillOperation(
+            operation_id=operation_id,
+            kind=BackfillKind.DERIVED_REBUILD,
+            targets=resolved_names,
+            status=OperationStatus.RUNNING,
+            progress=0.0,
+            started_at=started_at,
+            scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            reason=reason,
+        ),
+        dry_run=dry_run,
+    )
 
     try:
         repair_targets = tuple(n for n in resolved_names if n in SAFE_REPAIR_TARGETS)
@@ -569,6 +585,7 @@ def execute_backfill(
             dry_run=dry_run,
             preview_counts=preview,
             targets=resolved_names,
+            scope_filter=effective_filter,
         )
 
         completed_at = datetime.now(timezone.utc).isoformat()
@@ -584,7 +601,7 @@ def execute_backfill(
             success=all_success,
         )
 
-        return BackfillOperation(
+        result = BackfillOperation(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
@@ -599,6 +616,8 @@ def execute_backfill(
             reason=reason,
             metrics={"repaired_count": float(total_repaired)},
         )
+        persist_operation_snapshot(config, result, dry_run=dry_run)
+        return result
     except Exception as exc:
         logger.exception(
             "backfill_failed",
@@ -606,7 +625,7 @@ def execute_backfill(
             targets=resolved_names,
             error=str(exc),
         )
-        return BackfillOperation(
+        result = BackfillOperation(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
@@ -626,6 +645,8 @@ def execute_backfill(
                 ]
             ),
         )
+        persist_operation_snapshot(config, result, dry_run=dry_run)
+        return result
 
 
 def _derive_invalidation_reason(status: object) -> InvalidationReason | None:

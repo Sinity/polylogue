@@ -754,6 +754,8 @@ class MCPMutationStatusPayload(SurfacePayloadModel):
     index_exists: bool | None = None
     indexed_messages: int | None = None
     session_count: int | None = None
+    scope: str | None = None
+    scope_note: str | None = None
     outcome: str | None = None
     """Tag idempotency outcome: ``added``, ``no_op``, ``removed``, or ``not_present``."""
 
