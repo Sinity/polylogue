@@ -45,6 +45,11 @@ def install_native_host(
             handle.write("\n")
         os.chmod(temporary, 0o600)
         os.replace(temporary, target)
+        directory = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
