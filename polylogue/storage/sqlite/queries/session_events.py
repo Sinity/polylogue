@@ -42,6 +42,11 @@ def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
         source_message_provider_id=row["source_message_provider_id"],
         raw_id=None,
         materializer_version=1,
+        boundary_start_position=(
+            int(row["boundary_start_position"]) if row["boundary_start_position"] is not None else None
+        ),
+        boundary_end_position=(int(row["boundary_end_position"]) if row["boundary_end_position"] is not None else None),
+        boundary_message_id=(MessageId(row["boundary_message_id"]) if row["boundary_message_id"] is not None else None),
     )
 
 

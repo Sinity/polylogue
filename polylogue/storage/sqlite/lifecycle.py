@@ -1040,6 +1040,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # derived tier from durable evidence.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=76,
+        # Compaction boundary ranges and summary identities are parser-derived
+        # values. Existing index rows require fresh re-ingest.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

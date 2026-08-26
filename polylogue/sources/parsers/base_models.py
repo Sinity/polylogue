@@ -430,6 +430,9 @@ class ParsedSessionEvent(BaseModel):
         default=None,
         validation_alias=AliasChoices("source_message_provider_id", "source_message_id"),
     )
+    boundary_start_position: int | None = None
+    boundary_end_position: int | None = None
+    boundary_message_position: int | None = Field(default=None, exclude=True)
 
 
 class ParsedSession(BaseModel):

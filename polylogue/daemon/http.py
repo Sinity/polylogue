@@ -4582,6 +4582,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
 
             payload = self._sync_run(_get)
+        elif view == "effective_context":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get_effective(poly: Polylogue) -> object | None:
+                messages = await poly.get_effective_context(
+                    conv_id,
+                    at_position=(
+                        self._get_int(params, "at_position", 0)
+                        if self._get_param(params, "at_position") is not None
+                        else None
+                    ),
+                )
+                if messages is None:
+                    return None
+                return {"session_id": conv_id, "messages": messages}
+
+            payload = self._sync_run(_get_effective)
         else:
 
             async def _get(poly: Polylogue) -> object | None:

@@ -403,6 +403,7 @@ def _read_view_option_values(
     *,
     limit: int | None,
     offset: int,
+    at_position: int | None,
     full: bool,
     related_limit: int,
     max_sessions: int,
@@ -418,6 +419,7 @@ def _read_view_option_values(
     return {
         "limit": limit,
         "offset": offset,
+        "at_position": at_position,
         "full": full,
         "related_limit": related_limit,
         "max_sessions": max_sessions,
@@ -949,6 +951,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 @click.option("--full", "full", is_flag=True, help="Read a full single-session body for views that paginate.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
+@click.option("--at-position", type=int, default=None, help="Message position for --view effective_context.")
 @click.option(
     "--window-hours",
     type=int,
@@ -1037,6 +1040,7 @@ def read_verb(
     first_only: bool,
     show_spec: bool = False,
     show_views: bool = False,
+    at_position: int | None = None,
     ref: str | None = None,
 ) -> None:
     """Read matched sessions.
@@ -1323,6 +1327,7 @@ def read_verb(
                 _read_view_option_values(
                     limit=limit,
                     offset=offset,
+                    at_position=at_position,
                     full=full,
                     related_limit=related_limit,
                     max_sessions=max_sessions,
