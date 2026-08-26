@@ -700,18 +700,10 @@ def _enrich_parsed_sessions(
     if context.raw_record.sidecar_snapshot is not None:
         sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot)
         return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
-    source_path = context.raw_record.source_path
-    if not source_path:
-        return parsed_sessions, False
-    try:
-        sidecar_data = spec.discover_sidecars([Path(source_path)])
-        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
-    except Exception:
-        logger.exception(
-            "assembly enrichment failed for %s; keeping unenriched sessions",
-            context.raw_record.raw_id,
-        )
-        return parsed_sessions, True
+    # Workers are forbidden from consulting the ambient source tree.  The
+    # acquisition cut carries an optional, generation-bound snapshot; a
+    # missing snapshot is ordinary absence, not permission to rediscover it.
+    return parsed_sessions, False
 
 
 def _materialize_parsed_sessions(

@@ -58,7 +58,6 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
         referent_column="hook_event_id",
         rekeyable_legacy_ref=True,
     ),
-    BlobOwner("source", "history_sidecars", ref_type="sidecar", referent_column="sidecar_id"),
 )
 
 

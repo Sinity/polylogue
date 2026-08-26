@@ -84,7 +84,6 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "blob_refs",
         "raw_artifacts",
         "raw_hook_events",
-        "history_sidecars",
     ),
     ArchiveTier.INDEX: (
         "sessions",
