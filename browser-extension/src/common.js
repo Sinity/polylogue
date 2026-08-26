@@ -53,6 +53,34 @@
     return (node?.innerText || node?.textContent || "").replace(/\s+\n/g, "\n").trim();
   }
 
+  const ARCHIVE_ORIGINS = {
+    chatgpt: "chatgpt-export",
+    "claude-ai": "claude-ai-export",
+    claude: "claude-ai-export",
+  };
+
+  function identityObservation({ provider, conversationId, messageId, parentMessageId = null, text = null,
+    ordinal = null, adapterName, adapterVersion = null, fidelity = "unknown", degradedReason = null }) {
+    const origin = ARCHIVE_ORIGINS[provider] || "unknown-export";
+    const observation = {
+      origin,
+      provider_conversation_id: conversationId || null,
+      provider_message_id: messageId || null,
+      parent_provider_message_id: parentMessageId,
+      content_fingerprint: text ? `sha256:${fnv1a(String(text).replace(/\s+/g, " ").trim())}` : null,
+      dom_ordinal: Number.isInteger(ordinal) ? ordinal : null,
+      adapter_name: adapterName || "",
+      adapter_version: adapterVersion,
+      // Provider adapters may supply a provider timestamp when available.
+      // Do not stamp wall-clock time here: identical native snapshots must
+      // produce identical envelopes and deduplication hashes.
+      observed_at: null,
+      fidelity,
+      degraded_reason: degradedReason,
+    };
+    return observation;
+  }
+
   function randomHex(length) {
     const bytes = new Uint8Array(Math.ceil(length / 2));
     if (globalThis.crypto?.getRandomValues) {
@@ -154,7 +182,8 @@
           // it, silently flattening every native capture's tool call/result
           // structure back down to prose (polylogue-ah21 regressed).
           blocks: Array.isArray(turn.blocks) ? turn.blocks : [],
-          provider_meta: turn.provider_meta || {}
+          provider_meta: turn.provider_meta || {},
+          ...(turn.identity_observation ? { identity_observation: turn.identity_observation } : {}),
         })),
         attachments: Array.isArray(attachments) ? attachments : []
       }
@@ -190,6 +219,7 @@
     refreshArchiveState,
     sendCapture,
     temporarySessionId,
-    visibleText
+    visibleText,
+    identityObservation,
   };
 })();

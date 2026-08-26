@@ -536,6 +536,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 replaced=result.replaced,
                 deduplicated=result.deduplicated,
                 capture_instance_id=result.capture_instance_id,
+                accepted_identities=list(result.accepted_identities),
             ).model_dump(mode="json"),
         )
 

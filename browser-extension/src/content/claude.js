@@ -207,7 +207,18 @@
             model: message.model || null,
             sender: message.sender || message.role || null,
             capture_source: "claude_chat_conversations_api"
-          }
+          },
+          identity_observation: window.polylogueCapture.identityObservation({
+            provider: "claude-ai",
+            conversationId: payload?.uuid || conversationIdFromUrl(),
+            messageId: message.uuid || message.id ? String(message.uuid || message.id) : null,
+            parentMessageId: message.parent_message_uuid || message.parent_uuid || null,
+            text,
+            adapterName: nativeAdapterName,
+            adapterVersion: chrome.runtime.getManifest().version,
+            fidelity: message.uuid || message.id ? "native" : "unknown",
+            degradedReason: message.uuid || message.id ? null : "missing_message_id",
+          })
         };
       })
       .filter(Boolean);
@@ -320,7 +331,7 @@
     }
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     if (!captureResult?.ok) {
-      messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });
+      messageLayer?.reportOutcome({ ok: false });
       return {
         ok: false,
         envelope: finalEnvelope,
@@ -333,7 +344,7 @@
       "claude-ai",
       finalEnvelope.session.provider_session_id
     );
-    messageLayer?.reportOutcome({ ok: true, turnCount: finalEnvelope.session.turns.length });
+    messageLayer?.reportOutcome({ ok: true, acceptedIdentities: captureResult.accepted_identities });
     return { ok: true, envelope: finalEnvelope, captureResult, archiveState };
   }
 
@@ -346,6 +357,12 @@
   if (window.polylogueMessageLayer) {
     messageLayer = window.polylogueMessageLayer.mount({
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
+      identityForNode: (node) => window.polylogueCapture.identityObservation({
+        provider: "claude-ai", conversationId: conversationIdFromUrl(),
+        messageId: node.getAttribute("data-message-id") || node.getAttribute("data-turn-id"),
+        text: node.innerText || node.textContent || "", adapterName: nativeAdapterName,
+        fidelity: node.getAttribute("data-message-id") || node.getAttribute("data-turn-id") ? "native" : "unknown",
+      }),
       onSave: () => {
         capture("message_layer_save").catch(() => undefined);
       },
