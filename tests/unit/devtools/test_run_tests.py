@@ -126,6 +126,54 @@ def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:
     assert "devtools verify" in err
 
 
+def test_outliers_aggregate_phases_and_report_test_and_file_shares(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report_dir = tmp_path / run_tests.PYTEST_REPORT_DIR
+    report_dir.mkdir(parents=True)
+    (report_dir / "last-pytest-parallel-1-of-3.json").write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {
+                        "nodeid": "tests/unit/slow.py::test_a",
+                        "setup": {"duration": 1.0},
+                        "call": {"duration": 9.0},
+                        "teardown": {"duration": 2.0},
+                    },
+                    {
+                        "nodeid": "tests/unit/slow.py::test_b",
+                        "setup": {"duration": 0.5},
+                        "call": {"duration": 3.0},
+                        "teardown": {"duration": 0.5},
+                    },
+                    {
+                        "nodeid": "tests/unit/fast.py::test_c",
+                        "setup": {"duration": 0.1},
+                        "call": {"duration": 1.0},
+                        "teardown": {"duration": 0.1},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_tests.print_outliers(2, root=tmp_path) == 0
+    output = capsys.readouterr().out
+    assert "Full-run receipts: 1; tests: 3; serial time: 17.20s" in output
+    assert "Top 2 slowest tests (93.0% of serial time):" in output
+    assert "tests/unit/slow.py::test_a" in output
+    assert "Top 2 slowest files (100.0% of serial time):" in output
+    assert "tests/unit/slow.py" in output
+
+
+def test_parse_outliers_supports_default_and_explicit_limits() -> None:
+    assert run_tests._parse_outliers(["--outliers"]) == (10, [])
+    assert run_tests._parse_outliers(["--outliers", "25"]) == (25, [])
+    assert run_tests._parse_outliers(["--outliers=3"]) == (3, [])
+
+
 def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 

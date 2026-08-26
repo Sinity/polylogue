@@ -507,11 +507,10 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   semantic/media/language, is_error, exit_code — excluding
   session_id/message_id/position/tool_id) so a stored block citation anchor
   survives fork-position shift, re-ingest renumbering, and provider tool-id
-  regeneration. The column itself is live and written on every block. The
-  helper module that formatted and resolved citation anchors over it was
-  deleted 2026-07-30 as a two-sided gap -- nothing ever emitted an anchor, so
-  nothing could resolve one -- and that wiring is deferred to the webui
-  citation-verifier work (polylogue-bby.11).
+  regeneration. The column itself is live and written on every block. No
+  citation-anchor helper exists over it (nothing emits anchors, nothing
+  resolves them); that wiring is deferred to the webui citation-verifier
+  work (polylogue-bby.11).
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
@@ -904,17 +903,13 @@ SQLite WAL behavior for the archive database (see also
   accidental writes at SQL parse time instead of contending for the
   write lock and timing out.
 
-### Relationship to #1602 (autocheckpoint revert)
+### WAL growth bounds
 
-A previous PR (3c5cc1a0) lowered the autocheckpoint threshold to 4 MB
-to shrink the symptom of unbounded WAL growth under reader-blocked
-TRUNCATE checkpoints. That tightening was reverted in #1602 once the
-real fix landed: the autocheckpoint threshold is back to 40 MB
-(`WAL_AUTOCHECKPOINT_PAGES = 10000`), and the new
-`journal_size_limit` cap from #1614 is what bounds WAL growth
-without paying the per-commit cost of a tighter autocheckpoint
-threshold. The two work together — autocheckpoint is the routine
-trim, journal_size_limit is the post-blocked-window shrink.
+The autocheckpoint threshold is 40 MB (`WAL_AUTOCHECKPOINT_PAGES = 10000`)
+and `journal_size_limit` bounds WAL growth after reader-blocked TRUNCATE
+windows. The two work together — autocheckpoint is the routine trim,
+journal_size_limit is the post-blocked-window shrink; do not re-tighten
+autocheckpoint to fight WAL growth (per-commit cost, symptom not cause).
 
 ### Daemon-side periodic checkpoint
 
@@ -1193,9 +1188,8 @@ attributable to a specific convergence cycle.
 (`text/plain; version=0.0.4`). Implementation lives in
 `polylogue/daemon/metrics.py`; the route is wired in
 `polylogue/daemon/http.py` alongside `/healthz/*` so all three scrape
-surfaces share the same unauthenticated posture (Prometheus and
-kubernetes/docker healthchecks cannot supply credentials, and the
-daemon binds to loopback by default).
+surfaces share the same unauthenticated posture (scrapers cannot supply
+credentials; the daemon binds to loopback by default).
 
 Series are derived from existing daemon state tables via
 `open_readonly_connection` — `live_ingest_attempt` (totals by status,
@@ -1204,9 +1198,8 @@ in-flight gauge, recent-attempt duration min/mean/max), unresolved
 from `active_fts_triggers_sync`. The same scrape also exposes embedding
 backlog counts and the latest `embedding_catchup_runs` progress row so
 semantic-search catch-up is visible in normal daemon dashboards without
-running an operator CLI command. Missing tables degrade to zero samples
-rather than 5xx-ing, so a fresh archive still emits the discovery
-skeleton.
+running an operator CLI command. Missing tables degrade to zero samples rather than 5xx-ing on a fresh
+archive.
 
 Archive layout observability is emitted on the same scrape. The
 `polylogue_archive_storage_layout` gauge mirrors `polylogue config paths`

@@ -22,8 +22,8 @@ change belongs or which production route must be exercised.
 - Surfaces should not import substrate internals directly, but this is a
   **ratchet, not a clean boundary**: `cli`/`mcp`/`api`/`daemon` each carry a
   large pre-existing baseline of direct substrate imports
-  (`docs/plans/layering-surface-baseline.json`, 311 entries as of
-  polylogue-2ciy) that `devtools verify layering` exempts by exact
+  (`docs/plans/layering-surface-baseline.json`) that
+  `devtools verify layering` exempts by exact
   `(target, file, import)` triple; anything not already in that baseline
   fails the check, so the count can shrink over time but never grow
   unnoticed. `devtools verify layering` runs in the required per-PR `lint`

@@ -28,8 +28,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
-from polylogue.product.continuity_scenarios import (
+from devtools.continuity_scenarios import (
     CONTINUITY_SCENARIOS,
     ContinuityAttemptCurriculumProjection,
     ContinuityAttemptGrade,
@@ -42,6 +41,7 @@ from polylogue.product.continuity_scenarios import (
     ContinuityScenarioSpec,
     continuity_scenario,
 )
+from polylogue.core.json import JSONDocument, JSONValue, require_json_document, require_json_value
 
 if TYPE_CHECKING:
     from mcp import ClientSession

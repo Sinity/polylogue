@@ -4,9 +4,7 @@ For a change-oriented map from tasks to owning packages and verification, see
 [Code Navigation](code-navigation.md). For the target shape, guardrails, and
 architectural decision log, see [Architecture Spine](architecture-spine.md).
 Current sequencing and active workstreams live in the external task authority,
-not in this repository. The former `docs/execution-plan.md` was retired; its
-historical task data remains available only as pinned Git evidence. For the
-vocabulary split between
+not in this repository. For the vocabulary split between
 provider-wire identity, public origin, source roots, capture mode, parser
 provenance, and refs, see `docs/provider-origin-identity.md`.
 
@@ -305,14 +303,8 @@ Polylogue integrates with AI coding agents via hook scripts that fire on session
 lifecycle events. See [docs/hooks.md](hooks.md) for the full event catalog,
 per-event use cases, sidecar layout, and recommended starter set.
 
-- **Claude Code**: 16 hook events available (SessionStart, Setup,
-  UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure,
-  PermissionRequest, PermissionDenied, Notification, Elicitation,
-  ElicitationResult, CwdChanged, FileChanged, WorktreeCreate, SubagentStart,
-  Stop). See [#802](https://github.com/Sinity/polylogue/issues/802) and
-  [#1213](https://github.com/Sinity/polylogue/issues/1213).
-- **Codex**: 6 hook events available (SessionStart, UserPromptSubmit,
-  PreToolUse, PostToolUse, PermissionRequest, Stop).
+- Claude Code and Codex hook integrations; the per-provider event catalog
+  lives in [docs/hooks.md](hooks.md) — do not restate it here.
 
 Hook scripts call `polylogue-hook` which ingests session data at event
 granularity, providing 100% data coverage vs. ~79% from post-hoc JSONL
@@ -324,9 +316,9 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 
 ## Embedding Pipeline
 
-Vector embeddings for semantic search, powered by the configured Voyage AI
-recipe (`voyage-4-lite` and 1024 dimensions by default) via SQLite-vec (`vec0`
-virtual table):
+Vector embeddings for semantic search, powered by the configured embedding
+recipe (provider/model/dimensions live in configuration, not here) via
+SQLite-vec (`vec0` virtual table):
 
 - **Storage**: `message_embeddings` (vec0) and `message_embeddings_meta` are
   content-addressed, keyed by `embedding_input_hash = SHA-256(model,
@@ -342,23 +334,13 @@ virtual table):
   bounded windows and records catch-up progress; when disabled, no embedding
   provider calls are made ([#1503](https://github.com/Sinity/polylogue/issues/1503)).
 
-### Activation flow (#1217)
+### Activation flow
 
-The `polylogue ops embed` group is the operator-facing onboarding surface:
-
-| Command | Purpose |
-|---------|---------|
-| `polylogue ops embed preflight` | Count pending messages + Voyage cost estimate without contacting the provider. |
-| `polylogue ops embed enable` | Verify `sqlite-vec`, capture the Voyage key, print the cost preflight, and on confirmation persist `[embedding] enabled = true` (and the API key unless `--no-store-key`) into the user `polylogue.toml`. |
-| `polylogue ops embed backfill` | Run a bounded, resumable embedding batch with per-session cost feedback; honours `embedding_max_cost_usd` as a soft cap and persists run progress. |
-| `polylogue ops embed disable` | Flip `embedding.enabled = false` without dropping existing embeddings — previously-embedded messages remain queryable via `--similar`. |
-| `polylogue ops embed status` | Coverage / freshness / configured model+cap / latest catch-up / next-action snapshot via `embedding_status_payload`. Use `--detail` for exact pending-message and retrieval-band accounting. |
-
-The CLI orchestrates substrate primitives under
-`polylogue.storage.embeddings` (`iter_pending_sessions`,
-`embed_session_sync`, `embedding_catchup_runs`) and the cost constants
-`ESTIMATED_TOKENS_PER_MESSAGE` / `VOYAGE_4_COST_PER_1M_TOKENS` from
-`polylogue.storage.search_providers.sqlite_vec_support`.
+The `polylogue ops embed` group is the operator-facing onboarding surface
+(preflight, enable, backfill, disable, status — see the generated CLI
+reference for the exact commands). The activation invariant: enabling is
+explicit and cost-previewed; disabling never drops existing embeddings; the
+CLI orchestrates substrate primitives under `polylogue.storage.embeddings`.
 
 ### Search defaults (#1217)
 
@@ -519,10 +501,9 @@ four ways, and `surfaces/payloads.py` is itself a large, growing module.
 Target topology (execute opportunistically alongside surface work, not as a
 big-bang move — recorded here so the direction is not re-litigated per PR):
 
-- `ui/` (the Textual TUI) is slated for deletion (polylogue-f94, decided
-  KILL by the operator 2026-07-03) — once that lands, `ui/` should hold only
-  the web-reader-adjacent assets, if anything, not compete with `daemon/`'s
-  web-shell.
+- `ui/` is frozen — no new adopters (importer set may only shrink); its
+  canonical-vs-migrate disposition is owned with 4p1's presentation
+  ownership (polylogue-4wqi2).
 - `rendering/` stays as the markdown/HTML string-building layer; it does
   not grow response-shaping logic that belongs in `surfaces/`.
 - `surfaces/` payload shaping is the target home for response models

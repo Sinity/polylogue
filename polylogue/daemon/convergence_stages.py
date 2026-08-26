@@ -1001,7 +1001,7 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
 
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
-        from polylogue.product.raw_authority import repair_materialization
+        from polylogue.maintenance.raw_authority import repair_materialization
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
         configured_root = archive_root or db_path.parent

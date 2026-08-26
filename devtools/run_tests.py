@@ -55,6 +55,8 @@ from devtools.verify_runs import (
 ROOT = Path(__file__).resolve().parent.parent
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
+PYTEST_PARALLEL_REPORT_PATTERN = "last-pytest-parallel-*.json"
+DEFAULT_OUTLIER_COUNT = 10
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_EVENTS_DIR = PYTEST_REPORT_DIR / "current-pytest-events"
@@ -99,6 +101,70 @@ class ManagedTestInterrupted(KeyboardInterrupt):
     def __init__(self, signum: int) -> None:
         super().__init__()
         self.signum = signum
+
+
+def _phase_duration(test: dict[str, Any]) -> float:
+    return sum(float((test.get(phase) or {}).get("duration", 0) or 0) for phase in ("setup", "call", "teardown"))
+
+
+def _format_duration(seconds: float) -> str:
+    return f"{seconds / 60:.1f}m" if seconds >= 60 else f"{seconds:.2f}s"
+
+
+def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
+    """Print slow tests and files from the latest full-run pytest reports."""
+    report_paths = sorted((root / PYTEST_REPORT_DIR).glob(PYTEST_PARALLEL_REPORT_PATTERN))
+    tests: list[tuple[str, str, float]] = []
+    for path in report_paths:
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        for test in report.get("tests", []):
+            if not isinstance(test, dict) or not isinstance(test.get("nodeid"), str):
+                continue
+            duration = _phase_duration(test)
+            tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
+    if not tests:
+        print(f"devtools test --outliers: no readable {PYTEST_PARALLEL_REPORT_PATTERN} receipts", file=sys.stderr)
+        return 2
+
+    serial_time = sum(duration for _nodeid, _filename, duration in tests)
+    slowest_tests = sorted(tests, key=lambda item: (-item[2], item[0]))[:limit]
+    file_totals: dict[str, float] = {}
+    for _nodeid, filename, duration in tests:
+        file_totals[filename] = file_totals.get(filename, 0.0) + duration
+    slowest_files = sorted(file_totals.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+    print(f"Full-run receipts: {len(report_paths)}; tests: {len(tests)}; serial time: {_format_duration(serial_time)}")
+    test_share = sum(duration for _nodeid, _filename, duration in slowest_tests) / serial_time * 100
+    print(f"Top {len(slowest_tests)} slowest tests ({test_share:.1f}% of serial time):")
+    for nodeid, _filename, duration in slowest_tests:
+        print(f"  {duration:8.2f}s ({duration / serial_time * 100:5.1f}%) {nodeid}")
+    file_share = sum(duration for _filename, duration in slowest_files) / serial_time * 100
+    print(f"Top {len(slowest_files)} slowest files ({file_share:.1f}% of serial time):")
+    for filename, duration in slowest_files:
+        print(f"  {duration:8.2f}s ({duration / serial_time * 100:5.1f}%) {filename}")
+    return 0
+
+
+def _parse_outliers(selection: list[str]) -> tuple[int | None, list[str]]:
+    if not selection or not selection[0].startswith("--outliers"):
+        return None, selection
+    option, _, inline_limit = selection[0].partition("=")
+    if option != "--outliers":
+        return None, selection
+    remaining = selection[1:]
+    value = inline_limit or (remaining.pop(0) if remaining and not remaining[0].startswith("-") else "")
+    try:
+        limit = int(value) if value else DEFAULT_OUTLIER_COUNT
+    except ValueError as exc:
+        raise ValueError("--outliers expects a positive integer") from exc
+    if limit < 1:
+        raise ValueError("--outliers expects a positive integer")
+    return limit, remaining
 
 
 def _raise_managed_interruption(_signum: int, _frame: object) -> None:
@@ -325,6 +391,13 @@ def _copy_focused_pytest_report(artifacts: PytestStepArtifacts) -> None:
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
+    try:
+        outlier_count, selection = _parse_outliers(selection)
+    except ValueError as exc:
+        sys.stderr.write(f"devtools test: {exc}\n")
+        return 2
+    if outlier_count is not None:
+        return print_outliers(outlier_count)
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
     try:
