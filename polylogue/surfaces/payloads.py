@@ -1057,6 +1057,13 @@ def _domain_values(
     return {surface_name: getattr(model, domain_name, None) for domain_name, surface_name in mask}
 
 
+def _session_terminal_state(session: Session) -> str:
+    """Read terminal state from the canonical derived session profile."""
+    from polylogue.archive.session.session_profile import build_session_profile
+
+    return build_session_profile(session).terminal_state
+
+
 def message_render_envelope_from_domain(
     message: Message,
     *,
@@ -1184,7 +1191,7 @@ def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnve
         origin=role_label(session.origin),
         title_source=session.title_source.value if session.title_source else None,
         message_count=len(session.messages),
-        terminal_state=session.terminal_state,
+        terminal_state=_session_terminal_state(session),
         total_cost_usd=session.total_cost_usd,
         cost_provenance=getattr(session, "cost_provenance", None),
         target_ref=TargetRefPayload.session(session_id),
@@ -1227,9 +1234,19 @@ def session_detail_envelope_from_domain(
 ) -> SessionDetailEnvelope:
     if content_projection is not None and content_projection.filters_content():
         session = session.with_content_projection(content_projection)
-    summary = session_summary_envelope_from_domain(session)
+    session_id = str(session.id)
+    values = _domain_values(session, _SESSION_LIST_MASK)
+    values.update(
+        title=session.display_title,
+        origin=role_label(session.origin),
+        title_source=session.title_source.value if session.title_source else None,
+        message_count=len(session.messages),
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+    )
     return SessionDetailEnvelope(
-        **summary.model_dump(),
+        **values,
         messages=tuple(message_render_envelope_from_domain(msg, session_id=session.id) for msg in session.messages),
     )
 
@@ -1255,7 +1272,7 @@ def session_list_envelope_from_domain(
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
         message_count=len(session.messages),
-        terminal_state=session.terminal_state,
+        terminal_state=_session_terminal_state(session),
         total_cost_usd=session.total_cost_usd,
         cost_provenance=getattr(session, "cost_provenance", None),
         tags=tuple(session.tags),

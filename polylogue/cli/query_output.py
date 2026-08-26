@@ -34,7 +34,7 @@ from polylogue.cli.query_stats import (
     emit_structured_stats,
     output_stats_sql,
 )
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.payloads import (
@@ -415,7 +415,7 @@ def summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument
         summary,
         message_count=message_count,
     ).selected()
-    payload.update(session_row(summary, message_count=message_count).as_dict())
+    payload.update(json_document(session_row(summary, message_count=message_count).as_dict()))
     return payload
 
 

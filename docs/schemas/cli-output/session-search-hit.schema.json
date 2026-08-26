@@ -243,6 +243,18 @@
           "default": null,
           "title": "Anchor"
         },
+        "cost_provenance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Provenance"
+        },
         "created_at": {
           "anyOf": [
             {
@@ -276,6 +288,18 @@
           "title": "Origin",
           "type": "string"
         },
+        "relative_time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relative Time"
+        },
         "target_ref": {
           "anyOf": [
             {
@@ -286,6 +310,18 @@
             }
           ],
           "default": null
+        },
+        "terminal_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal State"
         },
         "title": {
           "default": null,
@@ -327,6 +363,18 @@
           ],
           "default": null,
           "title": "Title Source"
+        },
+        "total_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Cost Usd"
         },
         "updated_at": {
           "anyOf": [

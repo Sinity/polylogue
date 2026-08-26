@@ -40,7 +40,6 @@ def session_to_summary(session: Session) -> SessionSummary:
         branch_type=session.branch_type,
         message_count=len(session.messages),
         dialogue_count=sum(1 for message in session.messages if message.is_dialogue),
-        reported_cost_usd=session.reported_cost_usd,
         total_cost_usd=session.reported_cost_usd,
         cost_provenance="exact" if session.reported_cost_usd is not None else None,
     )

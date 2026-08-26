@@ -1321,6 +1321,30 @@ components:
           - type: 'null'
           default: null
           title: Updated At
+        terminal_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Terminal State
+        total_cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Total Cost Usd
+        cost_provenance:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Cost Provenance
+        relative_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Relative Time
       required:
       - id
       - origin
@@ -1611,6 +1635,30 @@ components:
           default: 0
           title: Message Count
           type: integer
+        terminal_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Terminal State
+        total_cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Total Cost Usd
+        cost_provenance:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Cost Provenance
+        relative_time:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Relative Time
         tags:
           default: []
           items:
