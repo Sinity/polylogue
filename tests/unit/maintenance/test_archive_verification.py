@@ -2303,9 +2303,10 @@ def test_chatgpt_conservation_excludes_documents_absent_from_the_index(tmp_path:
     report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
 
     check = _check(report, "chatgpt-content-conservation")
-    assert check.status is OutcomeStatus.OK
+    assert check.status is OutcomeStatus.ERROR
     assert check.evidence["documents_absent_from_index"] == 1
     assert check.evidence["documents_measured"] == 0
+    assert check.evidence["outcome_reason"] == "zero_candidate_overlap"
 
 
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
