@@ -379,6 +379,13 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     """Make focused collection independent of ambient pytest plugins/options."""
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
+    # A managed run launched from inside another pytest process (a test that
+    # subprocesses `devtools test`) inherits the enclosing xdist worker
+    # identity. The inner run is a fresh controller; a leaked worker id makes
+    # the progress plugin skip controller-side selection/summary receipts and
+    # the run fails closed despite collecting tests.
+    env.pop("PYTEST_XDIST_WORKER", None)
+    env.pop("PYTEST_CURRENT_TEST", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
 
