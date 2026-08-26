@@ -367,6 +367,20 @@ def _write_jsonl_manifest(path: Path, rows: list[dict[str, object]]) -> None:
             os.unlink(tmp_path)
 
 
+def _append_jsonl_manifest(path: Path, rows: list[dict[str, object]]) -> None:
+    """Append and fsync terminal outcomes to an already-prepared manifest."""
+    import json
+
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
+            handle.write("\n")
+        handle.flush()
+        import os
+
+        os.fsync(handle.fileno())
+
+
 def _checkpoint_index_tier(conn: sqlite3.Connection) -> None:
     try:
         row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -492,7 +506,7 @@ def apply_attachment_reacquisition(
         parser = _default_raw_session_parser(archive_root, blob_store.root)
         publisher = ArchiveBlobPublisher(source_db, blob_store.root, store=blob_store)
 
-        manifest_rows: list[dict[str, object]] = []
+        prepared_manifest_rows: list[dict[str, object]] = []
         errors: list[str] = []
         reacquired_writes: list[tuple[ReacquirableAttachment, str, int, str | None]] = []
         source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
@@ -517,9 +531,10 @@ def apply_attachment_reacquisition(
                 published_hash, _size = publisher.write_from_bytes(inline_bytes)
                 receipt_id = publisher.receipt_id(published_hash)
                 reacquired_writes.append((candidate, new_hash, len(inline_bytes), receipt_id))
-                manifest_rows.append(
+                prepared_manifest_rows.append(
                     {
-                        "action": "reacquired",
+                        "phase": "prepared",
+                        "action": "reacquire",
                         "attachment_id": candidate.attachment_id,
                         "raw_id": candidate.raw_id,
                         "session_id": candidate.session_id,
@@ -528,7 +543,7 @@ def apply_attachment_reacquisition(
                         "blob_hash": new_hash,
                         "byte_count": len(inline_bytes),
                         "blob_already_existed": existed_before,
-                        "compared_at_ms": int(time.time() * 1000),
+                        "prepared_at_ms": int(time.time() * 1000),
                         "tool_version": TOOL_VERSION,
                     }
                 )
@@ -537,17 +552,23 @@ def apply_attachment_reacquisition(
             source_conn.close()
 
         for item in unrecoverable:
-            manifest_rows.append(
+            prepared_manifest_rows.append(
                 {
-                    "action": "marked_unavailable",
+                    "phase": "prepared",
+                    "action": "mark_unavailable",
                     "attachment_id": item.attachment_id,
                     "reason": item.reason,
                     "old_status": "unfetched",
                     "new_status": "unavailable",
-                    "compared_at_ms": int(time.time() * 1000),
+                    "prepared_at_ms": int(time.time() * 1000),
                     "tool_version": TOOL_VERSION,
                 }
             )
+
+        # Persist the exact prepared intent before either durable tier is
+        # mutated. A crash after this point leaves an operator-visible record
+        # of the candidates that must be reconciled, rather than silent state.
+        _write_jsonl_manifest(manifest_path, prepared_manifest_rows)
 
         # Authoritative re-validation now that classification/publication is
         # done and we are about to take the write lock -- matches
@@ -560,6 +581,7 @@ def apply_attachment_reacquisition(
         reacquired_bytes = 0
         marked_unavailable_count = 0
         consumed_receipts: list[tuple[str | None, str]] = []
+        committed_manifest_rows: list[dict[str, object]] = []
         index_conn.execute("BEGIN IMMEDIATE")
         try:
             for candidate, new_hash, byte_count, receipt_id in reacquired_writes:
@@ -579,6 +601,21 @@ def apply_attachment_reacquisition(
                 consumed_receipts.append((receipt_id, new_hash))
                 reacquired_count += 1
                 reacquired_bytes += byte_count
+                committed_manifest_rows.append(
+                    {
+                        "phase": "committed",
+                        "action": "reacquired",
+                        "attachment_id": candidate.attachment_id,
+                        "raw_id": candidate.raw_id,
+                        "session_id": candidate.session_id,
+                        "old_status": "unfetched",
+                        "new_status": "acquired",
+                        "blob_hash": new_hash,
+                        "byte_count": byte_count,
+                        "committed_at_ms": int(time.time() * 1000),
+                        "tool_version": TOOL_VERSION,
+                    }
+                )
 
             for item in unrecoverable:
                 cursor = index_conn.execute(
@@ -591,6 +628,18 @@ def apply_attachment_reacquisition(
                 )
                 if cursor.rowcount == 1:
                     marked_unavailable_count += 1
+                    committed_manifest_rows.append(
+                        {
+                            "phase": "committed",
+                            "action": "marked_unavailable",
+                            "attachment_id": item.attachment_id,
+                            "reason": item.reason,
+                            "old_status": "unfetched",
+                            "new_status": "unavailable",
+                            "committed_at_ms": int(time.time() * 1000),
+                            "tool_version": TOOL_VERSION,
+                        }
+                    )
 
             quick_check = index_conn.execute("PRAGMA quick_check").fetchone()
             if quick_check is None or str(quick_check[0]).lower() != "ok":
@@ -617,7 +666,7 @@ def apply_attachment_reacquisition(
             finally:
                 source_write_conn.close()
 
-        _write_jsonl_manifest(manifest_path, manifest_rows)
+        _append_jsonl_manifest(manifest_path, committed_manifest_rows)
     finally:
         index_conn.close()
 
