@@ -409,7 +409,7 @@ def project_live_blob_hashes(
                 ):
                     continue
                 generation_filter = ""
-                params: tuple[object, ...] = (owner.ref_type,)
+                params = (owner.ref_type,)
                 if source_generation_id is not None and owner.table == "raw_sessions":
                     generation_filter = (
                         " AND EXISTS (SELECT 1 FROM source_items si "
