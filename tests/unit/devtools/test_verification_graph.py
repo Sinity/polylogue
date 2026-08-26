@@ -15,8 +15,8 @@ from devtools.verification_graph import (
 )
 
 
-def _identity(**overrides: object) -> str:
-    values: dict[str, object] = {name: f"{name}-value" for name in GRAPH_IDENTITY_INPUTS}
+def _identity(**overrides: str) -> str:
+    values: dict[str, str] = {name: f"{name}-value" for name in GRAPH_IDENTITY_INPUTS}
     values.update(overrides)
     return graph_identity(**values)
 
