@@ -5929,11 +5929,39 @@ def _write_repo_edges(
 
 def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     active_leaf_count = sum(1 for message in messages if message.is_active_leaf)
-    if active_leaf_count == 1 or not messages:
+    if not messages:
         return messages
+
+    normalized = messages
+    if active_leaf_count != 1:
+        normalized = [
+            message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
+            for position, message in enumerate(messages)
+        ]
+
+    # A provider may identify the active leaf without repeating the active-path
+    # bit on every inherited message. Resolve that evidence while lowering the
+    # parsed session, where the parent ids are still available. Unknown path
+    # values are filled only on the leaf's parent chain. The leaf evidence is
+    # authoritative for that chain; an explicit False sibling remains provider
+    # evidence and is never inferred at read time.
+    active_leaf = next((message for message in normalized if message.is_active_leaf), None)
+    if active_leaf is None or not active_leaf.provider_message_id:
+        return normalized
+    by_provider_id = {message.provider_message_id: message for message in normalized if message.provider_message_id}
+    active_path_ids: set[str] = set()
+    cursor: ParsedMessage | None = active_leaf
+    while cursor is not None and cursor.provider_message_id not in active_path_ids:
+        active_path_ids.add(cursor.provider_message_id)
+        parent_id = cursor.parent_message_provider_id
+        cursor = by_provider_id.get(parent_id) if parent_id is not None else None
+    if not active_path_ids:
+        return normalized
     return [
-        message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
-        for position, message in enumerate(messages)
+        message.model_copy(update={"is_active_path": True})
+        if message.provider_message_id in active_path_ids
+        else message
+        for message in normalized
     ]
 
 
