@@ -152,6 +152,7 @@ def _write_codex_thread_title_hook_event(source_db_path: Path, *, thread_id: str
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="synthetic:state-db",
+            carrier_relative_path=f"synthetic:state-db:{thread_id}",
             payload=json_dumps(payload),
             acquired_at_ms=1_000,
             raw_id=f"raw-{thread_id}",
