@@ -341,7 +341,7 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
             try_load_sqlite_vec(conn)
             placeholders = ",".join("?" for _ in target.message_ids)
             # message_embeddings/message_embeddings_meta are content-addressed
-            # (keyed by embedding_input_hash, polylogue-q88p) and may be
+            # (keyed by vector_derivation_hash, polylogue-q88p) and may be
             # shared with messages outside this excision target; the
             # message-scoped count is the per-message ref count, not a raw
             # vector-table count (a shared vector must not be reported as
@@ -481,7 +481,7 @@ def _apply_single_session_excision(
                 affected_hashes = tuple(
                     bytes(row[0])
                     for row in conn.execute(
-                        f"SELECT DISTINCT embedding_input_hash FROM message_embedding_refs "
+                        f"SELECT DISTINCT vector_derivation_hash FROM message_embedding_refs "
                         f"WHERE message_id IN ({placeholders})",
                         target.message_ids,
                     ).fetchall()
@@ -494,18 +494,18 @@ def _apply_single_session_excision(
                 removed_vector_hashes = 0
                 for input_hash in affected_hashes:
                     still_referenced = conn.execute(
-                        "SELECT 1 FROM message_embedding_refs WHERE embedding_input_hash = ? LIMIT 1",
+                        "SELECT 1 FROM message_embedding_refs WHERE vector_derivation_hash = ? LIMIT 1",
                         (input_hash,),
                     ).fetchone()
                     if still_referenced is not None:
                         continue
                     conn.execute(
-                        "DELETE FROM message_embeddings WHERE embedding_input_hash = ?",
+                        "DELETE FROM message_embeddings WHERE vector_derivation_hash = ?",
                         (input_hash.hex(),),
                     )
                     removed_vector_hashes += max(
                         conn.execute(
-                            "DELETE FROM message_embeddings_meta WHERE embedding_input_hash = ?",
+                            "DELETE FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
                             (input_hash,),
                         ).rowcount,
                         0,

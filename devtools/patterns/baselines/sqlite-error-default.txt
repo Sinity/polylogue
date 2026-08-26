@@ -62,8 +62,8 @@ polylogue/storage/artifacts/inspection.py:121
 polylogue/storage/blob_gc.py:184
 polylogue/storage/embeddings/materialization.py:840
 polylogue/storage/embeddings/materialization.py:853
-polylogue/storage/embeddings/materialization.py:1272
-polylogue/storage/embeddings/materialization.py:1928
+polylogue/storage/embeddings/materialization.py:1274
+polylogue/storage/embeddings/materialization.py:1932
 polylogue/storage/embeddings/preflight.py:211
 polylogue/storage/embeddings/status_payload.py:368
 polylogue/storage/embeddings/status_payload.py:1108

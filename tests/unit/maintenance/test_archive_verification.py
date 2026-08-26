@@ -1413,7 +1413,7 @@ def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -
     try:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
             """,
             (b"g" * 32,),

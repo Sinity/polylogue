@@ -16,6 +16,7 @@ from typing import Literal, cast
 from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
+    EmbeddingRequestSpec,
     EmbeddingSourceDigest,
     embedding_derivation_key,
     message_embedding_derivation_digest_from_hashes,
@@ -40,7 +41,7 @@ class ArchiveEmbeddingMeta:
     message_id: str
     model: str
     dimension: int
-    embedding_input_hash: bytes
+    vector_derivation_hash: bytes
     embedded_at_ms: int | None
 
 
@@ -65,10 +66,12 @@ class ArchiveEmbeddingWrite:
     embedding: list[float]
     model: str
     embedded_at_ms: int
-    embedding_input_hash: bytes
+    vector_derivation_hash: bytes
     recipe_hash: bytes | None = None
+    output_contract_hash: bytes | None = None
     derivation_key: bytes | None = None
     generation: int = 0
+    request_spec: EmbeddingRequestSpec | None = None
 
 
 EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
@@ -258,11 +261,11 @@ def upsert_message_embedding(
     embedding: list[float],
     model: str,
     embedded_at_ms: int,
-    embedding_input_hash: bytes | None = None,
+    vector_derivation_hash: bytes | None = None,
 ) -> ArchiveEmbeddingMeta:
     """Upsert one message vector plus its reproducibility metadata."""
-    if embedding_input_hash is None:
-        raise ValueError("embedding_input_hash is required for message embedding metadata")
+    if vector_derivation_hash is None:
+        raise ValueError("vector_derivation_hash is required for message embedding metadata")
     upsert_message_embeddings(
         conn,
         [
@@ -273,7 +276,7 @@ def upsert_message_embedding(
                 embedding=embedding,
                 model=model,
                 embedded_at_ms=embedded_at_ms,
-                embedding_input_hash=embedding_input_hash,
+                vector_derivation_hash=vector_derivation_hash,
             )
         ],
     )
@@ -283,15 +286,25 @@ def upsert_message_embedding(
 def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
     if len(write.embedding) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
-    if len(write.embedding_input_hash) != 32:
-        raise ValueError("embedding_input_hash must be a SHA-256 value")
-    recipe = EmbeddingRecipe.current(model=write.model, dimensions=EMBEDDING_DIMENSION)
+    if len(write.vector_derivation_hash) != 32:
+        raise ValueError("vector_derivation_hash must be a SHA-256 value")
+    recipe = (
+        write.request_spec.recipe
+        if write.request_spec is not None
+        else EmbeddingRecipe.current(model=write.model, dimensions=EMBEDDING_DIMENSION)
+    )
+    if write.request_spec is not None:
+        if write.request_spec.recipe.model != write.model:
+            raise ValueError("embedding request model must match write model")
+        if write.request_spec.vector_derivation_hash != write.vector_derivation_hash:
+            raise ValueError("embedding address must be derived from the request spec")
     recipe_hash = write.recipe_hash or recipe.recipe_hash
+    output_contract_hash = write.output_contract_hash or recipe.output_contract_hash
     derivation_key = (
         write.derivation_key
         or message_embedding_derivation_key(
             message_id=write.message_id,
-            embedding_input_hash=write.embedding_input_hash,
+            vector_derivation_hash=write.vector_derivation_hash,
             recipe=recipe,
         ).digest()
     )
@@ -302,8 +315,9 @@ def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
         embedding=write.embedding,
         model=write.model,
         embedded_at_ms=write.embedded_at_ms,
-        embedding_input_hash=write.embedding_input_hash,
+        vector_derivation_hash=write.vector_derivation_hash,
         recipe_hash=recipe_hash,
+        output_contract_hash=output_contract_hash,
         derivation_key=derivation_key,
         generation=write.generation,
     )
@@ -313,7 +327,7 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
     """Write content-addressed vectors/meta once per hash, plus per-message refs.
 
     ``message_embeddings`` (vec0) and ``message_embeddings_meta`` are keyed by
-    ``embedding_input_hash`` and are write-once: a hash whose meta row already
+    ``vector_derivation_hash`` and are write-once: a hash whose meta row already
     exists is never re-inserted or deleted here (dedup — identical content
     embeds exactly once, and a vector already proven valid for its hash stays
     valid regardless of which message(s) currently reference it). Only
@@ -322,15 +336,15 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
     """
     for raw_write in writes:
         write = _prepared_write(raw_write)
-        hash_hex = write.embedding_input_hash.hex()
+        hash_hex = write.vector_derivation_hash.hex()
         existing = conn.execute(
-            "SELECT 1 FROM message_embeddings_meta WHERE embedding_input_hash = ?",
-            (write.embedding_input_hash,),
+            "SELECT 1 FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
+            (write.vector_derivation_hash,),
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO message_embeddings (embedding_input_hash, embedding, model)
+                INSERT INTO message_embeddings (vector_derivation_hash, embedding, model)
                 VALUES (?, ?, ?)
                 """,
                 (hash_hex, _serialize_f32(write.embedding), write.model),
@@ -338,32 +352,32 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
             conn.execute(
                 """
                 INSERT INTO message_embeddings_meta (
-                    embedding_input_hash, model, dimension, embedded_at_ms,
+                    vector_derivation_hash, model, dimension, embedded_at_ms,
                     recipe_hash, output_contract_hash
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    write.embedding_input_hash,
+                    write.vector_derivation_hash,
                     write.model,
                     EMBEDDING_DIMENSION,
                     write.embedded_at_ms,
                     write.recipe_hash,
-                    None,
+                    write.output_contract_hash,
                 ),
             )
         origin_value = _enum_value(write.origin)
         conn.execute(
             """
             INSERT INTO message_embedding_refs (
-                message_id, session_id, origin, embedding_input_hash, embedded_at_ms
+                message_id, session_id, origin, vector_derivation_hash, embedded_at_ms
             ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 origin = excluded.origin,
-                embedding_input_hash = excluded.embedding_input_hash,
+                vector_derivation_hash = excluded.vector_derivation_hash,
                 embedded_at_ms = excluded.embedded_at_ms
             """,
-            (write.message_id, write.session_id, origin_value, write.embedding_input_hash, write.embedded_at_ms),
+            (write.message_id, write.session_id, origin_value, write.vector_derivation_hash, write.embedded_at_ms),
         )
 
 
@@ -411,13 +425,13 @@ def complete_embedding_attempt_success(
             raise ValueError("embedding write recipe must match the owning attempt")
         expected_message_key = message_embedding_derivation_digest_from_hashes(
             message_id=write.message_id,
-            embedding_input_hash=write.embedding_input_hash,
+            vector_derivation_hash=write.vector_derivation_hash,
             recipe_hash=attempt.recipe_hash,
             output_contract_hash=attempt.output_contract_hash,
         )
         if write.derivation_key != expected_message_key:
             raise ValueError("embedding write key must match its message content and attempt recipe")
-        input_hashes.append(write.embedding_input_hash)
+        input_hashes.append(write.vector_derivation_hash)
     # Digested in hash-sorted order to match the order-independent SQL
     # aggregate (_EmbeddingSourceHashAggregate) that computes the same
     # session source_hash at selection time.
@@ -444,7 +458,7 @@ def complete_embedding_attempt_success(
             return False
 
         # message_embeddings / message_embeddings_meta are content-addressed
-        # (keyed by embedding_input_hash) and write-once/shared across
+        # (keyed by vector_derivation_hash) and write-once/shared across
         # messages and sessions -- they are never deleted on session
         # re-embed. Only this session's message_id -> hash refs are stale;
         # drop the ones this generation no longer writes (message removed
@@ -883,9 +897,10 @@ def read_embedding_meta(conn: sqlite3.Connection, target_id: str) -> ArchiveEmbe
     row = conn.execute(
         """
         SELECT r.message_id AS message_id, em.model AS model, em.dimension AS dimension,
-               em.embedding_input_hash AS embedding_input_hash, em.embedded_at_ms AS embedded_at_ms
+               em.vector_derivation_hash AS vector_derivation_hash, em.embedded_at_ms AS embedded_at_ms,
+               em.recipe_hash AS recipe_hash, em.output_contract_hash AS output_contract_hash
         FROM message_embedding_refs AS r
-        JOIN message_embeddings_meta AS em ON em.embedding_input_hash = r.embedding_input_hash
+        JOIN message_embeddings_meta AS em ON em.vector_derivation_hash = r.vector_derivation_hash
         WHERE r.message_id = ?
         """,
         (target_id,),
@@ -896,7 +911,7 @@ def read_embedding_meta(conn: sqlite3.Connection, target_id: str) -> ArchiveEmbe
         message_id=row["message_id"],
         model=row["model"],
         dimension=row["dimension"],
-        embedding_input_hash=row["embedding_input_hash"],
+        vector_derivation_hash=row["vector_derivation_hash"],
         embedded_at_ms=row["embedded_at_ms"],
     )
 

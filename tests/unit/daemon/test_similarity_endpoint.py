@@ -193,7 +193,7 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
                     embedding=vector,
                     model="voyage-4",
                     embedded_at_ms=1_767_225_700_000,
-                    embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
+                    vector_derivation_hash=hashlib.sha256(message_id.encode()).digest(),
                 )
     except RuntimeError as exc:
         if "sqlite-vec" in str(exc) or "vec0" in str(exc):

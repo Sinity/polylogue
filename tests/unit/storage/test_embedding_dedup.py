@@ -118,7 +118,7 @@ def test_identical_content_across_two_sessions_embeds_once(tmp_path: Path) -> No
             str(row[0]) for row in conn.execute("SELECT DISTINCT session_id FROM message_embedding_refs").fetchall()
         }
         distinct_hashes = {
-            str(row[0]) for row in conn.execute("SELECT embedding_input_hash FROM message_embedding_refs").fetchall()
+            str(row[0]) for row in conn.execute("SELECT vector_derivation_hash FROM message_embedding_refs").fetchall()
         }
 
     assert vector_rows == 1, "identical text across two sessions must produce exactly one stored vector"

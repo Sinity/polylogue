@@ -850,7 +850,7 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS message_embeddings_meta (
-                embedding_input_hash   BLOB PRIMARY KEY,
+                vector_derivation_hash   BLOB PRIMARY KEY,
                 model                  TEXT NOT NULL,
                 dimension              INTEGER NOT NULL,
                 embedded_at_ms         INTEGER,
@@ -862,7 +862,7 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
         conn.execute(
             """
             INSERT INTO message_embeddings_meta (
-                embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash
+                vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (b"\x00" * 32, "voyage-4", 1024, 1, None, None),
