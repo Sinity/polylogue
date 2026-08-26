@@ -30,7 +30,12 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
-from polylogue.sources.hooks import HookSpoolSourceSpec, drain_hook_event_spool, pending_hook_spool_dir
+from polylogue.sources.hooks import (
+    HookSpoolSourceSpec,
+    drain_hook_event_spool,
+    hook_spool_sources,
+    pending_hook_spool_dir,
+)
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.archive_open import _source_tier_acquisition_required
 from polylogue.sources.live.batch import (
@@ -1705,9 +1710,10 @@ class LiveWatcher:
     def _is_hook_spool_path(self, path: Path) -> bool:
         for source in self._hook_sources():
             try:
-                return path.resolve().is_relative_to(source.root.resolve())
+                if path.resolve().is_relative_to(source.root.resolve()):
+                    return True
             except OSError:
-                return False
+                continue
         return False
 
     def _is_hook_spool_shard_directory(self, path: Path) -> bool:
@@ -1715,9 +1721,10 @@ class LiveWatcher:
 
         for source in self._hook_sources():
             try:
-                return path.resolve().parent == source.root.resolve()
+                if path.resolve().parent == source.root.resolve():
+                    return True
             except OSError:
-                return False
+                continue
         return False
 
     @staticmethod
@@ -1946,13 +1953,7 @@ def default_sources(*, hermes_root: Path | None = None, beads_roots: tuple[Path,
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        WatchSource(
-            name="hooks",
-            root=pending_hook_spool_dir(),
-            suffixes=(".json",),
-            source_id="primary-hook-spool",
-            role="primary-writable",
-        ),
+        *hook_watch_sources(hook_spool_sources()),
         *beads_sources,
     )
 

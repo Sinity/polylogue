@@ -54,7 +54,7 @@ from uuid import uuid4
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
-from polylogue.paths import hooks_sidecar_dir
+from polylogue.paths import data_home, hooks_sidecar_dir
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
@@ -97,6 +97,25 @@ class HookSpoolSourceSpec:
     source_id: str
     role: Literal["primary-writable", "legacy-read-only"]
     root: Path
+
+
+def hook_spool_sources(
+    *,
+    primary_root: Path | None = None,
+    legacy_roots: tuple[Path, ...] | list[Path] | None = None,
+) -> tuple[HookSpoolSourceSpec, ...]:
+    """Return the canonical primary plus finite legacy hook-spool topology."""
+    primary = (primary_root or hooks_sidecar_dir()).expanduser().resolve()
+    configured_legacy = tuple(legacy_roots) if legacy_roots is not None else (data_home() / "hooks",)
+    sources = [HookSpoolSourceSpec("primary-hook-spool", "primary-writable", primary)]
+    for index, root_value in enumerate(configured_legacy):
+        root = Path(root_value).expanduser().resolve()
+        if root == primary or root in primary.parents or primary in root.parents:
+            if legacy_roots is not None:
+                sources.append(HookSpoolSourceSpec(f"legacy-hook-spool-{index}", "legacy-read-only", root))
+            continue
+        sources.append(HookSpoolSourceSpec(f"legacy-hook-spool-{index}", "legacy-read-only", root))
+    return validate_hook_spool_topology(sources)
 
 
 def validate_hook_spool_topology(
@@ -575,6 +594,7 @@ __all__ = [
     "HookSpoolDrainResult",
     "HookSpoolRecordError",
     "HookSpoolSourceSpec",
+    "hook_spool_sources",
     "HookSpoolTopologyError",
     "acknowledged_hook_spool_dir",
     "drain_hook_event_spool",
