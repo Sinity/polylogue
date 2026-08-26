@@ -30,6 +30,7 @@ const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
 const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
 const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
 const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
+const NATIVE_BOOTSTRAP_HOST = "com.polylogue.browser_capture";
 const RECEIVER_TRUST_CACHE_MS = 10000;
 const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
@@ -494,6 +495,19 @@ async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
     });
   }
   return receiverSettings();
+}
+
+async function bootstrapReceiverCredential(settings, expectedReceiverId = null) {
+  if (!chrome.runtime?.sendNativeMessage) return { ok: false, error: "native_messaging_unavailable" };
+  try {
+    const result = await chrome.runtime.sendNativeMessage(NATIVE_BOOTSTRAP_HOST, { endpoint: settings.baseUrl, receiver_id: expectedReceiverId, extension_id: chrome.runtime.id });
+    if (!result?.ok || !result.auth_token || !result.receiver_id || !result.api_schema) return { ok: false, error: result?.error || "native_bootstrap_rejected" };
+    if (expectedReceiverId && result.receiver_id !== expectedReceiverId) return { ok: false, error: "receiver_pairing_mismatch" };
+    await saveReceiverSettings(settings.baseUrl, result.auth_token);
+    return result;
+  } catch (error) {
+    return { ok: false, error: String(error?.message || error) };
+  }
 }
 
 async function storedReceiverPairing() {
@@ -1007,13 +1021,9 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   // receiver. Keep that unpaired state local: repeatedly sending an empty
   // request only creates receiver-side auth noise and cannot establish trust.
   if (!settings.authToken) {
-    return {
-      ok: true,
-      status: "unauthorized",
-      detail: "receiver_auth_missing",
-      endpoint: settings.baseUrl,
-      pairing: pairingBefore,
-    };
+    const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
+    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false });
+    return { ok: true, status: "unauthorized", detail: bootstrap.error === "native_messaging_unavailable" ? "receiver_auth_missing" : (bootstrap.error || "receiver_auth_missing"), endpoint: settings.baseUrl, pairing: pairingBefore };
   }
 
   async function classifyProbe(endpoint, probe, recoveredFrom = null) {
@@ -1029,6 +1039,8 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
       };
     }
     if (body.error === "unauthorized" || probe.response?.status === 401) {
+      const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
+      if (refreshed.ok) return classifyProbe(settings.baseUrl, await probeReceiverStatus(settings.baseUrl, refreshed.auth_token));
       const pairing = pairingBefore
         ? await persistReceiverPairing({
           ...pairingBefore,
