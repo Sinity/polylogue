@@ -1119,13 +1119,11 @@ def _archive_list_assertion_claims(
 ) -> list[Any]:
     """Return assertion-backed lifecycle claims from ``user.db``."""
 
+    from polylogue.archive.query.transaction import run_archive_read_sync
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(user_db)
+    def _read(archive: Any) -> list[Any]:
+        conn = open_readonly_connection(archive.user_db_path)
         conn.row_factory = sqlite3.Row
         try:
             if kinds is None:
@@ -1148,8 +1146,13 @@ def _archive_list_assertion_claims(
             )
         finally:
             conn.close()
-    except sqlite3.Error:
-        return []
+
+    return run_archive_read_sync(
+        _active_archive_root(config),
+        operation="assertion-list",
+        arguments={"target_ref": target_ref, "scope_ref": scope_ref},
+        work=_read,
+    )
 
 
 def _archive_get_context_delivery(
