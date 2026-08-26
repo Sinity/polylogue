@@ -54,8 +54,17 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from polylogue.scenarios import (
+    MeasurementScope,
+    WorkloadEnvelopeSpec,
+    WorkloadInputRef,
+    WorkloadPhaseObservation,
+    WorkloadReceipt,
+    WorkloadRunStatus,
+)
+
 # Bumped when the JSON shape gains/changes a top-level key or field type.
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 
 _DEFAULT_PROVIDER = "codex"
 _DEFAULT_BATCHES = 16
@@ -67,6 +76,89 @@ _DEFAULT_MESSAGES_MAX = 320
 # lineage workload.  Kept small so each fork batch is dominated by the
 # inherited-prefix scan + signature memoization, not by fresh tail content.
 _LINEAGE_TAIL_MESSAGES = 4
+
+
+def _workload_receipt(
+    *,
+    provider: str,
+    batches: int,
+    seed: int,
+    lineage: bool,
+    total_wall_s: float,
+    cpu_seconds_total: float,
+    peak_rss_mb: float,
+    proc_io: dict[str, Any],
+    total_messages: int,
+) -> dict[str, Any]:
+    """Adapt the legacy ingest probe into the shared physical receipt.
+
+    The probe is intentionally one process-tree scoped phase: per-batch
+    timings remain in the legacy report, while this receipt is the common
+    comparable envelope.  ``ru_maxrss`` is Linux KiB and is converted here to
+    bytes; absent proc I/O stays explicitly unavailable rather than zero.
+    """
+    unavailable = {
+        "current_rss_bytes",
+        "peak_pss_bytes",
+        "current_pss_bytes",
+        "anon_bytes",
+        "file_cache_bytes",
+        "swap_bytes",
+        "temp_storage_bytes",
+        "storage_bytes",
+        "response_bytes",
+        "cancellation_latency_ms",
+        "queue_depth",
+        "backpressure_ms",
+        "cleanup_reclaimed_bytes",
+        "sqlite_vm_steps",
+    }
+    if "read_bytes" not in proc_io:
+        unavailable.add("read_io_bytes")
+    if "write_bytes" not in proc_io:
+        unavailable.add("write_io_bytes")
+    spec = WorkloadEnvelopeSpec(
+        workload_id="devtools:ingest-throughput:lineage" if lineage else "devtools:ingest-throughput:corpus",
+        family_id="ingest-throughput",
+        version=1,
+        inputs=(
+            WorkloadInputRef(
+                input_id=f"synthetic:{provider}:{seed}:{batches}:{'lineage' if lineage else 'corpus'}",
+                package_ref=provider,
+                seed=seed,
+                distribution_refs=("ingest-throughput.synthetic-corpus-v1",),
+            ),
+        ),
+        phases=("ingest",),
+        measurement_scope=MeasurementScope.PROCESS_TREE,
+    )
+    phase = WorkloadPhaseObservation(
+        name="ingest",
+        wall_ms=total_wall_s * 1000.0,
+        # Match the report's four-decimal-second precision before converting
+        # units, so the two projections cannot drift by rounding noise.
+        cpu_ms=round(cpu_seconds_total, 4) * 1000.0,
+        peak_rss_bytes=round(peak_rss_mb * 1024 * 1024),
+        read_io_bytes=proc_io.get("read_bytes"),
+        write_io_bytes=proc_io.get("write_bytes"),
+        progress_completed=total_messages,
+        progress_total=total_messages,
+        cleanup_complete=True,
+        quiescent=True,
+        unavailable=tuple(sorted(unavailable)),
+    )
+    return WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id=None,
+        runtime_id=None,
+        archive_id=None,
+        generation_id=None,
+        frame_id=None,
+        phases=(phase,),
+        cleanup_complete=True,
+        notes=("Legacy ingest probe adapter; stage distributions remain in the report.",),
+    ).to_payload()
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +628,17 @@ def measure_ingest_throughput(
             "proc_io": proc_io,
             "proc_io_available": proc_io_available,
             "storage": storage,
+            "workload_receipt": _workload_receipt(
+                provider=provider,
+                batches=len(batch_reports),
+                seed=seed,
+                lineage=lineage,
+                total_wall_s=total_wall_s,
+                cpu_seconds_total=cpu_seconds_total,
+                peak_rss_mb=peak_rss_mb,
+                proc_io=proc_io,
+                total_messages=total_messages,
+            ),
             "per_batch": batch_reports,
         }
         if tracemalloc_peak_mb is not None:
