@@ -112,11 +112,9 @@ INDEX_BENIGN_DDL_REGISTRY: tuple[BenignDDLEntry, ...] = (
             "The referencing columns (session_model_usage.priced_with/"
             "priced_at_ms) and pricing_seed.py's seed_price_catalog()/"
             "active_price_catalog_id() are removed in the same change "
-            "(INDEX_SCHEMA_VERSION v61's CONSTRAINT_ONLY delta). Does NOT "
-            "cover session_profiles.priced_with/priced_at_ms -- a different, "
-            "unrelated pair of columns (no FK to price_catalogs) with a "
-            "real production reader (daemon/http.py's session-insights "
-            "panel) -- those are kept."
+            "(INDEX_SCHEMA_VERSION v61's CONSTRAINT_ONLY delta). The "
+            "session_profiles pricing mirrors are removed by the later "
+            "canonical-cost semantic rebuild."
         ),
     ),
 )

@@ -20,8 +20,8 @@ def test_token_columns_exist_on_messages() -> None:
     conn.close()
 
 
-def test_cost_summary_queryable_from_session_profiles(tmp_path: Path) -> None:
-    """Session profile must carry per_model_cost_json for analytical queries."""
+def test_cost_summary_is_not_persisted_on_session_profiles(tmp_path: Path) -> None:
+    """Session profiles must not carry a second cost authority."""
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -30,7 +30,7 @@ def test_cost_summary_queryable_from_session_profiles(tmp_path: Path) -> None:
     initialize_archive_database(db, ArchiveTier.INDEX)
     with sqlite3.connect(str(db)) as conn:
         cols = {row[1] for row in conn.execute("PRAGMA table_info('session_profiles')").fetchall()}
-    assert "per_model_cost_json" in cols, "session_profiles missing per_model_cost_json"
+    assert "per_model_cost_json" not in cols
 
 
 def test_tokenizer_estimate() -> None:

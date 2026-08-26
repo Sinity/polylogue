@@ -59,7 +59,7 @@ class CanonicalArchiveSnapshot:
 RUN_LOCAL_NORMALIZATION_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "index.insight_materialization": frozenset({"materialized_at_ms"}),
     "index.session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
-    "index.session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
+    "index.session_profiles": frozenset({"materialized_at"}),
     "index.session_latency_profiles": frozenset({"materialized_at"}),
     "index.session_tag_rollups": frozenset({"materialized_at"}),
     "index.threads": frozenset({"materialized_at"}),

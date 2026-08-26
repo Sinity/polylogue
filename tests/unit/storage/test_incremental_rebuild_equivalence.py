@@ -65,7 +65,7 @@ PARSER_RECIPE = RAW_AUTHORITY_PARSER_FINGERPRINT
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "raw_revision_heads": frozenset({"decided_at_ms"}),
-    "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
+    "session_profiles": frozenset({"materialized_at"}),
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_tag_rollups": frozenset({"materialized_at"}),
     "insight_materialization": frozenset({"materialized_at_ms"}),

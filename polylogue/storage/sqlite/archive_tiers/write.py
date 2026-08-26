@@ -1241,31 +1241,18 @@ def upsert_session_profile_costs(
     priced_with: str | None = None,
     priced_at_ms: int | None = None,
 ) -> None:
-    """Upsert a minimal cost/pricing slice for an existing profile row."""
+    """Seed canonical session-scoped money for legacy test callers.
+
+    The historical helper name is retained as a narrow compatibility shim for
+    fixtures while the profile columns are removed.  It deliberately writes
+    ``sessions.reported_cost_usd`` (the canonical provider-money evidence),
+    never ``session_profiles``.
+    """
     conn.execute("PRAGMA foreign_keys = ON")
     with conn:
         conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, cost_credits, cost_usd, cost_is_estimated, cost_provenance, priced_with, priced_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                cost_credits = excluded.cost_credits,
-                cost_usd = excluded.cost_usd,
-                cost_is_estimated = excluded.cost_is_estimated,
-                cost_provenance = excluded.cost_provenance,
-                priced_with = excluded.priced_with,
-                priced_at_ms = excluded.priced_at_ms
-            """,
-            (
-                session_id,
-                cost_credits,
-                cost_usd,
-                1 if cost_is_estimated else 0,
-                cost_provenance,
-                priced_with,
-                priced_at_ms,
-            ),
+            "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
+            (cost_usd, session_id),
         )
 
 

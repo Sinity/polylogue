@@ -315,8 +315,7 @@ def test_only_allowlisted_materialization_stamps_are_ignored(tmp_path: Path) -> 
         assert profile is not None
         assert materialization is not None
         conn.execute(
-            "UPDATE session_profiles SET materialized_at = '2099-01-01T00:00:00+00:00', priced_at_ms = 2099 "
-            "WHERE session_id = ?",
+            "UPDATE session_profiles SET materialized_at = '2099-01-01T00:00:00+00:00' WHERE session_id = ?",
             (profile[0],),
         )
         conn.execute(
@@ -327,7 +326,7 @@ def test_only_allowlisted_materialization_stamps_are_ignored(tmp_path: Path) -> 
 
     after = capture_canonical_snapshot(archive.root)
     assert_canonical_snapshots_equal(before, after)
-    assert RUN_LOCAL_NORMALIZATION_ALLOWLIST["index.session_profiles"] == frozenset({"materialized_at", "priced_at_ms"})
+    assert RUN_LOCAL_NORMALIZATION_ALLOWLIST["index.session_profiles"] == frozenset({"materialized_at"})
 
 
 @pytest.mark.parametrize(
