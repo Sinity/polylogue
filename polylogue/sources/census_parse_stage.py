@@ -347,16 +347,23 @@ class CensusParseStage:
         """Publish the single state transition for completed warm work."""
         if self._active_warm_operations != 0 or self._background_workers or self._pending_payload_by_raw_id:
             return
-        self._warm_idle.set()
+        # Publication order is load-bearing: ``wait_until_idle`` returns the
+        # instant ``_warm_idle`` is set, and its caller may immediately read
+        # ``writer_admission_ready`` from another thread (the corpus suite
+        # caught the reversed order as a real interleaving on the
+        # free-threaded build). Set the dependent gate first, wake last.
         if not self._stop_requested.is_set():
             self._writer_admission_ready.set()
+        self._warm_idle.set()
 
     def _begin_warm_operation(self) -> None:
         with self._warm_state_lock:
             self._active_warm_operations += 1
-            self._warm_idle.clear()
+            # Mirror of _refresh_lifecycle_state_locked: gate down first so no
+            # reader can observe idle cleared with admission still open.
             if not self._stop_requested.is_set():
                 self._writer_admission_ready.clear()
+            self._warm_idle.clear()
 
     def _end_warm_operation(self) -> None:
         with self._warm_state_lock:
