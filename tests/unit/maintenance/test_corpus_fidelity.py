@@ -83,6 +83,7 @@ def test_real_production_route_is_green_and_read_only(
     assert not report.blocking
     assert all(check.status is OutcomeStatus.OK for check in report.checks)
     revision = next(check for check in report.checks if check.name == "corpus-revision-fidelity")
+    assert isinstance(revision, ArchiveVerificationCheck)
     denominators = revision.evidence["denominators"]
     assert (
         sum(value for key, value in denominators.items() if key != "source_memberships")
