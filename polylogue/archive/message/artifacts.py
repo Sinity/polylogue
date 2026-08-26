@@ -154,6 +154,35 @@ def classify_block_message_type(block_types: tuple[BlockType, ...]) -> MessageTy
     return None
 
 
+def classify_message_type(
+    *,
+    role: Role,
+    message_type: MessageType,
+    text: str | None,
+    block_types: tuple[BlockType, ...] = (),
+) -> MessageType:
+    """Normalize a message type from provider envelope and content evidence.
+
+    Provider roles are envelope evidence, not authoredness.  A nonempty
+    system/developer envelope is model-visible runtime context unless a more
+    specific structured or textual classification already applies.  Keeping
+    this rule here makes parser, replay, and read-model construction converge
+    on the same law.
+    """
+    normalized_type = MessageType.normalize(message_type)
+    if normalized_type is not MessageType.MESSAGE:
+        return normalized_type
+    block_message_type = classify_block_message_type(block_types)
+    if block_message_type is not None:
+        return block_message_type
+    text_message_type = classify_text_message_type(text)
+    if text_message_type is not None:
+        return text_message_type
+    if role is Role.SYSTEM:
+        return MessageType.CONTEXT
+    return MessageType.MESSAGE
+
+
 def classify_material_origin(
     *,
     role: Role,
@@ -163,7 +192,12 @@ def classify_material_origin(
 ) -> MaterialOrigin:
     """Classify authoredness/material origin independently from provider role."""
     normalized_role = role
-    normalized_type = MessageType.normalize(message_type)
+    normalized_type = classify_message_type(
+        role=role,
+        message_type=message_type,
+        text=text,
+        block_types=block_types,
+    )
     stripped = strip_leading_system_reminders(text or "")
 
     if normalized_role is Role.TOOL or normalized_type is MessageType.TOOL_RESULT:
@@ -182,6 +216,10 @@ def classify_material_origin(
         if any(marker in stripped for marker in _OPERATOR_COMMAND_MARKERS):
             return MaterialOrigin.OPERATOR_COMMAND
         return MaterialOrigin.RUNTIME_PROTOCOL
+    if normalized_role is Role.SYSTEM and normalized_type is MessageType.MESSAGE:
+        # Direct callers may classify material before the parser model has
+        # normalized its message_type. Preserve the same envelope law here.
+        return MaterialOrigin.RUNTIME_CONTEXT
     if normalized_role is Role.ASSISTANT and normalized_type in (MessageType.MESSAGE, MessageType.TOOL_USE):
         # The assistant role IS positive evidence of model authorship: it is the
         # model's output channel. Unlike the user channel, nothing else is
@@ -202,6 +240,7 @@ def classify_material_origin(
 
 __all__ = [
     "classify_block_message_type",
+    "classify_message_type",
     "classify_material_origin",
     "classify_text_message_type",
     "strip_leading_system_reminders",

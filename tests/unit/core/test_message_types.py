@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.archive.message.artifacts import classify_material_origin
+from polylogue.archive.message.artifacts import classify_material_origin, classify_message_type
 from polylogue.archive.message.types import (
     MessageType,
     message_type_sql_values,
@@ -49,6 +49,78 @@ def test_plain_user_message_does_not_imply_human_authorship() -> None:
             text="Please inspect the failing tests.",
         )
         is MaterialOrigin.UNKNOWN
+    )
+
+
+def test_system_envelope_is_runtime_context_but_unknown_role_stays_unknown() -> None:
+    assert (
+        classify_message_type(
+            role=Role.SYSTEM,
+            message_type=MessageType.MESSAGE,
+            text="Runtime instruction from the provider.",
+        )
+        is MessageType.CONTEXT
+    )
+    assert (
+        classify_material_origin(
+            role=Role.SYSTEM,
+            message_type=MessageType.MESSAGE,
+            text="Runtime instruction from the provider.",
+        )
+        is MaterialOrigin.RUNTIME_CONTEXT
+    )
+    assert (
+        classify_message_type(
+            role=Role.UNKNOWN,
+            message_type=MessageType.MESSAGE,
+            text="Unclassified provider text.",
+        )
+        is MessageType.MESSAGE
+    )
+
+
+@pytest.mark.parametrize(
+    ("message_type", "text", "expected"),
+    [
+        (MessageType.PROTOCOL, "<command-name>run</command-name>", MessageType.PROTOCOL),
+        (MessageType.TOOL_RESULT, "tool output", MessageType.TOOL_RESULT),
+        (MessageType.SUMMARY, "summary", MessageType.SUMMARY),
+    ],
+)
+def test_system_rule_does_not_override_more_specific_types(
+    message_type: MessageType, text: str, expected: MessageType
+) -> None:
+    block_types = (BlockType.TOOL_RESULT,) if message_type is MessageType.TOOL_RESULT else ()
+    assert (
+        classify_message_type(
+            role=Role.SYSTEM,
+            message_type=message_type,
+            text=text,
+            block_types=block_types,
+        )
+        is expected
+    )
+
+
+def test_system_generated_pack_keeps_generated_material_origin() -> None:
+    assert (
+        classify_material_origin(
+            role=Role.SYSTEM,
+            message_type=MessageType.MESSAGE,
+            text="Generate all artifacts for this change.",
+        )
+        is MaterialOrigin.GENERATED_CONTEXT_PACK
+    )
+
+
+def test_system_protocol_shape_keeps_protocol_material_origin() -> None:
+    assert (
+        classify_material_origin(
+            role=Role.SYSTEM,
+            message_type=MessageType.MESSAGE,
+            text="<command-name>status</command-name>",
+        )
+        is MaterialOrigin.OPERATOR_COMMAND
     )
 
 

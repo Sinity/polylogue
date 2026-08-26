@@ -99,18 +99,26 @@ class Message(MessageRuntimeMixin, BaseModel):
 
     @model_validator(mode="after")
     def derive_material_origin(self) -> Message:
+        from polylogue.archive.message.artifacts import classify_message_type
+
+        block_types: list[BlockType] = []
+        for block in self.blocks:
+            raw_type = block.get("type")
+            if raw_type is None:
+                continue
+            try:
+                block_types.append(BlockType.from_string(str(raw_type)))
+            except ValueError:
+                continue
+        self.message_type = classify_message_type(
+            role=self.role,
+            message_type=self.message_type,
+            text=self.text,
+            block_types=tuple(block_types),
+        )
         if self.material_origin is MaterialOrigin.UNKNOWN:
             from polylogue.archive.message.artifacts import classify_material_origin
 
-            block_types: list[BlockType] = []
-            for block in self.blocks:
-                raw_type = block.get("type")
-                if raw_type is None:
-                    continue
-                try:
-                    block_types.append(BlockType.from_string(str(raw_type)))
-                except ValueError:
-                    continue
             self.material_origin = classify_material_origin(
                 role=self.role,
                 message_type=self.message_type,
