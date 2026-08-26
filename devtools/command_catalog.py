@@ -241,6 +241,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify portfolio-frontier",
+        "verification",
+        "Validate complete Beads ambition, active-set, and execution-focus views.",
+        "devtools.portfolio_frontier",
+        use_when="Inspect the complete external Beads export; soft active-set bands diagnose growth but never truncate work.",
+        examples=("devtools verify portfolio-frontier /path/to/issues.jsonl",),
+    ),
+    CommandSpec(
         "verify doc-commands",
         "verification",
         "Validate executable documentation examples against live command inventories.",
