@@ -16,6 +16,10 @@ from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 
 from .base import (
+    AdmissionLedger,
+    AdmissionRefusalReason,
+    AdmissionUnit,
+    AdmissionUnknownReason,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
@@ -24,6 +28,7 @@ from .base import (
     ParsedWebConstruct,
     attachment_from_meta,
     human_authored_override,
+    typed_unknown_block,
 )
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
@@ -590,9 +595,17 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
+    *,
+    admission: AdmissionLedger | None = None,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, str, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
+    if admission is not None:
+        admission.expect(
+            AdmissionUnit.MESSAGE,
+            sum(1 for node in mapping.values() if isinstance(node, dict) and isinstance(node.get("message"), dict)),
+        )
+    message_ordinal = 0
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
     emitted_by_node_id: dict[str, str] = {}
@@ -603,8 +616,17 @@ def extract_messages_from_mapping(
         msg = node.get("message")
         if not isinstance(msg, dict):
             continue
+        current_message_ordinal = message_ordinal
+        message_ordinal += 1
         content = msg.get("content")
         if not isinstance(content, dict):
+            if admission is not None:
+                admission.unknown(
+                    AdmissionUnit.MESSAGE,
+                    current_message_ordinal,
+                    node_id,
+                    AdmissionUnknownReason.UNSUPPORTED_SHAPE,
+                )
             continue
         parts = content.get("parts") or []
         raw_text = _extract_content_text(content)
@@ -613,6 +635,13 @@ def extract_messages_from_mapping(
         author = msg.get("author")
         raw_role = author.get("role") if isinstance(author, dict) else None
         if not raw_role or not isinstance(raw_role, str):
+            if admission is not None:
+                admission.refusal(
+                    AdmissionUnit.MESSAGE,
+                    current_message_ordinal,
+                    node_id,
+                    AdmissionRefusalReason.INVALID_ROLE,
+                )
             continue
         role = Role.normalize(str(raw_role))
         timestamp = msg.get("create_time")
@@ -979,6 +1008,30 @@ def extract_messages_from_mapping(
                             ],
                         )
                     )
+                elif isinstance(part, dict):
+                    content_blocks.append(
+                        typed_unknown_block(
+                            part,
+                            wire_type=_string_value(part, "content_type", "type") or str(content_type),
+                        )
+                    )
+
+        if not content_blocks and content_type not in {
+            "text",
+            "thoughts",
+            "reasoning_recap",
+            "code",
+            "execution_output",
+            "computer_output",
+            "tether_quote",
+            "tether_browsing_display",
+            "sonic_webpage",
+            "system_error",
+            "citable_code_output",
+            "user_editable_context",
+            "model_editable_context",
+        }:
+            content_blocks.append(typed_unknown_block(content, wire_type=str(content_type)))
 
         web_constructs = _constructs_from_chatgpt_metadata(msg_metadata)
         # Inline citation anchors are stripped from stored text (invisible
@@ -1003,7 +1056,49 @@ def extract_messages_from_mapping(
                 content_blocks.append(ParsedContentBlock(type=BlockType.TEXT))
             first_block = content_blocks[0]
             first_block.web_constructs.extend(web_constructs)
+        if admission is not None:
+            part_offset = admission.next_ordinal(AdmissionUnit.PART)
+            admission.expect(AdmissionUnit.PART, len(parts) if isinstance(parts, list) else 0)
+            for part_ordinal, part in enumerate(parts if isinstance(parts, list) else []):
+                if isinstance(part, str) or (
+                    isinstance(part, dict)
+                    and part.get("content_type")
+                    in {
+                        "image_asset_pointer",
+                        "audio_asset_pointer",
+                        "audio_transcription",
+                        "real_time_user_audio_video_asset_pointer",
+                    }
+                ):
+                    admission.materialized(
+                        AdmissionUnit.PART,
+                        part_offset + part_ordinal,
+                        "text" if isinstance(part, str) else str(part.get("content_type")),
+                    )
+                else:
+                    admission.unknown(
+                        AdmissionUnit.PART,
+                        part_offset + part_ordinal,
+                        str(content_type),
+                        AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+                    )
+            admission.expect(AdmissionUnit.BLOCK, len(content_blocks))
+            for block in content_blocks:
+                block_ordinal = admission.next_ordinal(AdmissionUnit.BLOCK)
+                if block.metadata and block.metadata.get("admission_disposition") == "typed_unknown":
+                    admission.unknown(
+                        AdmissionUnit.BLOCK, block_ordinal, str(block.metadata.get("wire_type") or "unknown")
+                    )
+                else:
+                    admission.materialized(AdmissionUnit.BLOCK, block_ordinal, block.type.value)
         if not text and not content_blocks:
+            if admission is not None:
+                admission.unknown(
+                    AdmissionUnit.MESSAGE,
+                    current_message_ordinal,
+                    node_id,
+                    AdmissionUnknownReason.EMPTY_CONTENT,
+                )
             continue
 
         status_val = msg.get("status")
@@ -1047,6 +1142,8 @@ def extract_messages_from_mapping(
         )
         emitted_by_node_id[node_id] = parsed.provider_message_id
         entries.append((_coerce_float(timestamp), idx, node_id, parsed))
+        if admission is not None:
+            admission.materialized(AdmissionUnit.MESSAGE, current_message_ordinal, node_id)
     if any(value is not None for value, _, _, _ in entries):
         # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
         entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
@@ -1319,7 +1416,10 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         mapping, derived_current_node = _shared_decode_mapping(payload)
     current_node = payload.get("current_node")
     current_node = current_node if isinstance(current_node, str) else derived_current_node
-    messages, attachments = extract_messages_from_mapping(mapping, current_node)
+    admission = AdmissionLedger()
+    admission.expect(AdmissionUnit.OUTER_RECORD, 1)
+    admission.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
+    messages, attachments = extract_messages_from_mapping(mapping, current_node, admission=admission)
     generation_timings = _extract_generation_timings(mapping)
     emitted_message_ids = {message.provider_message_id for message in messages}
     resolved_generation_timings: list[_GenerationTiming] = []
@@ -1416,6 +1516,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         ),
         attachments=attachments,
         session_events=session_events,
+        unit_accounting=admission.close(),
         reported_duration_ms=sum(duration_values) if duration_values else None,
         ingest_flags=ingest_flags,
     )
