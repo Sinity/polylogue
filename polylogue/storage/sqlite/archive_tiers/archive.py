@@ -48,7 +48,7 @@ from polylogue.archive.semantic.pricing import (
     CostUsagePayload,
     _normalize_model,
 )
-from polylogue.archive.semantic.subscription_pricing import compute_credit_cost
+from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
@@ -332,6 +332,7 @@ class _UsageTimelineAccumulator:
     stored_cost_usd: float = 0.0
     subscription_credits: float = 0.0
     cost_provenance_counts: dict[str, int] = field(default_factory=dict)
+    cost_session_ids: set[str] = field(default_factory=set)
     source_sort_key: float | None = None
 
     def note_sort_key(self, value: object) -> None:
@@ -355,6 +356,7 @@ class _CostRollupAccumulator:
     source_updated_at_ms: int | None = None
     source_sort_key: float | None = None
     per_model: dict[tuple[str | None, str | None], CostModelBreakdown] = field(default_factory=dict)
+    session_ids: set[str] = field(default_factory=set)
 
     def note_source_updated_at(self, value: object) -> None:
         if isinstance(value, int) and (self.source_updated_at_ms is None or value > self.source_updated_at_ms):
@@ -2608,7 +2610,8 @@ class ArchiveStore:
                        'unknown'
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
-                   MAX(s.sort_key_ms) AS source_sort_key
+                   MAX(s.sort_key_ms) AS source_sort_key,
+                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
@@ -2634,7 +2637,8 @@ class ArchiveStore:
                    0 AS total_tokens,
                    CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
-                   MAX(s.sort_key_ms) AS source_sort_key
+                   MAX(s.sort_key_ms) AS source_sort_key,
+                   GROUP_CONCAT(DISTINCT s.session_id) AS session_ids
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN session_model_usage u ON u.session_id = s.session_id
@@ -2663,6 +2667,18 @@ class ArchiveStore:
             cache_write_tokens = int(row["cache_write_tokens"] or 0)
             total_tokens = int(row["total_tokens"] or 0)
             provenance = str(row["cost_provenance"] or "unknown")
+            entry = grouped.setdefault(
+                key,
+                _CostRollupAccumulator(
+                    source_name=source_name,
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                ),
+            )
+            session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            new_session_ids = session_ids - entry.session_ids
+            entry.session_ids.update(session_ids)
+            effective_session_count = len(new_session_ids) if session_ids else session_count
 
             usage = CostUsagePayload(
                 input_tokens=input_tokens,
@@ -2682,19 +2698,12 @@ class ArchiveStore:
             )
             basis = CostBasisPayload(
                 provider_reported_usd=stored_cost_usd if provenance in {"exact", "origin_reported"} else 0.0,
+                api_equivalent_usd=stored_cost_usd if provenance in {"priced", "estimated"} else 0.0,
                 catalog_priced_usd=stored_cost_usd if provenance in {"priced", "estimated"} else 0.0,
-                subscription_equivalent_usd=subscription_credits,
+                subscription_equivalent_usd=credits_to_usd(subscription_credits),
             )
 
-            entry = grouped.setdefault(
-                key,
-                _CostRollupAccumulator(
-                    source_name=source_name,
-                    model_name=model_name,
-                    normalized_model=normalized_model,
-                ),
-            )
-            entry.session_count += session_count
+            entry.session_count += effective_session_count
             if stored_cost_usd > 0 and provenance in {"exact", "origin_reported"}:
                 status = "exact"
                 confidence = 1.0
@@ -2704,12 +2713,12 @@ class ArchiveStore:
             else:
                 status = "unavailable"
                 confidence = 0.0
-            entry.status_counts[status] = entry.status_counts.get(status, 0) + session_count
+            entry.status_counts[status] = entry.status_counts.get(status, 0) + effective_session_count
             if stored_cost_usd > 0:
-                entry.priced_session_count += session_count
-                entry.confidence_total += session_count * confidence
+                entry.priced_session_count += effective_session_count
+                entry.confidence_total += effective_session_count * confidence
             else:
-                entry.unavailable_session_count += session_count
+                entry.unavailable_session_count += effective_session_count
             entry.basis = entry.basis.plus(basis)
             entry.usage = entry.usage.plus(usage)
             entry.total_usd += stored_cost_usd
@@ -2724,7 +2733,7 @@ class ArchiveStore:
                     usage=usage,
                     basis=basis,
                     total_usd=stored_cost_usd,
-                    session_count=session_count,
+                    session_count=effective_session_count,
                 )
             else:
                 entry.per_model[per_model_key] = CostModelBreakdown(
@@ -2733,7 +2742,7 @@ class ArchiveStore:
                     usage=prior_breakdown.usage.plus(usage),
                     basis=prior_breakdown.basis.plus(basis),
                     total_usd=prior_breakdown.total_usd + stored_cost_usd,
-                    session_count=prior_breakdown.session_count + session_count,
+                    session_count=prior_breakdown.session_count + effective_session_count,
                 )
 
         rollups: list[CostRollupInsight] = []
@@ -2936,7 +2945,8 @@ class ArchiveStore:
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    COALESCE(u.cost_provenance, 'unknown') AS cost_provenance,
-                   MAX(s.sort_key_ms) AS source_sort_key
+                   MAX(s.sort_key_ms) AS source_sort_key,
+                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             WHERE {where_clause}
@@ -2967,6 +2977,9 @@ class ArchiveStore:
                     int(row["cache_write_tokens"] or 0),
                 )
             provenance = str(row["cost_provenance"] or "unknown")
+            item.cost_session_ids.update(
+                session_id for session_id in str(row["session_ids"] or "").split(",") if session_id
+            )
             item.cost_provenance_counts[provenance] = item.cost_provenance_counts.get(provenance, 0) + int(
                 row["session_count"] or 0
             )
@@ -2976,7 +2989,7 @@ class ArchiveStore:
         rows: list[UsageTimelineInsight] = []
         for item in buckets.values():
             timeline_model_name: str | None = item.model_name
-            cost_session_count = sum(item.cost_provenance_counts.values())
+            cost_session_count = len(item.cost_session_ids)
             rows.append(
                 UsageTimelineInsight(
                     group_by=group_by,
