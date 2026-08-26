@@ -230,6 +230,23 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
+    if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
+        digest = _tier_prototype_key(tier, spec.version)[2]
+        state = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'polylogue_ops_schema_state'"
+        ).fetchone()
+        current = (
+            state is not None
+            and conn.execute(
+                "SELECT 1 FROM polylogue_ops_schema_state WHERE schema_digest = ?",
+                (digest,),
+            ).fetchone()
+            is not None
+        )
+        if current:
+            _apply_archive_tier_convergence(conn, tier, spec)
+            _record_tier_init(tier, "schema_convergence")
+            return
     if tier in _PROTOTYPE_CACHEABLE_TIERS:
         object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
         if object_count == 0:
@@ -296,6 +313,28 @@ def _apply_archive_tier_convergence(
         apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
+    if tier is ArchiveTier.OPS:
+        # OPS is the one schema that intentionally has additive same-version
+        # convergence.  Remember which DDL was applied so an already-current
+        # database can take the cheap convergence-only route on its next open.
+        # The table is internal bootstrap state; it is included in the
+        # prototype snapshot and therefore does not make prototypes writable
+        # or share state between archive roots.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS polylogue_ops_schema_state (
+                schema_digest TEXT PRIMARY KEY
+            ) STRICT
+            """
+        )
+        conn.execute(
+            "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
+            (_tier_prototype_key(tier, spec.version)[2],),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
+            (_tier_prototype_key(tier, spec.version)[2],),
+        )
     # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
     # rewrites the database header even when N is already the stored value, so an
     # unconditional write dirties a page on every same-version reapply and turns a
