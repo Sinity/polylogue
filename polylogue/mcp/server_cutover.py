@@ -922,6 +922,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         expression: str | None = None,
         ref: str | None = None,
         offset: int = 0,
+        search: str | None = None,
+        limit: int = 25,
     ) -> str:
         """Explain parser grammar, capabilities, refs, result semantics, or recovery.
 
@@ -952,17 +954,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             from polylogue.archive.query.discovery import RESULT_SEMANTICS_TEACHING, query_discovery_examples
 
             if subject == "capability":
-                all_read_views = list(await hooks.get_polylogue().list_read_view_profiles())
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "subject": subject,
-                            "read_views": all_read_views[offset:],
-                            "total": len(all_read_views),
-                            "offset": offset,
-                        }
-                    )
+                from polylogue.archive.query.capability_catalog import capability_detail_page
+
+                stats = await hooks.get_polylogue().stats()
+                page = capability_detail_page(
+                    search=search,
+                    offset=offset,
+                    limit=limit,
+                    stats=stats.to_dict(),
+                    readiness={"embedding": stats.embedding_readiness_status},
                 )
+                return hooks.json_payload(MCPRootPayload(root={"subject": subject, **page}))
             all_examples = query_discovery_examples()
             return hooks.json_payload(
                 MCPRootPayload(
@@ -979,7 +981,16 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             )
 
         return await hooks.async_safe_call(
-            "explain", run, arguments={"subject": subject, "expression": expression, "ref": ref, "offset": offset}
+            "explain",
+            run,
+            arguments={
+                "subject": subject,
+                "expression": expression,
+                "ref": ref,
+                "offset": offset,
+                "search": search,
+                "limit": limit,
+            },
         )
 
     async def context(
