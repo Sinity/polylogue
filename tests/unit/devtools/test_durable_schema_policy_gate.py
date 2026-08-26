@@ -30,6 +30,37 @@ def test_checked_in_durable_migrations_have_unique_contention_keys() -> None:
     assert {claim.tier for claim in claims} == DURABLE_MIGRATION_TIERS
 
 
+def test_changed_train_must_reserve_next_slot_after_master_head() -> None:
+    violations = verify_schema_upgrade_lane._durable_slot_reservation_violations(
+        changed_paths=("polylogue/storage/sqlite/migrations/source/038.train.json",),
+        master_heads={ArchiveTier.SOURCE: 37},
+    )
+
+    assert violations == []
+
+
+def test_changed_train_with_stale_current_version_requires_rebase_and_renumber(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sidecar = tmp_path / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
+    sidecar.mkdir(parents=True)
+    source_sidecar = (
+        Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "migrations" / "source" / "038.train.json"
+    )
+    target = sidecar / "038.train.json"
+    target.write_text(source_sidecar.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr(verify_schema_upgrade_lane, "ROOT", tmp_path)
+
+    violations = verify_schema_upgrade_lane._durable_slot_reservation_violations(
+        changed_paths=("polylogue/storage/sqlite/migrations/source/038.train.json",),
+        master_heads={ArchiveTier.SOURCE: 39},
+    )
+
+    assert len(violations) == 1
+    assert "current_version v37 does not match origin/master source head v39" in violations[0]
+    assert "rebase and renumber" in violations[0]
+
+
 def test_schema_policy_accepts_only_canonical_train_sidecar_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
