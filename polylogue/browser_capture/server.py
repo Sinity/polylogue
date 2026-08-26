@@ -64,6 +64,7 @@ from polylogue.browser_capture.pairing import (
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    BrowserCaptureSpoolConflictError,
     SpoolQuotaExceededError,
     capture_response_id,
     existing_capture_state,
@@ -71,7 +72,7 @@ from polylogue.browser_capture.receiver import (
     receiver_identity,
     receiver_status_payload,
     write_backfill_checkpoint,
-    write_capture_envelope,
+    write_capture_envelope_bytes,
 )
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
@@ -140,6 +141,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     server: BrowserCaptureHTTPServer
     _polylogue_request_id: str
     _polylogue_status: int | None
+    _request_body_bytes: bytes
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -437,6 +439,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
         raw = self.rfile.read(length)
+        self._request_body_bytes = raw
         try:
             parsed: object = json.loads(raw)
         except json.JSONDecodeError:
@@ -503,10 +506,17 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
             return
         try:
-            result = write_capture_envelope(envelope, spool_path=self.server.config.spool_path)
+            result = write_capture_envelope_bytes(
+                self._request_body_bytes,
+                spool_path=self.server.config.spool_path,
+            )
         except SpoolQuotaExceededError as exc:
             logger.warning("browser_capture.spool_quota_exceeded", request_id=self._request_id(), error=str(exc))
             self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "spool_quota_exceeded")
+            return
+        except BrowserCaptureSpoolConflictError as exc:
+            logger.warning("browser_capture.spool_conflict", request_id=self._request_id(), error=str(exc))
+            self._safe_error(HTTPStatus.CONFLICT, "spool_conflict")
             return
         except OSError as exc:
             logger.warning("browser_capture.write_failed", request_id=self._request_id(), error=repr(exc))

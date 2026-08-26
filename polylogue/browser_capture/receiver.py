@@ -533,6 +533,16 @@ class SpoolQuotaExceededError(RuntimeError):
     """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
 
 
+class BrowserCaptureSpoolConflictError(RuntimeError):
+    """Raised when an existing spool name cannot safely admit a capture.
+
+    A spool artifact is an immutable envelope once published.  A malformed
+    artifact or an artifact belonging to a different provider/session is not
+    evidence that the incoming capture is a duplicate; replacing it would
+    destroy the only durable evidence of the conflict.
+    """
+
+
 # BrowserCaptureHTTPServer is a ThreadingHTTPServer — concurrent POSTs run on
 # separate threads. Without this lock, multiple new-capture writes could all
 # pass _check_spool_quota() before any of them lands (TOCTOU), overshooting
@@ -628,6 +638,40 @@ def write_capture_envelope(
     concurrent requests cannot all pass the check before any one write
     lands.
     """
+    payload = envelope.model_dump(mode="json", exclude_none=True)
+    return _write_capture_envelope(
+        envelope,
+        dumps_bytes(payload, sort_keys=True, indent=2) + b"\n",
+        spool_path=spool_path,
+    )
+
+
+def write_capture_envelope_bytes(
+    raw: bytes,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserCaptureWriteResult:
+    """Admit an envelope while preserving its exact source bytes.
+
+    The HTTP receiver and controlled source restoration both use this route:
+    Pydantic validates the shape and identity, but the published artifact is
+    the byte sequence that was actually acquired.  This keeps provenance and
+    DOM-degraded markers byte-preserving without adding a historical parser or
+    authority table.
+    """
+    try:
+        envelope = BrowserCaptureEnvelope.model_validate(json_loads(raw))
+    except (JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise BrowserCaptureSpoolConflictError("capture envelope is malformed") from exc
+    return _write_capture_envelope(envelope, raw, spool_path=spool_path)
+
+
+def _write_capture_envelope(
+    envelope: BrowserCaptureEnvelope,
+    raw: bytes,
+    *,
+    spool_path: Path | None = None,
+) -> BrowserCaptureWriteResult:
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     target = capture_artifact_path(envelope, root)
     session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
@@ -647,10 +691,18 @@ def write_capture_envelope(
         replaced = target.exists()
         if replaced:
             try:
-                existing = BrowserCaptureEnvelope.model_validate(json_loads(target.read_bytes()))
-            except (OSError, JSONDecodeError, ValueError):
-                existing = None
-            if existing is not None and capture_dedup_content_hash(existing) == dedup_content_hash:
+                existing_raw = target.read_bytes()
+                existing = BrowserCaptureEnvelope.model_validate(json_loads(existing_raw))
+            except (OSError, JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+                raise BrowserCaptureSpoolConflictError(
+                    f"existing capture artifact is unreadable or malformed: {target.name}"
+                ) from exc
+            if (
+                existing.provider is not envelope.provider
+                or existing.provider_session_id != envelope.provider_session_id
+            ):
+                raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
+            if capture_dedup_content_hash(existing) == dedup_content_hash:
                 return BrowserCaptureWriteResult(
                     provider=envelope.provider.value,
                     provider_session_id=envelope.provider_session_id,
@@ -663,7 +715,7 @@ def write_capture_envelope(
                     capture_instance_id=envelope.provenance.extension_instance_id,
                     accepted_identities=accepted_identities,
                 )
-            if existing is not None and not _capture_is_newer_or_richer(envelope, existing):
+            if not _capture_is_newer_or_richer(envelope, existing):
                 return BrowserCaptureWriteResult(
                     provider=envelope.provider.value,
                     provider_session_id=envelope.provider_session_id,
@@ -679,8 +731,6 @@ def write_capture_envelope(
         else:
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = envelope.model_dump(mode="json", exclude_none=True)
-        raw = dumps_bytes(payload, sort_keys=True, indent=2)
         temp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
@@ -688,8 +738,14 @@ def write_capture_envelope(
             ) as handle:
                 temp_path = Path(handle.name)
                 handle.write(raw)
-                handle.write(b"\n")
-            temp_path.replace(target)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, target)
+            directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except BaseException:
             if temp_path is not None:
                 with suppress(FileNotFoundError):
@@ -964,6 +1020,7 @@ __all__ = [
     "RECEIVER_TOKEN_ENTROPY_BYTES",
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
+    "BrowserCaptureSpoolConflictError",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
     "capture_response_id",
@@ -978,4 +1035,5 @@ __all__ = [
     "resolve_receiver_auth_token",
     "write_backfill_checkpoint",
     "write_capture_envelope",
+    "write_capture_envelope_bytes",
 ]
