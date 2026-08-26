@@ -251,6 +251,7 @@ def build_verify_steps(
             ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
             ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
             ("verify consumer-reachability", _devtools_cmd("verify consumer-reachability", "--json")),
+            ("verify definition-closure", _devtools_cmd("verify definition-closure", "--json")),
             ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
             ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
             (

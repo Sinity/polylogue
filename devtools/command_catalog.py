@@ -568,6 +568,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify definition-closure",
+        "verification",
+        "Evaluate representative definition-to-production closure policies as a bounded JSON matrix.",
+        "devtools.definition_closure",
+        use_when="Check that authoritative definitions have required production, lifecycle, contract, discovery, and real-route edges.",
+        examples=("devtools verify definition-closure", "devtools verify definition-closure --json"),
+    ),
+    CommandSpec(
         "verify timestamp-doctrine",
         "verification",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
