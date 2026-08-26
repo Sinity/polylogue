@@ -335,8 +335,7 @@ async def save_raw_session(
             # revision_authority_evidence (migration 017) is never computed at
             # initial-write time -- it is only ever populated later by a
             # dedicated, explicitly operator-invoked maintenance actuator
-            # (raw_live_source_reconciliation_apply.py /
-            # raw_append_chain_backfill_apply.py) re-verifying the raw
+            # historical reconciliation tooling re-verifying the raw
             # against still-present live source bytes. This is `INSERT OR
             # IGNORE`, so binding NULL here for a brand-new row is correct
             # and a duplicate-key insert attempt never overwrites an

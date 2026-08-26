@@ -43,11 +43,10 @@ stay exactly as they were). ``index.db`` is opened read-only, purely to
 determine which raw_ids already have a materialized session; nothing here
 ever writes to it.
 
-:mod:`polylogue.maintenance.raw_byte_duplicate_supersession_apply` is the
-"act" half, following the identical dry-run-by-default /
+The historical one-shot "act" half is retired; this module remains the
+read-side planner with the identical dry-run-by-default /
 verified-backup-required-to-apply / immutable-receipt pattern as every other
-actuator in this family (``raw_live_source_reconciliation_apply``,
-``raw_membership_writeback_apply``, ``raw_append_chain_backfill_apply``).
+actuator in this family.
 """
 
 from __future__ import annotations

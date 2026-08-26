@@ -59,7 +59,7 @@ class LiveSourceVerdict:
 
 
 #: ``raw_sessions.revision_authority_evidence`` value (migration 017) written
-#: by the actuator (``polylogue.maintenance.raw_live_source_reconciliation_apply``)
+#: by the retired one-shot actuator
 #: when it promotes a row to ``byte_proven`` on THIS module's evidence --
 #: distinct from the pre-existing revision-graph reconciler's promotions,
 #: which leave the column ``NULL``. See migration 017's docstring for why this

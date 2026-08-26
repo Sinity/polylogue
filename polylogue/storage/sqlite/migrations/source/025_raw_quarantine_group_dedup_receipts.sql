@@ -8,7 +8,7 @@
 -- consistent with ordinary concurrent archive activity between the two
 -- measurements, not a discrepancy in the classifier itself. ZERO of these
 -- duplicate blob_hash values have any non-quarantined ("indexed") twin
--- anywhere in raw_sessions, so raw_byte_duplicate_supersession_apply (which
+-- anywhere in raw_sessions, so the historical duplicate-supersession actuator (which
 -- only matches a quarantined raw against an ALREADY-INDEXED twin) does not
 -- and cannot catch this class: every member of one of these groups starts
 -- out quarantined, with nothing yet materialized for any of them.

@@ -19,8 +19,7 @@ independent predicates agree completely, matching polylogue-b508's own
 audit numbers exactly.
 
 Separate from this module: an explicit, ``--apply``-gated actuator
-(``polylogue/maintenance/agent_meta_sidecar_purge_apply.py`` +
-``devtools/agent_meta_sidecar_purge_apply.py``) that actually deletes the
+the retired one-shot purge actuator) that actually deletes the
 flagged ``sessions`` rows from ``index.db`` (the rebuildable tier) --
 ``raw_sessions`` rows and blobs in ``source.db`` are never touched, and
 re-ingest cannot resurrect a purged row because the producer no longer

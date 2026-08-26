@@ -299,7 +299,7 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
 -- v17 (polylogue-u19l): one immutable receipt per raw_sessions row promoted
 -- out of quarantine by live-source-verification (see
 -- polylogue.storage.live_source_reconciliation +
--- polylogue.maintenance.raw_live_source_reconciliation_apply). Records what
+++ retired historical live-source reconciliation actuator). Records what
 -- was compared, what matched, when, by which tool version, and against
 -- which verified backup manifest -- never edited after being written.
 CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
@@ -322,8 +322,7 @@ ON raw_live_source_reconciliation_receipts(compared_at_ms);
 -- raw_sessions row promoted out of quarantine because its membership
 -- pipeline verdict (raw_session_memberships.decision) was already decided
 -- but never written back to revision_authority. See
--- polylogue.storage.raw_membership_writeback +
--- polylogue.maintenance.raw_membership_writeback_apply.
+++ polylogue.storage.raw_membership_writeback.
 CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key          TEXT NOT NULL,
@@ -356,8 +355,7 @@ ON raw_membership_writeback_receipts(promoted_at_ms);
 -- never reach it). Reuses revision_authority_evidence=
 -- 'live_source_verification_v1' (the proof mechanism is identical to
 -- polylogue-u19l's); this table's own existence records the distinct target
--- population. See polylogue.storage.raw_append_chain_backfill +
--- polylogue.maintenance.raw_append_chain_backfill_apply.
+++ population. See polylogue.storage.raw_append_chain_backfill.
 CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
     raw_id                           TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key                TEXT,
@@ -386,8 +384,7 @@ ON raw_append_chain_backfill_receipts(compared_at_ms);
 -- see migration 021); this distinct, independently-verifiable evidence
 -- mechanism gets its own receipt table instead, exactly like
 -- raw_membership_writeback_receipts (v19) already does for its own distinct
--- mechanism. See polylogue.storage.raw_byte_duplicate_supersession +
--- polylogue.maintenance.raw_byte_duplicate_supersession_apply.
+++ mechanism. See polylogue.storage.raw_byte_duplicate_supersession.
 CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
