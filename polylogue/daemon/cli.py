@@ -3181,9 +3181,6 @@ async def _run_daemon_services_under_active_writer_lease(
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
         if not watcher_blocked:
-            from polylogue.daemon.antigravity_conversation_acquisition import (
-                periodic_antigravity_conversation_acquisition_check,
-            )
             from polylogue.daemon.blob_gc_periodic import (
                 periodic_blob_gc_check,
                 periodic_blob_publication_reconciliation_check,
@@ -3237,7 +3234,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_publication_reconciliation_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
-                periodic_antigravity_conversation_acquisition_check(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))

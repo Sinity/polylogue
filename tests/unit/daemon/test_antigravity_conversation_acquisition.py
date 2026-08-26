@@ -1,200 +1,131 @@
-"""Periodic Antigravity ``.pb`` conversation acquisition (polylogue-3m3de).
+"""Resident and batch Antigravity admission use the shared source route.
 
-Exercises ``acquire_antigravity_conversations_once`` -- the bounded sync body
-the periodic daemon loop (``periodic_antigravity_conversation_acquisition_check``)
-schedules on a quiet cadence -- against a real archive fixture with a fake
-language-server client, proving:
-
-1. Real ``conversations/*.pb`` cascades get acquired into ``raw_sessions``
-   with their own ``.pb`` source_path (not the metadata-sidecar fragments
-   the live watcher was stuck admitting forever).
-2. Re-running is a no-op once every cascade is acquired (content-hash /
-   already-acquired dedup, not a re-conversion on every tick).
-3. The per-tick batch is bounded so one reconciliation pass never converts
-   an unbounded number of cascades.
+This file retains its historical command-path for the focused lane contract.
+The old Antigravity-specific daemon loop is intentionally gone: the ordinary
+live batch scheduler now invokes the same source-role and vendor-converter
+route as batch acquisition.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from typing import Any, cast
 
-import pytest
-
-from polylogue.daemon.antigravity_conversation_acquisition import (
-    ANTIGRAVITY_ACQUISITION_MAX_PER_TICK,
-    acquire_antigravity_conversations_once,
-)
-from polylogue.sources import source_parsing
-from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
-from polylogue.storage.blob_store import BlobStore
+from polylogue.config import Source
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.parsers import antigravity
+from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
-class _FakeLanguageServerClient:
-    """Drop-in fake of AntigravityLanguageServerClient for driver tests."""
+def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    metadata = root / "brain" / "work" / "plan.md.metadata.json"
+    document = root / "brain" / "work" / "plan.md"
+    unknown = root / "settings" / "opaque.bin"
 
-    def __init__(self, markdown_by_cascade: dict[str, str]) -> None:
-        self._markdown = markdown_by_cascade
-        self.started = False
-        self.closed = False
-        self.exported_cascade_ids: list[str] = []
-
-    def start(self) -> None:
-        self.started = True
-
-    def close(self) -> None:
-        self.closed = True
-
-    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]:
-        return []
-
-    def export_markdown(self, cascade_id: str) -> str:
-        self.exported_cascade_ids.append(cascade_id)
-        return self._markdown[cascade_id]
-
-
-def _touch_conversation_pb(antigravity_root: Path, *cascade_ids: str) -> None:
-    conversations = antigravity_root / "conversations"
-    conversations.mkdir(parents=True, exist_ok=True)
-    for cascade_id in cascade_ids:
-        (conversations / f"{cascade_id}.pb").write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode())
-
-
-def _raw_pb_blobs_by_source_path(source_db: Path) -> dict[str, str]:
-    import sqlite3
-
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-    try:
-        rows = conn.execute(
-            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = 'antigravity-session'"
-        ).fetchall()
-    finally:
-        conn.close()
-    return {str(source_path): bytes(blob_hash).hex() for source_path, blob_hash in rows}
-
-
-@pytest.fixture
-def _fake_client(monkeypatch: pytest.MonkeyPatch) -> _FakeLanguageServerClient:
-    fake = _FakeLanguageServerClient(
-        {f"cascade-{i}": f"### User Input\n\nhello {i}\n" for i in range(ANTIGRAVITY_ACQUISITION_MAX_PER_TICK + 5)}
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
-        lambda root: fake,
-    )
-    return fake
-
-
-def test_no_conversations_dir_reports_gap_without_promoting_brain_sidecar(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    antigravity_root = tmp_path / "antigravity-empty"
-    sidecar = antigravity_root / "brain" / "work-session" / "plan.md.metadata.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.with_name("plan.md").write_text("# Plan\n\nInspect the archive.\n", encoding="utf-8")
-    sidecar.write_text(
-        '{"artifactType":"ARTIFACT_TYPE_OTHER","summary":"Plan","updatedAt":"2026-08-04T08:00:00Z"}',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
-    gap_logger = Mock()
-    monkeypatch.setattr(source_parsing, "logger", gap_logger)
-
-    archive_root = workspace_env["archive_root"]
-    acquired = acquire_antigravity_conversations_once(archive_root)
-
-    assert acquired == 0
-    assert _raw_pb_blobs_by_source_path(archive_root / "source.db") == {}
-    gap_logger.warning.assert_called_once()
-    warning = gap_logger.warning.call_args
-    assert warning.args == ("antigravity_coverage_gap",)
-    assert warning.kwargs["source_name"] == "antigravity"
-    assert warning.kwargs["source_path"] == str(antigravity_root)
-    assert warning.kwargs["reason"] == "conversations_directory_missing"
-    assert "restore" in warning.kwargs["action"]
-
-
-def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(
-    tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-    _fake_client: _FakeLanguageServerClient,
-) -> None:
-    antigravity_root = tmp_path / "antigravity"
-    _touch_conversation_pb(antigravity_root, "cascade-0", "cascade-1")
-    sidecar = antigravity_root / "brain" / "work-session" / "plan.md.metadata.json"
-    sidecar.parent.mkdir(parents=True)
-    sidecar.write_text(
-        '{"artifactType":"ARTIFACT_TYPE_OTHER","summary":"Plan","updatedAt":"2026-08-04T08:00:00Z"}',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
-
-    archive_root = workspace_env["archive_root"]
-    acquired = acquire_antigravity_conversations_once(archive_root)
-
-    assert acquired == 2
-    expected_paths = sorted((antigravity_root / "conversations").glob("*.pb"))
-    expected_payloads = {str(path): path.read_bytes() for path in expected_paths}
-    expected_mtimes = {str(path): int(path.stat().st_mtime * 1000) for path in expected_paths}
-    raw_blobs = _raw_pb_blobs_by_source_path(archive_root / "source.db")
-
-    assert sorted(raw_blobs) == sorted(expected_payloads)
-    import sqlite3
-
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        durable_mtimes = dict(
-            conn.execute(
-                "SELECT source_path, file_mtime_ms FROM raw_sessions WHERE origin = 'antigravity-session'"
-            ).fetchall()
-        )
-    assert durable_mtimes == expected_mtimes
-    blob_store = BlobStore(archive_root / "blob")
+    expected = {
+        conversation: (antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF, True),
+        metadata: (antigravity.AntigravitySourceRole.METADATA_SIDECAR, False),
+        document: (antigravity.AntigravitySourceRole.BRAIN_DOCUMENT, False),
+        unknown: (antigravity.AntigravitySourceRole.UNKNOWN, False),
+    }
     assert {
-        source_path: blob_store.read_all(blob_hash) for source_path, blob_hash in raw_blobs.items()
-    } == expected_payloads
-    assert str(sidecar) not in raw_blobs
+        path: (
+            classification.role,
+            classification.parse_as_session,
+        )
+        for path, classification in ((path, antigravity.classify_source_path(path)) for path in expected)
+    } == expected
 
 
-def test_rerun_after_full_acquisition_is_a_noop(
+def test_shared_source_iterator_never_promotes_brain_artifacts(
     tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-    _fake_client: _FakeLanguageServerClient,
+    monkeypatch,
 ) -> None:
-    antigravity_root = tmp_path / "antigravity"
-    _touch_conversation_pb(antigravity_root, "cascade-0", "cascade-1")
-    monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
+    root = tmp_path / "antigravity"
+    (root / "conversations").mkdir(parents=True)
+    (root / "conversations" / "cascade.pb").write_bytes(b"opaque")
+    (root / "brain" / "work").mkdir(parents=True)
+    (root / "brain" / "work" / "plan.md").write_text("# plan", encoding="utf-8")
+    (root / "brain" / "work" / "plan.md.metadata.json").write_text("{}", encoding="utf-8")
+    session = antigravity.parse_markdown_export(
+        "### User Input\n\nhello",
+        antigravity.AntigravitySessionSummary(cascade_id="cascade"),
+    )
 
-    archive_root = workspace_env["archive_root"]
-    first = acquire_antigravity_conversations_once(archive_root)
-    assert first == 2
+    def outcomes(*_args, **_kwargs):
+        yield antigravity.AntigravityExportOutcome(root / "conversations/cascade.pb", "cascade", session)
 
-    _fake_client.exported_cascade_ids.clear()
-    second = acquire_antigravity_conversations_once(archive_root)
+    monkeypatch.setattr(antigravity, "iter_language_server_export_results", outcomes)
 
-    assert second == 0
-    # No language-server RPC at all for the already-acquired cascades.
-    assert _fake_client.exported_cascade_ids == []
+    admitted = list(iter_antigravity_language_server_sessions(Source(name="antigravity", path=root)))
+
+    assert [item[1].provider_session_id for item in admitted] == ["cascade"]
+    assert all("metadata" not in item[1].provider_session_id for item in admitted)
 
 
-def test_batch_is_bounded_per_tick(
+def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity"
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True)
+    for cascade_id in ("poison", "healthy"):
+        (conversations / f"{cascade_id}.pb").write_bytes(cascade_id.encode())
+
+    class Client:
+        def search_sessions(self, **_kwargs):
+            return []
+
+        def export_markdown(self, cascade_id: str) -> str:
+            if cascade_id == "poison":
+                return ""
+            return "### User Input\n\nhealthy"
+
+    outcomes = list(antigravity.iter_language_server_export_results(root, client=Client()))
+
+    assert [outcome.cascade_id for outcome in outcomes] == ["healthy", "poison"]
+    assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["healthy"]
+    failed = next(outcome for outcome in outcomes if not outcome.obtained)
+    assert failed.error is not None
+    assert "empty" in failed.error
+
+
+def test_common_live_batch_admits_conversation_through_vendor_route(
     tmp_path: Path,
-    workspace_env: dict[str, Path],
-    monkeypatch: pytest.MonkeyPatch,
-    _fake_client: _FakeLanguageServerClient,
+    monkeypatch,
 ) -> None:
-    antigravity_root = tmp_path / "antigravity"
-    cascade_ids = [f"cascade-{i}" for i in range(ANTIGRAVITY_ACQUISITION_MAX_PER_TICK + 5)]
-    _touch_conversation_pb(antigravity_root, *cascade_ids)
-    monkeypatch.setattr("polylogue.paths.antigravity_path", lambda: antigravity_root)
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque protobuf")
 
-    archive_root = workspace_env["archive_root"]
-    acquired = acquire_antigravity_conversations_once(archive_root)
+    class Client:
+        def start(self) -> None:
+            return None
 
-    assert acquired == ANTIGRAVITY_ACQUISITION_MAX_PER_TICK
-    # A second tick picks up the remainder.
-    remaining = acquire_antigravity_conversations_once(archive_root)
-    assert remaining == 5
+        def close(self) -> None:
+            return None
+
+        def search_sessions(self, **_kwargs):
+            return []
+
+        def export_markdown(self, cascade_id: str) -> str:
+            assert cascade_id == "cascade"
+            return "### User Input\n\nhello"
+
+    monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: Client())
+    index_db = tmp_path / "cursor.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity")
+
+    assert result.succeeded == [conversation]
+    assert result.failed == []

@@ -272,11 +272,6 @@ def _looks_like_antigravity_markdown_record(payload: object) -> bool:
     return record is not None and antigravity.looks_like_markdown_export(record)
 
 
-def _looks_like_antigravity_brain_record(payload: object) -> bool:
-    record = _payload_record(payload)
-    return record is not None and antigravity.looks_like_brain_metadata(record, None)
-
-
 def _looks_like_beads_record(payload: object) -> bool:
     record = _payload_record(payload)
     return record is not None and beads.looks_like(record)
@@ -1442,9 +1437,7 @@ def _lower_payload_specs(
         return []
     if runtime_provider is Provider.ANTIGRAVITY:
         record = _single_document_record(shaped_payload)
-        if record is not None and (
-            antigravity.looks_like_markdown_export(record) or antigravity.looks_like_brain_metadata(record, source_path)
-        ):
+        if record is not None and antigravity.looks_like_markdown_export(record):
             return [
                 _local_artifact_document_spec(
                     runtime_provider,
@@ -1607,11 +1600,8 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
                 spec.fallback_id,
                 profile_root=Path(spec.source_path).parent if spec.source_path else None,
             )
-        if spec.provider is Provider.ANTIGRAVITY:
-            if antigravity.looks_like_markdown_export(record):
-                return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
-            source_path = Path(spec.source_path) if spec.source_path is not None else Path(f"{spec.fallback_id}.md")
-            return [antigravity.parse_brain_metadata(record, source_path, spec.fallback_id)]
+        if spec.provider is Provider.ANTIGRAVITY and antigravity.looks_like_markdown_export(record):
+            return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
         return []
 
     if spec.mode == "chunked_prompt":

@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, TitleSource
-from polylogue.core.json import JSONDocument
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.antigravity import (
-    BRAIN_METADATA_FRAGMENT_FLAG,
-    AntigravitySessionSummary,
-    _mark_active_leaf,
-    looks_like_brain_metadata,
-    parse_brain_metadata,
-    parse_markdown_export,
-)
+from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, _mark_active_leaf, parse_markdown_export
 from polylogue.sources.parsers.base import ParsedMessage
 
 
@@ -117,100 +107,6 @@ Unstructured transcript body.
     assert session.title_source is None
 
 
-def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:
-    session_dir = tmp_path / "brain" / "session-1"
-    session_dir.mkdir(parents=True)
-    artifact_path = session_dir / "implementation_plan.md"
-    artifact_path.write_text("# Implementation Plan\n\nDo the work.\n", encoding="utf-8")
-    metadata_path = session_dir / "implementation_plan.md.metadata.json"
-    payload: JSONDocument = {
-        "artifactType": "ARTIFACT_TYPE_OTHER",
-        "summary": "Implementation Plan",
-        "updatedAt": "2026-01-07T19:08:15.216541610Z",
-    }
-
-    assert looks_like_brain_metadata(payload, metadata_path) is True
-
-    session = parse_brain_metadata(payload, metadata_path, "fallback")
-
-    assert session.source_name is Provider.ANTIGRAVITY
-    assert session.provider_session_id == "session-1:implementation_plan.md"
-    assert session.title == "Implementation Plan"
-    assert session.title_source is None
-    assert session.updated_at == "2026-01-07T19:08:15.216541610Z"
-    assert session.messages[0].role is Role.ASSISTANT
-    assert session.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
-    assert session.messages[0].position == 0
-    assert session.messages[0].is_active_leaf is True
-    assert session.active_leaf_message_provider_id == "session-1:implementation_plan.md:artifact"
-    assert session.messages[0].blocks[0].type == BlockType.TEXT
-
-
-def test_parse_brain_metadata_falls_back_to_summary_on_non_utf8_artifact(tmp_path: Path) -> None:
-    session_dir = tmp_path / "brain" / "session-non-utf8"
-    session_dir.mkdir(parents=True)
-    artifact_path = session_dir / "output.md"
-    artifact_path.write_bytes(b"\xff\xfe\x00not utf-8")
-    metadata_path = session_dir / "output.md.metadata.json"
-    payload: JSONDocument = {
-        "artifactType": "ARTIFACT_TYPE_OTHER",
-        "summary": "Recovered summary",
-        "updatedAt": "2026-01-07T19:08:15.216541610Z",
-    }
-
-    session = parse_brain_metadata(payload, metadata_path, "fallback")
-
-    assert session.provider_session_id == "session-non-utf8:output.md"
-    assert session.messages[0].text == "Recovered summary"
-    assert session.messages[0].blocks[0].text == "Recovered summary"
-
-
-def test_parse_brain_metadata_marks_missing_artifact(tmp_path: Path) -> None:
-    metadata_path = tmp_path / "brain" / "session-2" / "missing.md.metadata.json"
-    metadata_path.parent.mkdir(parents=True)
-    payload: JSONDocument = {
-        "artifactType": "ARTIFACT_TYPE_OTHER",
-        "summary": "Missing body",
-        "updatedAt": "2026-01-07T19:08:15.216541610Z",
-    }
-
-    session = parse_brain_metadata(payload, metadata_path, "fallback")
-
-    assert session.provider_session_id == "session-2:missing.md"
-    assert session.messages[0].text == "Missing body"
-
-
-# ---------------------------------------------------------------------------
-# Regression: brain-metadata fragmentation degraded flag (#1764)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_brain_metadata_sets_degraded_ingest_flag(tmp_path: Path) -> None:
-    """Brain-metadata sessions are flagged degraded:brain-metadata-fragment.
-
-    Each *.metadata.json artifact becomes its own single-message session,
-    fragmenting one work session into N sessions.  The ingest_flags field
-    carries the degraded marker so it is written as an auto-tag at storage
-    time and can be excluded from primary session counts and insight rollups.
-    """
-    session_dir = tmp_path / "brain" / "session-abc"
-    session_dir.mkdir(parents=True)
-    artifact_path = session_dir / "output.md"
-    artifact_path.write_text("# Output\n\nSome result.\n", encoding="utf-8")
-    metadata_path = session_dir / "output.md.metadata.json"
-    payload: JSONDocument = {
-        "artifactType": "ARTIFACT_TYPE_OTHER",
-        "summary": "Output",
-        "updatedAt": "2026-04-01T10:00:00Z",
-    }
-
-    session = parse_brain_metadata(payload, metadata_path, "fallback")
-
-    assert BRAIN_METADATA_FRAGMENT_FLAG in session.ingest_flags, (
-        f"Expected {BRAIN_METADATA_FRAGMENT_FLAG!r} in ingest_flags, got {session.ingest_flags!r}"
-    )
-
-
 def test_parse_markdown_export_has_no_degraded_flag() -> None:
     """Language-server export sessions are whole transcripts — not fragmented.
 
@@ -227,7 +123,4 @@ def test_parse_markdown_export_has_no_degraded_flag() -> None:
 
     session = parse_markdown_export(markdown, summary)
 
-    assert BRAIN_METADATA_FRAGMENT_FLAG not in session.ingest_flags, (
-        f"Markdown export session must not carry {BRAIN_METADATA_FRAGMENT_FLAG!r}, "
-        f"got ingest_flags={session.ingest_flags!r}"
-    )
+    assert session.ingest_flags == []

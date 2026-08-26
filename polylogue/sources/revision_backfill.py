@@ -2820,7 +2820,7 @@ def census_parse_worker(
 #: ``source_path`` (``sources/parsers/beads.py:_repository_root``);
 #: ``Provider.ANTIGRAVITY``'s brain-metadata mode derives its
 #: ``profile_root``/artifact path from ``source_path``
-#: (``sources/dispatch.py``'s ``antigravity.parse_brain_metadata`` call);
+#: (the retired Antigravity brain-metadata session route);
 #: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
 #: derive ``profile_root`` from ``source_path``. Those three keep the
 #: conservative same-path-only dedup below. ``Provider.UNKNOWN`` (browser
