@@ -8,9 +8,16 @@ from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL, OPS_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
+    assert_complete_audit_disposition,
+    audit_column_dispositions,
+)
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
+
+AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
+assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
 ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
     ArchiveTier.SOURCE: SOURCE_DDL,
@@ -37,6 +44,7 @@ def archive_ddl_for_tier(tier: ArchiveTier) -> str:
 
 
 __all__ = [
+    "AUDIT_COLUMN_DISPOSITIONS",
     "ARCHIVE_DDL_BY_TIER",
     "ARCHIVE_VERSION_BY_TIER",
     "archive_ddl_for_tier",

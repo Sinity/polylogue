@@ -25,6 +25,7 @@ over the `CREATE TABLE` statement.
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 53` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 10` |
+| `audit.py` | `audit.db` | `AUDIT_SCHEMA_VERSION = 2` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -60,7 +61,7 @@ The runtime table inventory per tier is also enumerated in
 status` uses to report row counts; that dict is a useful cross-check against
 the DDL.
 
-## The Five Tiers
+## The Six Tiers
 
 ### `source.db` — raw acquisition (rebuild-from-source)
 
