@@ -9,7 +9,6 @@ const operatorStatusApi = globalThis.PolylogueOperatorStatus;
 
 let currentCaptureQueue = { entries: [], dropped_count: 0 };
 let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
-let currentBackfillJobs = [];
 let currentReceiverOnline = true;
 let currentBrowserActions = [];
 
@@ -101,7 +100,9 @@ function renderTimeline(items) {
     return;
   }
   node.innerHTML = events.map((entry) => {
-    const presentation = operatorStatusApi.eventPresentation(entry);
+    const presentation = entry.action_id
+      ? operatorStatusApi.actionPresentation(entry)
+      : operatorStatusApi.eventPresentation(entry);
     return `<div class="log-item"><div class="log-time">${escapeHtml(relativeAge(entry.at))}</div><div><div class="log-title">${escapeHtml(presentation.label)}</div><div class="log-meta">${escapeHtml(presentation.detail || "")}</div></div></div>`;
   }).join("");
 }
@@ -166,7 +167,7 @@ function activeConversationState(tab, globalState, ledger) {
     globalState?.provider === context.provider
     && globalState?.provider_session_id === context.sessionId
   ) {
-    // globalState (background's live/mission snapshot) agrees with the ledger
+    // globalState (background's live capture snapshot) agrees with the ledger
     // on which conversation this is, but the two are updated by separate,
     // independently-timed paths (a synchronous storage read vs. an async
     // background round-trip) and can transiently disagree -- e.g. right
@@ -291,7 +292,6 @@ function workKindLabel(kind) {
   return {
     capture_retry: "Capture retry",
     freshness: "Freshness check",
-    backfill: "Backfill",
   }[kind] || "Work";
 }
 
@@ -302,7 +302,6 @@ function renderWorkQueue() {
   const items = operatorStatusApi.normalizeWorkItems({
     captureQueue: currentCaptureQueue,
     freshnessQueue: currentFreshnessQueue,
-    backfillJobs: currentBackfillJobs,
     receiverOnline: currentReceiverOnline,
   });
   countNode.textContent = String(items.length);
@@ -399,65 +398,6 @@ function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
   currentReceiverOnline = ["ok", "recovered"].includes(health.status);
   renderReceiverPairing(pairing || health.pairing || null, health, configuredUrl);
   renderWorkQueue();
-}
-
-let selectedBackfillJobId = null;
-
-function renderBackfill(jobs) {
-  const statusNode = document.getElementById("backfill-status");
-  if (!statusNode) return;
-  const list = Array.isArray(jobs) ? [...jobs].sort((left, right) => {
-    const leftActive = ["running", "paused"].includes(left.status) ? 1 : 0;
-    const rightActive = ["running", "paused"].includes(right.status) ? 1 : 0;
-    return rightActive - leftActive || String(right.updated_at || right.created_at || "").localeCompare(String(left.updated_at || left.created_at || ""));
-  }) : [];
-  currentBackfillJobs = list;
-  renderWorkQueue();
-  const job = list.find((candidate) => candidate.id === selectedBackfillJobId) || list[0] || null;
-  const selector = document.getElementById("backfill-job");
-  if (selector) {
-    selector.innerHTML = list.length
-      ? list.map((candidate) => `<option value="${escapeHtml(candidate.id)}">${escapeHtml(`${candidate.job_title || `${candidate.provider} history backfill`} · ${candidate.status}`)}</option>`).join("")
-      : '<option value="">No jobs yet</option>';
-  }
-  if (!job) {
-    statusNode.textContent = "idle";
-    return;
-  }
-  selectedBackfillJobId = job.id;
-  if (selector) selector.value = job.id;
-  const contractBlocked = job.cooldown_reason === "receiver_contract_incompatible";
-  const recoveryBlocked = job.cooldown_reason === "browser_profile_recovery_required";
-  const bridgeBlocked = job.cooldown_reason === "backfill_bridge_response_too_large";
-  statusNode.textContent = contractBlocked
-    ? `${job.provider} · receiver upgrade required`
-    : recoveryBlocked
-      ? `${job.provider} · profile recovery required`
-      : bridgeBlocked
-        ? `${job.provider} · conversation bridge limit reached`
-      : `${job.provider} · ${job.status}`;
-  document.getElementById("backfill-cursor").textContent = job.inventory_complete ? `${job.inventory_cursor} · complete` : job.inventory_cursor || "--";
-  const progress = job.progress || {};
-  document.getElementById("backfill-progress").textContent = `${progress.complete || 0}/${progress.total || 0} · ${progress.retry || 0} retry · ${progress.no_turns || 0} empty · ${(progress.error || 0) + (progress.operator_action || 0)} attention`;
-  const cooldown = job.cooldown_until_ms ? new Date(job.cooldown_until_ms).toLocaleTimeString() : "none";
-  document.getElementById("backfill-rate").textContent = `${Math.round((job.learned_cadence_ms || 0) / 1000)}s · ${cooldown}`;
-  document.getElementById("backfill-last").textContent = contractBlocked
-    ? "Receiver ACK contract is stale. Upgrade/restart receiver, then Resume."
-    : recoveryBlocked
-      ? "Browser profile was replaced. Inspect exported ledger before starting a new job."
-      : bridgeBlocked
-        ? "A native conversation exceeded the bounded bridge. It is held; Resume explicitly retries it with compact capture."
-      : job.recovery_checkpoint_error
-        ? `Profile recovery checkpoint failed: ${job.recovery_checkpoint_error}`
-      : job.last_ack?.receiver_request_id || job.last_error || "--";
-  const resumeButton = document.getElementById("backfill-resume");
-  if (resumeButton) resumeButton.disabled = recoveryBlocked;
-}
-
-async function refreshBackfills() {
-  const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.status" });
-  renderBackfill(result?.jobs || []);
-  return result;
 }
 
 function ambientFallback(raw, tabUrl) {
@@ -681,6 +621,25 @@ async function render() {
     mission?.state || stored.polylogueState,
     stored.polylogueSessionLedger || {},
   );
+  const receiverContract = document.getElementById("receiver-contract");
+  if (receiverContract) {
+    receiverContract.textContent = [
+      mission?.receiver?.health?.api_schema,
+      mission?.extension?.contract_epoch,
+    ].filter(Boolean).join(" · ") || "Not reported";
+  }
+  const writeExclusion = document.getElementById("write-exclusion");
+  if (writeExclusion) {
+    const exclusion = mission?.receiver?.health?.write_exclusion
+      || state?.write_exclusion
+      || state?.archive_state?.write_exclusion;
+    writeExclusion.textContent = exclusion ? String(exclusion) : "Not reported";
+  }
+  const cooldown = document.getElementById("cooldown");
+  if (cooldown) {
+    const nextAttempt = state?.capture_freshness?.next_attempt_at_ms || state?.cooldown_until_ms;
+    cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
+  }
   const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
   const health = mission?.receiver?.health || state?.receiver_health || (
     state?.error === "unauthorized"
@@ -737,17 +696,21 @@ async function render() {
 
   const activeProvider = state?.provider || providerFromUrl(tab?.url || "");
   const activeSessionId = state?.provider_session_id || tabState(tab, stored.polylogueSessionLedger || {}).sessionId;
-  renderTimeline(mission?.timeline || stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || []);
+  const conversationTimeline = mission?.timeline || stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || [];
+  const recentActionOutcomes = currentBrowserActions.map((action) => ({
+    ...action,
+    action_id: action.action_id || true,
+    at: action.updated_at || action.completed_at || action.created_at || null,
+  }));
+  renderTimeline([...conversationTimeline, ...recentActionOutcomes].sort((left, right) => String(right.at || "").localeCompare(String(left.at || ""))));
   renderOpenTabs(openTabs, stored.polylogueSessionLedger || {}, tab?.id, currentReceiverOnline);
 
   if (mission?.work) {
     renderQueue(mission.work.capture_queue || stored.polylogueCaptureQueue);
     renderFreshnessQueue(mission.work.freshness_queue || stored.polylogueCaptureFreshnessQueue);
-    renderBackfill(mission.work.backfill_jobs || []);
   } else {
     renderQueue(stored.polylogueCaptureQueue);
     renderFreshnessQueue(stored.polylogueCaptureFreshnessQueue);
-    await refreshBackfills().catch(() => renderBackfill([]));
   }
 
   const ambient = mission?.ambient || ambientFallback(stored.polylogueAmbientSettings, tab?.url || "");
@@ -756,7 +719,6 @@ async function render() {
   const workItems = operatorStatusApi.normalizeWorkItems({
     captureQueue: currentCaptureQueue,
     freshnessQueue: currentFreshnessQueue,
-    backfillJobs: currentBackfillJobs,
     receiverOnline: currentReceiverOnline,
   });
   renderAttention(operatorStatusApi.computeAttention({
@@ -878,10 +840,27 @@ document.getElementById("debug-toggle").addEventListener("click", () => {
 
 document.getElementById("debug-export").addEventListener("click", async () => {
   await withAction("debug-export", async () => {
-    const stored = await chrome.storage.local.get({ polylogueDebugLog: [], polylogueCaptureLog: [], polylogueState: null });
+    const [stored, snapshot, actionStatus] = await Promise.all([
+      chrome.storage.local.get({
+        polylogueDebugLog: [],
+        polylogueCaptureLog: [],
+        polylogueCaptureQueue: { entries: [], dropped_count: 0 },
+        polylogueCaptureFreshnessQueue: { entries: {}, dropped_count: 0 },
+        polylogueState: null,
+      }),
+      loadMissionSnapshot(),
+      loadBrowserActionsStatus(),
+    ]);
     const payload = {
       exported_at: new Date().toISOString(),
       state: stored.polylogueState || null,
+      receiver: snapshot?.receiver || null,
+      extension: snapshot?.extension || null,
+      automatic_capture: {
+        capture_queue: stored.polylogueCaptureQueue,
+        freshness_queue: stored.polylogueCaptureFreshnessQueue,
+      },
+      browser_actions: actionStatus,
       debug_log: Array.isArray(stored.polylogueDebugLog) ? stored.polylogueDebugLog : [],
       capture_log: Array.isArray(stored.polylogueCaptureLog) ? stored.polylogueCaptureLog : [],
     };
@@ -890,50 +869,6 @@ document.getElementById("debug-export").addEventListener("click", async () => {
     const link = document.createElement("a");
     link.href = url;
     link.download = `polylogue-browser-capture-debug-${Date.now()}.json`;
-    link.click();
-    globalThis.URL.revokeObjectURL(url);
-  }, { busy: "Exporting", ok: "Exported" });
-});
-
-document.getElementById("backfill-start")?.addEventListener("click", async () => {
-  await withAction("backfill-start", async () => {
-    const provider = document.getElementById("backfill-provider").value;
-    const cutoffValue = document.getElementById("backfill-cutoff").value;
-    if (!cutoffValue) throw new Error("backfill_cutoff_required");
-    const response = await chrome.runtime.sendMessage({
-      type: "polylogue.backfill.start",
-      provider,
-      cutoff: new Date(`${cutoffValue}T00:00:00Z`).toISOString(),
-    });
-    selectedBackfillJobId = response.job.id;
-    await refreshBackfills();
-  }, { busy: "Starting", ok: "Started" });
-});
-
-document.getElementById("backfill-job")?.addEventListener("change", async (event) => {
-  selectedBackfillJobId = event.target.value || null;
-  await refreshBackfills();
-});
-
-for (const action of ["pause", "resume", "cancel"]) {
-  document.getElementById(`backfill-${action}`)?.addEventListener("click", async () => {
-    if (!selectedBackfillJobId) return;
-    await withAction(`backfill-${action}`, async () => {
-      await chrome.runtime.sendMessage({ type: "polylogue.backfill.control", job_id: selectedBackfillJobId, action });
-      await refreshBackfills();
-    }, { busy: `${action}…`, ok: action });
-  });
-}
-
-document.getElementById("backfill-export")?.addEventListener("click", async () => {
-  if (!selectedBackfillJobId) return;
-  await withAction("backfill-export", async () => {
-    const response = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: selectedBackfillJobId });
-    const blob = new globalThis.Blob([`${JSON.stringify(response.ledger, null, 2)}\n`], { type: "application/json" });
-    const url = globalThis.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `polylogue-backfill-${selectedBackfillJobId}.json`;
     link.click();
     globalThis.URL.revokeObjectURL(url);
   }, { busy: "Exporting", ok: "Exported" });

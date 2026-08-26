@@ -188,7 +188,7 @@
 
     const host = doc.createElement("div");
     host.id = HOST_ID;
-    host.setAttribute("data-polylogue-surface", "ambient-mission-control");
+    host.setAttribute("data-polylogue-surface", "ambient-capture-status");
     // Fixed positioning keeps the host outside provider layout. Overflow must
     // remain visible: paint containment would clip the panel to this zero-size
     // anchor and make a visually correct DOM tree render as an invisible UI.
@@ -208,11 +208,11 @@
     panel.hidden = true;
 
     const head = createElement(doc, "div", "head");
-    const title = createElement(doc, "h2", "", "Polylogue mission control");
+    const title = createElement(doc, "h2", "", "Polylogue capture status");
     title.id = "polylogue-ambient-title";
     const close = createElement(doc, "button", "close", "×");
     close.type = "button";
-    close.setAttribute("aria-label", "Close Polylogue mission control");
+    close.setAttribute("aria-label", "Close Polylogue capture status");
     head.append(title, close);
     panel.appendChild(head);
 
@@ -239,13 +239,6 @@
     timelineSection.appendChild(timelineList);
     panel.appendChild(timelineSection);
 
-    const workSection = createElement(doc, "section", "section");
-    workSection.appendChild(createElement(doc, "h3", "", "Work queue"));
-    const workMeta = createElement(doc, "p", "meta");
-    const workList = createElement(doc, "div", "list");
-    workSection.append(workMeta, workList);
-    panel.appendChild(workSection);
-
     const selectionSection = createElement(doc, "section", "section");
     selectionSection.appendChild(createElement(doc, "h3", "", "Selection to assertion"));
     const selectionText = createElement(doc, "div", "selection", "Select text inside a conversation message to prepare an assertion candidate.");
@@ -270,7 +263,7 @@
     chip.type = "button";
     chip.setAttribute("aria-controls", panel.id);
     chip.setAttribute("aria-expanded", "false");
-    chip.setAttribute("aria-label", "Open Polylogue mission control; checking status");
+    chip.setAttribute("aria-label", "Open Polylogue capture status; checking status");
     const mark = createElement(doc, "span", "mark", "P");
     const chipDot = createElement(doc, "span", "dot");
     const count = createElement(doc, "span", "count", "—");
@@ -312,46 +305,24 @@
       }
     }
 
-    function renderWork(work) {
-      clearNode(workList);
-      workMeta.textContent = "";
-      const items = root.PolylogueOperatorStatus?.normalizeWorkItems?.({
-        captureQueue: work?.capture_queue,
-        freshnessQueue: work?.freshness_queue,
-        backfillJobs: work?.backfill_jobs,
-        receiverOnline: snapshot?.state?.online !== false,
-      }) || [];
-      count.textContent = items.length > 99 ? "99+" : String(items.length);
-      if (!items.length) {
-        workList.appendChild(createElement(doc, "p", "empty", "No capture work is waiting."));
-        return;
-      }
-      for (const workItem of items.slice(0, 6)) {
-        const item = createElement(doc, "div", "item");
-        const itemHead = createElement(doc, "div", "item-head");
-        itemHead.append(createElement(doc, "div", "item-title", workItem.title));
-        const pill = createElement(doc, "span", `pill ${workItem.status.tone}`, workItem.status.label);
-        itemHead.appendChild(pill);
-        item.append(itemHead);
-        item.append(createElement(doc, "p", "meta", `${workItem.phase} · ${workItem.cadence}`));
-        item.append(createElement(doc, "p", "meta", `Owner: ${workItem.owner}`));
-        if (workItem.cooldown) item.append(createElement(doc, "p", "meta", `Cooldown/backoff: ${workItem.cooldown}`));
-        workList.appendChild(item);
-      }
-    }
-
     function render(nextSnapshot) {
       snapshot = nextSnapshot;
       const state = nextSnapshot?.state || { online: false, error: "receiver_unavailable" };
-      const status = root.PolylogueOperatorStatus?.operatorStatusForState?.(state) || {
+      const presentation = root.PolylogueOperatorStatus?.operatorPresentationForState?.(state) || {
+        status: {
+          label: state.online === false ? "Receiver offline" : "Needs attention",
+          tone: "warn",
+        },
         label: state.online === false ? "Receiver offline" : "Needs attention",
         tone: "warn",
       };
+      const status = presentation.status || presentation;
       conversationLabel.textContent = status.label;
-      conversationDetail.textContent = status.detail || "Current conversation status unavailable.";
+      conversationDetail.textContent = presentation.detail || status.detail || "Current conversation status unavailable.";
       setTone(conversationDot, status.tone);
       setTone(chipDot, status.tone);
-      chip.setAttribute("aria-label", `Open Polylogue mission control; ${status.label}`);
+      count.textContent = presentation.status?.partialFidelity ? "!" : "";
+      chip.setAttribute("aria-label", `Open Polylogue capture status; ${status.label}`);
 
       const pairing = root.PolylogueOperatorStatus?.receiverPairingPresentation?.({
         pairing: nextSnapshot?.receiver?.pairing,
@@ -362,8 +333,6 @@
       receiverDetail.textContent = pairing?.detail || "";
 
       renderTimeline(nextSnapshot?.timeline);
-      renderWork(nextSnapshot?.work);
-
       const assertionRouteAdvertised = Boolean(nextSnapshot?.assertions?.persistence_supported);
       assertionButton.disabled = true;
       assertionButton.textContent = assertionRouteAdvertised

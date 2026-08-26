@@ -79,12 +79,11 @@ polylogued browser-capture status
 Then navigate to `chatgpt.com`, `claude.ai`, or `grok.com`. (Grok on `x.com`/`twitter.com`
 is not supported: it is served through X's own API rather than grok.com's, so it has no
 capture path here.)
-Open the popup and use **Capture page** for the current page or
-**Sync open tabs** for all currently open supported tabs. The extension does
-not continuously watch page mutations or capture while you type.
-The popup refreshes receiver status automatically when opened and then on a
-short cadence while it remains open; **Check status** is a manual refresh, not
-the only way to update state.
+Capture and freshness checks run automatically on supported conversations. Open
+the popup to see the current conversation, capture confidence, pending browser
+actions, recent outcomes, and any typed exception. The popup does not launch
+retries, sync jobs, or provider inventory work. It refreshes receiver status
+automatically when opened and then on a short cadence while it remains open.
 
 For branch-local development, use the declared `dev_loop_proof` AgentCTL
 operation. Its job result is the authority for the leased receiver URL and
@@ -104,17 +103,14 @@ agentctl job result <job-id>
 
 The proof starts a temporary receiver, proves unauthenticated rejection, asks Sinnix's shared-Chrome control boundary to load the unpacked extension and create one parked `agentbrowser` window, submits deterministic ChatGPT and Claude captures through the receiver, and verifies archive/API convergence without cookies or raw turn text in its bounded result. It never launches Chrome or Chromium, creates a browser profile, or allocates a private CDP port. AgentCTL owns the process, ports, timeout, cancellation, and cleanup. The shared-Chrome provider proof runs only through the declared `live_provider_proof` AgentCTL operation. It opens parked, proof-owned windows in the authenticated browser and does not create another Polylogue daemon lifecycle.
 
-## Mission control, pairing, and ambient status
+## Capture status, pairing, and ambient status
 
-The popup is the operator mission-control surface for all currently open
-supported conversation tabs. It uses one status vocabulary across active-page
-capture, queued capture retries, history backfill, and receiver-owned GPT-5.6
-Sol Pro work: **Safe / current**, **Catching up**, **Partial fidelity**, **Needs
-attention**, **Failed**, **Receiver offline**, **Provider warning**, plus
-**Queued**, **Running**, and **Completed** for external work. Sol Pro rows retain
-the receiver-provided title, phase, cadence, owner/lease, cooldown or backoff,
-and completion-handoff state rather than deriving a second queue model in the
-extension.
+The popup is the compact operator status surface for supported conversation tabs.
+It uses one status vocabulary across active-page capture, automatic retries,
+receiver identity, and generic browser actions: **Safe / current**, **Catching
+up**, **Partial fidelity**, **Needs attention**, **Failed**, **Receiver offline**,
+and **Provider warning**. Automatic work is summarized as evidence. Job launch,
+campaign organization, and archive-scale views remain outside the popup.
 
 A compatible receiver advertises `polylogue-browser-capture/v1` and a stable,
 non-secret `receiver_id` derived from its persisted local pairing root. Once
@@ -122,8 +118,8 @@ observed, the extension binds endpoint, schema, and identity. A different
 identity fails closed; an unreachable noncanonical endpoint gets one bounded
 recovery attempt at `http://127.0.0.1:8765`, and only the already-paired identity
 can be adopted there. **Reset pairing** removes only that trust binding and
-preserves capture retries, backfill ledgers, Sol Pro work, and the extension
-instance identity. Token rotation intentionally appears as an identity change
+preserves capture retries and the extension instance identity. Token rotation
+intentionally appears as an identity change
 and requires operator verification plus reset/re-pair.
 
 ChatGPT and Claude pages also receive a fixed in-page status chip implemented in
@@ -164,11 +160,10 @@ pages the badge shows grey and no data is sent.
 - **Stale archive**: the receiver spool is newer than the indexed archive. Keep
   the daemon running; live convergence should advance this to **Archived**
   automatically.
-- **Explicit background collection only**: ordinary page capture reads content
-  only on an explicit capture action. A backfill runs in the service worker
-  only after **Start** is pressed with a provider and cutoff; it uses the
-  authenticated provider inventory/API, never activates foreground tabs, and
-  can be paused or cancelled from the popup.
+- **Automatic background collection**: ordinary page capture and freshness
+  checks run from the service worker, use the authenticated provider
+  inventory/API where applicable, never activate foreground tabs, and expose
+  their evidence in the popup. The popup does not launch or control collection.
 - **Local only**: content is posted to the configured `127.0.0.1` receiver and never leaves your machine
 - **Privacy diagnostics**: the popup shows capture counts and timestamps, never message content
 
@@ -181,7 +176,7 @@ pages the badge shows grey and no data is sent.
 | Captures not appearing in archive | Run `polylogue ops doctor --runtime --daemon` to verify the daemon is ingesting |
 | Popup says `stale` | The receiver has a newer spool artifact than the indexed archive. Leave the daemon running and inspect the debug log request id if it does not converge. |
 | Popup says `dom` / `dom_degraded` | Reload the provider page, wait for the conversation to load fully, then capture again so the native app payload can be observed. |
-| A button click seems ineffective | The button status line should show Working/Done/Failed. Open **Debug log** and export JSON if the state does not change. |
+| A status seems stuck | Open **Diagnostics** and export the support packet. It contains redacted capture, action, receiver, and extension evidence. |
 | "Failed to load extension" in Chrome | Ensure you selected the `browser-extension/` directory (not `src/`) |
 | Extension not updating | Go to `chrome://extensions`, click the refresh icon on the extension card |
 
@@ -203,10 +198,10 @@ polylogued browser-capture serve (Python)
 polylogued daemon → ingests → FTS index
 ```
 
-## Resumable background backfill
+## Resumable background collection
 
-The popup's **Background backfill** panel starts a provider-native inventory
-delta from a user-selected cutoff. Jobs and queue entries live in IndexedDB,
+The service-worker coordinator runs provider-native inventory deltas outside the
+popup. Jobs and queue entries live in IndexedDB,
 so MV3 service-worker suspension or a browser restart does not lose the cursor,
 captured artifact, retry deadline, or receiver receipt. `chrome.alarms` wakes
 the next eligible item; expired leases are recovered and only one extension

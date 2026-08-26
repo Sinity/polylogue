@@ -289,6 +289,17 @@
     return labels[provider] || humanize(provider, "Unknown provider");
   }
 
+  function captureStatePresentation(state) {
+    const presentations = {
+      captured: { label: "Saved to Polylogue", tone: "ok" },
+      pending: { label: "Saving to Polylogue…", tone: "warn" },
+      failed: { label: "Save to Polylogue failed — click to retry", tone: "bad" },
+      unknown: { label: "Polylogue capture status unknown", tone: "neutral" },
+      "not-seen": { label: "Save to Polylogue", tone: "neutral" },
+    };
+    return { ...(presentations[state] || presentations.unknown) };
+  }
+
   function compactDate(value) {
     const parsed = Date.parse(value || "");
     if (!Number.isFinite(parsed)) return null;
@@ -442,6 +453,25 @@
     };
   }
 
+  function actionPresentation(action = {}) {
+    const labels = {
+      queued: "Browser action queued",
+      leased: "Browser action claimed",
+      preparing: "Browser action preparing",
+      submit_intent: "Browser action ready to submit",
+      awaiting_approval: "Browser action awaiting approval",
+      submitted: "Browser action submitted",
+      completed: "Browser action completed",
+      failed: "Browser action failed",
+      outcome_unknown: "Browser action outcome unknown",
+      declined: "Browser action declined",
+    };
+    return {
+      label: labels[action.status] || "Browser action observed",
+      detail: action.last_error || action.reason || action.provider || "",
+    };
+  }
+
   function receiverPairingPresentation({ pairing = null, health = null, configuredUrl = "" } = {}) {
     if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
       return {
@@ -494,14 +524,11 @@
 
   // The exception-driven popup surfaces at most one attention item at a
   // time (polylogue-yyvg.7 AC3). This is a strict typed priority list, not a
-  // free-form aggregation: auth/pairing mismatch (the receiver cannot be
-  // trusted) outranks an unconfirmed action outcome (a stuck submit, never
-  // auto-retried), which outranks a browser action explicitly held for
-  // operator approval (a genuinely destructive submit that must not
-  // auto-resolve either way), which outranks a typed capability mismatch on
-  // queued work, which outranks a hard archive failure on the current
-  // conversation. Anything else is healthy/automatic and returns null —
-  // silence is the correct answer far more often than not.
+  // free-form aggregation. Every returned kind has a producer and a bounded
+  // resolution contract: auth/pairing mismatch, unknown action outcome,
+  // explicit submit approval, or provider capability mismatch. Ordinary
+  // archive failures and automatic waits remain evidence in diagnostics; they
+  // do not invent a fifth operator state.
   function computeAttention({
     conversationState = null,
     pairing = null,
@@ -511,7 +538,7 @@
   } = {}) {
     if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
       return {
-        kind: "dev_override_stale",
+        kind: "auth_pairing_mismatch",
         tone: "bad",
         headline: "Dev-override receiver unreachable",
         detail: "This profile is deliberately pinned to a non-canonical receiver and will not silently fail over. Reset pairing or repoint settings at the canonical endpoint.",
@@ -549,7 +576,7 @@
         headline: "A browser action's outcome could not be confirmed",
         detail: unknownAction.last_error
           || "The provider connection ended without a receipt. Check the conversation before retrying.",
-        actionId: null,
+        actionId: "diagnostics",
         actionLabel: "Details",
       };
     }
@@ -580,20 +607,7 @@
         tone: "bad",
         headline: `${capabilityItem.title} needs a compatible provider selection`,
         detail: capabilityItem.cooldown || "The receiver rejected an unsupported provider capability.",
-        actionId: null,
-        actionLabel: "Details",
-      };
-    }
-
-    if (conversationState && (conversationState.archive_state?.state === "failed" || conversationState.error)) {
-      return {
-        kind: "archive_failed",
-        tone: "bad",
-        headline: "This conversation failed to archive",
-        detail: conversationState.archive_state?.latest_failure
-          || conversationState.error
-          || "Check the debug log request id.",
-        actionId: null,
+        actionId: "diagnostics",
         actionLabel: "Details",
       };
     }
@@ -610,7 +624,9 @@
   root.PolylogueOperatorStatus = Object.freeze({
     OPERATOR_STATUS,
     WORK_STATUS,
+    actionPresentation,
     computeAttention,
+    captureStatePresentation,
     eventPresentation,
     normalizeWorkItems,
     operatorPresentationForState,

@@ -60,19 +60,6 @@ function installDom() {
       <button id="open-polylogue" class="conversation-only"><span class="button-status"></span></button>
       <button id="debug-toggle"><span class="button-status"></span></button>
       <button id="debug-export"><span class="button-status"></span></button>
-      <select id="backfill-provider"><option value="chatgpt">ChatGPT</option></select>
-      <select id="backfill-job"></select>
-      <input id="backfill-cutoff" />
-      <span id="backfill-status"></span>
-      <span id="backfill-cursor"></span>
-      <span id="backfill-progress"></span>
-      <span id="backfill-rate"></span>
-      <span id="backfill-last"></span>
-      <button id="backfill-start"><span class="button-status"></span></button>
-      <button id="backfill-pause"><span class="button-status"></span></button>
-      <button id="backfill-resume"><span class="button-status"></span></button>
-      <button id="backfill-cancel"><span class="button-status"></span></button>
-      <button id="backfill-export"><span class="button-status"></span></button>
       <span id="mode"></span>
       <span id="fidelity" class="conversation-only"></span>
       <span id="turns" class="conversation-only"></span>
@@ -176,6 +163,11 @@ describe("popup capture", () => {
     for (const id of ["capture", "check", "sync-open-tabs", "check-receiver", "retry-captures"]) {
       expect(markup).not.toContain(`id="${id}"`);
     }
+    for (const id of ["backfill-start", "backfill-pause", "backfill-resume", "backfill-cancel", "backfill-export"]) {
+      expect(markup).not.toContain(`id="${id}"`);
+    }
+    expect(markup).not.toContain("Mission Control");
+    expect(markup).not.toContain("Background backfill");
     expect(markup).toContain("Capture, freshness checks, open-tab convergence, and receiver health run automatically.");
   });
 
@@ -303,9 +295,9 @@ describe("popup capture", () => {
       .toBe("A browser action's outcome could not be confirmed");
     expect(globalThis.document.getElementById("attention-detail").textContent)
       .toBe("submit channel ended without a receipt");
-    // No actionId is offered for an outcome_unknown action -- there is no safe
-    // one-click resolution, only "Details" (progressive disclosure, not a button).
-    expect(globalThis.document.getElementById("attention-action").hidden).toBe(true);
+    expect(globalThis.document.getElementById("attention-action").hidden).toBe(false);
+    expect(globalThis.document.getElementById("attention-action").querySelector(".button-label").textContent)
+      .toBe("Details");
   });
 
   it("holds a destructive submit_once reply for explicit operator approval and renders one primary action", async () => {
@@ -490,37 +482,6 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("state").textContent).toContain("not saved yet");
   });
 
-  it("names receiver, recovery, and bridge-size holds as actionable backfill states", async () => {
-    const job = (cooldown_reason) => ({
-      id: `job-${cooldown_reason}`,
-      provider: "chatgpt",
-      status: "paused",
-      cooldown_reason,
-      inventory_cursor: "17",
-      learned_cadence_ms: 40000,
-      progress: { total: 1, complete: 0, retry: 1, no_turns: 0, error: 0, operator_action: 0 },
-    });
-    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
-      ? { ok: true, jobs: [job("receiver_contract_incompatible")] }
-      : { ok: true });
-    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("receiver upgrade required"));
-    expect(document.getElementById("backfill-last").textContent).toContain("Upgrade/restart receiver");
-
-    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
-      ? { ok: true, jobs: [job("browser_profile_recovery_required")] }
-      : { ok: true });
-    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("profile recovery required"));
-    expect(document.getElementById("backfill-last").textContent).toContain("profile was replaced");
-    expect(document.getElementById("backfill-resume").disabled).toBe(true);
-
-    await loadPopup({}, [CHATGPT_TAB], async (message) => message.type === "polylogue.backfill.status"
-      ? { ok: true, jobs: [job("backfill_bridge_response_too_large")] }
-      : { ok: true });
-    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("bridge limit reached"));
-    expect(document.getElementById("backfill-last").textContent).toContain("held; Resume explicitly retries");
-    expect(document.getElementById("backfill-resume").disabled).toBe(false);
-  });
-
   it("renders mission-control status, open tabs, and the active decision timeline", async () => {
     await loadPopup({
       polylogueState: {
@@ -555,7 +516,7 @@ describe("popup capture", () => {
         ok: true,
         state: { online: true, archive_state: { state: "archived" } },
         receiver: { health: { status: "ok" }, pairing: null, configured_url: "http://127.0.0.1:8765" },
-        work: { capture_queue: { entries: [] }, backfill_jobs: [] },
+        work: { capture_queue: { entries: [] } },
         timeline: [],
         ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
         assertions: { persistence_supported: true },
@@ -858,40 +819,6 @@ describe("popup capture", () => {
 
     expect(globalThis.document.getElementById("queue-count").textContent).toBe("0");
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("No captures queued for retry.");
-  });
-
-  it("starts and controls a background backfill while rendering rate and progress", async () => {
-    let status = "running";
-    const job = () => ({
-      id: "backfill-1",
-      provider: "chatgpt",
-      status,
-      inventory_cursor: "144",
-      inventory_complete: false,
-      learned_cadence_ms: 30000,
-      cooldown_until_ms: Date.now() + 60000,
-      last_error: "provider_http_429",
-      progress: { total: 462, complete: 144, retry: 1, no_turns: 0, error: 0, operator_action: 0 },
-    });
-    globalThis.chrome.runtime.sendMessage.mockImplementation(async (message) => {
-      if (message.type === "polylogue.backfill.status") return { ok: true, jobs: [job()] };
-      if (message.type === "polylogue.backfill.start") return { ok: true, job: job() };
-      if (message.type === "polylogue.backfill.control") { status = message.action === "pause" ? "paused" : message.action; return { ok: true, job: job() }; }
-      return { ok: true };
-    });
-    document.getElementById("backfill-cutoff").value = "2026-04-23";
-
-    document.getElementById("backfill-start").click();
-    await vi.waitFor(() => expect(document.getElementById("backfill-progress").textContent).toContain("144/462"));
-    expect(document.getElementById("backfill-rate").textContent).toContain("30s");
-    expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      type: "polylogue.backfill.start",
-      provider: "chatgpt",
-      cutoff: "2026-04-23T00:00:00.000Z",
-    }));
-
-    document.getElementById("backfill-pause").click();
-    await vi.waitFor(() => expect(document.getElementById("backfill-status").textContent).toContain("paused"));
   });
 
   it("pairs with a one-time code and clears the input on success (polylogue-gnie)", async () => {
