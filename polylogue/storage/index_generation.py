@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -256,6 +257,8 @@ class IndexGeneration:
     predecessor_generation_id: str | None = None
     retention_owner_id: str | None = None
     retention_state: str | None = None
+    sealed_membership_count: int = 0
+    sealed_membership_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -729,6 +732,7 @@ class IndexGenerationStore:
         if path.exists():
             raise RuntimeError(f"rebuild transaction already exists: {op_id}")
         generation = self.create(source_snapshot=source_snapshot)
+        self.seal_candidate_membership(generation, source_snapshot=source_snapshot)
         now = int(time.time() * 1000)
         transaction = IndexRebuildTransaction(
             operation_id=op_id,
@@ -907,46 +911,38 @@ class IndexGenerationStore:
         """
         if limit <= 0:
             raise ValueError("rebuild raw page limit must be positive")
-        source_db = self.archive_root / "source.db"
-        not_resume_debt_clause = f"""(
-            NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
-            OR EXISTS (
-                SELECT 1 FROM raw_session_memberships m
-                WHERE m.raw_id = raw_sessions.raw_id
-                  AND (m.decision IS NULL OR m.decision NOT IN ({_SUPERSEDED_DECISION_PLACEHOLDERS}))
-            )
-        )"""
-        if transaction.last_blob_hash_hex is None or transaction.last_raw_id is None:
-            query = f"""
-                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
-                WHERE {not_resume_debt_clause}
-                ORDER BY blob_hash, raw_id LIMIT ?
-            """
-            params: tuple[object, ...] = (*_SUPERSEDED_DECISIONS, limit + 1)
-        else:
-            last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex)
-            query = f"""
-                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
-                WHERE (blob_hash > ?
-                   OR (blob_hash = ? AND raw_id > ?))
-                  AND {not_resume_debt_clause}
-                ORDER BY blob_hash, raw_id LIMIT ?
-            """
-            params = (
-                last_blob_hash,
-                last_blob_hash,
-                transaction.last_raw_id,
-                *_SUPERSEDED_DECISIONS,
-                limit + 1,
-            )
-        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        generation = self.load(transaction.generation_id)
+        membership_status = self.candidate_membership_status(generation)
+        with closing(sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True)) as conn:
+            # A pre-membership transaction written by older code may have a
+            # cursor checkpoint but no committed membership rows. Honor that
+            # cursor only for this compatibility state. Once one membership
+            # row is committed, the sealed table is the sole resume authority.
+            if membership_status["committed"] == 0 and transaction.cursor is not None:
+                last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex or "")
+                query = """
+                    SELECT raw_id, lower(hex(blob_hash)), blob_size
+                    FROM candidate_source_membership
+                    WHERE status = 'pending'
+                      AND (blob_hash > ? OR (blob_hash = ? AND raw_id > ?))
+                    ORDER BY blob_hash, raw_id LIMIT ?
+                """
+                params: tuple[object, ...] = (last_blob_hash, last_blob_hash, transaction.last_raw_id, limit + 1)
+            else:
+                query = """
+                    SELECT raw_id, lower(hex(blob_hash)), blob_size
+                    FROM candidate_source_membership
+                    WHERE status = 'pending'
+                    ORDER BY blob_hash, raw_id LIMIT ?
+                """
+                params = (limit + 1,)
             rows = conn.execute(query, params).fetchall()
         selected: list[tuple[str, str, int]] = []
         selected_bytes = 0
         deferred_reason: str | None = None
         budget = transaction.pass_byte_budget
         for raw_id, blob_hash, blob_size in rows:
-            raw = (str(raw_id), bytes(blob_hash).hex(), int(blob_size or 0))
+            raw = (str(raw_id), str(blob_hash), int(blob_size or 0))
             if budget is not None and selected and selected_bytes + raw[2] > budget:
                 deferred_reason = "byte-budget"
                 break
@@ -959,6 +955,91 @@ class IndexGenerationStore:
         if has_more and deferred_reason is None:
             deferred_reason = "raw-batch"
         return RebuildRawPage(rows=tuple(selected), has_more=has_more, deferred_reason=deferred_reason)
+
+    def seal_candidate_membership(self, generation: IndexGeneration, *, source_snapshot: str) -> int:
+        """Copy the selected source-head universe into the inactive generation."""
+        source_db = self.archive_root / "source.db"
+        clause = f"""(
+            NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
+            OR EXISTS (
+                SELECT 1 FROM raw_session_memberships m
+                WHERE m.raw_id = raw_sessions.raw_id
+                  AND (m.decision IS NULL OR m.decision NOT IN ({_SUPERSEDED_DECISION_PLACEHOLDERS}))
+            )
+        )"""
+        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source:
+            rows = source.execute(
+                f"SELECT raw_id, blob_hash, blob_size FROM raw_sessions WHERE {clause} ORDER BY blob_hash, raw_id",
+                _SUPERSEDED_DECISIONS,
+            ).fetchall()
+        with closing(sqlite3.connect(generation.index_path)) as conn:
+            conn.executemany(
+                """INSERT INTO candidate_source_membership
+                   (raw_id, blob_hash, blob_size, source_snapshot, status)
+                   VALUES (?, ?, ?, ?, 'pending')""",
+                [
+                    (str(raw_id), bytes(blob_hash), int(blob_size or 0), source_snapshot)
+                    for raw_id, blob_hash, blob_size in rows
+                ],
+            )
+            conn.commit()
+        digest = hashlib.sha256()
+        for raw_id, blob_hash, blob_size in rows:
+            digest.update(str(raw_id).encode())
+            digest.update(b"\0")
+            digest.update(bytes(blob_hash))
+            digest.update(b"\0")
+            digest.update(str(int(blob_size or 0)).encode())
+            digest.update(b"\n")
+        self._write(
+            IndexGeneration(
+                **{
+                    **asdict(generation),
+                    "sealed_membership_count": len(rows),
+                    "sealed_membership_digest": digest.hexdigest(),
+                }
+            )
+        )
+        return len(rows)
+
+    def commit_candidate_membership(self, generation: IndexGeneration, raw_ids: list[str]) -> None:
+        """Commit source membership after the corresponding replay transaction."""
+        if not raw_ids:
+            return
+        with closing(sqlite3.connect(generation.index_path)) as conn:
+            conn.executemany(
+                """UPDATE candidate_source_membership
+                   SET status = 'committed', committed_at_ms = ?
+                   WHERE raw_id = ? AND status = 'pending'""",
+                [(int(time.time() * 1000), raw_id) for raw_id in raw_ids],
+            )
+            conn.commit()
+
+    def candidate_membership_status(self, generation: IndexGeneration) -> dict[str, int]:
+        """Return exact sealed, committed, and pending counts from the candidate."""
+        with closing(sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True)) as conn:
+            rows = conn.execute("SELECT status, COUNT(*) FROM candidate_source_membership GROUP BY status").fetchall()
+            members = conn.execute(
+                "SELECT raw_id, blob_hash, blob_size FROM candidate_source_membership ORDER BY blob_hash, raw_id"
+            ).fetchall()
+        counts = {str(status): int(count) for status, count in rows}
+        committed = counts.get("committed", 0)
+        pending = counts.get("pending", 0)
+        sealed = committed + pending
+        if generation.sealed_membership_count and sealed != generation.sealed_membership_count:
+            raise RuntimeError("candidate source membership count does not match its sealed generation")
+        if generation.sealed_membership_digest:
+            digest = hashlib.sha256()
+            for raw_id, blob_hash, blob_size in members:
+                digest.update(str(raw_id).encode())
+                digest.update(b"\0")
+                digest.update(bytes(blob_hash))
+                digest.update(b"\0")
+                digest.update(str(int(blob_size or 0)).encode())
+                digest.update(b"\n")
+            if digest.hexdigest() != generation.sealed_membership_digest:
+                raise RuntimeError("candidate source membership does not match its sealed generation")
+        return {"sealed": sealed, "committed": committed, "pending": pending, "failed": 0}
 
     def create(self, *, owner_id: str | None = None, source_snapshot: str) -> IndexGeneration:
         created_at_ns = self._next_lifecycle_timestamp_ns()
