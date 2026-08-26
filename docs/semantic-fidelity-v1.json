@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "semantic-fidelity-v1",
+  "purpose": "Bounded independent census of production origin admission, parser preservation, and construct negative space.",
+  "independent_oracle": "OriginSpec and the committed capability manifest are inputs; detection, parsing, and conversational-content admission are exercised through production functions.",
+  "required_report_fields": [
+    "population",
+    "denominator",
+    "strata",
+    "contradictions",
+    "representative_refs",
+    "versions",
+    "blind_spots",
+    "resource_measurements",
+    "mutation_controls"
+  ],
+  "construct_classifications": [
+    "preserved",
+    "normalized",
+    "queryable",
+    "provenance-marked",
+    "rendered",
+    "intentionally unsupported",
+    "gap"
+  ],
+  "privacy": {
+    "payload_text": "never emitted",
+    "refs": "repository-relative fixture paths and stable case names only",
+    "live_archive": "not opened by the bounded command"
+  },
+  "rerun": "devtools verify semantic-fidelity --json --report .agent/reports/semantic-fidelity-v1.json"
+}

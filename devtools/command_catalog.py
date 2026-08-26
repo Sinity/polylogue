@@ -271,6 +271,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify semantic-fidelity",
+        "verification",
+        "Run the bounded production-route semantic contradiction and construct-flow census.",
+        "devtools.semantic_fidelity",
+        use_when="Check OriginSpec witnesses, detector precedence, dropped-construct mutations, and privacy-safe construct flow.",
+        examples=(
+            "devtools verify semantic-fidelity --json",
+            "devtools verify semantic-fidelity --json --report .agent/reports/semantic-fidelity-v1.json",
+        ),
+    ),
+    CommandSpec(
         "verify schema-inference-gate",
         "verification",
         "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
