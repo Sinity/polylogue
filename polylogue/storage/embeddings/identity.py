@@ -115,7 +115,7 @@ class EmbeddingRecipe:
                 "record_selector": self.record_selector,
                 "task": self.task,
                 "tool_implementation": self.tool_implementation,
-                "request_options": self.request_options,
+                "request_options": json.dumps([[k, v] for k, v in self.request_options], separators=(",", ":")),
                 "element_type": self.element_type,
             },
         )
