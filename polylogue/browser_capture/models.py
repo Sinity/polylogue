@@ -27,6 +27,7 @@ class BrowserCaptureAttachment(BaseModel):
 
     provider_attachment_id: str
     message_provider_id: str | None = None
+    attachment_kind: str | None = None
     name: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None

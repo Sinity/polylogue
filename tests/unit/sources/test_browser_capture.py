@@ -882,6 +882,21 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
             "name": "embedded.md",
             "mime_type": "text/markdown",
             "extracted_content": "archive notes",
+            "attachment_kind": "file_service_file",
+        },
+        {
+            "provider_attachment_id": "file-service://file-image",
+            "name": "diagram.png",
+            "mime_type": "image/png",
+            "attachment_kind": "file_service_image",
+            "provider_meta": {"base64_data": "iVBORw0KGgo="},
+        },
+        {
+            "provider_attachment_id": "file-service://file-audio",
+            "name": "voice.wav",
+            "mime_type": "audio/wav",
+            "attachment_kind": "file_service_audio",
+            "provider_meta": {"base64_data": "UklGRg=="},
         },
         {
             "provider_attachment_id": "att-remote",
@@ -916,6 +931,22 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     assert acquired["byte_count"] == len(b"archive notes")
     assert bytes(acquired["blob_hash"]) == expected_hash
     assert blob_store.read_all(expected_hash.hex()) == b"archive notes"
+
+    for name, payload_bytes in (
+        ("diagram.png", b"\x89PNG\r\n\x1a\n"),
+        ("voice.wav", b"RIFF"),
+    ):
+        row = by_name[name]
+        assert row["acquisition_status"] == "acquired"
+        assert row["byte_count"] == len(payload_bytes)
+        digest = hashlib.sha256(payload_bytes).digest()
+        assert bytes(row["blob_hash"]) == digest
+        assert blob_store.read_all(digest.hex()) == payload_bytes
+
+    parsed = parse_browser_capture(payload, "fallback-id")
+    kinds = {attachment.provider_attachment_id: attachment.attachment_kind for attachment in parsed.attachments}
+    assert kinds["file-service://file-image"] == "file_service_image"
+    assert kinds["file-service://file-audio"] == "file_service_audio"
 
     remote = by_name["remote.pdf"]
     assert remote["acquisition_status"] == "unfetched"
