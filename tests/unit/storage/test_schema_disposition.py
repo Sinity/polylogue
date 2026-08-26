@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -54,7 +55,9 @@ def test_audit_disposition_rejects_incomplete_or_unresolved_inventory(mutation: 
     elif mutation == "extra":
         rows.append(replace(rows[0], column="undeclared_column"))
     else:
-        rows[0] = replace(rows[0], disposition="UNCLEAR")
+        # Anti-vacuity: deliberately construct a disposition outside the
+        # declared vocabulary to prove the runtime validator rejects it.
+        rows[0] = replace(rows[0], disposition=cast(Any, "UNCLEAR"))
 
     with pytest.raises(ValueError):
         assert_complete_audit_disposition(rows)
@@ -93,5 +96,7 @@ def test_six_tier_report_is_generated_from_the_complete_disposition() -> None:
 
     assert report["complete"] is True
     assert report["object_count"] == len(schema_dispositions())
-    assert sum(report["disposition_counts"].values()) == report["object_count"]  # type: ignore[union-attr]
-    assert len(report["objects"]) == report["object_count"]  # type: ignore[arg-type]
+    counts = cast("dict[str, int]", report["disposition_counts"])
+    objects = cast("list[object]", report["objects"])
+    assert sum(counts.values()) == report["object_count"]
+    assert len(objects) == report["object_count"]
