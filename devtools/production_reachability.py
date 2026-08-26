@@ -121,23 +121,29 @@ class _CallGraph:
         module_imports = _imports_from_nodes(
             module.tree.body, module.name, is_package=module.path.name == "__init__.py"
         )
+
+        def imported_targets(bindings: dict[str, str], *, expand_nodes: bool) -> set[str]:
+            targets: set[str] = set()
+            for imported in bindings.values():
+                parts = imported.split(".")
+                for end in range(len(parts), 0, -1):
+                    candidate = ".".join(parts[:end])
+                    if candidate in self.module_names:
+                        targets.add(candidate)
+                    if expand_nodes and (
+                        candidate in self.nodes or any(name.startswith(f"{candidate}.") for name in self.nodes)
+                    ):
+                        targets.add(candidate)
+                        targets.update(name for name in self.nodes if name.startswith(f"{candidate}."))
+            return targets
+
         # Package roots are declared production entrypoints. Follow their
         # imports so a route exposed through a facade package is not mistaken
         # for an orphan merely because the facade's callable is a class
         # method. This remains fail-closed for callable seams: imported code
         # still needs an actual call edge from the selected production
         # function in ``check_production_seam``.
-        imported_modules: set[str] = set()
-        for imported in module_imports.values():
-            parts = imported.split(".")
-            for end in range(len(parts), 0, -1):
-                candidate = ".".join(parts[:end])
-                if candidate in self.module_names:
-                    imported_modules.add(candidate)
-                if candidate in self.nodes or any(name.startswith(f"{candidate}.") for name in self.nodes):
-                    imported_modules.add(candidate)
-                    imported_modules.update(name for name in self.nodes if name.startswith(f"{candidate}."))
-        self.edges[module.name] = frozenset(imported_modules)
+        self.edges[module.name] = frozenset(imported_targets(module_imports, expand_nodes=True))
         local_functions = {
             name: f"{module.name}.{name}"
             for name in (
@@ -160,7 +166,17 @@ class _CallGraph:
             qualified_parts = function.qualified_name.split(".")
             if len(qualified_parts) >= 3:
                 bindings["self"] = ".".join(qualified_parts[:-1])
-            targets: set[str] = set()
+            # A local import executes as part of the production callable. Its
+            # module is therefore a real route edge even when the imported
+            # object is a class or the call is hidden behind a constructor.
+            # Keep this production-only: test seam edges remain call-based so
+            # importing a symbol cannot satisfy ``test_symbol_not_called``.
+            local_imports = _imports_in_function(
+                function.node, module.name, is_package=module.path.name == "__init__.py"
+            )
+            targets: set[str] = (
+                imported_targets(local_imports, expand_nodes=False) if module.name.startswith("polylogue.") else set()
+            )
             for call in _calls_in_function(function.node):
                 target = _resolve_call_target(call.func, bindings, self.nodes)
                 if target is not None:
@@ -230,6 +246,42 @@ def _imports_from_nodes(nodes: Iterable[ast.AST], module: str, *, is_package: bo
                 local_name = alias.asname or alias.name
                 bindings[local_name] = f"{imported_module}.{alias.name}"
     return bindings
+
+
+def _imports_in_function(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, module: str, *, is_package: bool = False
+) -> dict[str, str]:
+    """Return imports executed by a function, including conditional imports."""
+
+    class ImportScanner(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.nodes: list[ast.AST] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                for statement in node.body:
+                    self.visit(statement)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is function:
+                for statement in node.body:
+                    self.visit(statement)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            del node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            del node
+
+        def visit_Import(self, node: ast.Import) -> None:
+            self.nodes.append(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            self.nodes.append(node)
+
+    scanner = ImportScanner()
+    scanner.visit(function)
+    return _imports_from_nodes(scanner.nodes, module, is_package=is_package)
 
 
 def _attribute_parts(node: ast.AST) -> tuple[str, ...] | None:

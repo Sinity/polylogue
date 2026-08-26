@@ -329,13 +329,6 @@ def _row(
 
 def record_context_ledger(conn: sqlite3.Connection, assembly: ContextAssembly, *, observed_at_ms: int) -> None:
     """Persist the append-only admission receipt in disposable ``ops.db``."""
-    conn.execute("""CREATE TABLE IF NOT EXISTS context_injection_ledger (
-        ledger_id TEXT PRIMARY KEY, build_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
-        decision TEXT NOT NULL, source TEXT NOT NULL, item_ref TEXT NOT NULL, token_cost INTEGER NOT NULL,
-        source_local_rank INTEGER NOT NULL, budget_before INTEGER NOT NULL, budget_after INTEGER NOT NULL,
-        disclosure_verdict TEXT NOT NULL, authority_verdict TEXT NOT NULL, authority_reason TEXT NOT NULL,
-        policy_refs_json TEXT NOT NULL, target_session TEXT, execution_context_ref TEXT NOT NULL
-    ) STRICT""")
     for index, row in enumerate(assembly.ledger):
         ledger_id = hashlib.sha256(f"{assembly.build_ref}:{index}:{row.item_ref}".encode()).hexdigest()
         conn.execute(

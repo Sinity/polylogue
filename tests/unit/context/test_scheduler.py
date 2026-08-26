@@ -6,6 +6,7 @@ import sqlite3
 
 from polylogue.context.scheduler import ContextItem, read_context_ledger, record_context_ledger, schedule_context
 from polylogue.core.refs import ExecutionContextRef
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 
 
 class _Source:
@@ -74,6 +75,7 @@ def test_ledger_is_idempotent_for_one_assembly() -> None:
         (source,), moment="session_start", target_session="s1", execution_context=_context(), token_budget=1, now_ms=10
     )
     conn = sqlite3.connect(":memory:")
+    conn.executescript(OPS_DDL)
     record_context_ledger(conn, result, observed_at_ms=10)
     record_context_ledger(conn, result, observed_at_ms=10)
     assert conn.execute("SELECT COUNT(*) FROM context_injection_ledger").fetchone()[0] == len(result.ledger)
@@ -85,6 +87,7 @@ def test_ledger_reader_returns_bounded_decisions_and_filters_context() -> None:
         (source,), moment="session_start", target_session="s1", execution_context=_context(), token_budget=1, now_ms=10
     )
     conn = sqlite3.connect(":memory:")
+    conn.executescript(OPS_DDL)
     record_context_ledger(conn, result, observed_at_ms=10)
 
     records = read_context_ledger(conn, target_session="s1", limit=1)
