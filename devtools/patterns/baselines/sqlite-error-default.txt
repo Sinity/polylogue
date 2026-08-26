@@ -30,7 +30,7 @@ polylogue/demo/seed.py:161
 polylogue/hooks/__init__.py:619
 polylogue/hooks/__init__.py:656
 polylogue/maintenance/preview.py:427
-polylogue/maintenance/schema_inference_gate.py:536
+polylogue/maintenance/schema_inference_gate.py:542
 polylogue/operations/archive_debt.py:214
 polylogue/operations/archive_debt.py:219
 polylogue/operations/daemon_workload_probe.py:164

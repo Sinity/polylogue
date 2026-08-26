@@ -1,6 +1,6 @@
 """Read-only go/no-go receipt for the schema-inference prerequisite.
 
-This gate composes the existing corpus-fidelity registry with the four
+This gate composes the existing corpus-fidelity declarations with the four
 source-tier hard gates named by polylogue-r9xsj. It never runs a repair or
 cleanup actuator. SQLite inputs are opened through the repository's
 read-only connection helper; the only write is the caller-selected JSON
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal, NotRequired, TypeAlias, TypedDict, cast
 from uuid import uuid4
 
-from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
+from polylogue.maintenance.archive_verification import archive_verification_names_for_route, verify_archive
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.backup_attestation import (
@@ -40,6 +40,12 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.version import POLYLOGUE_VERSION
+
+
+def _corpus_fidelity_check_names() -> tuple[str, ...]:
+    """Compile the corpus route from current domain declarations."""
+    return archive_verification_names_for_route("corpus-fidelity")
+
 
 RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v2"
 GATE_VERSION = "3"
@@ -1338,11 +1344,12 @@ def _fidelity_evidence(report: object) -> dict[str, object]:
     reasons: list[str] = []
     typed_residuals: list[dict[str, object]] = []
 
-    required_checks = set(CORPUS_FIDELITY_CHECKS)
+    corpus_checks = _corpus_fidelity_check_names()
+    required_checks = set(corpus_checks)
     missing_checks = sorted(required_checks - by_name.keys())
     if missing_checks:
         reasons.append(f"corpus fidelity checks missing from report: {', '.join(missing_checks)}")
-    for name in CORPUS_FIDELITY_CHECKS:
+    for name in corpus_checks:
         check = by_name.get(name)
         if check is None:
             continue
@@ -1631,7 +1638,7 @@ def _validate_schema_inference_gate_payload(
         raise ValueError("schema-inference gate receipt ground-truth evidence changed")
     try:
         live_fidelity = _fidelity_evidence(
-            verify_archive(expected_root, checks=CORPUS_FIDELITY_CHECKS, sample_limit=sample_limit)
+            verify_archive(expected_root, checks=_corpus_fidelity_check_names(), sample_limit=sample_limit)
         )
     except Exception as exc:
         raise ValueError(f"unable to recompute schema-inference corpus fidelity: {exc}") from exc
@@ -2179,7 +2186,7 @@ def _run_schema_inference_gate_locked(
         source_gates = _failed_source_gates(f"source-tier read failed: {exc}")
     blob_denominators = _as_dict(source_gates.get("blob_denominators"))
     try:
-        corpus_report = verify_archive(root, checks=CORPUS_FIDELITY_CHECKS, sample_limit=sample_limit)
+        corpus_report = verify_archive(root, checks=_corpus_fidelity_check_names(), sample_limit=sample_limit)
         fidelity = _fidelity_evidence(corpus_report)
     except Exception as exc:
         fidelity = {"report": {}, "typed_residuals": [], "passed": False, "reasons": [f"corpus audit raised: {exc}"]}
@@ -2296,7 +2303,7 @@ def _run_schema_inference_gate_locked(
             "gate": GATE_VERSION,
             "python": platform.python_version(),
             "executable": sys.executable,
-            "corpus_audit": "polylogue.maintenance.corpus_fidelity via archive verification registry",
+            "corpus_audit": "polylogue.maintenance.corpus_fidelity via archive verification declarations",
         },
         "pass_fail_reasons": reasons,
     }

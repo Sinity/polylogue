@@ -116,10 +116,10 @@ def test_stamp_corruption_blocks_real_candidate_promotion_without_touching_activ
     assert _active_snapshot(root) == snapshot_before
 
 
-def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
+def test_embedding_orphan_blocks_full_rebuild_candidate_promotion(
     tmp_path: Path,
 ) -> None:
-    """The full rebuild route must not treat the feu0 waiver as acceptance."""
+    """The full rebuild route must not treat an embedding error as acceptance."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     _seed_raw(root, "active-session", "active generation remains exact")
@@ -141,7 +141,7 @@ def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
         )
         conn.commit()
 
-    with pytest.raises(RuntimeError, match=r"embeddings-refs-liveness.*waived by polylogue-feu0"):
+    with pytest.raises(RuntimeError, match=r"embeddings-refs-liveness.*orphan"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
         )

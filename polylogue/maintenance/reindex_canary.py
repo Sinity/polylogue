@@ -1507,20 +1507,17 @@ def _validate_selection_evidence(
 def _validate_canary_acceptance_evidence(receipt: dict[str, object]) -> None:
     """Require the running daemon's full canonical canary-profile attestation."""
 
-    from polylogue.maintenance.archive_verification import (
-        REINDEX_CANARY_ACCEPTANCE_CHECKS,
-        REINDEX_CANARY_ACCEPTANCE_PROFILE,
-    )
+    from polylogue.maintenance.archive_verification import archive_verification_names_for_route
 
     acceptance = receipt.get("canary_acceptance")
     if not isinstance(acceptance, dict):
         raise UnclassifiedCanaryDiffError("canary report has no daemon acceptance-profile attestation")
-    if acceptance.get("profile") != REINDEX_CANARY_ACCEPTANCE_PROFILE:
+    if acceptance.get("profile") != "reindex-canary-v2-domain-coverage":
         raise UnclassifiedCanaryDiffError("canary report acceptance profile does not match the running daemon")
     results = acceptance.get("results")
     if not isinstance(results, list):
         raise UnclassifiedCanaryDiffError("canary report acceptance attestation has no per-check results")
-    expected_names = list(REINDEX_CANARY_ACCEPTANCE_CHECKS)
+    expected_names = list(archive_verification_names_for_route("reindex-canary-candidate"))
     actual_names: list[str] = []
     for result in results:
         if not isinstance(result, dict):
