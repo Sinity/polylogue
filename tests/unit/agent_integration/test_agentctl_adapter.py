@@ -44,7 +44,7 @@ def adapter_command() -> tuple[str, ...]:
         if installed.is_file() and installed.stat().st_size
         else None
     )
-    if installed.is_file() and os.access(installed, os.X_OK) and (interpreter is None or Path(interpreter).exists()):
+    if installed.is_file() and os.access(installed, os.X_OK) and interpreter is not None and Path(interpreter).exists():
         return (str(installed),)
     return (sys.executable, "-m", "polylogue.agent_integration.agentctl_adapter")
 
