@@ -87,18 +87,23 @@ def _declaration_rows() -> tuple[dict[str, object], ...]:
     return tuple(rows)
 
 
+def _stat_int(stats: Mapping[str, object], key: str) -> int | None:
+    value = stats.get(key)
+    return value if isinstance(value, int) else None
+
+
 def _observed_count(name: str, kind: str, stats: Mapping[str, object] | None) -> int | None:
     if not stats:
         return None
     if kind == "unit":
         return {
-            "message": stats.get("total_messages"),
+            "message": _stat_int(stats, "total_messages"),
             "action": None,
-            "block": stats.get("total_messages"),
+            "block": _stat_int(stats, "total_messages"),
         }.get(name)
     if name in {"query_terms", "contains_terms", "exclude_text_terms"}:
-        return stats.get("total_messages") if name == "query_terms" else None
-    return stats.get("total_sessions")
+        return _stat_int(stats, "total_messages") if name == "query_terms" else None
+    return _stat_int(stats, "total_sessions")
 
 
 def _status(*, supported: bool, observed: int | None, stale: bool = False) -> str:

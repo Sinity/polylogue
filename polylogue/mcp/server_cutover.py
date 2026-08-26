@@ -961,8 +961,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     search=search,
                     offset=offset,
                     limit=limit,
-                    stats=stats.to_dict(),
-                    readiness={"embedding": stats.embedding_readiness_status},
+                    stats={
+                        "total_sessions": stats.session_count,
+                        "total_messages": stats.message_count,
+                    },
                 )
                 return hooks.json_payload(MCPRootPayload(root={"subject": subject, **page}))
             all_examples = query_discovery_examples()
