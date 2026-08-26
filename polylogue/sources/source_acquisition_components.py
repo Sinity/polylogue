@@ -17,6 +17,14 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
+from polylogue.sources.live.admission import (
+    AdmissionAttempt,
+    AdmissionReceipt,
+    AdmissionState,
+    ArtifactIdentity,
+    ResourceEnvelope,
+    SourceCoordinates,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -354,6 +362,42 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         from polylogue.storage.blob_publication import publication_receipt_id
 
         publication_id = publication_receipt_id(context.blob_store, blob_hash)
+    # The blob is now an exact artifact. Publish the source-owned receipt at
+    # this boundary, before parsing or indexing can run. The callback is the
+    # existing observation sink, so ordinary and bounded files share one
+    # lifecycle and no disposable offset can certify admission.
+    artifact = ArtifactIdentity(blob_hash, blob_size)
+    attempt = AdmissionAttempt(
+        attempt_id=f"{context.source.name}:{context.path}:{artifact.sha256}",
+        coordinates=SourceCoordinates(context.source.name, str(original_source_path or context.path)),
+        artifact=artifact,
+        source_law=f"{context.source.name}:stream-v1",
+        parser_identity="detector-before-parser-v1",
+        start_frontier=None,
+        envelope=ResourceEnvelope(max_bytes=blob_size, max_duration_ms=0),
+    )
+
+    def publish_receipt(receipt: AdmissionReceipt) -> None:
+        if context.observation_callback is None:
+            return
+        context.observation_callback(
+            {
+                "phase": "source-admission",
+                "source_path": str(context.path),
+                "attempt_id": attempt.attempt_id,
+                "disposition": receipt.disposition.value,
+                "artifact_sha256": artifact.sha256,
+                "artifact_size": artifact.size_bytes,
+                "source_law": attempt.source_law,
+                "parser_identity": attempt.parser_identity,
+            }
+        )
+
+    # Keep the state at OBSERVED here: the raw/source transaction is the
+    # production commit authority and completes the terminal transition in
+    # its owning layer. Marking this ACCEPTED would authorize progress before
+    # that commit exists.
+    AdmissionState(attempt, publish_receipt)
     observe_acquisition(
         context.observation_callback,
         phase="source-file-streamed",
