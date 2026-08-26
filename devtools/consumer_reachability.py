@@ -130,6 +130,52 @@ def _console_script_modules(root: Path) -> tuple[str, ...]:
     return tuple(sorted({str(target).split(":", 1)[0] for target in scripts.values()}))
 
 
+def _import_reachable_modules(root: Path, entrypoints: tuple[str, ...]) -> frozenset[str]:
+    """Transitive module-import closure from the production entrypoints."""
+    import ast
+
+    package_root = root / "polylogue"
+    modules: dict[str, Path] = {}
+    for path in package_root.rglob("*.py"):
+        modules[_module_name(path, root)] = path
+    edges: dict[str, set[str]] = {}
+    for name, path in modules.items():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            continue
+        targets: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                targets.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    parts = name.split(".")
+                    is_package = path.name == "__init__.py"
+                    anchor = parts[: len(parts) - node.level + (1 if is_package else 0)]
+                    base_pkg = ".".join(anchor)
+                else:
+                    base_pkg = node.module or ""
+                if base_pkg:
+                    targets.add(base_pkg)
+                    targets.update(f"{base_pkg}.{alias.name}" for alias in node.names)
+        edges[name] = {target for target in targets if target.split(".")[0] == "polylogue"}
+    reachable: set[str] = set()
+    frontier: list[str] = []
+    for entry in entrypoints:
+        frontier.extend(name for name in modules if name == entry or name.startswith(entry + "."))
+    while frontier:
+        current = frontier.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        for target in edges.get(current, ()):  # imported names may be modules or attributes
+            for candidate in (target, target.rsplit(".", 1)[0] if "." in target else target):
+                if candidate in modules and candidate not in reachable:
+                    frontier.append(candidate)
+    return frozenset(reachable)
+
+
 def _waivers(path: Path | None) -> dict[str, str]:
     if path is None:
         return {}
@@ -172,13 +218,30 @@ def check(root: Path, *, base: str | None = None, head: str | None = None, waive
         *_console_script_modules(root),
     ):
         reachable.update(graph.reachable_from(entrypoint))
+    reachable_modules = _import_reachable_modules(
+        root,
+        (
+            "polylogue.api",
+            "polylogue.mcp",
+            "polylogue.daemon",
+            "polylogue.hooks",
+            "polylogue.cli",
+            *_console_script_modules(root),
+        ),
+    )
     findings: list[Finding] = []
     for relative, lines in additions.items():
         path = root / relative
         if path.suffix != ".py" or not path.exists():
             continue
         module = _module_name(path, root)
-        if relative in added_files and module not in reachable and relative not in waivers:
+        # Module reachability is an IMPORT question, not a call-graph one: a
+        # module consumed only at import time (constants, module-level
+        # registry construction) is genuinely reached in production even
+        # though no function body calls into it. The call graph misses those
+        # edges (first false positive: core/schema_subjects.py, consumed by
+        # module-level schema_subject(...) calls in core/provider_identity).
+        if relative in added_files and module not in reachable_modules and relative not in waivers:
             findings.append(Finding(relative, "module", "no production entrypoint reaches the added module"))
         for index, line in enumerate(lines):
             if _TOOL_DECORATOR.search(line):
