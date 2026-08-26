@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, 
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 35
+SOURCE_SCHEMA_VERSION = 36
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -726,6 +726,23 @@ ON raw_hook_events(origin, session_native_id, observed_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_raw_hook_events_source_hash
 ON raw_hook_events(source_path, blob_hash);
+
+-- v36: one durable row per immutable physical hook carrier.  The source
+-- coordinate, not source_path on the logical event, is the identity of the
+-- observed file and permits duplicate events across declared roots.
+CREATE TABLE IF NOT EXISTS hook_event_carriers (
+    source_id       TEXT NOT NULL,
+    relative_path   TEXT NOT NULL,
+    hook_event_id   TEXT NOT NULL REFERENCES raw_hook_events(hook_event_id),
+    blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    payload_digest  BLOB NOT NULL CHECK(length(payload_digest) = 32),
+    carrier_role    TEXT NOT NULL CHECK(carrier_role IN ('primary-writable', 'legacy-read-only')),
+    admitted_at_ms  INTEGER NOT NULL,
+    PRIMARY KEY (source_id, relative_path)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_hook_event_carriers_event
+ON hook_event_carriers(hook_event_id, blob_hash);
 
 CREATE TABLE IF NOT EXISTS otlp_spans (
     span_id           TEXT PRIMARY KEY,

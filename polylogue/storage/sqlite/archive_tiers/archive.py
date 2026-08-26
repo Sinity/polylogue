@@ -1295,6 +1295,9 @@ class ArchiveStore:
         acquired_at_ms: int,
         hook_event: ArchiveHookEvent,
         source_index: int = 0,
+        carrier_source_id: str | None = None,
+        carrier_relative_path: str | None = None,
+        carrier_role: str = "primary-writable",
     ) -> str:
         """Persist a hook event as session-linked evidence, not a session.
 
@@ -1326,6 +1329,9 @@ class ArchiveStore:
             raw_id=raw_id,
             hook_event=hook_event,
             blob_publication_receipt_id=receipt_id,
+            carrier_source_id=carrier_source_id or "representative-hook-source",
+            carrier_relative_path=carrier_relative_path or source_path,
+            carrier_role=carrier_role,
             manage_transaction=True,
         )
 

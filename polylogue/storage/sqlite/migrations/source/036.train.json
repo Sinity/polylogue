@@ -1,0 +1,52 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v36",
+  "tier": "source",
+  "current_version": 35,
+  "target_version": 36,
+  "slot": 36,
+  "owner_ref": "polylogue-sd2vk.2",
+  "migration": {
+    "tier": "source",
+    "target_version": 36,
+    "slot": 36,
+    "path": "036_hook_event_carriers.sql",
+    "owner_ref": "polylogue-sd2vk.2",
+    "sql_sha256": "e99170d3c47354aebf4ee1cef1addbaff0d5b0a76657f339989ce5a24201f147",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:hook-event-carriers",
+      "owner_ref": "polylogue-sd2vk.2",
+      "schema_objects": ["table:hook_event_carriers", "index:idx_hook_event_carriers_event"],
+      "runtime_consumers": [
+        {"consumer_id": "hook-admission", "production_ref": "polylogue.storage.sqlite.archive_tiers.source_write:write_source_hook_event", "behavior_proof_ref": "proof:source-v36:hook-carrier-admission", "roles": ["read", "write"]},
+        {"consumer_id": "hook-spool-drain", "production_ref": "polylogue.sources.hooks:drain_hook_event_spool", "behavior_proof_ref": "proof:source-v36:hook-carrier-admission", "roles": ["read", "write"]}
+      ],
+      "behavior_proof_refs": ["proof:source-v36:hook-carrier-admission"],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:source-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "2a722f6f206e47f44e22bf40118aa82392122f22561015e4e50666f99d88cdb4"
+}
