@@ -103,6 +103,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
 | `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
 | `devtools verify patterns` | Enforce AST-shape defect-family rules with shrinking grandfathered baselines. |
+| `devtools verify portfolio-frontier` | Validate complete Beads ambition, active-set, and execution-focus views. |
 | `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
