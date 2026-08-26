@@ -988,7 +988,11 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     help="Number of related sessions to include (--view context).",
 )
 @click.option(
-    "--max-sessions", type=int, default=5, show_default=True, help="Max sessions, 1-20 (--view context-image)."
+    "--max-sessions",
+    type=click.IntRange(1, 20),
+    default=5,
+    show_default=True,
+    help="Max sessions, 1-20 (--view context-image).",
 )
 @click.option(
     "--max-tokens",
@@ -1065,10 +1069,14 @@ def read_verb(
         polylogue read session:abc123 --format json
     """
     env: AppEnv = ctx.obj
+    request = _parent_request(ctx)
+    if output_format is None:
+        inherited_format = request.params.get("output_format")
+        if isinstance(inherited_format, str):
+            output_format = inherited_format
     if show_views:
         _emit_read_view_profiles(output_format)
         return
-    request = _parent_request(ctx)
     render_settings = _parse_read_render_expression(render_expr)
     projection_settings = _parse_read_projection_expression(projection_expr)
     destination_alias = (
@@ -1403,11 +1411,16 @@ def continue_verb(
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    effective_output_format = output_format
+    if effective_output_format is None:
+        inherited_format = request.params.get("output_format")
+        if isinstance(inherited_format, str):
+            effective_output_format = inherited_format
     if _explain_terminal_action(
         request,
         action="continue",
         destination=destination,
-        format=output_format or request.params.get("output_format") or "default",
+        format=effective_output_format or "default",
         candidates=candidates,
         execute=execute,
     ):
@@ -1471,7 +1484,9 @@ def continue_verb(
     if route.status != "supported" or route.command is None:
         raise click.UsageError(route.detail or "This session cannot be resumed by a verified local harness command.")
     if execute:
-        subprocess.run(route.argv, cwd=route.cwd, check=False)
+        result = subprocess.run(route.argv, cwd=route.cwd, check=False)
+        if result.returncode:
+            raise click.exceptions.Exit(result.returncode)
         return
     if destination not in ("terminal", "stdout") or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
@@ -1499,6 +1514,9 @@ def delete_verb(
 ) -> None:
     """Delete matched sessions.
 
+    Output is JSON-only. Mutations emit a machine-consumable
+    ``MutationResultPayload`` envelope.
+
     \b
     Cardinality rules:
       --dry-run       Preview what would be deleted (no confirmation needed).
@@ -1522,13 +1540,16 @@ def delete_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    effective_output_format = output_format or (
+        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+    )
     if _explain_terminal_action(
         request,
         action="delete",
         dry_run=dry_run,
         yes=yes_flag,
         all=all_flag,
-        format=output_format or request.params.get("output_format") or "default",
+        format=effective_output_format or "default",
     ):
         return
 
@@ -1631,6 +1652,9 @@ def mark_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    effective_output_format = output_format or (
+        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+    )
     if _explain_terminal_action(
         request,
         action="mark",
@@ -1645,9 +1669,12 @@ def mark_verb(
         note=note_text is not None,
         all=apply_all,
         first=first_only,
-        format=output_format or "default",
+        format=effective_output_format or "default",
     ):
         return
+
+    if apply_all and first_only:
+        raise click.UsageError("mark --all and --first are mutually exclusive.")
 
     # Resolve matched sessions and enforce cardinality.
     session_ids = resolve_session_ids_for_verb(env, request)
@@ -1712,7 +1739,7 @@ def mark_verb(
         ops.append("archive-mark removed")
     if note_text is not None:
         ops.append("noted")
-    if output_format == "json":
+    if effective_output_format == "json":
         from polylogue.surfaces.payloads import MutationResultPayload
 
         click.echo(
@@ -1857,6 +1884,9 @@ def analyze_verb(
 
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    effective_output_format = output_format or (
+        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+    )
     if _explain_terminal_action(
         request,
         action="analyze",
@@ -1865,7 +1895,7 @@ def analyze_verb(
         facets=show_facets,
         include_deferred=include_deferred,
         cost_outlook=cost_outlook,
-        format=output_format or request.params.get("output_format") or "default",
+        format=effective_output_format or "default",
         limit=limit,
         projection_contract=_analyze_projection_contract_explain(
             show_facets=show_facets, cost_outlook=cost_outlook, include_deferred=include_deferred
@@ -1937,14 +1967,14 @@ def analyze_verb(
         request = request.with_param_updates(limit=limit)
 
     if show_facets:
-        if output_format not in (None, "json"):
+        if effective_output_format not in (None, "json"):
             raise click.UsageError("`analyze --facets` only supports terminal text or --format json")
         # Delegate to the Polylogue facets API using the request's query spec.
         spec = request.query_spec()
         response = run_coroutine_sync(
             env.polylogue.facets(spec, include_idf=not no_idf, include_deferred=include_deferred)
         )
-        emit_facets_response(response, output_format=output_format)
+        emit_facets_response(response, output_format=effective_output_format)
         return
 
     if cost_outlook:
