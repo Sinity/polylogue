@@ -267,7 +267,7 @@ def test_upsert_persistence_contract(
     ``upsert`` now delegates to the canonical content-addressed write
     primitives (polylogue-q88p), so this exercises a real sqlite-vec-backed
     ``embeddings.db`` rather than mocked SQL -- the shape those primitives
-    write (embedding_input_hash-keyed vectors + message_embedding_refs) is
+    write (vector_derivation_hash-keyed vectors + message_embedding_refs) is
     not expressible as raw "INSERT INTO message_embeddings" string matching
     against a mock connection anymore.
     """

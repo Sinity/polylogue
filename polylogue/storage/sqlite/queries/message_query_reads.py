@@ -67,6 +67,31 @@ async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> t
     return (str(row["resolved_dst_session_id"]), str(row["branch_point_message_id"]))
 
 
+async def _branch_point_content_address_matches(
+    conn: aiosqlite.Connection,
+    child_session_id: str,
+    parent_session_id: str,
+    branch_point_message_id: str,
+) -> bool:
+    cursor = await conn.execute(
+        """
+        SELECT l.branch_point_content_address, m.content_address
+        FROM session_links AS l
+        LEFT JOIN messages AS m ON m.message_id = l.branch_point_message_id
+        WHERE l.src_session_id = ?
+          AND l.resolved_dst_session_id = ?
+          AND l.branch_point_message_id = ?
+          AND l.inheritance = 'prefix-sharing'
+        LIMIT 1
+        """,
+        (child_session_id, parent_session_id, branch_point_message_id),
+    )
+    row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return True
+    return row[1] is not None and bytes(row[0]) == bytes(row[1])
+
+
 async def _own_messages(conn: aiosqlite.Connection, session_id: str, *, position_order: bool) -> list[MessageRecord]:
     # A non-lineage session keeps the historical sort-key ordering, which the
     # keyset streamer (iter_messages) mirrors. Lineage composition needs strict
@@ -189,11 +214,15 @@ async def get_messages_with_lineage_completeness(
     for child_session_id, branch_point_message_id in reversed(chain):
         own = await _own_messages(conn, child_session_id, position_order=True)
         prefix: list[MessageRecord] = []
+        edge = await _prefix_sharing_edge(conn, child_session_id)
+        witness_matches = edge is None or await _branch_point_content_address_matches(
+            conn, child_session_id, edge[0], branch_point_message_id
+        )
         found = False
         for record in composed:
             prefix.append(record)
             if record.message_id == branch_point_message_id:
-                found = True
+                found = witness_matches
                 break
         # Dangling branch point (e.g. the parent message was hard-deleted): return
         # this child's own tail rather than an over-long transcript (#2467 audit).

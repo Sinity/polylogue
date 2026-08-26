@@ -91,20 +91,60 @@ surfaces:
   # above, which defers to #838/#803/#870 the same way).
 
   daemon_cli_query:
-    description: "CLI-to-daemon UDS round trip for an ordinary find-mode session page (20d.1 fast path)"
+    description: "Installed CLI-to-daemon typed UDS operation for an ordinary find-mode session page"
     benchmark_test: "tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_cli_query"
     p50_ms: 100
     p95_ms: 400
     gate: "required"
     tier: "cheap-local"
 
-  daemon_health_probe:
-    description: "Config-matched UDS health probe every fast-path call pays before the query itself"
-    benchmark_test: "tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_health_probe"
-    p50_ms: 30
-    p95_ms: 100
-    gate: "required"
+  daemon_status_operation:
+    description: "Typed status operation carrying archive identity and readiness in one UDS request"
+    benchmark_test: "tests/benchmarks/test_daemon_uds.py::test_bench_daemon_uds_status_operation"
+    p50_ms: 100
+    p95_ms: 400
+    gate: "informational"
     tier: "cheap-local"
+
+  daemon_warm_status:
+    description: "Installed warm CLI status including operation startup and local rendering"
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_warm_status"
+    p50_ms: 400
+    p95_ms: 800
+    gate: "informational"
+    tier: "lab"
+
+  daemon_static_completion:
+    description: "Static shell/query completion without archive hydration"
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_static_completion"
+    p50_ms: 80
+    p95_ms: 150
+    gate: "informational"
+    tier: "lab"
+
+  daemon_live_completion:
+    description: "Archive-backed completion through the typed daemon operation"
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_live_completion"
+    p50_ms: 150
+    p95_ms: 300
+    gate: "informational"
+    tier: "lab"
+
+  daemon_cancellation:
+    description: "Read cancellation including connection and admission release"
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_cancellation"
+    p50_ms: 250
+    p95_ms: 500
+    gate: "informational"
+    tier: "lab"
+
+  daemon_concurrent_reads:
+    description: "Mixed interactive reads while representative background work progresses"
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_concurrent_reads"
+    p50_ms: 250
+    p95_ms: 500
+    gate: "informational"
+    tier: "lab"
 
   cli_status_cold:
     description: >-

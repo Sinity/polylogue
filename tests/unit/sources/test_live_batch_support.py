@@ -50,6 +50,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
     _parse_payload_as_session_artifact,
     encode_cursor_hash_authority,
+    jsonl_complete_prefix,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -66,6 +67,26 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+
+
+@pytest.mark.parametrize(
+    ("payload", "prefix_size", "record_count", "incomplete"),
+    [
+        (b"", 0, 0, False),
+        (b'{"a":1}', 7, 1, False),
+        (b'{"a":1}\n{"b":', 8, 1, True),
+        (b'{"text":"brace } and \\"quote\\"\\n"}\r\n{"n":2}\r\n', 45, 2, False),
+    ],
+)
+def test_jsonl_complete_prefix_is_lexical_and_newline_bound(
+    payload: bytes, prefix_size: int, record_count: int, incomplete: bool
+) -> None:
+    result = jsonl_complete_prefix(payload)
+    assert (result.prefix_size, result.record_count, result.incomplete_tail) == (
+        prefix_size,
+        record_count,
+        incomplete,
+    )
 
 
 @pytest.mark.parametrize(
@@ -4949,24 +4970,25 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     assert first.failed_file_count == 0
     captured_cursor = cursor.get_record(path)
     assert captured_cursor is not None
-    # The cursor records the acquired source snapshot, but raw-failure
-    # evidence below still prohibits an append from that frontier.
-    assert captured_cursor.byte_offset == path.stat().st_size
+    # The cursor records the full observed size but its append frontier stops
+    # at the last proven complete record.
+    assert captured_cursor.byte_offset == len(prefix)
+    assert captured_cursor.deferred_end_offset == path.stat().st_size
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = conn.execute(
             """
             SELECT r.raw_id
             FROM raw_sessions AS r
             JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
-            WHERE a.artifact_kind = 'terminal_corrupt_input'
+            WHERE a.artifact_kind = 'deferred_hot_jsonl_capture'
             """
         ).fetchone()[0]
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
-        assert "complete record boundary" in str(parse_error)
-    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
+    assert parse_error is None
+    assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
     assert captured_cursor.content_fingerprint == raw_id
     assert processor._cursor_references_raw_failure_requiring_full_replay(path, captured_cursor)
 

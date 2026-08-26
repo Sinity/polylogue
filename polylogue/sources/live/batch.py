@@ -115,6 +115,7 @@ from polylogue.sources.live.batch_support import (
     cursor_state_after_full_ingest,
     encode_cursor_hash_authority,
     fingerprint_file,
+    jsonl_complete_prefix,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -669,6 +670,18 @@ class LiveBatchProcessor:
             if paths is None:
                 raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
             return self._consume_scoped_cursor_authority(paths)
+        # A full capture with a proven prefix intentionally leaves the
+        # durable cursor behind the observed raw size.  Its deferred range is
+        # the positive proof that this is safe incomplete-tail state, not an
+        # unexplained cursor violation; allow the ordinary watcher to observe
+        # the later completion and perform full replay.
+        if paths and all(
+            (cursor := self._cursor.get_record(path)) is not None
+            and cursor.deferred_end_offset is not None
+            and cursor.byte_offset < cursor.deferred_end_offset
+            for path in paths
+        ):
+            return None
         raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
 
     async def ingest_files(
@@ -1078,6 +1091,7 @@ class LiveBatchProcessor:
                         path,
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
+                        frontier_byte_size=full_result.raw_frontier_sizes.get(path),
                         source_name=full_result.raw_source_names.get(path),
                         source_revision=full_result.raw_source_revisions.get(path),
                         captured_content_hash=full_result.captured_content_hashes.get(path),
@@ -1353,6 +1367,7 @@ class LiveBatchProcessor:
         *,
         raw_fingerprint: str | None = None,
         raw_byte_size: int | None = None,
+        frontier_byte_size: int | None = None,
         source_name: str | None = None,
         source_revision: str | None = None,
         captured_content_hash: str | None = None,
@@ -1412,7 +1427,7 @@ class LiveBatchProcessor:
                 if raw_fingerprint is not None and self._raw_failure_requires_full_replay(path, raw_fingerprint)
                 else source_revision
             )
-            last_nl = byte_size
+            last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
             tail_hash = source_revision
             if captured_content_hash is not None:
                 bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
@@ -1428,6 +1443,8 @@ class LiveBatchProcessor:
                 byte_size,
                 raw_fingerprint=raw_fingerprint,
             )
+            if frontier_byte_size is not None:
+                last_nl = frontier_byte_size
             prefix_hash, prefix_bytes = sha256_range_from_path(
                 path,
                 start_offset=0,
@@ -1475,6 +1492,9 @@ class LiveBatchProcessor:
             st_ino=final_stat.st_ino,
             mtime_ns=final_stat.st_mtime_ns,
             allow_backward=final_stat.st_size <= byte_size,
+            deferred_end_offset=(
+                byte_size if frontier_byte_size is not None and frontier_byte_size < byte_size else None
+            ),
         )
         self._last_cursor_write_stale = not updated
         if not updated:
@@ -1808,6 +1828,7 @@ class LiveBatchProcessor:
         raw_records: list[RawSessionRecord] = []
         raw_by_id: dict[str, Path] = {}
         raw_byte_sizes: dict[Path, int] = {}
+        raw_frontier_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         raw_source_names: dict[Path, str] = {}
@@ -2279,6 +2300,8 @@ class LiveBatchProcessor:
             # unlike every other branch where raw_id IS the content hash.
             acquired_via_sqlite_snapshot = path in raw_source_revisions
             raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
+            if is_jsonl_source_path(str(path)) and raw_id in raw_payloads:
+                raw_frontier_sizes[path] = jsonl_complete_prefix(raw_payloads[raw_id]).prefix_size
             raw_source_names[path] = source_name
             if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
@@ -2299,6 +2322,12 @@ class LiveBatchProcessor:
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
                     requires_complete_record_boundary=is_jsonl_source_path(str(path)),
+                    complete_prefix_size=(
+                        jsonl_complete_prefix(raw_payloads[raw_id]).prefix_size
+                        if is_jsonl_source_path(str(path)) and raw_id in raw_payloads
+                        else None
+                    ),
+                    captured_file_observation=captured_file_observations.get(path),
                 )
             )
             raw_source_revisions.setdefault(path, raw_id)
@@ -2395,6 +2424,7 @@ class LiveBatchProcessor:
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
+            raw_frontier_sizes=raw_frontier_sizes,
             raw_source_names=raw_source_names,
             raw_source_revisions=raw_source_revisions,
             captured_content_hashes=captured_content_hashes,
@@ -2527,6 +2557,20 @@ class LiveBatchProcessor:
                         else record.capture_mode
                     )
                     payload = raw_payloads.get(record.raw_id)
+                    parse_payload_bytes = payload
+                    if (
+                        parse_payload_bytes is not None
+                        and record.complete_prefix_size is not None
+                        and record.complete_prefix_size < len(parse_payload_bytes)
+                    ):
+                        parse_payload_bytes = parse_payload_bytes[: record.complete_prefix_size]
+                    elif payload is None and record.complete_prefix_size is not None:
+                        # Large captures stay blob-backed; a bounded prefix is
+                        # still the only parser input allowed past the
+                        # boundary classifier.  The full blob remains the
+                        # conserved source evidence.
+                        with blob_store.open(record.blob_hash or record.raw_id) as handle:
+                            parse_payload_bytes = handle.read(record.complete_prefix_size)
                     source_name = Path(record.source_path).name
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
@@ -2652,14 +2696,41 @@ class LiveBatchProcessor:
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
-                    if not _captured_jsonl_ends_at_record_boundary(
+                    incomplete_tail = (
+                        record.complete_prefix_size is not None
+                        and record.complete_prefix_size > 0
+                        and record.complete_prefix_size < record.blob_size
+                    )
+                    try:
+                        stable_capture = (
+                            _file_observation(Path(record.source_path).stat()) == record.captured_file_observation
+                        )
+                    except OSError:
+                        stable_capture = False
+                    captured_boundary_complete = _captured_jsonl_ends_at_record_boundary(
                         source_path=record.source_path,
                         required=record.requires_complete_record_boundary,
                         payload=payload,
                         blob_store=blob_store,
                         blob_hash=blob_hash,
                         blob_size=record.blob_size,
-                    ):
+                    )
+                    if incomplete_tail and stable_capture:
+                        # The full raw is conserved, while the ordinary parser
+                        # below receives only the proven complete prefix.
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            kind=(
+                                RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL
+                                if provider is Provider.CLAUDE_CODE
+                                else RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE
+                            ),
+                        )
+                    elif incomplete_tail or not captured_boundary_complete:
                         if _hot_capture_prefix_is_proven(
                             record.source_path,
                             payload,
@@ -2707,7 +2778,12 @@ class LiveBatchProcessor:
                         continue
                     t0 = time.perf_counter()
                     cached_sessions = (
-                        parsed_sessions_by_raw_id.pop(record.raw_id, None) if parsed_sessions_by_raw_id else None
+                        parsed_sessions_by_raw_id.pop(record.raw_id, None)
+                        if parsed_sessions_by_raw_id
+                        and not (
+                            record.complete_prefix_size is not None and record.complete_prefix_size < record.blob_size
+                        )
+                        else None
                     )
                     if cached_sessions is not None:
                         # polylogue-wf8a: this record's decode already ran
@@ -2762,7 +2838,7 @@ class LiveBatchProcessor:
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     elif is_stream_record_provider(record.source_path, str(provider)):
-                        if payload is None:
+                        if payload is None and record.complete_prefix_size is None:
                             with blob_store.open(blob_hash) as payload_handle:
                                 sessions = parse_stream_payload(
                                     provider,
@@ -2778,7 +2854,7 @@ class LiveBatchProcessor:
                             sessions = parse_stream_payload(
                                 provider,
                                 _iter_json_stream(
-                                    BytesIO(payload),
+                                    BytesIO(parse_payload_bytes or b""),
                                     source_name,
                                     fail_on_decode_error=provider is Provider.UNKNOWN,
                                 ),
@@ -2786,7 +2862,7 @@ class LiveBatchProcessor:
                                 source_path=record.source_path,
                             )
                     else:
-                        if payload is None:
+                        if payload is None and record.complete_prefix_size is None:
                             with blob_store.open(blob_hash) as payload_handle:
                                 payloads = list(
                                     _iter_json_stream(
@@ -2798,7 +2874,7 @@ class LiveBatchProcessor:
                         else:
                             payloads = list(
                                 _iter_json_stream(
-                                    BytesIO(payload),
+                                    BytesIO(parse_payload_bytes or b""),
                                     source_name,
                                     fail_on_decode_error=provider is Provider.UNKNOWN,
                                 )
@@ -3706,7 +3782,6 @@ class LiveBatchProcessor:
                           AND r.source_path IS a.source_path
                           AND r.source_path = ?
                           AND r.source_index IS a.source_index
-                          AND r.parse_error IS NOT NULL
                           AND a.artifact_kind IN ({placeholders})
                           AND ({support_pairs})
                         LIMIT 1

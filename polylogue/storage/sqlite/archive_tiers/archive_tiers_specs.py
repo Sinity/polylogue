@@ -92,7 +92,7 @@ def _make_messages_spec() -> TableColumnSpec:
       delivery_status, end_turn, user_context_text, has_tool_use, has_thinking,
       has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf,
       word_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_write_tokens, duration_ms, content_hash, occurred_at_ms
+      cache_write_tokens, duration_ms, content_address, content_hash, occurred_at_ms
 
     GENERATED (not writable): message_id
 
@@ -147,6 +147,7 @@ def _make_messages_spec() -> TableColumnSpec:
         _ddl("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0)"),
         _ddl("cache_write_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0)"),
         _ddl("duration_ms", "INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0)"),
+        _ddl("content_address", "BLOB CHECK(content_address IS NULL OR length(content_address) = 32)"),
         _ddl("content_hash", f"BLOB NOT NULL {CONTENT_HASH_CHECK}"),
         _ddl("occurred_at_ms", "INTEGER"),
         ColumnSpec(
@@ -188,6 +189,7 @@ def _make_messages_spec() -> TableColumnSpec:
         "session_id": record("session_id"),
         "native_id": record("native_id", record_name="provider_message_id"),
         "parent_message_id": record("parent_message_id", domain_name="parent_id"),
+        "content_address": record("content_address", select_expression="lower(hex({alias}.content_address))"),
         "position": record("position", domain_name="position", record_transform=_none_to_zero),
         "role": record("role", domain_name="role"),
         "message_type": record("message_type", domain_name="message_type"),
@@ -877,6 +879,12 @@ SESSION_LINKS_SPEC = _make_table_spec(
     branch_point_message_id TEXT""",
         ),
         _raw_column(
+            "branch_point_content_address",
+            """branch_point_content_address BLOB CHECK(
+                branch_point_content_address IS NULL OR length(branch_point_content_address) = 32
+            )""",
+        ),
+        _raw_column(
             "inheritance",
             f"""inheritance             TEXT CHECK({literal_check("inheritance", "prefix-sharing", "spawned-fresh")} OR inheritance IS NULL)""",
         ),
@@ -1235,7 +1243,7 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "last_total_tokens",
-            """last_total_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_total_tokens >= 0)""",
+            """last_total_tokens              INTEGER CHECK(last_total_tokens IS NULL OR last_total_tokens >= 0)""",
         ),
         _raw_column(
             "total_input_tokens",
@@ -1258,7 +1266,8 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
             """total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0)""",
         ),
         _raw_column(
-            "total_tokens", """total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0)"""
+            "total_tokens",
+            """total_tokens                   INTEGER CHECK(total_tokens IS NULL OR total_tokens >= 0)""",
         ),
         _raw_column("occurred_at_ms", """occurred_at_ms                 INTEGER"""),
     ),

@@ -84,7 +84,7 @@ def test_verify_archive_cli_restricts_to_selected_checks(
             "--check",
             "tier-schema",
             "--check",
-            "counts-summary",
+            "planner-stats",
             "--output-format",
             "json",
         ],
@@ -93,7 +93,7 @@ def test_verify_archive_cli_restricts_to_selected_checks(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     names = {check["name"] for check in payload["checks"]}
-    assert names == {"tier-schema", "counts-summary"}
+    assert names == {"tier-schema", "planner-stats"}
 
 
 def test_verify_archive_cli_rejects_unknown_check_name(

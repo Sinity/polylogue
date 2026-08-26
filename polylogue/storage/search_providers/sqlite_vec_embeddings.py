@@ -13,10 +13,10 @@ from tenacity import (
     wait_exponential,
 )
 
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingRequestSpec
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
-    DEFAULT_DIMENSION,
     VOYAGE_API_URL,
     SqliteVecError,
 )
@@ -47,13 +47,9 @@ class SqliteVecEmbeddingMixin:
         )
         def _do_request(batch: list[str]) -> list[list[float]]:
             with httpx.Client(timeout=60.0) as client:
-                payload: dict[str, object] = {
-                    "input": batch,
-                    "model": self.model,
-                    "input_type": input_type,
-                }
-                if self.dimension != DEFAULT_DIMENSION:
-                    payload["output_dimension"] = self.dimension
+                recipe = EmbeddingRecipe.current(model=self.model, dimensions=self.dimension, input_type=input_type)
+                payload = EmbeddingRequestSpec(recipe=recipe, input_text=batch[0]).provider_request
+                payload["input"] = [__import__("unicodedata").normalize("NFC", text) for text in batch]
 
                 response = client.post(
                     VOYAGE_API_URL,

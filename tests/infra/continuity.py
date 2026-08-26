@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from devtools.continuity_scenarios import CONTINUITY_SCENARIOS
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -50,7 +51,10 @@ def load_continuity_catalog(path: Path | None = None) -> JSONDocument:
     """Load and minimally validate a continuity corpus/oracle manifest."""
 
     catalog_path = path or continuity_catalog_path()
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(catalog_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except ValueError as exc:
+        raise ValueError(f"invalid continuity catalog {catalog_path}: {exc}") from exc
     catalog = require_json_document(payload, context=f"continuity catalog {catalog_path}")
     if catalog.get("schema_version") != 2:
         raise ValueError("continuity catalog schema_version must be 2")
@@ -60,7 +64,69 @@ def load_continuity_catalog(path: Path | None = None) -> JSONDocument:
         raise ValueError("continuity catalog requires corpus object")
     if not isinstance(catalog.get("oracles"), Mapping):
         raise ValueError("continuity catalog requires oracles object")
+    _validate_continuity_catalog(catalog)
     return dict(catalog)
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, JSONValue]]) -> dict[str, JSONValue]:
+    values: dict[str, JSONValue] = {}
+    for key, value in pairs:
+        if key in values:
+            raise ValueError(f"duplicate catalog key {key!r}")
+        values[key] = value
+    return values
+
+
+def _validate_continuity_catalog(catalog: Mapping[str, JSONValue]) -> None:
+    """Check the manifest against the registry without creating a denominator.
+
+    ``CONTINUITY_SCENARIOS`` is the only scenario denominator.  The catalog is
+    deliberately keyed by each declaration's stable fixture key so a missing,
+    stale, or duplicate fixture/oracle contract cannot silently become an
+    untested scenario.  Values remain planted inputs; this function never
+    observes archive or route output.
+    """
+
+    registry = tuple(CONTINUITY_SCENARIOS)
+    scenario_ids = tuple(scenario.scenario_id for scenario in registry)
+    fixture_keys = tuple(scenario.fixture_key for scenario in registry)
+    if len(scenario_ids) != len(set(scenario_ids)):
+        raise ValueError("continuity scenario registry contains duplicate scenario IDs")
+    if len(fixture_keys) != len(set(fixture_keys)):
+        raise ValueError("continuity scenario registry contains duplicate fixture keys")
+
+    corpus = _mapping(catalog, "corpus")
+    oracles = _mapping(catalog, "oracles")
+    reserved_corpus_keys = {"provider", "timestamp", "origin"}
+    actual_inputs = set(corpus) - reserved_corpus_keys
+    # The checked-in manifest keeps JSON-friendly snake_case keys for corpus
+    # sections, while declarations retain their public scenario IDs.  This is
+    # a name translation, not a second membership list.
+    expected_inputs = {key.replace("-", "_") for key in fixture_keys}
+    expected_oracles = set(fixture_keys)
+    if actual_inputs != expected_inputs:
+        missing = sorted(expected_inputs - actual_inputs)
+        stale = sorted(actual_inputs - expected_inputs)
+        raise ValueError(f"continuity fixture contracts differ: missing={missing}, stale={stale}")
+    if set(oracles) != expected_oracles:
+        missing = sorted(expected_oracles - set(oracles))
+        stale = sorted(set(oracles) - expected_oracles)
+        raise ValueError(f"continuity oracle contracts differ: missing={missing}, stale={stale}")
+
+    for scenario in registry:
+        fixture = _mapping(corpus, scenario.fixture_key.replace("-", "_"))
+        oracle = _mapping(oracles, scenario.fixture_key)
+        if not fixture:
+            raise ValueError(f"continuity fixture contract {scenario.fixture_key!r} is empty")
+        facts = _mapping(oracle, "facts")
+        if set(facts) != set(scenario.required_facts):
+            missing = sorted(set(scenario.required_facts) - set(facts))
+            stale = sorted(set(facts) - set(scenario.required_facts))
+            raise ValueError(
+                f"continuity oracle facts for {scenario.scenario_id!r} differ: missing={missing}, stale={stale}"
+            )
+        if not _string_list(oracle, "source_refs"):
+            raise ValueError(f"continuity oracle {scenario.scenario_id!r} requires source_refs")
 
 
 def seed_continuity_archive(
@@ -136,7 +202,7 @@ def seed_continuity_archive(
         db_path,
         provider=provider,
         timestamp=timestamp,
-        data=_mapping(corpus, "parallel_incident"),
+        data=_mapping(corpus, "parallel_claude_incident"),
     )
     _seed_decision_assertion(archive_root, provider=provider, data=_mapping(corpus, "decision"))
 
@@ -158,7 +224,7 @@ def validate_continuity_population(
     fixture = dict(catalog or load_continuity_catalog())
     corpus = _mapping(fixture, "corpus")
     provider = _string(corpus, "provider")
-    incident = _mapping(corpus, "parallel_incident")
+    incident = _mapping(corpus, "parallel_claude_incident")
     run_ref = _string(incident, "run_ref")
     coordinator = native_session_id_for(provider, _string(incident, "coordinator_key"))
     db_path = archive_root / "index.db"
@@ -526,6 +592,13 @@ def _integer(source: Mapping[str, JSONValue], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"continuity catalog field {key!r} must be an integer")
     return value
+
+
+def _string_list(source: Mapping[str, JSONValue], key: str) -> tuple[str, ...]:
+    value = source.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"continuity catalog field {key!r} must be a non-empty string list")
+    return tuple(cast(str, item) for item in value)
 
 
 def _curriculum_records(source: Mapping[str, JSONValue]) -> tuple[Mapping[str, JSONValue], ...]:

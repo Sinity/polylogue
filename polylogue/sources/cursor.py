@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,17 +100,9 @@ def _select_paths_for_processing(
     """
     selected: list[tuple[Path, str | None]] = []
     skipped_mtime = 0
-    zip_known_mtimes: dict[str, str] = {}
-
-    if known_mtimes:
-        for key, mtime in known_mtimes.items():
-            zip_path, sep, _entry = key.partition(":")
-            if sep and zip_path not in zip_known_mtimes:
-                zip_known_mtimes[zip_path] = mtime
-
     for path in paths:
         # Slice B: fast-path against known cursor stat fields.
-        if known_cursors is not None:
+        if known_cursors is not None and not path.name.lower().endswith(".zip"):
             try:
                 st = path.stat()
                 cursor_fields = known_cursors.get(str(path))
@@ -136,11 +129,18 @@ def _select_paths_for_processing(
             if known_mtimes.get(path_str) == file_mtime:
                 skipped_mtime += 1
                 continue
-            # ZIP match: entries are stored as "path.zip:entry.json" — check
-            # if any entry for this ZIP has matching mtime
-            if path_str.endswith(".zip") and zip_known_mtimes.get(path_str) == file_mtime:
-                skipped_mtime += 1
-                continue
+            # ZIP members share the archive mtime, so one known member is not
+            # evidence that the whole archive was acquired.  Only skip when
+            # every current member has its own matching acquisition record.
+            if path_str.endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(path) as archive:
+                        members = [info.filename for info in archive.infolist() if not info.is_dir()]
+                except (OSError, zipfile.BadZipFile):
+                    members = []
+                if members and all(known_mtimes.get(f"{path_str}:{member}") == file_mtime for member in members):
+                    skipped_mtime += 1
+                    continue
         selected.append((path, file_mtime))
 
     return selected, skipped_mtime

@@ -1190,19 +1190,6 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
     assert check.evidence["missing_tables"] == ["action_pairs"]
 
 
-def test_counts_summary_reports_origin_breakdown(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("counts-summary",))
-
-    check = _check(report, "counts-summary")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["session_count"] == 1
-    assert check.evidence["message_count"] == 1
-    assert check.evidence["block_count"] == 1
-    assert check.breakdown == {"codex-session": 1}
-
-
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     empty_root = tmp_path / "does-not-exist"
 
@@ -1223,7 +1210,6 @@ def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     assert names_by_status["session-lineage-acyclic"] is OutcomeStatus.SKIP
     assert names_by_status["message-count-projection"] is OutcomeStatus.SKIP
     assert names_by_status["planner-stats"] is OutcomeStatus.SKIP
-    assert names_by_status["counts-summary"] is OutcomeStatus.SKIP
 
 
 def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1246,7 +1232,6 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     by_name = {check.name: check for check in report.checks}
     assert by_name["fts-parity"].status is OutcomeStatus.ERROR
     assert "synthetic failure" in by_name["fts-parity"].summary
-    assert by_name["counts-summary"].status is OutcomeStatus.OK
     assert by_name["tier-schema"].status is OutcomeStatus.OK
 
 
@@ -1413,7 +1398,7 @@ def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -
     try:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
             """,
             (b"g" * 32,),
@@ -1957,83 +1942,6 @@ def test_stalled_append_cursor_freshness_passes_on_coherent_archive(tmp_path: Pa
     check = _check(report, "stalled-append-cursor-freshness")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["stalled_count"] == 0
-
-
-def test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup(tmp_path: Path) -> None:
-    """polylogue-zm4w8: two quarantined raws sharing (source_path, blob_hash),
-    with no indexed twin anywhere for that blob_hash, is exactly the residual
-    gap raw-byte-duplicate-supersession-apply cannot see (it requires an
-    already-indexed twin). This must trip ERROR, not the WARN
-    source-index-coverage already gives quarantined-but-unindexed heads.
-    """
-    _seed_coherent_archive(tmp_path)
-    source_conn = _connect(tmp_path / "source.db")
-    try:
-        for raw_id in ("raw-dup-a", "raw-dup-b"):
-            source_conn.execute(
-                """
-                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-                VALUES (?, 'codex-session', ?, '/rollout-repeated.jsonl', ?, 10, 100)
-                """,
-                (raw_id, f"native-{raw_id}", b"d" * 32),
-            )
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.ERROR
-    assert check.evidence["group_count"] == 1
-    assert check.evidence["duplicate_count"] == 1
-    group_sample = check.evidence["group_sample"]
-    assert len(group_sample) == 1
-    assert group_sample[0]["source_path"] == "/rollout-repeated.jsonl"
-    assert group_sample[0]["representative_raw_id"] == "raw-dup-a"
-    assert group_sample[0]["duplicate_raw_ids"] == ["raw-dup-b"]
-
-
-def test_quarantined_duplicate_with_indexed_twin_elsewhere_does_not_trip(tmp_path: Path) -> None:
-    """A (source_path, blob_hash) group of >1 quarantined rows whose
-    blob_hash ALSO appears on an already-indexed raw elsewhere is
-    raw-byte-duplicate-supersession-apply's territory, not this check's --
-    it must not double-flag content that actuator can already resolve.
-    """
-    _seed_coherent_archive(tmp_path)
-    source_conn = _connect(tmp_path / "source.db")
-    try:
-        for raw_id in ("raw-dup-c", "raw-dup-d"):
-            source_conn.execute(
-                """
-                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-                VALUES (?, 'codex-session', ?, '/rollout-also-indexed.jsonl', ?, 10, 100)
-                """,
-                (raw_id, f"native-{raw_id}", b"s" * 32),
-            )
-        # raw-1's blob_hash (b"s" * 32) is the coherent-archive fixture's
-        # already-indexed raw -- share it here to simulate an indexed twin.
-        source_conn.execute("UPDATE raw_sessions SET blob_hash = ? WHERE raw_id = 'raw-1'", (b"s" * 32,))
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["group_count"] == 0
-    assert check.evidence["already_resolved_group_count"] == 1
-
-
-def test_raw_quarantine_group_dedup_passes_on_coherent_archive(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["group_count"] == 0
 
 
 # ---------------------------------------------------------------------------

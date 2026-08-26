@@ -29,6 +29,10 @@ class DaemonMutationIndeterminateError(RuntimeError):
         super().__init__(f"daemon outcome is indeterminate after {method} {path}")
 
 
+class DaemonOperationProtocolError(RuntimeError):
+    """A daemon operation response was not a v1 typed envelope."""
+
+
 class _UnixHTTPConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: Path, timeout: float | None) -> None:
         super().__init__("localhost", timeout=timeout)
@@ -139,6 +143,35 @@ class DaemonClient:
     def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
         return self.request_json("POST", "/api/cli/query", {"params": params})
 
+    def operation(
+        self,
+        operation: str,
+        payload: dict[str, object] | None = None,
+        *,
+        archive_root: str | None = None,
+        index_schema_version: int | None = None,
+        daemon_version: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Issue one archive-scoped operation request; no health probe is needed."""
+
+        response = self.request_json(
+            "POST",
+            "/api/operation",
+            {
+                "operation": operation,
+                "payload": payload or {},
+                "archive_root": archive_root,
+                "index_schema_version": index_schema_version,
+                "daemon_version": daemon_version,
+            },
+            accepted_statuses=frozenset({200, 408, 409, 404, 429, 503}),
+        )
+        if response is None:
+            return None
+        if response.get("protocol") != "polylogue.daemon-operation/v1":
+            raise DaemonOperationProtocolError("daemon returned an invalid operation protocol envelope")
+        return response
+
     def probe(
         self,
         *,
@@ -169,4 +202,9 @@ class DaemonClient:
         return health
 
 
-__all__ = ["DaemonClient", "DaemonMutationIndeterminateError", "DaemonResponseError"]
+__all__ = [
+    "DaemonClient",
+    "DaemonMutationIndeterminateError",
+    "DaemonOperationProtocolError",
+    "DaemonResponseError",
+]

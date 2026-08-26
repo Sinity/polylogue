@@ -275,6 +275,9 @@ class AttachmentRecord(BaseModel):
     file_native_id: str | None = None
     drive_native_id: str | None = None
     upload_origin: str | None = None
+    blob_hash: bytes | None = None
+    acquisition_status: str | None = None
+    generation_id: str | None = None
 
     @field_validator("attachment_id", "session_id")
     @classmethod

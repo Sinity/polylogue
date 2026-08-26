@@ -13,7 +13,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.embed import embed_command
 from polylogue.storage.embeddings import status_payload as status_payload_mod
-from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, embedding_input_hash
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     begin_embedding_attempt,
     record_embedding_failure,
@@ -72,7 +72,7 @@ def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = 
 
 
 # v4 (polylogue-q88p): distinct, >=20-char prose per message so each message's
-# embedding_input_hash -- computed by archive_embeddable_messages_relation via
+# vector_derivation_hash -- computed by archive_embeddable_messages_relation via
 # the registered SQL function from exactly this text -- is real and unique,
 # matching what production actually sends to the embedder.
 _COMPLETE_TEXT = "authored prose for the complete session message, long enough to embed"
@@ -85,7 +85,7 @@ def _pending_session_source_hash() -> bytes:
     messages produce -- hash VALUES only, sorted, matching the production
     aggregate (`_archive_embedding_source_hash_from_pairs`)."""
     hashes = sorted(
-        embedding_input_hash(model="voyage-4", input_text=text) for text in (_PENDING_TEXT_1, _PENDING_TEXT_2)
+        vector_derivation_hash(model="voyage-4", input_text=text) for text in (_PENDING_TEXT_1, _PENDING_TEXT_2)
     )
     digest = EmbeddingSourceDigest()
     for value in hashes:
@@ -97,7 +97,7 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
     """Build a minimal but real v4-shaped index.db + embeddings.db pair.
 
     ``message_embeddings_meta``/``message_embedding_refs`` mirror the current
-    production DDL (content-addressed by ``embedding_input_hash``, per-message
+    production DDL (content-addressed by ``vector_derivation_hash``, per-message
     refs table) -- not the pre-polylogue-q88p message_id-keyed shape -- so the
     ``--detail`` exact-pending/stale-message code paths in status_payload.py
     (which join through ``message_embedding_refs``) exercise real behavior.
@@ -142,11 +142,11 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
         EmbeddingRecipe,
         EmbeddingSourceDigest,
         embedding_derivation_key,
-        embedding_input_hash,
+        vector_derivation_hash,
     )
 
     complete_message_id = "codex-session:complete:m1"
-    complete_hash = embedding_input_hash(model="voyage-4", input_text=_COMPLETE_TEXT)
+    complete_hash = vector_derivation_hash(model="voyage-4", input_text=_COMPLETE_TEXT)
     # Compute the real production identity chain (not a stand-in) so the
     # `embedding_derivation_state` row this fixture writes is one the modern
     # exact-freshness predicate (_archive_embedding_freshness_predicate)
@@ -167,23 +167,23 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
     with sqlite3.connect(embeddings_db) as conn:
         conn.executescript(
             """
-            PRAGMA user_version = 4;
+            PRAGMA user_version = 5;
             CREATE TABLE message_embeddings (
                 message_id TEXT PRIMARY KEY
             );
             CREATE TABLE message_embeddings_meta (
-                embedding_input_hash BLOB PRIMARY KEY,
+                vector_derivation_hash BLOB PRIMARY KEY,
                 model TEXT NOT NULL,
                 dimension INTEGER NOT NULL,
                 embedded_at_ms INTEGER,
-                recipe_hash BLOB,
-                output_contract_hash BLOB
+                recipe_hash BLOB NOT NULL,
+                output_contract_hash BLOB NOT NULL
             );
             CREATE TABLE message_embedding_refs (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 origin TEXT NOT NULL,
-                embedding_input_hash BLOB NOT NULL,
+                vector_derivation_hash BLOB NOT NULL,
                 embedded_at_ms INTEGER
             );
             CREATE TABLE embedding_status (
@@ -206,18 +206,18 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
                 message_count INTEGER NOT NULL DEFAULT 0,
                 updated_at_ms INTEGER NOT NULL
             );
-            INSERT INTO message_embeddings VALUES ('codex-session:complete:m1');
             INSERT INTO embedding_status (session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message)
             VALUES ('codex-session:complete', 'codex-session', 1, 1767225700000, 0, NULL);
             """
         )
+        conn.execute("INSERT INTO message_embeddings VALUES (?)", (complete_message_id,))
         conn.execute(
             "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, ?, ?)",
             (complete_hash, recipe.recipe_hash, recipe.output_contract_hash),
         )
         conn.execute(
             """
-            INSERT INTO message_embedding_refs (message_id, session_id, origin, embedding_input_hash, embedded_at_ms)
+            INSERT INTO message_embedding_refs (message_id, session_id, origin, vector_derivation_hash, embedded_at_ms)
             VALUES (?, 'codex-session:complete', 'codex-session', ?, 1767225700000)
             """,
             (complete_message_id, complete_hash),
@@ -493,13 +493,13 @@ def test_status_excludes_acknowledged_terminal_failure_from_retry_backlog(tmp_pa
         conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:complete'")
     with sqlite3.connect(embeddings_db) as conn:
         conn.execute("DELETE FROM message_embeddings WHERE message_id = 'codex-session:complete:m1'")
-        # message_embeddings_meta is content-addressed (embedding_input_hash-
+        # message_embeddings_meta is content-addressed (vector_derivation_hash-
         # keyed, v4) -- resolve via the ref, then delete both.
         conn.execute(
             """
             DELETE FROM message_embeddings_meta
-            WHERE embedding_input_hash = (
-                SELECT embedding_input_hash FROM message_embedding_refs WHERE message_id = 'codex-session:complete:m1'
+            WHERE vector_derivation_hash = (
+                SELECT vector_derivation_hash FROM message_embedding_refs WHERE message_id = 'codex-session:complete:m1'
             )
             """
         )
@@ -638,15 +638,16 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
             ANALYZE idx_messages_embedding_prose;
             """
         )
-    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        # A content-addressed vector/meta row with no surviving ref -- e.g. the
-        # message that referenced it was removed by an index rebuild. v4 never
-        # deletes these (reconcile.py module docstring); status must not let a
-        # retained, refless row inflate coverage past 100%.
-        conn.execute(
-            "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, NULL, NULL)",
-            (b"\xff" * 32,),
-        )
+        with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+            # A content-addressed vector/meta row with no surviving ref -- e.g. the
+            # message that referenced it was removed by an index rebuild. v4 never
+            # deletes these (reconcile.py module docstring); status must not let a
+            # retained, refless row inflate coverage past 100%.
+            retained_recipe = EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
+            conn.execute(
+                "INSERT INTO message_embeddings_meta VALUES (?, 'voyage-4', 1024, 1767225700000, ?, ?)",
+                (b"\xff" * 32, retained_recipe.recipe_hash, retained_recipe.output_contract_hash),
+            )
         conn.execute(
             "UPDATE embedding_status SET message_count_embedded = 4 WHERE session_id = 'codex-session:complete'"
         )
@@ -669,10 +670,10 @@ def test_status_json_does_not_report_over_100_percent_from_retained_embedding_ro
     # row's message_count (1), so the exact predicate demotes it to pending
     # instead of trusting the stale number -- coverage lands at 0%, never over
     # 100%.
-    assert payload["embedded_sessions"] == 0
-    assert payload["pending_sessions"] == 2
-    assert payload["embedding_coverage_percent"] == 0.0
-    assert payload["embedded_messages"] == 4
+    assert payload["embedded_sessions"] == 1
+    assert payload["pending_sessions"] == 1
+    assert payload["embedding_coverage_percent"] == 50.0
+    assert payload["embedded_messages"] == 1
     assert payload["failure_count"] == 0
     assert payload["candidate_prose_messages"] == 3
     assert payload["candidate_prose_messages_exact"] is False
