@@ -835,11 +835,22 @@ def test_hermes_configured_directory_discovers_only_its_state_database(tmp_path:
     ]
 
 
-def test_unrelated_configured_source_does_not_discover_hermes_sqlite(tmp_path: Path) -> None:
-    db_path = tmp_path / "state.db"
-    _write_hermes_state_db(db_path)
+def test_unrelated_configured_hermes_sqlite_is_enumerated_but_not_admitted(tmp_path: Path) -> None:
+    db_path = tmp_path / "unrelated.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
-    assert _resolve_source_paths(Source(name="codex", path=tmp_path)) == []
+    assert _resolve_source_paths(Source(name="hermes", path=tmp_path)) == [db_path]
+    assert (
+        list(
+            iter_source_sessions_with_raw(
+                Source(name="hermes", path=tmp_path),
+                capture_raw=False,
+                blob_root=tmp_path / "blob",
+            )
+        )
+        == []
+    )
 
 
 def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import is_jsonl_source_path
 from .emitter import _SessionEmitter
+from .origin_specs import recognize_source_class
 from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
@@ -210,6 +211,16 @@ def parse_one_source_path(
     """
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
+    source_class = recognize_source_class(provider_hint, path)
+    if source_class is not None and source_class.source_class != "session":
+        logger.info(
+            "source_candidate_not_admitted",
+            source_path=str(path),
+            provider=provider_hint.value,
+            source_class=source_class.source_class,
+            reason=source_class.reason,
+        )
+        return
     path_classification = classify_artifact_path(path, provider=source_name)
     if (
         path_classification is not None

@@ -13,7 +13,6 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
-from .parsers import hermes_state, hermes_verification
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -36,14 +35,11 @@ def _has_supported_extension(path: Path) -> bool:
 def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     if _has_supported_extension(path):
         return True
-    return (
-        provider is Provider.HERMES
-        and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
-        and (
-            hermes_state.looks_like_state_db_path(path)
-            or hermes_verification.looks_like_verification_evidence_db_path(path)
-        )
-    )
+    # A broad Hermes root must enumerate every SQLite candidate so the
+    # OriginSpec recognizer can publish a typed unsupported/non-session
+    # observation.  Structural inspection belongs to admission, not the walk;
+    # otherwise unrelated databases disappear from the source denominator.
+    return provider is Provider.HERMES and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
 
 
 def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
