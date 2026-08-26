@@ -338,9 +338,9 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     priced_estimate = json_object(priced["estimate"])
     unavailable_estimate = json_object(unavailable["estimate"])
     assert exact["insight_kind"] == "session_cost"
-    assert exact_estimate["status"] == "exact"
+    assert exact_estimate["status"] == "priced"
     assert json_number(exact_estimate["total_usd"]) == pytest.approx(1.25)
-    assert priced_estimate["status"] == "priced"
+    assert priced_estimate["status"] == "exact"
     assert priced_estimate["normalized_model"] == "gpt-4o"
     assert json_number(priced_estimate["total_usd"]) == pytest.approx(0.0075)
     assert unavailable_estimate["status"] == "unavailable"

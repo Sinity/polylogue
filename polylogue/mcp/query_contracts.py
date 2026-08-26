@@ -76,7 +76,12 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
         alternatives = query_boundary_alternatives(field, "mcp")
         accepted = ", ".join(alternatives) if alternatives else ", ".join(sorted(mcp_query_field_names()))
         raise QuerySpecError(field, f"unknown MCP query parameter; accepted alternatives: {accepted}")
-    normalized = normalize_query_params(params)
+    # ``SessionQuerySpec.from_params`` consumes the public query vocabulary
+    # (``origin``, ``repo``, ``contains``, ...).  The descriptor's internal
+    # names are for the compiled spec, not input to that parser.  Converting
+    # them here silently discarded every structured filter because the parser
+    # quite correctly ignored those internal names.
+    normalized = dict(params)
     _validate_origin_filters(normalized)
     if normalized.get("message_type") is not None:
         normalized["message_type"] = validate_message_type_filter(normalized["message_type"]).value

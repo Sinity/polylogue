@@ -854,8 +854,8 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
                 model                  TEXT NOT NULL,
                 dimension              INTEGER NOT NULL,
                 embedded_at_ms         INTEGER,
-                recipe_hash            BLOB,
-                output_contract_hash   BLOB
+                recipe_hash            BLOB NOT NULL,
+                output_contract_hash   BLOB NOT NULL
             );
             """
         )
@@ -865,7 +865,7 @@ def _seed_embeddings_meta(archive_root: Path, *, needs_reindex: int) -> None:
                 vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (b"\x00" * 32, "voyage-4", 1024, 1, None, None),
+            (b"\x00" * 32, "voyage-4", 1024, 1, b"\x01" * 32, b"\x02" * 32),
         )
         conn.commit()
     finally:

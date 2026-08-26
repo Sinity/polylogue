@@ -52,11 +52,11 @@ def test_select_row_carries_shared_informativeness_fields() -> None:
     row = select_row_from_result(summary)
 
     assert row.message_count == 7
-    assert row.repo == "https://example.test/org/polylogue"
-    assert row.cwd_display == "/workspace/polylogue"
+    assert row.repo == "polylogue"
+    assert row.cwd_display == "polylogue"
     assert row.to_json()["message_count"] == 7
-    assert row.to_json()["repo"] == "https://example.test/org/polylogue"
-    assert row.to_json()["cwd_display"] == "/workspace/polylogue"
+    assert row.to_json()["repo"] == "polylogue"
+    assert row.to_json()["cwd_display"] == "polylogue"
 
 
 def test_select_row_from_summary_uses_query_result_display_contract() -> None:
@@ -74,6 +74,7 @@ def test_select_row_from_summary_uses_query_result_display_contract() -> None:
         origin="codex-session",
         title="Selector Contract",
         date="2026-05-02",
+        relative_time="16w ago",
     )
 
 
@@ -107,6 +108,9 @@ def test_render_select_row_outputs_requested_field() -> None:
         "message_count": 0,
         "repo": None,
         "cwd_display": None,
+        "outcome": "unknown",
+        "cost_usd": None,
+        "relative_time": "unknown",
     }
 
 
@@ -162,6 +166,9 @@ def test_render_select_rows_json_emits_single_array() -> None:
             "message_count": 0,
             "repo": None,
             "cwd_display": None,
+            "outcome": "unknown",
+            "cost_usd": None,
+            "relative_time": "unknown",
         },
         {
             "id": "conv-2",
@@ -171,6 +178,9 @@ def test_render_select_rows_json_emits_single_array() -> None:
             "message_count": 0,
             "repo": None,
             "cwd_display": None,
+            "outcome": "unknown",
+            "cost_usd": None,
+            "relative_time": "unknown",
         },
     ]
 

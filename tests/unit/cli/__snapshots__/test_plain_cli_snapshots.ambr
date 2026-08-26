@@ -475,6 +475,7 @@
         "id": "chatgpt-export:12ae5c22-741b-47f5-8c24-<HASH>",
         "message_count": 7,
         "origin": "chatgpt-export",
+        "relative_time": "70w ago",
         "tags": [],
         "target_ref": {
           "identity_key": "session:chatgpt-export:12ae5c22-741b-47f5-8c24-<HASH>",
@@ -482,6 +483,7 @@
           "target_id": "chatgpt-export:12ae5c22-741b-47f5-8c24-<HASH>",
           "target_type": "session"
         },
+        "terminal_state": "unknown",
         "title": "Designing schema validation stages",
         "updated_at": "<TIMESTAMP>",
         "words": 230
@@ -506,6 +508,7 @@
         "id": "chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
         "message_count": 5,
         "origin": "chatgpt-export",
+        "relative_time": "129w ago",
         "tags": [],
         "target_ref": {
           "identity_key": "session:chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
@@ -513,6 +516,7 @@
           "target_id": "chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
           "target_type": "session"
         },
+        "terminal_state": "unknown",
         "title": "Debugging flaky async pipeline tests",
         "updated_at": "<TIMESTAMP>",
         "words": 112
