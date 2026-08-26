@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import stat
-import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
+
+from polylogue.core.durable_fs import atomic_replace
 
 
 class MaintenanceReceiptPathError(RuntimeError):
@@ -185,30 +186,11 @@ def iter_pinned_receipts(directory_fd: int, *, suffix: str = ".json") -> Iterato
 def atomic_replace_receipt(directory_fd: int, filename: str, payload: bytes) -> None:
     """Fsync and atomically replace one file within a pinned receipt directory."""
     name = _simple_name(filename, label="maintenance receipt filename")
-    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
-    descriptor = -1
     try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o600,
-            dir_fd=directory_fd,
-        )
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-        os.fsync(directory_fd)
+        directory = Path(f"/proc/self/fd/{directory_fd}")
+        atomic_replace(directory / name, payload)
     except OSError as exc:
         raise MaintenanceReceiptPathError(f"cannot atomically publish maintenance receipt: {name}") from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        with suppress(FileNotFoundError):
-            os.unlink(temporary, dir_fd=directory_fd)
 
 
 __all__ = [

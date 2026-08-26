@@ -27,6 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -1232,22 +1233,7 @@ def _write_successful_verification_receipt(backup_root: Path, verification: dict
                 authority_paths[str(artifact["tier"])] = Path(source_path).resolve(strict=False)
     receipt = sign_verification_receipt(receipt_body, authority_paths=authority_paths)
     receipt_path = backup_root / _VERIFICATION_RECEIPT_FILE
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=backup_root,
-        prefix=f".{_VERIFICATION_RECEIPT_FILE}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        json.dump(receipt, handle, indent=2, sort_keys=True)
-        handle.flush()
-        os.fsync(handle.fileno())
-        temporary_path = Path(handle.name)
-    try:
-        os.replace(temporary_path, receipt_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    atomic_replace(receipt_path, json.dumps(receipt, indent=2, sort_keys=True).encode("utf-8"))
     return receipt_path
 
 
