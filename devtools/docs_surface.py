@@ -265,6 +265,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Corpus Reliability and Closure Reliability",
+        "findings/corpus-reliability.md",
+        "Measured distinction between stale assertions, void records, and closure reliability.",
+        "evidence",
+    ),
+    _entry(
         "Polylogue on Sinex",
         "sinex-interop.md",
         "Current bridge, target authority split, and rebuild proof.",
