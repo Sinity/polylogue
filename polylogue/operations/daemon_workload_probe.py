@@ -206,7 +206,11 @@ def _table_count_with_precision(conn: sqlite3.Connection, table: str, *, exact: 
     if not _table_exists(conn, table):
         return -1, "missing"
     if exact:
-        return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}"), "exact"
+        try:
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        except sqlite3.Error:
+            return UNKNOWN_TABLE_COUNT, "unavailable"
+        return (int(row[0] or 0) if row is not None else 0), "exact"
     cheap_count = _cheap_archive_table_count(conn, table)
     if cheap_count is not None:
         return cheap_count, "exact"
@@ -291,7 +295,10 @@ def _sqlite_maintenance_state(db: Path, observed_db: Path | None) -> dict[str, A
 def _readiness_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
     """Return a readiness display count without scanning large tables by default."""
 
-    return _scalar_int(conn, f"SELECT COUNT(*) FROM {table}") if exact else _table_count(conn, table, exact=False)
+    if not exact:
+        return _table_count(conn, table, exact=False)
+    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def _count_mode(exact: bool) -> str:

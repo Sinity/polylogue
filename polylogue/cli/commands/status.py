@@ -401,6 +401,7 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
 
 _ARCHIVE_TIER_ENUM: dict[str, ArchiveTier] = {tier.value: tier for tier in ArchiveTier}
 _LARGE_TIER_EXACT_COUNT_LIMIT_BYTES = 256 * 1024 * 1024
+_UNKNOWN_COUNT = -2
 
 
 def _archive_tier_status(root: Path) -> dict[str, dict[str, Any]]:
@@ -617,37 +618,37 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
     if configured_root is not None:
         source_db = configured_root / "source.db"
         if not source_db.exists():
-            return 0
+            return -1
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
                 if not _table_exists(source_conn, table):
-                    return 0
+                    return -1
                 return _fast_count(source_conn, sql)
             finally:
                 source_conn.close()
         except sqlite3.Error:
-            return 0
+            return _UNKNOWN_COUNT
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
     except Exception as exc:
         logger.warning("%s count unavailable (database_list probe failed: %s); reporting 0", table, exc)
-        return 0
+        return _UNKNOWN_COUNT
     if row is None or len(row) < 3 or not row[2]:
         return 0
     source_db = Path(str(row[2])).with_name("source.db")
     if not source_db.exists():
-        return 0
+        return -1
     try:
         source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
         try:
             if not _table_exists(source_conn, table):
-                return 0
+                return -1
             return _fast_count(source_conn, sql)
         finally:
             source_conn.close()
     except sqlite3.Error:
-        return 0
+        return _UNKNOWN_COUNT
 
 
 # Live ingest workload is read directly from ops.db so it is visible even when
@@ -1902,6 +1903,8 @@ def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dic
 def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
     """Render live ingest-workload state derived from ops.db."""
     if not workload.get("available"):
+        reason = str(workload.get("reason") or "workload evidence is unavailable")
+        env.ui.console.print(f"  Ingest workload: [yellow]unavailable[/yellow] — {reason}")
         return
     tput = workload.get("throughput") or {}
     files = int(tput.get("files", 0) or 0)
@@ -2157,7 +2160,10 @@ def _show_direct_status(
             else {"available": False}
         )
         actively_ingesting = bool(workload.get("actively_ingesting"))
-        header = "Archive (daemon ingesting)" if actively_ingesting else "Archive (daemon not running)"
+        if not workload.get("available"):
+            header = "Archive (daemon workload unavailable)"
+        else:
+            header = "Archive (daemon ingesting)" if actively_ingesting else "Archive (daemon idle)"
         env.ui.console.print(f"\n[bold]{header}[/bold]")
         env.ui.console.print(f"  Database: {active_db.name}")
         if active_db.name == "index.db":
@@ -2213,7 +2219,12 @@ def _show_direct_status(
             _render_assertion_candidate_queue(env, assertion_candidate_queue_status_summary())
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
-        env.ui.console.print(f"  Raw records: {raw:,}")
+        if raw == _UNKNOWN_COUNT:
+            env.ui.console.print("  Raw records: unavailable (source.db could not be queried)")
+        elif raw == -1:
+            env.ui.console.print("  Raw records: missing (source.db/raw_sessions)")
+        else:
+            env.ui.console.print(f"  Raw records: {raw:,}")
         raw_failure_status = _direct_raw_failure_status(root)
         raw_lifecycle_healthy = _raw_failure_lifecycle_is_healthy(raw_failure_status)
         raw_total = (

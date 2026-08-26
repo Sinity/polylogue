@@ -2601,7 +2601,7 @@ class TestStatusDiagnosticIntegration:
         assert result.exit_code == 0, result.output
         assert "convergence debt: none (ledger healthy)" in output_lower
         assert "convergence debt status unavailable" not in output_lower
-        assert "ops workload status unavailable" not in output_lower
+        assert "ops workload status unavailable" in output_lower
         assert "could not be queried" not in output_lower
         assert "traceback" not in output_lower
 
