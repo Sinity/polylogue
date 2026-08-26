@@ -12,7 +12,10 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from polylogue.storage.archive_tuple_location import InactiveTierDestination
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
@@ -433,8 +436,34 @@ def initialize_archive_database(
     *,
     allow_create: bool = True,
     expected_version: int | None = None,
+    inactive_destination: InactiveTierDestination | None = None,
 ) -> None:
-    """Create or initialize one archive tier database file."""
+    """Create or initialize one archive tier database file.
+
+    A path below ``.archive-tuples`` is an inactive whole-archive candidate,
+    not an ordinary archive root.  Such a writer must carry the manifest-bound
+    destination capability so a typo cannot silently open the active or a
+    foreign generation.  Validation happens before ``sqlite3.connect``.
+    """
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.archive_tuple_location import (
+        ArchiveTupleError,
+        InactiveTierDestination,
+        is_archive_tuple_candidate_path,
+        validate_inactive_destination,
+    )
+
+    if is_archive_tuple_candidate_path(path):
+        if not isinstance(inactive_destination, InactiveTierDestination):
+            raise ArchiveTupleError("inactive archive tuple tier initialization requires a typed inactive_destination")
+        validate_inactive_destination(
+            inactive_destination,
+            ArchiveLocation.resolve(inactive_destination.archive_root),
+            path=path,
+            expected_tier=tier,
+        )
+    elif inactive_destination is not None:
+        raise ArchiveTupleError("inactive_destination does not match an archive tuple candidate path")
     if allow_create:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
@@ -666,6 +695,13 @@ def _initialize_active_archive_root(root: Path) -> None:
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every active archive tier under one local bootstrap owner."""
+
+    from polylogue.storage.archive_tuple_location import ArchiveTupleError, is_archive_tuple_candidate_path
+
+    if is_archive_tuple_candidate_path(root):
+        raise ArchiveTupleError(
+            "inactive archive tuple roots require typed per-tier destinations; refusing active-root bootstrap"
+        )
 
     with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
         _initialize_active_archive_root(root)
