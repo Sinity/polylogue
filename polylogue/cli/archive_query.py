@@ -1509,30 +1509,38 @@ def _fetch_daemon_payload(
         ),
     )
     if path == "/api/cli/query" or path.startswith("/api/query-units?"):
+        from polylogue.cli.operation_kernel import (
+            OperationKernel,
+            OperationKernelError,
+            OperationRequest,
+        )
+
         operation = "cli.query"
         operation_body = body or {}
         if path.startswith("/api/query-units?"):
             operation = "query.units"
             operation_body = {"params": parse_qs(urlsplit(path).query, keep_blank_values=True)}
-        envelope = client.operation(
-            operation,
-            operation_body,
-            archive_root=str(config.archive_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
+        lowered = OperationRequest(operation, operation_body)
+        kernel = OperationKernel(
+            lambda request: client.operation(
+                request.operation,
+                dict(request.payload),
+                archive_root=str(config.archive_root),
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                daemon_version=POLYLOGUE_VERSION,
+            )
         )
-        if envelope is None:
+        try:
+            operation_result = kernel.execute(lowered)
+        except OperationKernelError:
             return None
-        error = envelope.get("error")
-        if error is not None:
-            return None
-        result = envelope.get("result")
-        if not isinstance(result, dict):
+        payload_result = operation_result.value
+        if not isinstance(payload_result, dict):
             return None
         if client.last_elapsed_ms is not None:
-            result = dict(result)
-            result["_daemon_elapsed_ms"] = client.last_elapsed_ms
-        return result
+            payload_result = dict(payload_result)
+            payload_result["_daemon_elapsed_ms"] = client.last_elapsed_ms
+        return payload_result
     if (
         client.probe(
             archive_root=str(config.archive_root),
