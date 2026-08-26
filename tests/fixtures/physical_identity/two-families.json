@@ -1,0 +1,16 @@
+{
+  "public_origin": "aistudio-drive",
+  "native_id": "same-native-id",
+  "members": [
+    {"source_family": "gemini", "raw_id": "raw-gemini"},
+    {"source_family": "drive", "raw_id": "raw-drive"}
+  ],
+  "expected": {
+    "physical_keys": [
+      ["gemini", "same-native-id"],
+      ["drive", "same-native-id"]
+    ],
+    "public_ref": ["aistudio-drive", "same-native-id"],
+    "resolution": "ambiguous"
+  }
+}
