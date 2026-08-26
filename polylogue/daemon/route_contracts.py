@@ -260,6 +260,15 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/operation",
+        "operational",
+        "private",
+        "credential_if_configured",
+        "DaemonOperationEnvelope",
+        "Local CLI/MCP control-plane transport for archive-scoped read operations.",
+    ),
+    RouteContract(
+        "POST",
         "/api/cli/delete/prepare",
         "maintenance",
         "private",

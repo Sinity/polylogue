@@ -1155,7 +1155,6 @@ def recover_interrupted_operations(archive_root: Path) -> None:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.bindings import runtime_operation_binding
     from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     audit = AuditRepository.for_archive_root(
         archive_root,
@@ -1180,7 +1179,12 @@ def recover_interrupted_operations(archive_root: Path) -> None:
         return
     classified: set[str] = set()
     try:
-        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        from polylogue.archive.query.execution_control import InterruptibleSQLiteRead, QueryExecutionContext
+
+        reader = InterruptibleSQLiteRead(
+            QueryExecutionContext.create(query_text="startup.recover_abandoned_operations")
+        )
+        with reader.open_context(archive_root) as archive:
             args = SessionDeleteArgs(archive=archive, session_ids=())
             for operation in orphans:
                 if (operation.operation, operation.operation_version) != inspectable:

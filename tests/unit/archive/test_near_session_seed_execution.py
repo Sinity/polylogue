@@ -23,6 +23,7 @@ from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
 from polylogue.config import Config, Source
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
@@ -204,7 +205,7 @@ async def test_search_hits_for_plan_session_seed_no_backend_fails_typed(
     seed_id = mapping["seed"][0]
 
     plan = SessionQueryPlan(similar_session_id=seed_id)
-    with pytest.raises(ExpressionCompileError):
+    with pytest.raises(EmbeddingRetrievalNotReadyError):
         await search_hits_for_plan(plan, config)
 
 

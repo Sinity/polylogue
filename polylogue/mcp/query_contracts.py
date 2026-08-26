@@ -23,17 +23,20 @@ MCPCountBound: TypeAlias = Annotated[int, Field(ge=0)] | None
 
 
 def _mcp_aliases() -> dict[str, str]:
-    """Lower declared MCP names to their canonical SessionQuerySpec fields."""
-    aliases: dict[str, str] = {}
-    from polylogue.archive.query.fields import QUERY_DECLARATIONS
+    """Lower MCP-only aliases to names accepted by ``SessionQuerySpec``.
 
-    for descriptor in QUERY_DECLARATIONS:
-        target = descriptor.spec_attr
-        if target is None:
-            continue
-        for name in descriptor.mcp_names:
-            aliases[name] = target
-    return aliases
+    The declaration registry's ``spec_attr`` names the dataclass field, while
+    ``SessionQuerySpec.from_params`` intentionally accepts the public
+    structured vocabulary (for example ``origin`` and ``repo``). Mapping all
+    MCP names to ``spec_attr`` therefore drops filters whose public and
+    dataclass names differ. Only the three MCP spellings that are aliases at
+    the structured boundary belong here.
+    """
+    return {
+        "has_tool_use": "filter_has_tool_use",
+        "has_thinking": "filter_has_thinking",
+        "has_paste_evidence": "filter_has_paste",
+    }
 
 
 def _validate_origin_filters(params: Mapping[str, object]) -> None:

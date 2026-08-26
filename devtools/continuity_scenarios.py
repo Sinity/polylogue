@@ -658,7 +658,11 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "explain",
                 _args(subject="query", expression="assertions where kind:decision AND status:active"),
             ),
-            ContinuityRouteStep("read-views", "explain", _args(subject="capability")),
+            # The capability route is a bounded declaration catalogue.  Keep
+            # this probe to one item so the MCP response retains its envelope
+            # metadata under the transport byte budget; exhaustive catalogue
+            # paging is covered by the explain pagination tests.
+            ContinuityRouteStep("read-views", "explain", _args(subject="capability", limit=1)),
         ),
         facts=(
             _fact(
@@ -677,8 +681,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "*",
                 reducer="count",
             ),
-            _fact("read_view_count", "read-views", "total"),
-            _fact("read_view_ids", "read-views", "read_views", "*", "view_id", reducer="unique_values"),
+            _fact("capability_declaration_count", "read-views", "total"),
         ),
         evidence=(),
         workflows=("find-then-read-messages", "find-then-context-image", "resolve-ref-drilldown"),

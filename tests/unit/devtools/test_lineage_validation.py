@@ -25,7 +25,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
     try:
         conn.executescript(
             """
-            PRAGMA user_version = 24;
+            PRAGMA user_version = 73;
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 native_id TEXT,
@@ -62,6 +62,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 method TEXT,
                 evidence_json TEXT,
                 branch_point_message_id TEXT,
+                branch_point_content_address BLOB,
                 inheritance TEXT
             );
             CREATE TABLE session_working_dirs (
@@ -73,7 +74,9 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 attachment_id TEXT,
                 display_name TEXT,
                 media_type TEXT,
-                byte_count INTEGER
+                byte_count INTEGER,
+                blob_hash BLOB,
+                acquisition_status TEXT
             );
             CREATE TABLE attachment_refs (
                 session_id TEXT,
@@ -98,6 +101,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 has_tool_use INTEGER DEFAULT 0,
                 has_thinking INTEGER DEFAULT 0,
                 has_paste INTEGER DEFAULT 0,
+                content_address BLOB,
                 occurred_at_ms INTEGER,
                 paste_boundary TEXT,
                 duration_ms INTEGER,
@@ -140,7 +144,10 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 ('bp2', 'p2', 'text', 'parent two', 0),
                 ('bc3', 'c3', 'text', 'child tail', 0),
                 ('bf1', 'f1', 'text', 'fresh', 0);
-            INSERT INTO session_links VALUES
+            INSERT INTO session_links
+                (src_session_id, dst_origin, dst_native_id, link_type, status,
+                 resolved_dst_session_id, method, evidence_json, branch_point_message_id, inheritance)
+            VALUES
                 ('child', 'codex-session', 'parent-native', 'continuation', NULL, 'parent', 'parser-parent', '{}', 'p2', 'prefix-sharing'),
                 ('fresh', 'claude-code-session', 'parent-native', 'subagent', NULL, 'parent', 'parent-tool-use-id', '{}', NULL, 'spawned-fresh');
             """
@@ -265,7 +272,7 @@ def test_lineage_validation_clean_archive_is_citable(tmp_path: Path) -> None:
 
     report = lineage_validation.build_report(_args(archive_root))
 
-    assert report["index_schema_version"] == 24
+    assert report["index_schema_version"] == 73
     assert report["counts"]["physical_sessions"] == 3
     assert report["counts"]["logical_sessions"] == 2
     assert report["counts"]["stored_messages"] == 4

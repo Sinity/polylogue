@@ -4566,6 +4566,13 @@ x-polylogue-route-contracts:
   response_contract: SearchEnvelope / SessionListResponse with route_state
   notes: Local UDS-only root-request parameter envelope; daemon owns query compilation.
 - method: POST
+  pattern: /api/operation
+  kind: operational
+  stability: private
+  auth_policy: credential_if_configured
+  response_contract: DaemonOperationEnvelope
+  notes: Local CLI/MCP control-plane transport for archive-scoped read operations.
+- method: POST
   pattern: /api/cli/delete/prepare
   kind: maintenance
   stability: private
