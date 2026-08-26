@@ -3097,25 +3097,43 @@ def _check_chatgpt_content_conservation_at_index_path(
 
     dropped = int(evidence["content_units_dropped"])
     conserved = int(evidence["content_units_conserved"])
-    # An empty measured universe is not evidence of conservation.  In
-    # particular, a parser can silently stop recognizing every ChatGPT
-    # document and make this census vacuously green.  Keep the absence count
-    # visible, but make the owner red until at least one acquired document is
-    # actually measured (corpus-absences remains the owner of wholly absent
-    # indexed documents).
-    if (
-        evidence["raws_scanned"] > 0
-        and not evidence["documents_measured"]
-        and not evidence["documents_absent_from_index"]
-    ):
+    if not evidence["source_rows_selected"]:
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.SKIP,
+            summary="ChatGPT source population is absent; conservation is not applicable",
+            evidence={**evidence, "outcome_reason": "no_chatgpt_population"},
+        )
+    if not evidence["blobs_readable"]:
         return ArchiveVerificationCheck(
             name="chatgpt-content-conservation",
             status=OutcomeStatus.ERROR,
-            summary=(
-                "no indexed chatgpt-export document has acquired raw bytes to measure; content conservation is vacuous"
-            ),
-            count=1,
-            evidence=evidence,
+            summary="ChatGPT source evidence exists but no selected blob is readable",
+            count=int(evidence["blobs_missing"]),
+            evidence={**evidence, "outcome_reason": "all_blobs_unreadable"},
+        )
+    if not evidence["documents_lowered"]:
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.ERROR,
+            summary="ChatGPT source evidence lowered zero documents",
+            count=int(evidence["blobs_readable"]),
+            evidence={**evidence, "outcome_reason": "unsupported_or_malformed_envelopes"},
+        )
+    if not evidence["candidate_documents_matched"]:
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.ERROR,
+            summary="ChatGPT documents were lowered but none overlap the candidate index",
+            count=int(evidence["candidate_documents_absent"]),
+            evidence={**evidence, "outcome_reason": "zero_candidate_overlap"},
+        )
+    if not evidence["content_units_enumerated"]:
+        return ArchiveVerificationCheck(
+            name="chatgpt-content-conservation",
+            status=OutcomeStatus.ERROR,
+            summary="ChatGPT documents overlap the candidate but contain no measurable content units",
+            evidence={**evidence, "outcome_reason": "zero_content_units"},
         )
     summary = (
         f"{dropped:,} content unit(s) dropped at the parse boundary across "
