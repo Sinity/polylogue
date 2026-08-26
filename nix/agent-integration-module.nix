@@ -10,6 +10,9 @@ let
   inherit (lib) mkEnableOption mkIf mkOption types;
 
   clientArgs = lib.concatMap (client: [ "--client" client ]) cfg.clients;
+  roleWrite = cfg.mcpRole == "write" || cfg.mcpRole == "admin";
+  roleJudge = cfg.mcpRole == "review" || cfg.mcpRole == "admin";
+  roleMaintenance = cfg.mcpRole == "admin";
   archiveArgs = lib.optionals (cfg.archiveRoot != null) [ "--archive-root" cfg.archiveRoot ];
   configArgs = lib.optionals (cfg.configPath != null) [ "--config-path" cfg.configPath ];
   optDownArgs = [
@@ -17,9 +20,9 @@ let
     (if cfg.installMcp then "--mcp" else "--no-mcp")
   ];
   replaceArgs = lib.optionals cfg.replaceClients [ "--replace-clients" ];
-  capabilityArgs = lib.optionals cfg.mcpEnableWrite [ "--enable-write" ]
-    ++ lib.optionals cfg.mcpEnableJudge [ "--enable-judge" ]
-    ++ lib.optionals cfg.mcpEnableMaintenance [ "--enable-maintenance" ];
+  capabilityArgs = lib.optionals (roleWrite || cfg.mcpEnableWrite) [ "--enable-write" ]
+    ++ lib.optionals (roleJudge || cfg.mcpEnableJudge) [ "--enable-judge" ]
+    ++ lib.optionals (roleMaintenance || cfg.mcpEnableMaintenance) [ "--enable-maintenance" ];
 
   installArgs = [
     "${cfg.package}/bin/polylogue"
@@ -48,6 +51,17 @@ in
       default = [ ];
       example = [ "claude-code" "codex" ];
       description = "Native clients to reconcile. Keep the module enabled while these files are managed.";
+    };
+
+    mcpRole = mkOption {
+      type = types.enum [ "read" "write" "review" "admin" ];
+      default = "read";
+      description = ''
+        Coarse profile for the generated MCP entry. read is the default;
+        write enables write/run, review enables judge, and admin enables all
+        privileged dispatchers. The explicit mcpEnable* options below can
+        opt into additional independent capabilities.
+      '';
     };
 
     mcpEnableWrite = mkOption {
