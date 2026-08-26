@@ -2301,8 +2301,13 @@ class LiveBatchProcessor:
             # unlike every other branch where raw_id IS the content hash.
             acquired_via_sqlite_snapshot = path in raw_source_revisions
             raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
-            if is_jsonl_source_path(str(path)) and raw_id in raw_payloads:
-                raw_frontier_sizes[path] = jsonl_complete_prefix(raw_payloads[raw_id]).prefix_size
+            jsonl_boundary = (
+                jsonl_complete_prefix(raw_payloads[raw_id])
+                if is_jsonl_source_path(str(path)) and raw_id in raw_payloads
+                else None
+            )
+            if jsonl_boundary is not None:
+                raw_frontier_sizes[path] = jsonl_boundary.prefix_size
             raw_source_names[path] = source_name
             if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
@@ -2324,8 +2329,8 @@ class LiveBatchProcessor:
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
                     requires_complete_record_boundary=is_jsonl_source_path(str(path)),
                     complete_prefix_size=(
-                        jsonl_complete_prefix(raw_payloads[raw_id]).prefix_size
-                        if is_jsonl_source_path(str(path)) and raw_id in raw_payloads
+                        jsonl_boundary.prefix_size
+                        if jsonl_boundary is not None and not jsonl_boundary.malformed_record
                         else None
                     ),
                     captured_file_observation=captured_file_observations.get(path),
@@ -2834,6 +2839,7 @@ class LiveBatchProcessor:
                                 state_snapshot,
                                 source_path=record.source_path,
                                 acquired_at_ms=acquired_at_ms,
+                                observation_order=archive.raw_revision_observation_order(source_raw_id)[1],
                             )
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)

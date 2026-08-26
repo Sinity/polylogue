@@ -303,10 +303,21 @@ class ParsedMessage(BaseModel):
         if self.message_type is MessageType.MESSAGE:
             from polylogue.archive.message.artifacts import classify_message_type
 
+            # ``ParsedMessage.text`` may intentionally contain the provider's
+            # combined multi-segment representation. Runtime artifact
+            # classification must use the same TEXT-only projection that
+            # materialization and message-type backfill see, or a marker in a
+            # THINKING block can overwrite the parser's correct verdict.
+            classification_text = self.text
+            if self.blocks:
+                classification_text = (
+                    "\n".join(block.text for block in self.blocks if block.type is BlockType.TEXT and block.text)
+                    or None
+                )
             self.message_type = classify_message_type(
                 role=self.role,
                 message_type=self.message_type,
-                text=self.text,
+                text=classification_text,
                 block_types=tuple(block.type for block in self.blocks),
             )
         if self.material_origin is MaterialOrigin.UNKNOWN:

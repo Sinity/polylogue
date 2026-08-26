@@ -15,6 +15,7 @@ def write_codex_thread_state_evidence(
     *,
     source_path: str,
     acquired_at_ms: int,
+    observation_order: int | None = None,
 ) -> None:
     """Attach state-db thread metadata to existing Codex sessions.
 
@@ -24,6 +25,17 @@ def write_codex_thread_state_evidence(
     the derived tier returns.
     """
     from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+
+    def event_identity(base: str) -> str:
+        # A state snapshot is a durable observation, not a mutable hook
+        # envelope. Once source v36 made hook-event identity immutable, a
+        # stable per-thread id could no longer represent A -> B -> A state
+        # observations without either losing history or raising a conflict.
+        # Raw-payload receipt order is the acquisition authority used by
+        # retained replay, so carry it into the event identity.
+        if observation_order is None:
+            return base
+        return f"{base}:observation-{observation_order:020d}"
 
     for thread in snapshot.threads:
         payload: dict[str, object] = {
@@ -43,15 +55,16 @@ def write_codex_thread_state_evidence(
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
             hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-title:{thread.thread_id}",
+                hook_event_id=event_identity(f"codex-thread-title:{thread.thread_id}"),
                 origin=Origin.CODEX_SESSION,
                 source_path=source_path,
                 event_type="codex_thread_title",
                 payload=payload,
-                observed_at_ms=thread.updated_at_ms or acquired_at_ms,
+                observed_at_ms=acquired_at_ms,
                 native_id=f"{thread.thread_id}:codex_thread_title",
                 session_native_id=thread.thread_id,
             ),
+            carrier_relative_path=f"{source_path}::{event_identity(f'codex-thread-title:{thread.thread_id}')}",
         )
     for edge in snapshot.spawn_edges:
         payload = {
@@ -66,7 +79,7 @@ def write_codex_thread_state_evidence(
             source_path=source_path,
             acquired_at_ms=acquired_at_ms,
             hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}",
+                hook_event_id=event_identity(f"codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}"),
                 origin=Origin.CODEX_SESSION,
                 source_path=source_path,
                 event_type="codex_thread_spawn_edge",
@@ -74,6 +87,9 @@ def write_codex_thread_state_evidence(
                 observed_at_ms=acquired_at_ms,
                 native_id=f"{edge.parent_thread_id}:{edge.child_thread_id}:codex_thread_spawn_edge",
                 session_native_id=edge.parent_thread_id,
+            ),
+            carrier_relative_path=(
+                f"{source_path}::{event_identity(f'codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}')}"
             ),
         )
 

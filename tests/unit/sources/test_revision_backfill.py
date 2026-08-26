@@ -1136,7 +1136,13 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         payload_json = conn.execute(
-            "SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'codex-thread-title:codex-state-thread'"
+            """
+            SELECT payload_json
+            FROM raw_hook_events
+            WHERE event_type = 'codex_thread_title' AND session_native_id = 'codex-state-thread'
+            ORDER BY observed_at_ms DESC, hook_event_id DESC
+            LIMIT 1
+            """
         ).fetchone()
     assert payload_json is not None
     assert json.loads(str(payload_json[0]))["title"] == "title A"
@@ -1168,7 +1174,13 @@ def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_pa
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         payload_json = conn.execute(
-            "SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'codex-thread-title:codex-state-thread'"
+            """
+            SELECT payload_json
+            FROM raw_hook_events
+            WHERE event_type = 'codex_thread_title' AND session_native_id = 'codex-state-thread'
+            ORDER BY observed_at_ms DESC, hook_event_id DESC
+            LIMIT 1
+            """
         ).fetchone()
     assert payload_json is not None
     assert json.loads(str(payload_json[0]))["title"] == "newer title"

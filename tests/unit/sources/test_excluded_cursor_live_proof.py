@@ -24,19 +24,23 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
     checked = verify_receipt(receipt_path)
 
     assert checked == receipt
-    assert set(cast(dict[str, Any], receipt["outcomes"])) == {"indexed", "still_excluded", "typed_terminal"}
+    assert set(cast(dict[str, Any], receipt["outcomes"])) == {"indexed", "still_excluded", "deferred_partial"}
     assert receipt["outcomes"] == {
         "indexed": True,
         "still_excluded": True,
-        "typed_terminal": True,
+        "deferred_partial": True,
     }
-    typed_terminal = next(case for case in receipt["cases"] if case["case_id"] == "typed-terminal")
-    assert typed_terminal["terminal_evidence"]["parse_error_present"] is True
+    deferred_partial = next(case for case in receipt["cases"] if case["case_id"] == "deferred-partial")
+    assert deferred_partial["failure_evidence"] == {
+        "artifact_kind": "deferred_hot_jsonl_capture",
+        "support_status": "partial_decode",
+        "parse_error_present": False,
+    }
     assert receipt["execution"] == {
         "mode": "candidate_fixture",
         "live_census": "not_run",
         "live_residual": "Historical excluded population and current live file states were not accessed.",
-        "terminal_frontier_residual": "The typed-terminal candidate has no accepted byte head, so its readiness gate was injected for this case only.",
+        "partial_tail_frontier_residual": "The deferred-partial candidate has no accepted byte head, so its readiness gate was injected for this case only.",
         "residual_successor": "polylogue-excluded-cursor-live-proof",
     }
     assert receipt["production_route"]["catch_up"] == (
@@ -47,7 +51,7 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "indexed_authority": "byte_proven_source_raw_and_revision_head",
         "indexed_session_count_before": 0,
         "indexed_session_count": 1,
-        "typed_terminal_artifact": "terminal_corrupt_input",
+        "deferred_partial_artifact": "deferred_hot_jsonl_capture",
         "unchanged_excluded_attempt_present": False,
     }
 

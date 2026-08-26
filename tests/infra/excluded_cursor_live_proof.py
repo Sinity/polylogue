@@ -28,7 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.reindex_campaign import _codex_records, _write_jsonl
 
-RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v1"
+RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v2"
 FIXTURE_VERSION = "candidate-codex-live-compatible-2026-08-06"
 OLD_PARSER_FINGERPRINT = "live-batched-v1"
 NEW_PARSER_FINGERPRINT = "live-batched-v2"
@@ -182,14 +182,15 @@ def _indexed_counts(root: Path, path: Path) -> dict[str, int]:
     return {"parsed_raw": len(raw_ids), "indexed_sessions": int(indexed[0]) if indexed else 0}
 
 
-def _terminal_evidence(root: Path, path: Path) -> dict[str, object] | None:
+def _failure_evidence(root: Path, path: Path) -> dict[str, object] | None:
     with sqlite3.connect(root / "source.db") as conn:
         row = conn.execute(
             """
             SELECT a.artifact_kind, a.support_status, r.parse_error
             FROM raw_artifacts AS a
             JOIN raw_sessions AS r USING (raw_id)
-            WHERE r.source_path = ? AND a.artifact_kind LIKE 'terminal_%'
+            WHERE r.source_path = ?
+              AND (a.artifact_kind LIKE 'terminal_%' OR a.artifact_kind LIKE 'deferred_%')
             ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
             LIMIT 1
             """,
@@ -228,7 +229,7 @@ def _case_summary(
             "full_file_count": int(getattr(metrics, "full_file_count", 0)) if metrics else 0,
         },
         "indexed": _indexed_counts(root, path),
-        "terminal_evidence": _terminal_evidence(root, path),
+        "failure_evidence": _failure_evidence(root, path),
         "attempt": attempt,
         "proof_attempt_count": len(proof_attempts),
         "retry_state": retry_state,
@@ -285,7 +286,7 @@ def _run_case(
 
 def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, Any]:
     """Run the real cursor/fingerprint route and write a self-hashed receipt."""
-    case_roots = {case_id: root / case_id for case_id in ("indexed", "still-excluded", "typed-terminal")}
+    case_roots = {case_id: root / case_id for case_id in ("indexed", "still-excluded", "deferred-partial")}
 
     def prepare_case(case_id: str, native_id: str, texts: tuple[str, ...]) -> tuple[Path, Path, CursorStore, int]:
         case_root = case_roots[case_id]
@@ -330,12 +331,12 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         attempts_before=unchanged_attempts_before,
     )
 
-    terminal_root = case_roots["typed-terminal"]
+    terminal_root = case_roots["deferred-partial"]
     terminal_source_root = terminal_root / "wire" / "excluded-cursor-proof"
-    terminal_path = terminal_source_root / "typed-terminal.jsonl"
+    terminal_path = terminal_source_root / "deferred-partial.jsonl"
     _write_jsonl(
         terminal_path,
-        _codex_records("excluded-proof-terminal", ("valid prefix", "terminal corruption")),
+        _codex_records("excluded-proof-terminal", ("valid prefix", "partial tail")),
     )
     with terminal_path.open("ab") as handle:
         handle.write(b'{"type":"response_item","payload":{"type":"message","content":[')
@@ -343,20 +344,20 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
     terminal_cursor = CursorStore(terminal_root / "ops.db")
     terminal_attempts_before = len(_attempts_for_path(terminal_root, terminal_path))
     _seed_excluded(terminal_cursor, terminal_path, parser_fingerprint=OLD_PARSER_FINGERPRINT)
-    typed_terminal = _run_case(
+    deferred_partial = _run_case(
         root=terminal_root,
         source_root=terminal_source_root,
         cursor=terminal_cursor,
-        case_id="typed-terminal",
+        case_id="deferred-partial",
         path=terminal_path,
         parser_fingerprint=NEW_PARSER_FINGERPRINT,
         attempts_before=terminal_attempts_before,
         bypass_frontier_gate=True,
     )
 
-    cases = [indexed, still_excluded, typed_terminal]
+    cases = [indexed, still_excluded, deferred_partial]
     indexed_attempt = indexed["attempt"]
-    terminal_evidence = typed_terminal["terminal_evidence"]
+    deferred_evidence = deferred_partial["failure_evidence"]
     outcomes = {
         "indexed": indexed["indexed_before"]["indexed_sessions"] == 0
         and indexed["indexed"]["indexed_sessions"] == 1
@@ -366,12 +367,13 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         "still_excluded": still_excluded["retry_state"]["excluded"] is True
         and still_excluded["attempt_present"] is False
         and still_excluded["retry_state"]["retry_due"] is False,
-        "typed_terminal": terminal_evidence is not None
-        and terminal_evidence["artifact_kind"] == "terminal_corrupt_input"
-        and terminal_evidence["support_status"] == "decode_failed"
-        and terminal_evidence["parse_error_present"] is True
-        and typed_terminal["retry_state"]["excluded"] is False
-        and typed_terminal["retry_state"]["retry_due"] is False,
+        "deferred_partial": deferred_evidence is not None
+        and deferred_evidence["artifact_kind"] == "deferred_hot_jsonl_capture"
+        and deferred_evidence["support_status"] == "partial_decode"
+        and deferred_evidence["parse_error_present"] is False
+        and deferred_partial["indexed"]["indexed_sessions"] == 1
+        and deferred_partial["retry_state"]["excluded"] is False
+        and deferred_partial["retry_state"]["retry_due"] is False,
     }
     if not all(outcomes.values()):
         raise AssertionError(f"excluded-cursor proof outcomes failed: {outcomes}")
@@ -383,7 +385,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
             "mode": "candidate_fixture",
             "live_census": "not_run",
             "live_residual": "Historical excluded population and current live file states were not accessed.",
-            "terminal_frontier_residual": "The typed-terminal candidate has no accepted byte head, so its readiness gate was injected for this case only.",
+            "partial_tail_frontier_residual": "The deferred-partial candidate has no accepted byte head, so its readiness gate was injected for this case only.",
             "residual_successor": "polylogue-excluded-cursor-live-proof",
         },
         "production_route": {
@@ -394,7 +396,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
                 "_plan_catch_up -> coordinated chunk ingest"
             ),
             "ingest": "LiveWatcher._ingest_files -> LiveBatchProcessor.ingest_files",
-            "terminal_evidence": "source.raw_artifacts",
+            "failure_evidence": "source.raw_artifacts",
             "retry_state": "ops.ingest_cursor and ops.ingest_attempts",
         },
         "outcomes": outcomes,
@@ -410,7 +412,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
             "indexed_authority": "byte_proven_source_raw_and_revision_head",
             "indexed_session_count_before": indexed["indexed_before"]["indexed_sessions"],
             "indexed_session_count": indexed["indexed"]["indexed_sessions"],
-            "typed_terminal_artifact": terminal_evidence["artifact_kind"] if terminal_evidence else None,
+            "deferred_partial_artifact": deferred_evidence["artifact_kind"] if deferred_evidence else None,
             "unchanged_excluded_attempt_present": still_excluded["attempt_present"],
         },
     }
