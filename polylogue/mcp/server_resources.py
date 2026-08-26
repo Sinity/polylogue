@@ -252,6 +252,12 @@ def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
                         "prompts": [asdict(entry) for entry in TARGET_PROMPTS],
                     },
                     "units": units,
+                    "detail": {
+                        "tool": "explain",
+                        "arguments": {"subject": "capability", "limit": 25},
+                        "searchable": True,
+                        "paged_by": "offset",
+                    },
                 }
             )
         )
