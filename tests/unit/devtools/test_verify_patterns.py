@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,3 +53,26 @@ def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
 
     assert payload["blocking"] is False
     assert payload["stale_matches"] == ["synthetic polylogue/existing.py:10"]
+
+
+def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    rule = _rule(tmp_path)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["blocking"] is True
+    gate = payload["required_gate"]
+    assert gate["diagnosis"] == "gate_missing_executable"
+    assert "uv sync --group audit" in gate["details"][0]
+
+
+def test_scan_converts_ast_grep_zero_based_lines_to_one_based(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    rule = _rule(tmp_path)
+    completed = SimpleNamespace(
+        returncode=0, stdout='[{"file":"polylogue/example.py","range":{"start":{"line":41}}}]', stderr=""
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    assert verify_patterns._scan(tmp_path, rule) == {("polylogue/example.py", 42)}

@@ -89,7 +89,7 @@ def _scan(root: Path, rule: Rule) -> set[tuple[str, int]]:
         start = item.get("range", {}).get("start", {})
         if not isinstance(start, dict) or not isinstance(start.get("line"), int):
             raise ValueError("ast-grep returned a match without a start line")
-        matches.add((item["file"], start["line"]))
+        matches.add((item["file"], start["line"] + 1))
     return matches
 
 
@@ -109,6 +109,10 @@ def _payload(root: Path) -> dict[str, Any]:
             executable_available=False,
             required_count=sum(rule.status == "enforcing" for rule in rules),
             inspected_count=0,
+            details=(
+                "ast-grep is required for the patterns gate; install it with "
+                "`uv sync --group audit` and ensure the resulting executable is on PATH",
+            ),
         )
         return {"blocking": True, "new_matches": [], "stale_matches": [], "required_gate": gate.to_payload()}
     for rule in rules:

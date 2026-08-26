@@ -10,9 +10,17 @@ rule:
         not:
           has:
             any:
-              - pattern: os.fsync($$$)
-              - pattern: $OBJECT.fsync($$$)
-              - pattern: _fsync_directory($$$)
-              - pattern: _fsync_dir($$$)
+              - pattern: _fsync_directory($PATH.parent)
+              - pattern: _fsync_dir($PATH.parent)
+              - inside:
+                  kind: function_definition
+                  all:
+                    - has:
+                        pattern: os.open($PATH.parent, $$$)
+                        stopBy: end
+                    - has:
+                        pattern: os.fsync($$$)
+                        stopBy: end
+                  stopBy: end
             stopBy: end
         stopBy: end
