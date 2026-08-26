@@ -11,6 +11,7 @@ domain models rather than plans:
 | Doc | Purpose |
 |-----|---------|
 | [Session lineage model](session-lineage-model.md) | Fork/resume/compaction storage + composition semantics (polylogue-4ts) |
+| [Physical session identity](physical-session-identity.md) | Collision census and durable identity beneath lossy public-origin projection (polylogue-4ts.7) |
 | [Hermes archival export contract](hermes-archival-export-contract.md) | Versioned Hermes session export schema + durable lifecycle-event spool + snapshot reconciliation (polylogue-fs1.7) |
 | [Analysis rigor](analysis-rigor.md) | Rigor mechanisms for agent claims: population-validity (metric hashes, pre-registration, holdouts) + comparative judgment (Bradley-Terry rankings, agent judges, cascades) (polylogue-rxdo.9) |
 | [Query set algebra](query-set-algebra.md) | Set-composition semantics over query results (polylogue-fnm.13) |

@@ -470,6 +470,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace physical-identity-census",
+        "workspace",
+        "Census raw evidence hidden by origin/native session identity collapse.",
+        "devtools.physical_identity_census",
+        use_when="Before designing physical session identity changes, measure same-origin/native candidates and distinguishable family evidence.",
+        examples=(
+            "devtools workspace physical-identity-census --json",
+            "devtools workspace physical-identity-census --out docs/evidence/physical-session-identity-census.json",
+        ),
+    ),
+    CommandSpec(
         "verify agent-integration",
         "verification",
         "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",

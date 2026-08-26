@@ -144,6 +144,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
+| `devtools workspace physical-identity-census` | Census raw evidence hidden by origin/native session identity collapse. |
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 
 <!-- END GENERATED: devtools-command-catalog -->

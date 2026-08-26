@@ -1,0 +1,20 @@
+{
+  "artifact": "physical-session-identity-census",
+  "version": 1,
+  "status": "method-and-fixture-baseline",
+  "command": "devtools workspace physical-identity-census --source-db <archive>/source.db --json",
+  "evidence": "source.raw_sessions.native_id grouped with capture_mode/detected_provider",
+  "confidence_labels": {
+    "high": "same public origin/native_id and distinct family hints",
+    "medium": "same public origin/native_id and one usable family hint",
+    "low": "same public origin/native_id but no usable family hint"
+  },
+  "live_identifiers": [],
+  "summary": {
+    "candidate_groups": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "note": "This committed artifact contains no operator archive identifiers. Generate a local live report with the command above; raw ids, native ids, and paths are never emitted, only SHA-256 digests."
+}

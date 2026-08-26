@@ -343,6 +343,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Physical Session Identity",
+        "design/physical-session-identity.md",
+        "Durable identity proposal beneath lossy public origin projection.",
+        "design",
+    ),
+    _entry(
         "Content, Identity, and Lineage Architecture",
         "plans/content-identity-lineage-design.md",
         "Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority.",
