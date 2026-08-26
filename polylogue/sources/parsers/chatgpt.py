@@ -28,6 +28,7 @@ from .base import (
     ParsedWebConstruct,
     attachment_from_meta,
     human_authored_override,
+    parser_admission,
     typed_unknown_block,
 )
 
@@ -1402,6 +1403,7 @@ def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[P
     return events
 
 
+@parser_admission("chatgpt")
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):

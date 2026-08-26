@@ -39,6 +39,7 @@ from .base import (
     ParsedSessionRef,
     ParsedWebConstruct,
     human_authored_override,
+    parser_admission,
 )
 
 INGEST_FLAG = "capture:chatgpt-codex-cloud-task"
@@ -189,6 +190,7 @@ def _pull_request_ref(turn: Mapping[str, object]) -> ParsedSessionRef | None:
     return ParsedSessionRef(kind=SessionRefKind.PULL_REQUEST.value, url=pr_id)
 
 
+@parser_admission("chatgpt_codex_sidecar")
 def parse_codex_task(task: Mapping[str, object], fallback_id: str) -> ParsedSession:
     task_id = task.get("id")
     provider_session_id = task_id if isinstance(task_id, str) and task_id else fallback_id

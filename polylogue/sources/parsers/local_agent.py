@@ -19,6 +19,7 @@ from .base import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
 )
 
 
@@ -90,6 +91,7 @@ def looks_like_hermes(payload: JSONDocument) -> bool:
     )
 
 
+@parser_admission("gemini_cli")
 def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     messages: list[ParsedMessage] = []
@@ -131,6 +133,7 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     )
 
 
+@parser_admission("hermes")
 def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("session_id")) or fallback_id
     messages: list[ParsedMessage] = []

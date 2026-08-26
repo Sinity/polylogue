@@ -22,6 +22,7 @@ from .base import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
 )
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
@@ -323,6 +324,7 @@ def _gemini_usage_event(
     )
 
 
+@parser_admission("drive")
 def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallback_id: str) -> ParsedSession:
     runtime_provider = Provider.from_string(provider)
     run_settings = json_document(payload.get("runSettings"))
