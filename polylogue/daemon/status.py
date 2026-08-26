@@ -746,7 +746,7 @@ def _archive_tier_status(
     probe = probe_archive_tier(ArchiveTier(name), path)
     if not probe.exists:
         return ArchiveTierStatus(name=name, path=probe.path, expected_user_version=probe.expected_user_version)
-    table_count = 0
+    table_count = -2
     try:
         conn = open_readonly_connection(path)
         try:
@@ -786,7 +786,12 @@ def _insight_freshness_info() -> dict[str, object]:
             archive_info = _archive_insight_freshness_info(index_db)
             if archive_info is not None:
                 return archive_info
-        return {"sessions_with_profiles": 0, "total_sessions": 0}
+        return {
+            "checked": False,
+            "reason": "index tier is unavailable",
+            "sessions_with_profiles": 0,
+            "total_sessions": 0,
+        }
     index_db = dbf
     if index_db is not None:
         archive_info = _archive_insight_freshness_info(index_db)
@@ -820,7 +825,7 @@ def _insight_freshness_info() -> dict[str, object]:
         }
     except sqlite3.Error as exc:
         logger.warning("status: insight-freshness query failed for %s: %s", dbf, exc, exc_info=True)
-        return {"sessions_with_profiles": 0, "total_sessions": 0}
+        return {"checked": False, "reason": str(exc), "sessions_with_profiles": 0, "total_sessions": 0}
 
 
 def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | None:
@@ -875,7 +880,13 @@ def _raw_failure_info() -> dict[str, object]:
     """
     root = archive_root()
     source_db = root / "source.db"
-    maintenance_samples, maintenance_count = _maintenance_failure_info()
+    maintenance_samples, maintenance_count, maintenance_error = _maintenance_failure_info()
+    if maintenance_error is not None:
+        return _unavailable_raw_failure_info(
+            reason=f"maintenance failure ledger unavailable: {maintenance_error}",
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
     archive_info = _archive_raw_failure_info(
         source_db,
         maintenance_samples=maintenance_samples,
@@ -1047,7 +1058,13 @@ def _archive_raw_failure_info(
 
 def raw_failure_info_for_root(root: Path) -> dict[str, object]:
     """Return raw lifecycle evidence from one archive root without a daemon."""
-    maintenance_samples, maintenance_count = _maintenance_failure_info(root)
+    maintenance_samples, maintenance_count, maintenance_error = _maintenance_failure_info(root)
+    if maintenance_error is not None:
+        return _unavailable_raw_failure_info(
+            reason=f"maintenance failure ledger unavailable: {maintenance_error}",
+            maintenance_samples=maintenance_samples,
+            maintenance_count=maintenance_count,
+        )
     archive_info = _archive_raw_failure_info(
         root / "source.db",
         maintenance_samples=maintenance_samples,
@@ -1061,7 +1078,7 @@ def raw_failure_lifecycle_for_root(root: Path) -> Any:
     return read_raw_failure_lifecycle(root / "source.db", sample_limit=0)
 
 
-def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int]:
+def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int, str | None]:
     """Read routed maintenance failures into typed daemon samples (#1198).
 
     Returns a ``(samples, total_count)`` pair so the caller can both
@@ -1070,16 +1087,20 @@ def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailure
     """
     from polylogue.maintenance.failure_routing import (
         count_maintenance_failures,
-        read_maintenance_failures,
+        read_maintenance_failures_with_error,
     )
 
     try:
         archive = root or archive_root()
-        records = read_maintenance_failures(archive)
+        records, read_error = read_maintenance_failures_with_error(archive)
         total = count_maintenance_failures(archive)
     except Exception as exc:
         logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
-        return [], 0
+        return [], 0, str(exc)
+
+    if read_error is not None:
+        logger.warning("status: maintenance-failure read failed: %s", read_error)
+        return [], total, read_error
 
     samples: list[RawFailureSample] = []
     for record in records:
@@ -1093,7 +1114,7 @@ def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailure
                 locator=record.locator or None,
             )
         )
-    return samples, total
+    return samples, total, None
 
 
 def _typed_failure_samples(value: object) -> list[RawFailureSample]:

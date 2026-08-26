@@ -322,10 +322,47 @@ def read_maintenance_failures(
             path=str(path),
             error=str(exc),
         )
+        # Keep the historical list-returning API fail-soft for callers that
+        # only need samples.  Status callers use the typed helper below so an
+        # unreadable ledger cannot be mistaken for an empty one.
         return []
     if len(records) <= limit:
         return records
     return records[-limit:]
+
+
+def read_maintenance_failures_with_error(
+    archive_root: Path,
+    *,
+    limit: int = MAINTENANCE_FAILURE_SAMPLE_LIMIT,
+) -> tuple[list[MaintenanceFailureRecord], str | None]:
+    """Read maintenance evidence while preserving an I/O refusal.
+
+    Malformed lines remain non-fatal (the file is still readable), but an
+    unreadable ledger is distinct from a ledger with no failure records.
+    """
+    path = _failure_file_path(archive_root)
+    if not path.exists():
+        return [], None
+    records: list[MaintenanceFailureRecord] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    payload = loads(stripped)
+                except (ValueError, TypeError):
+                    logger.warning("maintenance_failure_unparseable_line", path=str(path))
+                    continue
+                rec = MaintenanceFailureRecord.from_dict(payload)
+                if rec is not None:
+                    records.append(rec)
+    except OSError as exc:
+        logger.warning("maintenance_failure_read_failed", path=str(path), error=str(exc))
+        return [], str(exc)
+    return (records if len(records) <= limit else records[-limit:]), None
 
 
 def resolve_maintenance_failures(

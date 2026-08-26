@@ -925,6 +925,16 @@ def _check_insight_freshness_medium() -> HealthAlert:
         from polylogue.daemon.status import _insight_freshness_info
 
         info = _insight_freshness_info()
+        if info.get("checked") is False:
+            reason = str(info.get("reason") or "insight freshness is unavailable")
+            return HealthAlert(
+                check_name="insight_freshness",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message=f"insight freshness unavailable: {reason}",
+                checked_at=now,
+                consecutive_failures=_record_failure("insight_freshness", False),
+            )
         total_sessions = info.get("total_sessions", 0)
         total = total_sessions if isinstance(total_sessions, int) else 0
         profiled = info.get("sessions_with_profiles", 0)
