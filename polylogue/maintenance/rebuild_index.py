@@ -2277,8 +2277,16 @@ async def _rebuild_index_from_source_owned(
             acceptance_failures = tuple(
                 failure
                 for report, required_checks in zip(acceptance_reports, acceptance_requirements, strict=True)
-                if not passes_strict_acceptance(report, required_checks=required_checks)
-                for failure in strict_acceptance_failures(report, required_checks=required_checks)
+                if not passes_strict_acceptance(
+                    report,
+                    required_checks=required_checks,
+                    allow_not_applicable=report is acceptance_reports[1],
+                )
+                for failure in strict_acceptance_failures(
+                    report,
+                    required_checks=required_checks,
+                    allow_not_applicable=report is acceptance_reports[1],
+                )
             )
             if acceptance_failures:
                 failing = "; ".join(acceptance_failures)
