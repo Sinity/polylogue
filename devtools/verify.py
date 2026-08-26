@@ -233,7 +233,7 @@ def _native_pytest_steps(
 
 
 def build_verify_steps(
-    *, quick: bool, lab: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
+    *, quick: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
 ) -> list[tuple[str, list[str]]]:
     steps = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -250,6 +250,8 @@ def build_verify_steps(
             ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),
             ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
             ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
+            ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
+            ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
             (
                 "schema promotion audit",
                 [
@@ -274,13 +276,6 @@ def build_verify_steps(
             serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
         )
-    if lab:
-        steps += [
-            ("verify scenario", _devtools_cmd("verify scenario", "run", "archive-smoke", "--tier", "0")),
-            ("bench slo", _devtools_cmd("bench slo", "--include-lab")),
-            ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
-            ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
-        ]
     return steps
 
 
@@ -631,7 +626,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--all", "--full", dest="all_tests", action="store_true")
-    parser.add_argument("--lab", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     _anchor_verification_paths()
@@ -709,7 +703,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         steps = build_verify_steps(
             quick=args.quick,
             commit=args.commit,
-            lab=args.lab,
             testmon_mode=mode,
             testmon_environment=preparation.environment_name if preparation else "",
         )
