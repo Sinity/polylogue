@@ -1,6 +1,29 @@
 # Content, identity, and lineage architecture
 
-Status: implementation design for `polylogue-a7xr.25`, `polylogue-6e7m`, `polylogue-4ts`, `polylogue-nas1`, `polylogue-2qx`, `polylogue-qj5x`, `polylogue-a7xr.23`, `polylogue-a7xr.24`, and `polylogue-83u`.
+Status: mixed historical design and current decision record. Sections concerning
+`polylogue-a7xr.23` are evaluation-only and supersede the older CDC selection
+language below. No CDC source schema or compatibility format is selected.
+
+## Current decision for `polylogue-a7xr.23`
+
+This bead is a post-reindex architecture evaluation, independent of reindex
+admission. The current production source authority remains whole observations,
+the semantic/byte frontier and bounded retention in `polylogue/storage/raw_retention.py`,
+and the existing blob publication/GC protocol. CDC is only a disposable
+in-memory candidate in `devtools/source_storage_evaluation.py` until a frozen
+workload proves identical semantic, crash, retry, liveness, reconstruction and
+privacy laws and a material measured benefit after migration and maintenance
+cost. The historical CDC design in this document is evidence to compare, not
+an implementation mandate.
+
+The frozen workload names append, leading-record rewrite, truncation, rotation,
+relocation, duplicate export, corruption, missing chunks and privacy deletion.
+Its tests invoke `ArchiveStore.write_raw_and_parsed_result` as the production
+admission oracle and separately exercise candidate reconstruction and erasure.
+The lab intentionally adds no durable tables, reader abstraction, experiment
+dashboard or compatibility twin. A future CDC selection would require a new,
+explicitly authorized durable migration and conservation proof; absent that
+measured result, the proposal closes in favor of the simpler frontier model.
 
 This design is the authority for the next implementation train. It is grounded in the code and schemas at `25434d0f0`, the complete Beads threads listed above, the live archive measured on 2026-08-03, and the relevant history through PRs #3246, #3250, #3252, #3416, #3643, #3655, #3662, #3663, #3669, and #3691. It does not assume that an older plan describes current behavior when source or history contradicts it.
 
@@ -14,7 +37,7 @@ This design is the authority for the next implementation train. It is grounded i
 | `polylogue-nas1` | Reserve `resume` topology for exact provider-native evidence. Model context preparation, delivery, and successor association as a separate evidence graph joined at read time. | The native resume distinction gates lineage; the context-delivery extension can land in parallel. |
 | `polylogue-2qx` | Extend the existing `OriginSpec` into the single executable admission and normalization contract. It owns title authority, positive material-origin evidence, lineage assertions, event disposition, provenance, fidelity, and coverage. | Yes, before parser and hash changes. |
 | `polylogue-qj5x` | Remove normalized Beads issue sessions after an all-archive durable-data census. Keep Beads work evidence in the work-effect and claim graph. | Targeted follow-up, not a rebuild gate. |
-| `polylogue-a7xr.23` | Make content-defined chunks the durable byte representation in `source.db`; keep an `ops.db` byte cursor only as a disposable tailing optimization. Preserve full observation identity and parser-visible byte streams. | The raw authority contract is a prerequisite for later blob cleanup, but it need not block the index reparse. |
+| `polylogue-a7xr.23` | Evaluate CDC against whole observations plus semantic frontier/retention after reindex. Do not select CDC or add durable chunk schema from this plan. | Independent of reindex; closes with the simpler model unless the frozen law-and-measurement gate is passed. |
 | `polylogue-a7xr.24` | Continue the existing spec-driven mapper work after semantic schema changes settle. It is a mechanical reconciliation project, not an identity abstraction. | Independent and serialized after shared DDL hot spots. |
 | `polylogue-83u` | Continue attachment integrity independently. Attachment bytes and metadata already participate in the canonical hash. CDC and attachment storage must share blob integrity and GC invariants, but attachment semantics do not gate lineage. | Independent. Blob compression or GC work rebases after CDC. |
 
@@ -403,55 +426,27 @@ Changing an OriginSpec title, material-origin, lineage, normalized-field, or eve
 
 Cross-provider tests must run each representative fixture through production detection, lowering, parsing, hashing, writing, and reading. Required mutations remove or alter one positive marker and must fall back to `UNKNOWN` or a weaker generic branch; move a fixture into the shape of an earlier loose detector and ensure the tight detector still owns it; replace real title with prompt echo and ensure stored title is null; inject unknown event type and ensure lossless inline retention. A test that constructs an `OriginSpec` and asserts its own fields is vacuous.
 
-## 9. Content-defined chunking and cursor architecture
+## 9. Source-storage evaluation boundary
 
-### 9.1 Authority boundary
+The current source authority is whole observations plus the existing semantic/byte
+frontier, retention, publication reservation, liveness and GC rules. The
+post-reindex comparison is deliberately candidate-only:
+`devtools/source_storage_evaluation.py` contains no durable schema, daemon
+route, compatibility reader, or migration.
 
-CDC is the durable byte representation in `source.db`. The full raw observation remains the unit of acquisition truth, admission, parser replay, retention, and normalized membership. Chunks are an implementation of exact-byte storage, not independent observations.
+The frozen matrix covers append, leading-record rewrite, truncation, rotation,
+relocation, duplicate export, corruption, missing chunks and privacy deletion.
+Each candidate must be compared on identical admitted bytes and semantic output,
+then on storage/write amplification, acquisition and rebuild CPU/wall time,
+peak memory, GC/recovery cost, schema objects, maintained production/test LOC,
+migration cost, and independent authorities. Historical 14.6 GB savings is a
+baseline hypothesis only.
 
-`ops.db.ingest_cursor.byte_offset` remains a disposable watcher optimization. It identifies where a live tailer last completed useful work. Deleting `ops.db` may cause a complete source reread and rechunk, but must never lose an admitted byte, change raw identity, or prevent replay. A cursor is never accepted as proof that bytes before it exist.
-
-The Bead's original choice between CDC and durable cursors is therefore rejected as a false binary. CDC replaces durable prefix snapshots. A disposable cursor still prevents needless live rereads.
-
-### 9.2 Chunk and manifest contract
-
-Use a versioned FastCDC profile named `fastcdc-v1` with a checked-in fixed gear table, minimum chunk size 256 KiB, target average 1 MiB, and maximum 4 MiB. A chunk id is SHA-256 of exact chunk bytes. A manifest id is SHA-256 of canonical CBOR or canonical JSON containing chunker version, total length, and the ordered sequence of `(chunk_hash, chunk_length)`. The existing provenance-bearing raw observation id remains stable even when equal bytes are observed under distinct source/native identities; `whole_sha256` is the byte-deduplication key and is verified independently after stream reconstruction. Any future raw-id identity migration must explicitly preserve observation provenance and memberships rather than collapsing equal bytes by itself.
-
-Add additive source-tier tables equivalent to:
-
-```text
-raw_payload_manifests(manifest_id, chunker_version, total_length, whole_sha256, created_at_ms)
-raw_payload_manifest_chunks(manifest_id, position, chunk_hash, chunk_length)
-```
-
-Chunk bytes use the existing blob store with a new `raw_chunk` reference type whose `ref_id` is the `manifest_id`. Extend `BLOB_REF_LIVENESS_JOIN`, orphan-census, integrity, privacy-deletion, and retirement tooling to resolve that manifest and its ordered chunk rows; a missing manifest is an integrity failure, not an unknown ref to retain forever. A raw-session row refers to its manifest during migration while legacy whole-blob refs remain readable. The exact column names may follow current source DDL conventions, but the identities and constraints above are fixed. Include a shared-chunk deletion test proving that deleting one manifest retains chunks still referenced by another and reclaims only chunks with no live manifest.
-
-Parsers receive a `RawPayloadReader` abstraction that can `readall`, stream ordered bytes, or open a seekable logical stream. It verifies chunk length, manifest length, and whole SHA-256 before the parse is accepted. A parser never sees chunk boundaries and cannot branch on them. The eager and streaming Claude Code paths therefore keep identical normalized semantics, including the chunk-order invariant repaired in PR #3669.
-
-### 9.3 Publication, partial writes, resume, and deduplication
-
-Publication follows the existing blob publication reservation protocol. Write chunks atomically, reserve their publication, write manifest plus ordered refs and raw observation in one source transaction, then release reservations. Do not introduce a second lease system; the current architecture uses publication reservations and snapshot reference checks for the acquire-to-commit gap.
-
-An incomplete append may store chunks for all observed bytes, but admission records the complete observation length and parser-safe frontier separately. The ops cursor advances only through the last complete provider record. On resume, the chunker rereads enough overlap to restore rolling state, validates the existing prefix against manifest bytes, reuses equal chunks, and publishes a new complete observation manifest. If the prefix differs, it records a new full observation rather than trusting the cursor.
-
-Deduplication has three layers:
-
-- Equal whole observation bytes share the `whole_sha256` dedup key, but do not automatically share the provenance-bearing `raw_id`; distinct source/native observations remain distinct until an explicit identity rule says otherwise.
-- Different observations reuse equal chunks through blob refs.
-- Normalized sessions reuse source memberships only when current-version canonical hashes agree.
-
-CDC reduces duplicated byte storage. It does not by itself reduce `raw_sessions` row count, parser CPU, or normalized revisions. Incremental parser reuse is allowed only for an OriginSpec lifecycle whose parser declares append-safe semantics and proves equivalence with replay from reconstructed complete bytes.
-
-### 9.4 Migration and retirement
-
-Roll out in four phases:
-
-1. Add manifest/chunk schema and reader fallback behind a verified source backup.
-2. Dual-write whole blob and manifest for new observations; shadow-read both and assert byte equality, parser equality, and raw-id equality.
-3. Make manifest the primary reader with whole-blob fallback, then stop new whole-blob publication after sustained equivalence.
-4. Separately request operator authorization to reclaim legacy whole blobs and copy-forward/remove durable `revision_kind` or append-offset columns after every replay, retention, repair, and governance consumer has migrated.
-
-The live 4,344 append offsets prove that immediate column deletion is unsafe. Retain `revision_kind` and `append_end_offset` during rollout as revision provenance. Their final disposition is deletion only after CDC manifests and current/previous observation relationships express the needed facts. A cheap interim policy that discards older raw observations was rejected because it would destroy replay evidence before CDC proves replacement.
+No candidate may delete the last wanted carrier. Any future strict-prefix
+reclaim requires exact containment, canonical liveness, reconstruction, and
+crash-safe disposition proofs. Any future CDC selection requires a material
+measured benefit after all conceptual and migration costs; otherwise this
+proposal closes and no chunk framework survives.
 
 ## 10. Independent follow-ups
 
@@ -491,7 +486,7 @@ Execution packet: complete the provider/artifact census, close remaining forward
 | --- | --- | --- | --- |
 | Hash-v2 parsed fields, authoritative title cleanup, event references, compaction boundaries, composition-parent unique index | `index.db` | Derived, semantic | Canonical DDL edit, version bump declared `SEMANTIC_REPARSE`, new generation from accepted raw. |
 | `normalized_content_hash_version` | `source.db` | Durable additive | Numbered SQL migration, one `user_version` step, verified backup manifest. |
-| CDC manifests/chunk refs and optional raw manifest reference | `source.db` | Durable additive | Numbered migrations, verified backup, dual-write and shadow-read rollout. |
+| Possible CDC manifests/chunk refs | `source.db` | Not selected; future durable additive only | Requires a new decision after the frozen law-and-measurement gate, verified backup, copy-forward and conservation proof. |
 | Removal of legacy raw columns or whole blobs | `source.db` | Durable destructive | Separate copy-forward design and explicit operator authorization after cutover proof. |
 | Beads-origin CHECK narrowing/removal | `source.db` | Durable destructive | All-archive census, preservation transform if needed, verified backup, explicit authorization, copy-forward. |
 | Context delivery seed and successor relation | `user.db` | Durable additive, irreplaceable | Numbered additive migration and verified backup. Never rebuild user evidence. |
@@ -588,17 +583,30 @@ All lanes work from isolated worktrees. They do not edit Beads. Each lane commit
 
 **Commit cadence:** migration and durable CRUD first, then joined surface. This packet can run parallel to C and D and rebases before final surface integration.
 
-### Packet F: CDC raw byte authority
+### Packet F: source-storage evaluation (not a CDC implementation)
 
-**Own:** source-tier DDL and numbered migrations for manifests/chunks, blob-ref type and publication logic, raw payload reader, acquisition writers/readers, append/cursor adapters, and focused tests including `tests/unit/pipeline/test_blob_publication_crash_matrix.py`, `test_ingest_append_replay.py`, `tests/unit/sources/test_cursor_lifecycle.py`, `test_live_append_cursor_resynthesis.py`, `tests/unit/storage/test_blob_integrity.py`, `test_blob_gc_raw_authority_verdict_invariant.py`, `test_raw_revision_authority.py`, and durable migration tests.
+**Own:** the read-only comparison lab and its evidence. The current bounded
+candidate lives in `devtools/source_storage_evaluation.py`; production source
+DDL, blob references, parser readers, and daemon admission remain untouched.
 
 **Avoid:** `pipeline/ids.py` normalized-session payload, index/session/event DDL, lineage, attachment parsers, and Beads-origin removal.
 
-**Implement:** FastCDC-v1 constants, manifest identity, raw chunk refs, verified logical reader, publication atomicity, dual-write and shadow-read, safe cursor resume, and metrics required for cutover. Do not delete legacy columns or blobs in this packet.
+**Implement:** a frozen workload and candidate laws for exact reconstruction,
+corruption/missing-chunk refusal, duplicate sharing, and privacy erasure, with
+production admission as the semantic oracle. Measure bytes written/stored and
+record the independent authority, schema, migration, and maintained-LOC costs.
+Do not add durable chunk tables, dual-write, shadow-read, or delete legacy
+columns/blobs in this packet.
 
-**Verification:** focused crash-matrix, cursor, raw-authority, blob-integrity, and migration tests; a bounded synthetic multi-append benchmark comparing stored bytes and parse output.
+**Verification:** `tests/unit/storage/test_source_storage_evaluation.py` plus
+the existing raw-retention, blob-GC and source-admission laws. A later
+post-reindex run must add crash/retry/restart measurements before any durable
+selection.
 
-**Anti-vacuity:** production acquisition of two observations with a long equal prefix must store fewer unique chunk bytes than two whole blobs while reconstructing identical whole SHA-256 values. Changing one byte must change raw id and only the affected chunk neighborhood. Removing `ops.db` must still replay exactly. A crash at every publication boundary must leave either no admitted manifest or a fully readable one.
+**Anti-vacuity:** mutating the candidate's chunk bytes or removing a referenced
+chunk makes reconstruction fail; erasing one of two observations preserves
+shared bytes and erasing both removes them. A candidate that bypasses
+`ArchiveStore.write_raw_and_parsed_result` is not a semantic comparison.
 
 **Commit cadence:** schema/identity commit, reader/dual-write commit, cursor/resume commit. Attachment blob work rebases only after these land.
 
@@ -656,10 +664,10 @@ Legend: **Existing** means current production code already satisfies the criteri
 | `qj5x` | Decide Beads origin | Decision complete: remove | Section 10.1. |
 | `qj5x` | Determine blast radius | Evidence required | All configured source/index archives and artifact roots, not current live archive alone. |
 | `qj5x` | Preserve existing evidence and migrate safely | Follow-up | `polylogue-5jnq` work graph, preservation transform if rows exist, authorized durable copy-forward. |
-| `a7xr.23` | Decide CDC versus cursor | Decision complete | CDC durable authority plus disposable ops cursor. |
-| `a7xr.23` | Chunk identity, partial write, resume, dedup | Implement | FastCDC-v1 manifests, publication crash matrix, byte equality, ops-loss replay proof. |
-| `a7xr.23` | Parser replay boundary | Implement | `RawPayloadReader` hides chunks and proves eager/streaming equivalence. |
-| `a7xr.23` | Retire legacy snapshot fields | Follow-up | Only after dual-write cutover, consumer census, and destructive authorization. |
+| `a7xr.23` | Decide CDC versus frontier/retention | Evidence gate | Frozen workload, identical semantic/crash/retry/liveness/reconstruction/erasure laws, then material benefit after schema and migration cost. |
+| `a7xr.23` | Candidate chunk identity, reconstruction, erasure | Evaluation-only | `devtools/source_storage_evaluation.py` and focused laws; no durable source format. |
+| `a7xr.23` | Parser/admission boundary | Existing authority | Production `ArchiveStore.write_raw_and_parsed_result`; candidate must consume admitted bytes, not replace admission. |
+| `a7xr.23` | Retire legacy snapshot fields | Not selected | Requires a separately authorized copy-forward migration after a future CDC decision; no deletion follows from this bead. |
 | `a7xr.24` | Reconcile DDL/record/mapper/hydrator | Existing for messages/blocks; Implement remaining mechanical families | Production round-trip tests, ordered after semantic DDL. |
 | `a7xr.24` | Identity/lineage coupling | Decision complete: independent | No semantic fields delegated to mechanical generation. |
 | `83u` | Attachment integrity coupling | Existing invariant plus independent work | Attachment byte hash remains session hash input; CDC preserves refs. |
@@ -677,10 +685,13 @@ sqlite3 -readonly /realm/state/polylogue/source.db 'SELECT revision_kind, count(
 sqlite3 -readonly /realm/state/polylogue/index.db '<bounded duplicate-block query from section 2>'
 ```
 
-No design choice remains open for implementation. The following operations require later operator authorization because they are destructive changes to durable evidence:
+The source-storage choice remains intentionally open until the post-reindex
+law-and-measurement gate completes; no CDC implementation follows from this
+document. The following operations require later operator authorization because
+they are destructive changes to durable evidence:
 
 1. Narrowing durable source-tier Origin checks and removing Beads-origin rows or admission after the all-archive census.
-2. Copy-forward removal of `revision_kind`, `append_end_offset`, or other durable raw columns after CDC cutover.
-3. Reclaiming legacy whole raw blobs after dual-write and restore proof.
+2. Any CDC schema/copy-forward migration or removal of `revision_kind`, `append_end_offset`, or other durable raw columns after a separately ratified decision.
+3. Reclaiming legacy whole raw blobs after exact containment, liveness and restore proof.
 
 The already recorded decision to include `a7xr.25` in `polylogue-818fy` authorizes the derived semantic rebuild slice. It does not imply any of the three durable destructive authorizations above.
