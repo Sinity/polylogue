@@ -181,6 +181,13 @@ def test_high_consequence_campaigns_declare_distinct_policy_and_faithful_tests()
         assert campaign.tests
 
 
+def test_every_catalog_campaign_resolves_to_a_kill_rate_floor() -> None:
+    """Anti-vacuity: adding a campaign without a floor must fail this gate."""
+    missing_floors = [name for name, campaign in MUTATION_CAMPAIGNS.items() if campaign.min_kill_rate is None]
+
+    assert not missing_floors, f"campaigns without kill-rate floors: {missing_floors}"
+
+
 def test_main_uses_catalog_policy_when_enforcing_kill_rate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
