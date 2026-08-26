@@ -289,7 +289,7 @@ local pytest selection is accelerated by pytest-testmon.
 ```bash
 devtools verify            # static/generated gates + incremental complete-corpus pytest
 devtools verify --quick    # format + lint + mypy + generated checks, including committed-schema privacy (skip tests)
-devtools verify --lab      # explicit lab checks beyond the quick/default loop
+devtools bench slo --include-lab  # explicit benchmark tier
 ```
 
 The quick gate runs on `git push` via the active pre-push hook. It's a fast

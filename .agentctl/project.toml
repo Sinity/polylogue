@@ -43,6 +43,7 @@ exec = ["devtools", "verify"]
 pool = "normal"
 result = "pytest"
 cache = "tree+environment"
+timeout_seconds = 3600
 exclusive_keys = ["polylogue:testmon-graph", "polylogue:seeded-archive-cache-gc"]
 scratch = "nvme"
 
@@ -52,6 +53,7 @@ exec = ["devtools", "verify", "--quick"]
 pool = "normal"
 result = "pytest"
 cache = "tree+environment"
+timeout_seconds = 900
 
 [operations.seeded_archive_cache_gc]
 description = "Preview or apply bounded GC for the reusable seeded-archive fixture cache"
