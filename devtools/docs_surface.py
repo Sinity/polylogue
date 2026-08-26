@@ -379,6 +379,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "GitHub Merge Queue Evaluation",
+        "design/merge-queue-evaluation.md",
+        "Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train.",
+        "design",
+    ),
+    _entry(
         "CLI Interaction Oracle Deletion Ledger",
         "plans/cli-interaction-deletion-ledger.md",
         "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
