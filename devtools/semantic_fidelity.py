@@ -49,7 +49,7 @@ def _mutated_empty(payload: object) -> object:
         # Empty all fields through the parser's real shape gate.  Keeping an
         # identity-only envelope is deliberate: a parser must not manufacture
         # a conversational session from an otherwise valid source container.
-        result = {}
+        result: dict[object, object] = {}
         for key, value in payload.items():
             if isinstance(value, list):
                 result[key] = []
@@ -59,6 +59,18 @@ def _mutated_empty(payload: object) -> object:
                 result[key] = "" if isinstance(value, str) else None
         return result
     return payload
+
+
+def _representative_refs(rows: list[dict[str, object]], limit: int = 20) -> list[object]:
+    refs: list[object] = []
+    for row in rows:
+        witnesses = row.get("witnesses")
+        if not isinstance(witnesses, list):
+            continue
+        for witness in witnesses:
+            if isinstance(witness, dict):
+                refs.append(witness["fixture_ref"])
+    return refs[:limit]
 
 
 def build_report() -> dict[str, object]:
@@ -199,7 +211,7 @@ def build_report() -> dict[str, object]:
         "contradictions": contradictions,
         "contradiction_count": len(contradictions),
         "confidence": "high for the committed witness population; not a claim about unobserved provider exports",
-        "representative_refs": [r["fixture_ref"] for row in rows for r in row.get("witnesses", [])][:20],
+        "representative_refs": _representative_refs(rows),
         "construct_flow": rows,
         "mutation_controls": mutation_receipts,
         "versions": {"schema": SCHEMA_VERSION, "lowering_fingerprint": lowering_fingerprint()},
@@ -233,9 +245,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         json.dump(report, output, indent=2, sort_keys=True)
         print(file=output)
     else:
-        print(
-            f"Semantic fidelity: {report['population']['witnesses']} witnesses, {report['contradiction_count']} contradictions"
-        )
+        population = report["population"]
+        assert isinstance(population, dict)
+        print(f"Semantic fidelity: {population['witnesses']} witnesses, {report['contradiction_count']} contradictions")
     return 1 if report["contradiction_count"] else 0
 
 
