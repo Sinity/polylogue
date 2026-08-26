@@ -515,8 +515,18 @@
 
           if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
             echo "devshell: syncing Python dependencies (fingerprint changed)" >&2
-            uv sync --extra dev --frozen --quiet
-            printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
+            # Record the fingerprint ONLY after a proven-complete sync: a
+            # failed/interrupted sync that still stamped the fingerprint made
+            # every later shell (and every dispatched lane) trust a venv with
+            # no dev tools — the recurring "missing ruff/pytest in managed
+            # env" lane failures.
+            if uv sync --extra dev --frozen --quiet \
+               && .venv/bin/python -c "import pytest" 2>/dev/null \
+               && [ -x .venv/bin/ruff ]; then
+              printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
+            else
+              echo "devshell: dependency sync INCOMPLETE; will retry next shell" >&2
+            fi
           fi
 
           if [[ $- == *i* ]]; then
