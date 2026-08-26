@@ -18,21 +18,13 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal, Protocol
 
 from polylogue.core.enums import AssertionStatus, AssertionVisibility, PolylogueStrEnum
+from polylogue.core.evidence_integrity import (
+    EvidenceIntegrityStatus,
+)
+from polylogue.core.evidence_integrity import (
+    EvidenceIntegrityVerdict as EvaluatedEvidenceIntegrityVerdict,
+)
 from polylogue.core.json import JSONValue
-
-
-class EvidenceIntegrityStatus(PolylogueStrEnum):
-    """Authoritative 37t.14 evidence-integrity vocabulary."""
-
-    SUPPORTED = "supported"
-    PARTIALLY_SUPPORTED = "partially_supported"
-    NOT_SUPPORTED = "not_supported"
-    STALE = "stale"
-    CLOSED_LOOP = "closed_loop"
-    CYCLE = "cycle"
-    UNRESOLVED = "unresolved"
-    FRAME_INCOMPLETE = "frame_incomplete"
-    HELD_PRIVATE = "held_private"
 
 
 class PublicClaimStatus(PolylogueStrEnum):
@@ -216,6 +208,25 @@ class EvidenceIntegrityVerdict:
             EvidenceIntegrityStatus.PARTIALLY_SUPPORTED,
         } and (not self.as_of_epoch or not self.frame_ref or not self.definition_ref):
             raise ValueError("supported evidence-integrity verdicts require as_of_epoch, frame_ref, and definition_ref")
+
+
+def public_verdict_from_evaluation(
+    finding_ref: str,
+    verdict: EvaluatedEvidenceIntegrityVerdict,
+) -> EvidenceIntegrityVerdict:
+    """Adapt the core evaluator result to the public-claim receipt schema."""
+
+    return EvidenceIntegrityVerdict(
+        finding_ref=finding_ref,
+        status=verdict.status,
+        public_evidence_refs=tuple(path[-1] for path in verdict.supported_paths if path),
+        reason_codes=verdict.reason_codes,
+        blind_spot_codes=verdict.blind_spots,
+        as_of_epoch=verdict.as_of,
+        frame_ref=verdict.frame_ref,
+        definition_ref=verdict.definition_ref,
+        public_remediation_refs=("bead:polylogue-37t.14",) if not verdict.supported else (),
+    )
 
 
 class EvidenceIntegrityProvider(Protocol):
@@ -927,6 +938,7 @@ __all__ = [
     "EvidenceIntegrityStatus",
     "EvidenceIntegrityVerdict",
     "MappingEvidenceIntegrityProvider",
+    "public_verdict_from_evaluation",
     "PUBLIC_CLAIM_PRESETS",
     "PublicClaimDisclosure",
     "PublicClaimPreset",
