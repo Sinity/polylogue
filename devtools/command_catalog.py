@@ -492,6 +492,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench daemon-operation",),
     ),
     CommandSpec(
+        "bench cli-interaction",
+        "benchmarking",
+        "Run the complete installed CLI and direct typed-UDS interaction profile.",
+        "devtools.cli_interaction_profile",
+        use_when=(
+            "Measure cold installed status and warm CLI/daemon interaction together, including completion, "
+            "pagination, cancellation, fuzzy-launch declarations, and concurrent-read evidence."
+        ),
+        examples=("devtools bench cli-interaction",),
+    ),
+    CommandSpec(
         "verify schema-versioning",
         "verification",
         "Verify durable-tier migration and derived-tier rebuild boundaries.",

@@ -16,17 +16,16 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from tests.infra.cli_interaction import SUPPORTED_SHELLS
 
 pytestmark = pytest.mark.contract
 
 TRACEBACK_SENTINEL = "Traceback (most recent call last)"
 
+
 # Shells whose completion scripts polylogue ships. Drives the parametrized
 # matrix and is asserted as a stable contract; adding a shell here is a
 # deliberate behavior change.
-SUPPORTED_SHELLS = ("bash", "zsh", "fish")
-
-
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
