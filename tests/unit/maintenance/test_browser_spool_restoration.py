@@ -120,12 +120,11 @@ def test_interrupted_atomic_publication_leaves_no_partial_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Anti-vacuity: bypassing the temp-file rename leaves partial JSON visible."""
-    import polylogue.browser_capture.receiver as receiver
 
     def fail_replace(source: Path, target: Path) -> None:
         raise OSError("injected publication interruption")
 
-    monkeypatch.setattr(receiver.os, "replace", fail_replace)
+    monkeypatch.setattr("polylogue.browser_capture.receiver.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="interruption"):
         write_capture_envelope_bytes(_raw(_payload()), spool_path=tmp_path)
