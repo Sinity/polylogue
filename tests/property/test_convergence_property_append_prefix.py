@@ -8,7 +8,6 @@ from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
-    assert_archives_equivalent,
     build_converged_archive,
     converge_convergence_archive,
     ingest_convergence_pathology,
@@ -18,6 +17,8 @@ from tests.infra.convergence_harness import (
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
+    build_convergence_run_plan,
+    execute_convergence_plan,
     generated_convergence_workload,
     read_semantic_projection,
     semantic_oracle,
@@ -58,7 +59,11 @@ def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: 
         append_only=True,
     )
     converge_convergence_archive(combined)
-    assert_archives_equivalent(full, combined)
+    execute_convergence_plan(
+        build_convergence_run_plan(workload),
+        (full.root, combined.root),
+        law=ConvergenceLaw.APPEND_PREFIX,
+    )
     expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive in (full, combined):
         assert_projection_matches_oracle(

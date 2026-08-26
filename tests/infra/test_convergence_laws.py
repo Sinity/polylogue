@@ -18,11 +18,35 @@ from tests.infra.convergence_harness import (
     initialize_active_archive,
 )
 from tests.infra.convergence_laws import (
+    ConvergenceLaw,
     assert_projection_matches_oracle,
+    build_convergence_run_plan,
+    convergence_declaration,
     generated_convergence_workload,
     read_semantic_projection,
     semantic_oracle,
 )
+
+
+def test_convergence_declaration_compiles_one_bounded_production_plan() -> None:
+    declaration = convergence_declaration()
+    plan = build_convergence_run_plan()
+
+    assert declaration.owner == "tests.infra.convergence_laws"
+    assert declaration.laws == tuple(ConvergenceLaw)
+    assert declaration.candidate_applicability.startswith("full-rewrite")
+    assert plan.declaration_id == declaration.declaration_id
+    assert plan.route_identity == "production-ingest-and-daemon-convergence"
+    assert plan.workload_digest.startswith("sha256:")
+    assert plan.expected.fts_membership
+    assert plan.expected.role_counts
+    assert set(plan.mutants) == {
+        "order-sensitive-overwrite",
+        "omitted-fts-batch-member",
+        "unconditional-rewrite",
+        "stale-excess-retention",
+        "over-broad-invalidation",
+    }
 
 
 def test_generated_workload_has_nonempty_authoritative_fts_probes() -> None:

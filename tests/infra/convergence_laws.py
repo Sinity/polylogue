@@ -12,10 +12,12 @@ tool-use input probe that the FTS contract excludes.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -71,6 +73,38 @@ class SemanticProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class ConvergenceDeclaration:
+    """The convergence obligation owned by this domain.
+
+    This is deliberately a declaration, not a universal test registry.  The
+    execution layer consumes it without inventing case identities or a
+    pathology catalogue.  ``candidate_applicability`` is explicit because a
+    partial candidate cannot honestly claim the whole-archive laws.
+    """
+
+    declaration_id: str
+    owner: str
+    laws: tuple[ConvergenceLaw, ...]
+    production_route: str
+    candidate_applicability: str
+    witness: str
+    unsupported: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ConvergenceRunPlan:
+    """Small, serializable input contract for one law execution."""
+
+    declaration_id: str
+    workload_digest: str
+    laws: tuple[ConvergenceLaw, ...]
+    route_identity: str
+    expected: SemanticProjection
+    resource_profile: str
+    mutants: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GeneratedConvergenceWorkload:
     """The generated authoritative input for the convergence properties."""
 
@@ -80,6 +114,19 @@ class GeneratedConvergenceWorkload:
     @property
     def authoritative_sessions(self) -> tuple[AuthoritativeSession, ...]:
         return authoritative_sessions(self.pathology)
+
+
+def convergence_declaration() -> ConvergenceDeclaration:
+    """Return the current domain-owned convergence obligation."""
+    return ConvergenceDeclaration(
+        declaration_id="archive.derived-convergence",
+        owner="tests.infra.convergence_laws",
+        laws=tuple(ConvergenceLaw),
+        production_route="source admission -> parsed-session writer -> DaemonConverger",
+        candidate_applicability="full-rewrite-only; partial candidates are unsupported",
+        witness="generated_convergence_workload",
+        unsupported=("provider/topology breadth beyond the bounded witness",),
+    )
 
 
 def authoritative_sessions(pathology: ComposedPathology) -> tuple[AuthoritativeSession, ...]:
@@ -144,6 +191,66 @@ def semantic_oracle(
         fts.append((term, tuple(sorted(members))))
     counts = Counter(message.role for session in sessions for message in logical_messages[session.native_id])
     return SemanticProjection(fts_membership=tuple(fts), role_counts=tuple(sorted(counts.items())))
+
+
+def build_convergence_run_plan(
+    workload: GeneratedConvergenceWorkload | None = None,
+    *,
+    route_identity: str = "production-ingest-and-daemon-convergence",
+    resource_profile: str = "focused-warm",
+) -> ConvergenceRunPlan:
+    """Compile the declaration and smallest faithful witness into a plan."""
+    workload = generated_convergence_workload() if workload is None else workload
+    declaration = convergence_declaration()
+    payload = {
+        "sessions": [
+            {
+                "native_id": session.native_id,
+                "parent_native_id": session.parent_native_id,
+                "messages": [asdict(message) for message in session.messages],
+            }
+            for session in workload.authoritative_sessions
+        ],
+        "probe_terms": workload.probe_terms,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return ConvergenceRunPlan(
+        declaration_id=declaration.declaration_id,
+        workload_digest=f"sha256:{digest}",
+        laws=declaration.laws,
+        route_identity=route_identity,
+        expected=semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms),
+        resource_profile=resource_profile,
+        mutants=(
+            "order-sensitive-overwrite",
+            "omitted-fts-batch-member",
+            "unconditional-rewrite",
+            "stale-excess-retention",
+            "over-broad-invalidation",
+        ),
+    )
+
+
+def execute_convergence_plan(
+    plan: ConvergenceRunPlan,
+    archive_roots: Sequence[str | Path],
+    *,
+    law: ConvergenceLaw,
+) -> None:
+    """Execute a plan through the production read route.
+
+    The plan owns the expected typed meaning; this adapter owns only route
+    execution and selection.  It intentionally does not inspect SQLite rows
+    or compare schema-shaped snapshots.
+    """
+    if law not in plan.laws:
+        raise ValueError(f"law {law.value!r} is not declared by {plan.declaration_id!r}")
+    for root in archive_roots:
+        assert_projection_matches_oracle(
+            read_semantic_projection(root),
+            plan.expected,
+            law=law,
+        )
 
 
 def read_semantic_projection(
@@ -213,10 +320,15 @@ __all__ = [
     "AuthoritativeMessage",
     "AuthoritativeSession",
     "ConvergenceLaw",
+    "ConvergenceDeclaration",
+    "ConvergenceRunPlan",
     "GeneratedConvergenceWorkload",
     "SemanticProjection",
     "assert_projection_matches_oracle",
     "authoritative_sessions",
+    "build_convergence_run_plan",
+    "convergence_declaration",
+    "execute_convergence_plan",
     "generated_convergence_workload",
     "read_semantic_projection",
     "semantic_oracle",

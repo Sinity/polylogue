@@ -8,13 +8,14 @@ from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
-    assert_archives_equivalent,
     build_converged_archive,
     rotated_session_order,
 )
 from tests.infra.convergence_laws import (
     ConvergenceLaw,
     assert_projection_matches_oracle,
+    build_convergence_run_plan,
+    execute_convergence_plan,
     generated_convergence_workload,
     read_semantic_projection,
     semantic_oracle,
@@ -34,7 +35,11 @@ def test_convergence_property_incremental_equals_bulk(tmp_path: Path, shift: int
     order = rotated_session_order(pathology, shift)
     bulk = build_converged_archive(tmp_path / "bulk", pathology, session_order=order)
     incremental = build_converged_archive(tmp_path / "incremental", pathology, session_order=order, incremental=True)
-    assert_archives_equivalent(bulk, incremental)
+    execute_convergence_plan(
+        build_convergence_run_plan(workload),
+        (bulk.root, incremental.root),
+        law=ConvergenceLaw.BATCHING,
+    )
     expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
     for archive in (bulk, incremental):
         assert_projection_matches_oracle(
