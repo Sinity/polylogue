@@ -30,6 +30,9 @@ def test_judge_identity_uses_core_identity_refs_and_preserves_wire_properties() 
     assert judge.execution_context is context
     assert judge.actor_ref == "agent:claude-sonnet-5"
     assert judge.execution_context_id == context.context_id
+    assert judge.worker_profile_ref.actor is actor
+    assert judge.worker_profile_ref.execution_context is context
+    assert judge.worker_profile_ref.role == "judge"
 
 
 def test_judge_identity_rejects_parallel_string_and_typed_identity_owners() -> None:

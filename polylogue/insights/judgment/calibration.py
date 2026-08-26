@@ -24,6 +24,7 @@ class CalibrationKey:
     actor_ref: str
     execution_context_id: str
     dimension: str
+    role: str = "judge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +100,12 @@ def compute_calibration(
 
     grouped: dict[CalibrationKey, list[ComparativeJudgment]] = defaultdict(list)
     for judgment in candidate_judgments:
+        profile = judgment.judge.worker_profile_ref
         key = CalibrationKey(
-            actor_ref=judgment.judge.actor_ref,
-            execution_context_id=judgment.judge.execution_context_id,
+            actor_ref=profile.actor.format(),
+            execution_context_id=profile.execution_context.context_id,
             dimension=judgment.dimension,
+            role=profile.role,
         )
         grouped[key].append(judgment)
 

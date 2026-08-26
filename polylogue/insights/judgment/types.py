@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from polylogue.core.enums import ComparativeVerdict
-from polylogue.core.refs import ActorRef, ExecutionContextRef
+from polylogue.core.refs import ActorRef, ExecutionContextRef, WorkerProfileRef
 
 Dimension: TypeAlias = str
 Ordering: TypeAlias = tuple[str, ...]
@@ -43,6 +43,7 @@ class JudgeIdentity:
 
     actor: ActorRef
     execution_context: ExecutionContextRef
+    role: str
 
     def __init__(
         self,
@@ -51,6 +52,7 @@ class JudgeIdentity:
         execution_context: ExecutionContextRef | None = None,
         actor_ref: str | None = None,
         execution_context_id: str | None = None,
+        role: str = "judge",
     ) -> None:
         if actor is not None and actor_ref is not None:
             raise ValueError("provide actor or actor_ref, not both")
@@ -66,6 +68,9 @@ class JudgeIdentity:
             execution_context = ExecutionContextRef.from_legacy_id(execution_context_id)
         object.__setattr__(self, "actor", actor)
         object.__setattr__(self, "execution_context", execution_context)
+        if not role.strip():
+            raise ValueError("judge identity role cannot be empty")
+        object.__setattr__(self, "role", role)
 
     @property
     def actor_ref(self) -> str:
@@ -74,6 +79,12 @@ class JudgeIdentity:
     @property
     def execution_context_id(self) -> str:
         return self.execution_context.context_id
+
+    @property
+    def worker_profile_ref(self) -> WorkerProfileRef:
+        """Declare the profile grouping used by judgment consumers."""
+
+        return WorkerProfileRef(actor=self.actor, execution_context=self.execution_context, role=self.role)
 
 
 @dataclass(frozen=True, slots=True)

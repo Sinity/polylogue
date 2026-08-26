@@ -314,3 +314,25 @@ def test_mutation_assuming_one_attempt_per_call_loses_real_attempts() -> None:
     assert len(real_attempts) == 3
     assert len(naive_attempts) == 1
     assert set(naive_attempts) != set(real_attempts)
+
+
+def test_run_node_declares_worker_profile_from_actor_context_and_role() -> None:
+    actor = ActorRef(kind="agent", identity="codex/Explore")
+    context = ExecutionContextRef.from_observation({"harness": "codex"})
+    run = node_from_projected_run(
+        ProjectedRun(
+            run_ref=ObjectRef(kind="run", object_id="codex-session:subagent"),
+            role="subagent",
+            title="Explore",
+            evidence_refs=(EVIDENCE,),
+        ),
+        corpus_snapshot_ref=SNAPSHOT,
+        actor_ref=actor,
+        execution_context_ref=context,
+    )
+
+    assert run.role == "subagent"
+    assert run.worker_profile_ref is not None
+    assert run.worker_profile_ref.actor is actor
+    assert run.worker_profile_ref.execution_context is context
+    assert run.worker_profile_ref.role == "subagent"

@@ -668,9 +668,9 @@ def _replace_graph_family(index_db: Path, graphs: Sequence[WorkEvidenceGraph]) -
                 INSERT INTO work_evidence_nodes(
                     graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
                     authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
-                    execution_context_known_json, execution_context_unknown_json,
+                    execution_context_known_json, execution_context_unknown_json, role,
                     execution_context_addressed, association_state, claim_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -695,6 +695,7 @@ def _replace_graph_family(index_db: Path, graphs: Sequence[WorkEvidenceGraph]) -
                             if node.execution_context_ref
                             else "[]"
                         ),
+                        node.role,
                         int(node.execution_context_ref.content_addressed) if node.execution_context_ref else None,
                         node.association_state,
                         node.claim_text,

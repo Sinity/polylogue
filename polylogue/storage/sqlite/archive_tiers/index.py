@@ -441,7 +441,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-tas4: v72 makes READY a source-verified FTS verdict. A READY row
 # records an exact snapshot bound to the current index schema generation;
 # bounded repairs remain STALE and preserve the last exact counters.
-INDEX_SCHEMA_VERSION = 73
+# polylogue-h6r: v74 persists the declared worker role alongside actor and
+# execution-context refs in work-evidence nodes. Existing graph rows cannot
+# recover role from their prior shape, so the normal derived rebuild route
+# must regenerate them from projected-run evidence.
+INDEX_SCHEMA_VERSION = 74
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
