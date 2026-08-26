@@ -460,12 +460,17 @@ def acquire_codex_revision_chain(
                 captured_file_observation=full_result.captured_file_observations.get(source_path),
             )
             source_path.write_bytes(full_payloads[0])
+            # Production-shaped for a JSONL source: ``source_revision`` is the
+            # SQLite-snapshot discriminator, and passing it here routed this
+            # cursor down the snapshot branch where the NFC content hash was
+            # recorded as the byte-prefix authority — which sha256-of-bytes in
+            # ``plan_append`` can never match. The JSONL branch derives the
+            # prefix authority from the rewound on-disk bytes themselves.
             processor._record_full_cursor(
                 source_path,
                 raw_fingerprint=raw_ids[0],
                 raw_byte_size=len(full_payloads[0]),
                 source_name="codex",
-                source_revision=raw_ids[0],
                 captured_content_hash=raw_ids[0],
             )
             owner = SimpleNamespace(
