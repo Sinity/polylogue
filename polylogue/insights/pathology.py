@@ -74,6 +74,10 @@ class PathologyReport(ArchiveInsightModel):
     findings: tuple[PathologyFinding, ...] = ()
     counts_by_kind: dict[str, int] = {}
     session_count: int = 0
+    matched_session_count: int | None = None
+    analyzed_session_count: int | None = None
+    truncated: bool = False
+    dropped_session_count: int = 0
     detector_version: int = PATHOLOGY_DETECTOR_VERSION
 
 

@@ -864,7 +864,11 @@ def _archive_facet_buckets(
     if spec is None:
         summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=1_000_000))
     else:
-        summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+        from dataclasses import replace
+
+        summaries = _archive_list_summaries_for_spec(
+            archive, replace(spec, limit=None, offset=0), default_limit=1_000_000
+        )
     origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_messages = 0
@@ -3053,7 +3057,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             digest = await self._session_digest(sid)
             if digest is not None:
                 projections.append(digest.run_projection)
-        return compile_pathology_report(projections)
+        report = compile_pathology_report(projections)
+        return report.model_copy(
+            update={
+                "matched_session_count": matched,
+                "analyzed_session_count": len(projections),
+                "truncated": matched > cap,
+                "dropped_session_count": max(0, matched - cap),
+            }
+        )
 
     async def portfolio_bundle(
         self,
@@ -3430,6 +3442,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 limit=limit,
             ),
         )
+        matched = len(
+            _archive_list_assertion_candidate_reviews(
+                self.config, target_ref=target_ref, kinds=kinds, statuses=candidate_statuses, limit=None
+            )
+        )
         evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
         for review in review_rows:
             previews: list[AssertionEvidencePreviewPayload] = []
@@ -3483,6 +3500,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             target_ref=target_ref,
             candidate_statuses=candidate_statuses,
             evidence_previews=evidence_previews,
+            matched=matched,
         )
 
     async def assertion_candidate_queue_health(self) -> AssertionCandidateQueueHealthPayload:
