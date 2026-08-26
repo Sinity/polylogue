@@ -7529,21 +7529,11 @@ def _session_cost_insight_from_archive_row(
     unavailable_reason: CostUnavailableReason | None
     provenance: tuple[str, ...]
     missing_reasons: tuple[str, ...]
-    if canonical is not None and canonical.availability == "no_tokens":
-        status = "unavailable"
-        confidence = 0.0
-        basis = CostBasisPayload()
-        missing_reasons = ("no_tokens",)
-        unavailable_reason = "no_tokens"
-        provenance = ("session_usage_cost", canonical.availability)
-    elif canonical is not None and canonical.availability == "unpriced":
-        status = "unavailable"
-        confidence = 0.0
-        basis = CostBasisPayload()
-        missing_reasons = ("no_price",)
-        unavailable_reason = "no_price"
-        provenance = ("session_usage_cost", canonical.availability)
-    elif total_usd > 0 or (
+    # A materialized profile cost (or a canonical priced/provider/known-zero
+    # verdict) outranks a usage-evidence absence: sessions whose cost was
+    # priced and stored must not report unavailable just because they carry
+    # no per-model usage rows.
+    if total_usd > 0 or (
         canonical is not None and canonical.availability in {"priced", "provider_money", "known_zero"}
     ):
         status = "exact" if cost_provenance in {"exact", "origin_reported"} else "priced"
@@ -7556,6 +7546,20 @@ def _session_cost_insight_from_archive_row(
         missing_reasons = ()
         unavailable_reason = None
         provenance = ("session_usage_cost", cost_provenance or status)
+    elif canonical is not None and canonical.availability == "unpriced":
+        status = "unavailable"
+        confidence = 0.0
+        basis = CostBasisPayload()
+        missing_reasons = ("no_price",)
+        unavailable_reason = "no_price"
+        provenance = ("session_usage_cost", canonical.availability)
+    elif canonical is not None and canonical.availability == "no_tokens":
+        status = "unavailable"
+        confidence = 0.0
+        basis = CostBasisPayload()
+        missing_reasons = ("no_tokens",)
+        unavailable_reason = "no_tokens"
+        provenance = ("session_usage_cost", canonical.availability)
     else:
         status = "unavailable"
         confidence = 0.0
