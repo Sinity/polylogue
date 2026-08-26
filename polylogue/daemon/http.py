@@ -42,7 +42,11 @@ from polylogue.daemon.execution import (
     DaemonOperationCancelled,
     current_cancellation,
 )
-from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
+from polylogue.daemon.route_contracts import (
+    RouteContract,
+    daemon_route_declaration,
+    route_contract_for_pattern,
+)
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.user_state_http import RouteMethod
 from polylogue.daemon.web_auth import (
@@ -318,7 +322,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/overview", "_handle_overview"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
-        _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
+        _declared_static_get_route("GET", "/api/sessions"),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
         _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
@@ -336,6 +340,19 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/sources", "_handle_sources"),
         _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
         _static_get_route("/api/maintenance/operations", "_handle_maintenance_operations"),
+    )
+
+
+def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
+    """Build a production GET adapter from the shared route declaration."""
+
+    declaration = daemon_route_declaration(method, path)
+    binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    return _StaticGetRoute(
+        contract=route_contract_for_pattern(method, path),
+        segments=_route_segments(declaration.path),
+        handler_name=binding.symbol,
+        passes_params=True,
     )
 
 
