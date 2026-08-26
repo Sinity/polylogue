@@ -1,7 +1,4 @@
-"""Fresh bootstrap helpers for archive databases.
-
-Writer module: ops.
-"""
+"""Fresh bootstrap helpers for archive databases."""
 
 from __future__ import annotations
 
@@ -323,21 +320,9 @@ def _apply_archive_tier_convergence(
         # The table is internal bootstrap state; it is included in the
         # prototype snapshot and therefore does not make prototypes writable
         # or share state between archive roots.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS polylogue_ops_schema_state (
-                schema_digest TEXT PRIMARY KEY
-            ) STRICT
-            """
-        )
-        conn.execute(
-            "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
-            (_tier_prototype_key(tier, spec.version)[2],),
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
-            (_tier_prototype_key(tier, spec.version)[2],),
-        )
+        from polylogue.storage.sqlite.archive_tiers.ops_write import _record_ops_schema_state
+
+        _record_ops_schema_state(conn, _tier_prototype_key(tier, spec.version)[2])
     # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
     # rewrites the database header even when N is already the stored value, so an
     # unconditional write dirties a page on every same-version reapply and turns a
