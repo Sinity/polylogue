@@ -1013,6 +1013,27 @@ class TestSessionFilterBranching:
         for conv in result:
             assert conv.parent_id == root_native_id
 
+    @pytest.mark.asyncio
+    async def test_default_listing_is_root_only_but_branch_predicates_widen_candidates(
+        self, filter_repo_branches: Path
+    ) -> None:
+        default = await SessionFilter(archive_root=filter_repo_branches).list()
+        assert len(default) == 1
+        assert default[0].is_root
+
+        continuation = await SessionFilter(archive_root=filter_repo_branches).is_continuation().list()
+        assert len(continuation) == 1
+        assert continuation[0].is_continuation
+        assert continuation[0].parent_id == "claude-ai-export:ext-root"
+
+        sidechain = await SessionFilter(archive_root=filter_repo_branches).is_sidechain().list()
+        assert len(sidechain) == 1
+        assert sidechain[0].is_sidechain
+        assert sidechain[0].parent_id == "claude-ai-export:ext-root"
+
+        assert await SessionFilter(archive_root=filter_repo_branches).is_continuation().count() == 1
+        assert await SessionFilter(archive_root=filter_repo_branches).is_sidechain().count() == 1
+
 
 class TestFtsWithProviderFilter:
     """FTS + provider combined filter regression."""

@@ -174,7 +174,12 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "since_session_id": plan.since_session_id,
         "boolean_predicate": plan.boolean_predicate,
         "root": resolve_default_root_filter(
-            plan.root, boolean_predicate=plan.boolean_predicate, parent_id=plan.parent_id
+            plan.root,
+            boolean_predicate=plan.boolean_predicate,
+            parent_id=plan.parent_id,
+            continuation=plan.continuation,
+            sidechain=plan.sidechain,
+            has_branches=plan.has_branches,
         ),
     }
 
