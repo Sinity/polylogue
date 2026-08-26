@@ -194,7 +194,7 @@ def embedded_message_count_sync(conn: sqlite3.Connection) -> int:
     """Count messages that have a current embedding.
 
     v4 (polylogue-q88p): ``message_embeddings_meta`` is keyed by
-    ``embedding_input_hash`` and deduped -- its row count is the number of
+    ``vector_derivation_hash`` and deduped -- its row count is the number of
     *distinct vectors*, not messages (identical content across sessions
     shares one row). ``message_embedding_refs`` (message_id -> hash) is the
     per-message count and is checked first; older/legacy shapes fall back to

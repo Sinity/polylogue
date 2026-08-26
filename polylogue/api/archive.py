@@ -2236,6 +2236,8 @@ def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachmen
         path=None,
         source_url=attachment.source_url,
         caption=attachment.caption,
+        upload_origin=attachment.upload_origin,
+        availability=attachment.availability,
     )
 
 

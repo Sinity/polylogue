@@ -702,7 +702,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 _args(
                     expression=(
                         "messages where text:parallel-child "
-                        'AND text:"workflow_run:{fixture:corpus.parallel_incident.run_ref}"'
+                        'AND text:"workflow_run:{fixture:corpus.parallel_claude_incident.run_ref}"'
                     ),
                     limit=17,
                 ),
@@ -716,7 +716,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 _args(
                     expression=(
                         "messages where text:parallel-child "
-                        'AND NOT text:"workflow_run:{fixture:corpus.parallel_incident.run_ref}"'
+                        'AND NOT text:"workflow_run:{fixture:corpus.parallel_claude_incident.run_ref}"'
                     ),
                     limit=19,
                 ),
@@ -730,7 +730,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 _args(
                     expression=(
                         "runs where native_parent_session_id:"
-                        '"{fixture:corpus.parallel_incident.coordinator_session_id}" '
+                        '"{fixture:corpus.parallel_claude_incident.coordinator_session_id}" '
                         "AND role:subagent"
                     ),
                     limit=19,
@@ -742,7 +742,9 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "incident-invocations",
                 "query",
                 _args(
-                    expression=('messages where text:"workflow-invocation:{fixture:corpus.parallel_incident.run_ref}"'),
+                    expression=(
+                        'messages where text:"workflow-invocation:{fixture:corpus.parallel_claude_incident.run_ref}"'
+                    ),
                     limit=2,
                 ),
                 paginate=True,
@@ -754,7 +756,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "query",
                 _args(
                     expression=(
-                        'messages where text:"final-structured-result:{fixture:corpus.parallel_incident.run_ref}"'
+                        'messages where text:"final-structured-result:{fixture:corpus.parallel_claude_incident.run_ref}"'
                     ),
                     limit=2,
                 ),
@@ -766,7 +768,9 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "incident-curriculum",
                 "query",
                 _args(
-                    expression=('messages where text:"incident-curriculum:{fixture:corpus.parallel_incident.run_ref}"'),
+                    expression=(
+                        'messages where text:"incident-curriculum:{fixture:corpus.parallel_claude_incident.run_ref}"'
+                    ),
                     limit=3,
                 ),
                 paginate=True,

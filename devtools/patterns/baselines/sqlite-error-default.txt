@@ -4,7 +4,7 @@ polylogue/api/archive.py:1152
 polylogue/api/archive.py:1431
 polylogue/api/archive.py:1474
 polylogue/api/archive.py:1554
-polylogue/api/archive.py:6970
+polylogue/api/archive.py:6951
 polylogue/api/user_state_resolver.py:63
 polylogue/api/user_state_resolver.py:82
 polylogue/api/user_state_resolver.py:129
@@ -62,8 +62,8 @@ polylogue/storage/artifacts/inspection.py:121
 polylogue/storage/blob_gc.py:184
 polylogue/storage/embeddings/materialization.py:840
 polylogue/storage/embeddings/materialization.py:853
-polylogue/storage/embeddings/materialization.py:1272
-polylogue/storage/embeddings/materialization.py:1928
+polylogue/storage/embeddings/materialization.py:1274
+polylogue/storage/embeddings/materialization.py:1932
 polylogue/storage/embeddings/preflight.py:211
 polylogue/storage/embeddings/status_payload.py:368
 polylogue/storage/embeddings/status_payload.py:1108
@@ -72,11 +72,11 @@ polylogue/storage/fts/drift_sampling.py:96
 polylogue/storage/fts/drift_sampling.py:141
 polylogue/storage/repair.py:5448
 polylogue/storage/repair.py:5849
-polylogue/storage/sqlite/archive_tiers/archive.py:966
+polylogue/storage/sqlite/archive_tiers/archive.py:965
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:127
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:131
 polylogue/storage/sqlite/archive_tiers/bootstrap.py:186
-polylogue/storage/sqlite/archive_tiers/write.py:3827
+polylogue/storage/sqlite/archive_tiers/write.py:3862
 polylogue/storage/sqlite/migration_runner.py:2779
 polylogue/storage/usage.py:841
 polylogue/storage/usage.py:1496

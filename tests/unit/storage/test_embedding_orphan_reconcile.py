@@ -124,12 +124,12 @@ def _write_embedding(
     message_id: str,
     session_id: str,
     embedded_at_ms: int,
-    embedding_input_hash: bytes | None = None,
+    vector_derivation_hash: bytes | None = None,
 ) -> None:
     """Write one message's vector/meta/ref via the real v4 content-addressed writer.
 
     Defaults to a hash derived from ``message_id`` (unique per message) unless
-    an explicit ``embedding_input_hash`` is supplied -- e.g. to simulate two
+    an explicit ``vector_derivation_hash`` is supplied -- e.g. to simulate two
     messages whose current embedder input text is identical and therefore
     dedups onto one shared vector row.
     """
@@ -143,9 +143,9 @@ def _write_embedding(
                 embedding=[0.01] * EMBEDDING_DIMENSION,
                 model="voyage-4",
                 embedded_at_ms=embedded_at_ms,
-                embedding_input_hash=(
-                    embedding_input_hash
-                    if embedding_input_hash is not None
+                vector_derivation_hash=(
+                    vector_derivation_hash
+                    if vector_derivation_hash is not None
                     else hashlib.sha256(message_id.encode("utf-8")).digest()
                 ),
             )
@@ -235,7 +235,7 @@ def test_reconcile_removes_message_orphaned_by_index_rebuild(tmp_path: Path) -> 
         m2_hash = hashlib.sha256(m2.encode("utf-8")).digest()
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings_meta WHERE embedding_input_hash = ?", (m2_hash,)
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE vector_derivation_hash = ?", (m2_hash,)
             ).fetchone()[0]
             == 1
         ), "an orphaned ref's underlying vector/meta row survives untouched -- reference-counted GC is out of scope"
@@ -391,14 +391,14 @@ def test_reconcile_removes_orphan_ref_but_preserves_shared_vector_and_meta_rows(
     embeddings_db = tmp_path / "embeddings.db"
     conn = _connect_embeddings(embeddings_db)
     _write_embedding(
-        conn, message_id=live_id, session_id=live_session, embedded_at_ms=_OLD_MS, embedding_input_hash=shared_hash
+        conn, message_id=live_id, session_id=live_session, embedded_at_ms=_OLD_MS, vector_derivation_hash=shared_hash
     )
     _write_embedding(
         conn,
         message_id=orphan_id,
         session_id=orphan_session,
         embedded_at_ms=_OLD_MS,
-        embedding_input_hash=shared_hash,
+        vector_derivation_hash=shared_hash,
     )
     _write_status(conn, session_id=live_session, message_count_embedded=1, last_embedded_at_ms=_OLD_MS)
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1, (
@@ -432,13 +432,13 @@ def test_reconcile_removes_orphan_ref_but_preserves_shared_vector_and_meta_rows(
         # can still resolve its embedding through it.
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings_meta WHERE embedding_input_hash = ?", (shared_hash,)
+                "SELECT COUNT(*) FROM message_embeddings_meta WHERE vector_derivation_hash = ?", (shared_hash,)
             ).fetchone()[0]
             == 1
         )
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM message_embeddings WHERE embedding_input_hash = ?", (shared_hash.hex(),)
+                "SELECT COUNT(*) FROM message_embeddings WHERE vector_derivation_hash = ?", (shared_hash.hex(),)
             ).fetchone()[0]
             == 1
         )
@@ -806,7 +806,7 @@ def test_apply_refuses_live_v32_index_and_preserves_orphans(tmp_path: Path) -> N
 # exists but vector row doesn't" / vice-versa scenario, then asserted the
 # reconciler's has_meta/has_vector row-kind counts and removals differed
 # accordingly. Under v4 that distinction is gone on both sides: the tables
-# are keyed by embedding_input_hash, not message_id (so a raw `DELETE ...
+# are keyed by vector_derivation_hash, not message_id (so a raw `DELETE ...
 # WHERE message_id = ?` against them no longer targets anything meaningful),
 # and `_orphan_message_rows` reports has_meta/has_vector as always-true from
 # a ref's perspective since a ref only ever points at a hash written

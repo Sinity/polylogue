@@ -32,9 +32,9 @@ from polylogue.scenarios import (
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
+    EmbeddingRequestSpec,
     EmbeddingSourceDigest,
     embedding_derivation_key,
-    embedding_input_hash,
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
@@ -1425,7 +1425,7 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 str(row["message_id"]),
                 str(row["session_id"]),
                 str(row["origin"]),
-                embedding_input_hash(model=recipe.model, input_text=str(row["text"])),
+                EmbeddingRequestSpec(recipe=recipe, input_text=str(row["text"])).vector_derivation_hash,
             )
             for row in rows
             if row["content_hash"] is not None
@@ -1442,11 +1442,11 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 embedding=_demo_embedding_vector(message_id),
                 model=_DEMO_EMBEDDING_MODEL,
                 embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
-                embedding_input_hash=input_hash,
+                vector_derivation_hash=input_hash,
                 recipe_hash=recipe.recipe_hash,
                 derivation_key=message_embedding_derivation_key(
                     message_id=message_id,
-                    embedding_input_hash=input_hash,
+                    vector_derivation_hash=input_hash,
                     recipe=recipe,
                 ).digest(),
                 generation=1,

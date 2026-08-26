@@ -12,13 +12,13 @@ embedded messages, 11,348 orphan message ids, 6 orphan session status rows on
 the 2026-07-10 audit).
 
 v4 (polylogue-q88p): ``message_embeddings``/``message_embeddings_meta`` are now
-content-addressed (keyed by ``embedding_input_hash``) and shared/deduped
+content-addressed (keyed by ``vector_derivation_hash``) and shared/deduped
 across messages and sessions -- a vector row has no single owning message, so
 it can no longer be deleted just because *one* referencing message vanished
 from the index (another message, possibly in a different session, may still
 legitimately point at the same hash). This reconciler therefore now scopes
 strictly to ``message_embedding_refs`` (the rebuildable message_id ->
-embedding_input_hash mapping): an orphan ref whose ``message_id`` no longer
+vector_derivation_hash mapping): an orphan ref whose ``message_id`` no longer
 exists in the live index is removed, but the vector/meta rows it pointed at
 are left untouched. Reference-counted vector/meta GC (removing hash rows with
 zero remaining refs) is deliberately out of scope here -- filed as follow-up

@@ -82,8 +82,10 @@ def test_attachment_to_envelope_shape() -> None:
         "name": "n.txt",
         "mime_type": "text/plain",
         "size_bytes": 256,
-        "path": "blob/aa/aaaa",
-        "state": "available",
+        "path": None,
+        "state": "missing-blob",
+        "availability": None,
+        "can_fetch": False,
     }
 
 
