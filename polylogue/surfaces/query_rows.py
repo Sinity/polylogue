@@ -94,7 +94,9 @@ def session_row(item: object, *, message_count: int | None = None) -> SessionRow
         id=session_id,
         origin=str(_value(item, "origin", "unknown")),
         title=bound_display_title(
-            _value(item, "display_title") or _value(item, "title"), session_id, max_chars=TITLE_BUDGET
+            _value(item, "display_title") or _value(item, "display_label") or _value(item, "title"),
+            session_id,
+            max_chars=TITLE_BUDGET,
         ),
         date=date_value.strftime("%Y-%m-%d") if date_value else None,
         relative_time=relative_time(date_value),

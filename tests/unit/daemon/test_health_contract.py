@@ -119,10 +119,12 @@ EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
 
 
 def _seed_ready_message_fts(index_db: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
     index_db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS fts_freshness_state (
                 surface TEXT PRIMARY KEY,
                 state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
@@ -141,7 +143,7 @@ def _seed_ready_message_fts(index_db: Path) -> None:
             )
             VALUES (
                 'messages_fts', 'ready', '2026-05-24T00:00:00+00:00',
-                0, 0, 0, 0, 0, 0, 'exact', '2026-05-24T00:00:00+00:00', 72, 'ready'
+                0, 0, 0, 0, 0, 0, 'exact', '2026-05-24T00:00:00+00:00', {INDEX_SCHEMA_VERSION}, 'ready'
             );
             """
         )

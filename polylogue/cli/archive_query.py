@@ -1725,6 +1725,9 @@ _DAEMON_LIST_ITEM_KEEP_KEYS = (
     "words",
     "repo",
     "cwd_display",
+    "terminal_state",
+    "total_cost_usd",
+    "relative_time",
     "flags",
 )
 
