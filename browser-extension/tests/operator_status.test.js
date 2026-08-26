@@ -10,6 +10,12 @@ async function loadApi() {
 describe("shared operator status vocabulary", () => {
   let api;
 
+  it("shares capture-mark wording with the message layer", () => {
+    expect(api.captureStatePresentation("captured")).toEqual({ label: "Saved to Polylogue", tone: "ok" });
+    expect(api.captureStatePresentation("pending")).toEqual({ label: "Saving to Polylogue…", tone: "warn" });
+    expect(api.captureStatePresentation("invalid")).toEqual({ label: "Polylogue capture status unknown", tone: "neutral" });
+  });
+
   beforeEach(async () => {
     api = await loadApi();
   });
@@ -294,16 +300,15 @@ describe("shared operator status vocabulary", () => {
       detail: "model unavailable",
     });
 
-    const archiveFailed = api.computeAttention({
+    expect(api.computeAttention({
       conversationState: { archive_state: { state: "failed", latest_failure: "index rejected" } },
-    });
-    expect(archiveFailed).toMatchObject({ kind: "archive_failed", detail: "index rejected" });
+    })).toBeNull();
 
     const devOverrideStale = api.computeAttention({
       pairing: { state: "dev_override_stale", dev_override: true },
       health: { status: "dev_override_stale" },
     });
-    expect(devOverrideStale).toMatchObject({ kind: "dev_override_stale", tone: "bad", actionId: "reset-pairing" });
+    expect(devOverrideStale).toMatchObject({ kind: "auth_pairing_mismatch", tone: "bad", actionId: "reset-pairing" });
   });
 
   it("ranks an unconfirmed action outcome above explicit-approval, and explicit-approval above a capability mismatch", () => {

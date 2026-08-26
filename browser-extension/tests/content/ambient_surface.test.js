@@ -36,23 +36,6 @@ function missionFixture(overrides = {}) {
       reason: "tab_activated",
       detail: "already_safe",
     }],
-    work: {
-      capture_queue: {
-        entries: [{
-          id: "capture-1",
-          next_attempt_at: "2026-07-16T12:01:00Z",
-          envelope: { session: { provider: "chatgpt", provider_session_id: "conversation-2", title: "Queued conversation" } },
-        }],
-      },
-      backfill_jobs: [{
-        id: "backfill-1",
-        provider: "chatgpt",
-        status: "running",
-        phase: "conversation_capture",
-        learned_cadence_ms: 15000,
-      }],
-      ...overrides.work,
-    },
     assertions: { selection_candidate_supported: true, persistence_supported: false },
     ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
     ...overrides,
@@ -96,7 +79,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("ambient mission-control surface", () => {
+describe("ambient capture status surface", () => {
   it("mounts one zero-layout-shift closed shadow surface with no remote assets", async () => {
     const dom = freshDom();
     const bodyChildrenBefore = dom.window.document.body.children.length;
@@ -130,7 +113,7 @@ describe("ambient mission-control surface", () => {
     });
   });
 
-  it("renders the same conversation, receiver, event, queue, and assertion contracts as the popup", async () => {
+  it("renders the same conversation, receiver, event, and assertion contracts as the popup", async () => {
     const dom = freshDom();
     const { api } = mount(dom);
     await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
@@ -140,12 +123,11 @@ describe("ambient mission-control surface", () => {
     expect(text).toContain("Paired receiver rx-ambient");
     expect(text).toContain("Observed; no action needed");
     expect(text).toContain("Archive was already current");
-    expect(text).toContain("Queued conversation");
     expect(text).toContain("Save assertion — receiver API unavailable");
 
     const chip = api.shadow.querySelector(".chip");
     expect(chip.getAttribute("aria-label")).toContain("Safe / current");
-    expect(api.shadow.querySelector(".count").textContent).toBe("2");
+    expect(api.shadow.querySelector(".count").textContent).toBe("");
     const assertion = [...api.shadow.querySelectorAll("button")]
       .find((button) => button.textContent.includes("Save assertion"));
     expect(assertion.disabled).toBe(true);
@@ -163,7 +145,7 @@ describe("ambient mission-control surface", () => {
     chip.click();
     expect(panel.hidden).toBe(false);
     expect(chip.getAttribute("aria-expanded")).toBe("true");
-    expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue mission control");
+    expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
 
     panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
       key: "Escape",

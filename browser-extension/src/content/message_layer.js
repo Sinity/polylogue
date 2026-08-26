@@ -122,9 +122,11 @@
       setState(nextState) {
         const normalized = normalizeState(nextState);
         dot.style.setProperty("--polylogue-dot-color", STATE_COLORS[normalized]);
-        button.setAttribute("aria-label", STATE_LABELS[normalized]);
+        const sharedPresentation = window.PolylogueOperatorStatus?.captureStatePresentation?.(normalized);
+        const label = sharedPresentation?.label || STATE_LABELS[normalized];
+        button.setAttribute("aria-label", label);
         button.setAttribute("aria-pressed", normalized === "captured" ? "true" : "false");
-        button.setAttribute("title", STATE_LABELS[normalized]);
+        button.setAttribute("title", label);
         host.setAttribute(STATE_ATTR, normalized);
       },
     };

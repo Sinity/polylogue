@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Polylogue Mission Control</title>
+    <title>Polylogue Capture</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -274,8 +274,8 @@
         <div class="brand">
           <div class="mark" aria-hidden="true">P</div>
           <div>
-            <h1>Polylogue Mission Control</h1>
-            <div class="subtitle">Capture health across open and recently changed conversations</div>
+            <h1>Polylogue Capture</h1>
+            <div class="subtitle">Automatic capture health across supported conversations</div>
           </div>
         </div>
         <div id="badge" class="badge neutral" aria-live="polite">checking</div>
@@ -316,12 +316,12 @@
       </section>
 
       <section class="conversation-only" aria-labelledby="timeline-heading">
-        <div class="section-head"><strong id="timeline-heading">What Polylogue did here</strong></div>
+        <div class="section-head"><strong id="timeline-heading">Recent outcomes</strong></div>
         <div id="timeline" class="log" aria-live="polite"></div>
       </section>
 
       <details id="diagnostics">
-        <summary>Diagnostics · leases, retries, request ids, receiver identity, backfill, raw logs</summary>
+        <summary>Diagnostics · receiver, extension, capture and action evidence</summary>
 
         <section aria-labelledby="capture-detail-heading">
           <div class="section-head"><strong id="capture-detail-heading">Capture detail</strong></div>
@@ -351,44 +351,17 @@
           <div class="controls">
             <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
           </div>
-          <p class="section-note">Reset removes only the trusted receiver identity. It does not delete capture or backfill queues.</p>
+          <p class="section-note">Reset removes only the trusted receiver identity. It does not delete automatic capture queues.</p>
         </section>
 
         <section aria-labelledby="work-heading">
-          <div class="section-head"><strong id="work-heading">Work queue</strong><span id="work-count" class="value mono">0</span></div>
-          <p class="section-note">One vocabulary covers local capture retries and provider backfills.</p>
+          <div class="section-head"><strong id="work-heading">Automatic capture</strong><span id="work-count" class="value mono">0</span></div>
+          <p class="section-note">Capture and freshness transitions continue automatically. This view only explains held evidence.</p>
           <div id="work-queue" class="work-list" aria-live="polite"></div>
           <details>
             <summary>Capture retry detail · <span id="queue-count" class="mono">0</span></summary>
             <div id="queue-log" class="log"></div>
           </details>
-        </section>
-
-        <section id="backfill-panel" aria-labelledby="backfill-heading">
-          <div class="section-head">
-            <strong id="backfill-heading">Background backfill</strong>
-            <span id="backfill-status" class="value">idle</span>
-          </div>
-          <select id="backfill-job" aria-label="Backfill job"><option value="">No jobs yet</option></select>
-          <div class="setting-row">
-            <select id="backfill-provider" aria-label="Backfill provider">
-              <option value="chatgpt">ChatGPT</option>
-              <option value="claude-ai">Claude.ai</option>
-            </select>
-            <input id="backfill-cutoff" type="date" aria-label="Capture conversations updated since">
-          </div>
-          <div class="row"><span class="label">Inventory cursor</span><span id="backfill-cursor" class="value mono">--</span></div>
-          <div class="row"><span class="label">Progress</span><span id="backfill-progress" class="value mono">--</span></div>
-          <div class="row"><span class="label">Cadence / cooldown</span><span id="backfill-rate" class="value mono">--</span></div>
-          <div class="row"><span class="label">Last ACK / error</span><span id="backfill-last" class="value">--</span></div>
-          <div class="controls">
-            <button id="backfill-start" class="primary"><span class="button-label">Start</span><span class="button-status"></span></button>
-            <button id="backfill-pause"><span class="button-label">Pause</span><span class="button-status"></span></button>
-            <button id="backfill-resume"><span class="button-label">Resume</span><span class="button-status"></span></button>
-            <button id="backfill-cancel"><span class="button-label">Cancel</span><span class="button-status"></span></button>
-            <button id="backfill-export"><span class="button-label">Export ledger</span><span class="button-status"></span></button>
-          </div>
-          <p class="section-note">Runs against authenticated provider inventory without activating foreground tabs. Provider cooldowns remain authoritative.</p>
         </section>
 
         <section>
@@ -397,13 +370,16 @@
         </section>
 
         <section>
-          <div class="section-head"><span class="label">Debug log</span><span id="debug-count" class="value mono">0</span></div>
+          <div class="section-head"><span class="label">Support diagnostics</span><span id="debug-count" class="value mono">0</span></div>
           <div class="debug-actions">
             <button id="debug-toggle" class="link-button"><span class="button-label">Show details</span><span class="button-status"></span></button>
-            <button id="debug-export" class="link-button"><span class="button-label">Export JSON</span><span class="button-status"></span></button>
+            <button id="debug-export" class="link-button"><span class="button-label">Export support packet</span><span class="button-status"></span></button>
           </div>
           <div id="debug-panel" hidden>
             <div class="row"><span class="label">Receiver</span><span id="receiver" class="value mono">127.0.0.1:8765</span></div>
+            <div class="row"><span class="label">Receiver contract</span><span id="receiver-contract" class="value mono">--</span></div>
+            <div class="row"><span class="label">Write exclusion</span><span id="write-exclusion" class="value">Not reported</span></div>
+            <div class="row"><span class="label">Cooldown</span><span id="cooldown" class="value mono">Not reported</span></div>
             <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
             <div class="row"><span class="label">Mode</span><span id="mode" class="value">--</span></div>
             <div class="row"><span class="label">Request</span><span id="receiver-request" class="value mono">--</span></div>
