@@ -83,6 +83,27 @@ class ContextLedgerRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextLedgerRecord:
+    """One persisted scheduler decision read back from ``ops.db``."""
+
+    ledger_id: str
+    build_ref: str
+    observed_at_ms: int
+    row: ContextLedgerRow
+
+    def as_dict(self) -> dict[str, object]:
+        payload = self.row.as_dict()
+        payload.update(
+            {
+                "ledger_id": self.ledger_id,
+                "build_ref": self.build_ref,
+                "observed_at_ms": self.observed_at_ms,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ContextAssembly:
     quoted_evidence: tuple[ContextItem, ...]
     executable_policy: tuple[ContextItem, ...]
@@ -341,11 +362,75 @@ def record_context_ledger(conn: sqlite3.Connection, assembly: ContextAssembly, *
     conn.commit()
 
 
+def read_context_ledger(
+    conn: sqlite3.Connection,
+    *,
+    target_session: str | None = None,
+    execution_context_ref: str | None = None,
+    limit: int = 100,
+) -> tuple[ContextLedgerRecord, ...]:
+    """Read bounded scheduler receipts without creating or mutating the table."""
+
+    if limit < 1:
+        raise ValueError("context ledger limit must be positive")
+    where: list[str] = []
+    params: list[object] = []
+    if target_session is not None:
+        where.append("target_session = ?")
+        params.append(target_session)
+    if execution_context_ref is not None:
+        where.append("execution_context_ref = ?")
+        params.append(execution_context_ref)
+    clause = " WHERE " + " AND ".join(where) if where else ""
+    rows = conn.execute(
+        f"""
+        SELECT ledger_id, build_ref, observed_at_ms, decision, source, item_ref,
+               token_cost, source_local_rank, budget_before, budget_after,
+               disclosure_verdict, authority_verdict, authority_reason,
+               policy_refs_json, target_session, execution_context_ref
+        FROM context_injection_ledger{clause}
+        ORDER BY observed_at_ms DESC, ledger_id DESC
+        LIMIT ?
+        """,
+        (*params, limit),
+    ).fetchall()
+    records: list[ContextLedgerRecord] = []
+    for row in rows:
+        policy_refs = json.loads(str(row[13]))
+        if not isinstance(policy_refs, list) or not all(isinstance(item, str) for item in policy_refs):
+            raise ValueError("stored context ledger policy refs are not a string list")
+        records.append(
+            ContextLedgerRecord(
+                ledger_id=str(row[0]),
+                build_ref=str(row[1]),
+                observed_at_ms=int(row[2]),
+                row=ContextLedgerRow(
+                    decision=row[3],
+                    source=str(row[4]),
+                    item_ref=str(row[5]),
+                    token_cost=int(row[6]),
+                    source_local_rank=int(row[7]),
+                    budget_before=int(row[8]),
+                    budget_after=int(row[9]),
+                    disclosure_verdict=str(row[10]),
+                    authority_verdict=str(row[11]),
+                    authority_reason=str(row[12]),
+                    policy_refs=tuple(policy_refs),
+                    target_session=None if row[14] is None else str(row[14]),
+                    execution_context_ref=str(row[15]),
+                ),
+            )
+        )
+    return tuple(records)
+
+
 __all__ = [
     "ContextAssembly",
     "ContextItem",
+    "ContextLedgerRecord",
     "ContextLedgerRow",
     "ContextSource",
+    "read_context_ledger",
     "TrustClass",
     "record_context_ledger",
     "schedule_context",

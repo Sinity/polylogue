@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.context.scheduler import ContextAssembly, ContextItem, record_context_ledger, schedule_context
 from polylogue.core.assertions import derive_assertion_context_trust
+from polylogue.core.refs import ExecutionContextRef
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.surfaces.compaction import estimate_tokens
 from polylogue.surfaces.payloads import (
     AssertionClaimPayload,
     ContextPreamble,
@@ -25,6 +31,57 @@ if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
 
 logger = get_logger(__name__)
+
+
+def _observation_value(value: object) -> str | int | float | bool | None:
+    if isinstance(value, (str, int, float, bool)):
+        return value if not isinstance(value, str) or value else value
+    return None
+
+
+def _preamble_execution_context(
+    *,
+    session_id: str | None,
+    boundary: str,
+    repo_path: str | None,
+    cwd: str | None,
+    related_limit: int,
+    session: object | None,
+) -> ExecutionContextRef:
+    """Capture the boundary inputs that actually shaped this preamble."""
+
+    fields: dict[str, object] = {"boundary": boundary, "related_limit": related_limit}
+    for name, value in (
+        ("session_id", session_id),
+        ("repo_path", repo_path),
+        ("cwd", cwd),
+        ("origin", getattr(session, "origin", None) if session is not None else None),
+        ("model", getattr(session, "model", None) if session is not None else None),
+        ("permission_mode", getattr(session, "permission_mode", None) if session is not None else None),
+    ):
+        observed = _observation_value(value)
+        if observed is not None:
+            fields[name] = observed
+    unknown_fields = tuple(name for name in ("model", "permission_mode", "runtime") if name not in fields)
+    return ExecutionContextRef.from_observation(fields, unknown_fields=unknown_fields)
+
+
+def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> None:
+    """Best-effort persistence for disposable scheduler receipts."""
+
+    config = getattr(polylogue, "config", None)
+    archive_root = getattr(config, "archive_root", None)
+    if not isinstance(archive_root, (str, Path)):
+        return
+    ops_db = Path(archive_root) / "ops.db"
+    try:
+        conn = open_connection(ops_db)
+        try:
+            record_context_ledger(conn, assembly, observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000))
+        finally:
+            conn.close()
+    except (OSError, TypeError, ValueError, sqlite3.Error):
+        logger.debug("context preamble: scheduler receipt could not be persisted", exc_info=True)
 
 
 def _git_project_state(cwd: str | None) -> ContextPreambleProjectState | None:
@@ -84,6 +141,8 @@ async def build_context_preamble_payload(
     recent_files: tuple[str, ...] = (),
     source_tool_calls: dict[str, str] | None = None,
     require_session: bool = True,
+    boundary: str = "session_start",
+    token_budget: int | None = None,
 ) -> ContextPreamble | None:
     """Build the shared typed context preamble payload for one seed session.
 
@@ -168,7 +227,7 @@ async def build_context_preamble_payload(
             logger.warning("context preamble: assertion guidance lookup failed for %s: %s", session_id, exc)
 
     guidance = ContextPreambleGuidance(assertions=assertion_guidance) if assertion_guidance else None
-    return ContextPreamble(
+    preamble = ContextPreamble(
         preamble_version="1.0",
         injected_at=datetime.now(timezone.utc).isoformat(),
         source_tool_calls=source_tool_calls or {},
@@ -178,6 +237,60 @@ async def build_context_preamble_payload(
         project_state=project,
         guidance=guidance,
         component_failures=component_failures,
+    )
+
+    # The preamble is an established output shape, so keep the shape and its
+    # content while routing its delivery through the same admission boundary
+    # as context images. The default budget is exactly the compiled payload's
+    # cost, which preserves historical output while still recording every
+    # decision. Explicit budgets are owned by the scheduler.
+    execution_context = _preamble_execution_context(
+        session_id=session_id,
+        boundary=boundary,
+        repo_path=repo_path,
+        cwd=cwd,
+        related_limit=related_limit,
+        session=conv,
+    )
+    serialized = json.dumps(preamble.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
+    source_name = f"context-{boundary}"
+
+    class _PreambleSource:
+        name = source_name
+
+        def candidates(self, *, moment: str, target_session: str | None) -> tuple[ContextItem, ...]:
+            del moment
+            return (
+                ContextItem(
+                    ref=f"context-preamble:{boundary}:{session_id or 'anonymous'}",
+                    content=serialized,
+                    token_cost=estimate_tokens(serialized),
+                    source=self.name,
+                    trust_class="quoted",
+                    material_class="evidence",
+                    target_session=target_session,
+                ),
+            )
+
+    assembly = schedule_context(
+        (_PreambleSource(),),
+        moment=boundary,
+        target_session=session_id,
+        execution_context=execution_context,
+        token_budget=token_budget if token_budget is not None else max(estimate_tokens(serialized), 1),
+    )
+    _record_preamble_ledger(polylogue, assembly)
+    if assembly.quoted_evidence:
+        return preamble
+    return preamble.model_copy(
+        update={
+            "recent_related_sessions": [],
+            "guidance": None,
+            "component_failures": {
+                **preamble.component_failures,
+                "context_scheduler": "preamble dropped by the context token budget",
+            },
+        }
     )
 
 

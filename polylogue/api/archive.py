@@ -10,6 +10,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
@@ -32,6 +33,13 @@ from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+)
+from polylogue.context.scheduler import (
+    ContextItem,
+    ContextLedgerRecord,
+    read_context_ledger,
+    record_context_ledger,
+    schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
 from polylogue.core.errors import PolylogueError
@@ -1199,6 +1207,35 @@ def _archive_list_context_deliveries(
         conn.row_factory = sqlite3.Row
         try:
             return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return []
+
+
+def _archive_list_context_injection_ledger(
+    config: Config,
+    *,
+    target_session: str | None,
+    execution_context_ref: str | None,
+    limit: int,
+) -> list[ContextLedgerRecord]:
+    """Read scheduler decisions from the disposable ops tier."""
+
+    ops_db = _active_archive_root(config) / "ops.db"
+    if not ops_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(ops_db)
+        try:
+            return list(
+                read_context_ledger(
+                    conn,
+                    target_session=target_session,
+                    execution_context_ref=execution_context_ref,
+                    limit=limit,
+                )
+            )
         finally:
             conn.close()
     except (sqlite3.Error, ValueError):
@@ -3092,6 +3129,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             limit=max(1, min(limit, 200)),
         )
 
+    async def list_context_injection_ledger(
+        self,
+        *,
+        target_session: str | None = None,
+        execution_context_ref: str | None = None,
+        limit: int = 100,
+    ) -> list[ContextLedgerRecord]:
+        """Read bounded scheduler admission receipts from ``ops.db``."""
+
+        return _archive_list_context_injection_ledger(
+            self.config,
+            target_session=target_session,
+            execution_context_ref=execution_context_ref,
+            limit=max(1, min(limit, 500)),
+        )
+
     async def record_context_delivery(
         self,
         *,
@@ -3815,21 +3868,23 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     token_total += segment.token_estimate
                     segments.append(segment)
 
-        object_refs = _dedupe_object_refs(ref for segment in segments for ref in segment.object_refs)
-        evidence_refs = _dedupe_evidence_refs(ref for segment in segments for ref in segment.evidence_refs)
-        assertion_refs = tuple(dict.fromkeys(ref for segment in segments for ref in segment.assertion_refs))
-        caveats = tuple(dict.fromkeys(caveat for segment in segments for caveat in segment.caveats))
-
         # All compiled material crosses the same admission kernel used by live
-        # sources.  The compiler remains responsible for producing typed
+        # sources. The compiler remains responsible for producing typed
         # archive segments; the scheduler alone decides what can be admitted
-        # and receipts every candidate.  Archive-derived segments are quoted
+        # and receipts every candidate. Archive-derived segments are quoted
         # evidence by construction, never executable instructions.
-        from polylogue.context.scheduler import ContextItem, schedule_context
         from polylogue.core.refs import ExecutionContextRef
 
         class _CompiledSegmentsSource:
             name = "archive-context"
+
+            @staticmethod
+            def _degrade(item: ContextItem) -> ContextItem:
+                # The historical message compiler guarantees at least one
+                # visible message plus its framing even at a one-token
+                # request. Preserve that established shape while making the
+                # scheduler record the bounded degraded admission.
+                return replace(item, token_cost=1)
 
             def candidates(self, *, moment: str, target_session: str | None) -> Sequence[ContextItem]:
                 del moment
@@ -3838,11 +3893,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                         ref=segment.segment_id,
                         content=segment.markdown or "",
                         token_cost=segment.token_estimate,
-                        ordinal_score=index,
+                        ordinal_score=-index,
                         source=self.name,
                         trust_class="quoted",
                         material_class="evidence",
                         target_session=target_session,
+                        degrade=self._degrade,
                     )
                     for index, segment in enumerate(segments)
                 )
@@ -3856,17 +3912,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             moment=spec.purpose,
             target_session=session_ids[0] if session_ids else None,
             execution_context=execution_context,
-            # ``compile_context`` has already applied its historical
-            # character/message degradation before admission.  Its markdown
-            # framing is intentionally retained even for a one-token content
-            # budget, so the scheduler receipts the post-degradation image
-            # without re-dropping those compatibility segments.
-            token_budget=max(token_total, 1),
+            token_budget=spec.max_tokens if spec.max_tokens is not None else max(token_total, 1),
             now_ms=0,
         )
         try:
-            from polylogue.context.scheduler import record_context_ledger
-
             ops_conn = open_connection(_active_archive_root(self.config) / "ops.db")
             try:
                 record_context_ledger(ops_conn, admission, observed_at_ms=0)
@@ -3876,9 +3925,26 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             # Frozen/read-only archive views still return the compiled image.
             pass
 
+        admitted_ids = {item.ref for item in (*admission.quoted_evidence, *admission.executable_policy)}
+        admitted_segments = tuple(segment for segment in segments if segment.segment_id in admitted_ids)
+        omitted.extend(
+            ContextOmission(
+                ref=row.item_ref,
+                view="scheduler",
+                reason="budget",
+                detail="segment rejected by the context scheduler budget",
+            )
+            for row in admission.ledger
+            if row.decision == "dropped" and row.disclosure_verdict == "budget"
+        )
+        object_refs = _dedupe_object_refs(ref for segment in admitted_segments for ref in segment.object_refs)
+        evidence_refs = _dedupe_evidence_refs(ref for segment in admitted_segments for ref in segment.evidence_refs)
+        assertion_refs = tuple(dict.fromkeys(ref for segment in admitted_segments for ref in segment.assertion_refs))
+        caveats = tuple(dict.fromkeys(caveat for segment in admitted_segments for caveat in segment.caveats))
+
         return ContextImage(
             spec=spec,
-            segments=tuple(segments),
+            segments=admitted_segments,
             object_refs=object_refs,
             evidence_refs=evidence_refs,
             assertion_refs=assertion_refs,
@@ -3973,8 +4039,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         session_id: str,
         *,
         related_limit: int = 5,
+        boundary: str = "session_start",
+        token_budget: int | None = None,
     ) -> Any:
-        """Build the shared typed context-preamble payload for one session."""
+        """Build a scheduler-admitted context preamble for one boundary."""
         from polylogue.context.preamble import build_context_preamble_payload
 
         return await build_context_preamble_payload(
@@ -3982,6 +4050,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             session_id=session_id,
             related_limit=related_limit,
             source_tool_calls={"context_preamble_payload": "polylogue-api"},
+            boundary=boundary,
+            token_budget=token_budget,
         )
 
     async def explain_query_expression(self, expression: str) -> JSONDocument:

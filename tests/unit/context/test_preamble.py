@@ -12,13 +12,17 @@ up is cheap and it proves the actual git command lines parse real output.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
+from polylogue.context.scheduler import read_context_ledger
+from polylogue.core.refs import ExecutionContextRef
 
 
 def _init_git_repo(path: Path, *, branch: str = "main") -> None:
@@ -135,3 +139,56 @@ class TestBuildContextPreambleGitEnrichment:
         assert preamble.project_state.repo == "https://example.invalid/repo"
         assert preamble.project_state.branch == "recorded-branch"
         assert preamble.project_state.recent_commits == []
+
+    @pytest.mark.asyncio
+    async def test_precompact_uses_scheduler_and_records_real_boundary_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import polylogue.context.preamble as preamble_module
+        from polylogue.context.scheduler import schedule_context
+
+        captured: dict[str, object] = {}
+
+        def capture_schedule(sources: object, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return schedule_context(sources, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(preamble_module, "schedule_context", capture_schedule)
+        session = MagicMock(
+            git_repository_url="https://example.invalid/repo",
+            git_branch="main",
+            origin="codex-session",
+            model="gpt-test",
+            permission_mode="default",
+        )
+        poly = MagicMock()
+        poly.config.archive_root = tmp_path / "archive"
+        poly.config.archive_root.mkdir()
+        poly.get_session = AsyncMock(return_value=session)
+        poly.get_session_topology = AsyncMock(return_value=None)
+        poly.find_resume_candidates = AsyncMock(return_value=[])
+        poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
+
+        preamble = await build_context_preamble_payload(
+            poly,
+            session_id="seed",
+            cwd=str(tmp_path),
+            boundary="precompact",
+        )
+
+        assert preamble is not None
+        with sqlite3.connect(tmp_path / "archive" / "ops.db") as conn:
+            records = read_context_ledger(conn, target_session="seed")
+        assert len(records) == 1
+        assert records[0].row.source == "context-precompact"
+        execution_context = cast(ExecutionContextRef, captured["execution_context"])
+        assert execution_context.known_fields == (
+            "boundary",
+            "cwd",
+            "model",
+            "origin",
+            "permission_mode",
+            "related_limit",
+            "session_id",
+        )
+        assert execution_context.unknown_fields == ("runtime",)

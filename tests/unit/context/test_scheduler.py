@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.context.scheduler import ContextItem, record_context_ledger, schedule_context
+from polylogue.context.scheduler import ContextItem, read_context_ledger, record_context_ledger, schedule_context
 from polylogue.core.refs import ExecutionContextRef
 
 
@@ -77,3 +77,20 @@ def test_ledger_is_idempotent_for_one_assembly() -> None:
     record_context_ledger(conn, result, observed_at_ms=10)
     record_context_ledger(conn, result, observed_at_ms=10)
     assert conn.execute("SELECT COUNT(*) FROM context_injection_ledger").fetchone()[0] == len(result.ledger)
+
+
+def test_ledger_reader_returns_bounded_decisions_and_filters_context() -> None:
+    source = _Source((ContextItem(ref="e", content="e", token_cost=1, source="memory"),))
+    result = schedule_context(
+        (source,), moment="session_start", target_session="s1", execution_context=_context(), token_budget=1, now_ms=10
+    )
+    conn = sqlite3.connect(":memory:")
+    record_context_ledger(conn, result, observed_at_ms=10)
+
+    records = read_context_ledger(conn, target_session="s1", limit=1)
+
+    assert len(records) == 1
+    assert records[0].row.item_ref == "e"
+    assert records[0].row.target_session == "s1"
+    assert records[0].build_ref == result.build_ref
+    assert read_context_ledger(conn, target_session="other") == ()

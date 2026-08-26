@@ -603,6 +603,7 @@ async def _resume_preamble(
     cwd: str | None,
     recent_files: tuple[str, ...],
     related_limit: int,
+    boundary: str = "session_start",
 ) -> str:
     """Build the SessionStart preamble: lineage, resume candidates, project git state, assertion guidance."""
     from polylogue.context.preamble import build_context_preamble_payload
@@ -617,6 +618,7 @@ async def _resume_preamble(
         recent_files=recent_files,
         source_tool_calls={"context": "polylogue-mcp"},
         require_session=False,
+        boundary=boundary,
     )
     if preamble is None:
         preamble = ContextPreamble(preamble_version="1.0", source_tool_calls={"context": "polylogue-mcp"})
@@ -1030,7 +1032,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
-            if intent == "resume":
+            if intent in {"resume", "precompact"}:
                 return await _resume_preamble(
                     hooks,
                     session_id=session_id,
@@ -1038,6 +1040,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     cwd=cwd,
                     recent_files=recent_files,
                     related_limit=hooks.clamp_limit(limit),
+                    boundary="precompact" if intent == "precompact" else "session_start",
                 )
             if result_ref is not None:
                 if recipient_ref is None:

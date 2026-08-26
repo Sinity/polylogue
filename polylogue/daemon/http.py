@@ -4510,11 +4510,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
                 return
+            boundary = (self._get_param(params, "boundary", "session_start") or "session_start").strip().lower()
+            if boundary not in {"session_start", "precompact"}:
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_context_boundary")
+                return
 
             async def _get_context(poly: Polylogue) -> dict[str, object] | None:
                 context_payload = await poly.context_preamble_payload(
                     conv_id,
                     related_limit=self._get_int(params, "related_limit", 5),
+                    boundary=boundary,
+                    token_budget=self._get_int(params, "max_tokens", 0) or None,
                 )
                 if context_payload is None:
                     return None

@@ -12,8 +12,10 @@ __all__ = [
     "context_snapshot_record_from_image",
     "ContextAssembly",
     "ContextItem",
+    "ContextLedgerRecord",
     "ContextLedgerRow",
     "ContextSource",
+    "read_context_ledger",
     "schedule_context",
     "record_context_ledger",
 ]
@@ -35,16 +37,20 @@ def __getattr__(name: str) -> object:
     if name in {
         "ContextAssembly",
         "ContextItem",
+        "ContextLedgerRecord",
         "ContextLedgerRow",
         "ContextSource",
+        "read_context_ledger",
         "schedule_context",
         "record_context_ledger",
     }:
         from polylogue.context.scheduler import (
             ContextAssembly,
             ContextItem,
+            ContextLedgerRecord,
             ContextLedgerRow,
             ContextSource,
+            read_context_ledger,
             record_context_ledger,
             schedule_context,
         )
@@ -52,8 +58,10 @@ def __getattr__(name: str) -> object:
         return {
             "ContextAssembly": ContextAssembly,
             "ContextItem": ContextItem,
+            "ContextLedgerRecord": ContextLedgerRecord,
             "ContextLedgerRow": ContextLedgerRow,
             "ContextSource": ContextSource,
+            "read_context_ledger": read_context_ledger,
             "schedule_context": schedule_context,
             "record_context_ledger": record_context_ledger,
         }[name]

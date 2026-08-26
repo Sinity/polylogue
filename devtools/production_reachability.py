@@ -100,6 +100,7 @@ class _CallGraph:
 
     def add_modules(self, modules: Iterable[_ParsedModule]) -> None:
         parsed = tuple(modules)
+        self.module_names = {module.name for module in parsed}
         for module in parsed:
             self._index_functions(module)
         for module in parsed:
@@ -120,6 +121,23 @@ class _CallGraph:
         module_imports = _imports_from_nodes(
             module.tree.body, module.name, is_package=module.path.name == "__init__.py"
         )
+        # Package roots are declared production entrypoints. Follow their
+        # imports so a route exposed through a facade package is not mistaken
+        # for an orphan merely because the facade's callable is a class
+        # method. This remains fail-closed for callable seams: imported code
+        # still needs an actual call edge from the selected production
+        # function in ``check_production_seam``.
+        imported_modules: set[str] = set()
+        for imported in module_imports.values():
+            parts = imported.split(".")
+            for end in range(len(parts), 0, -1):
+                candidate = ".".join(parts[:end])
+                if candidate in self.module_names:
+                    imported_modules.add(candidate)
+                if candidate in self.nodes or any(name.startswith(f"{candidate}.") for name in self.nodes):
+                    imported_modules.add(candidate)
+                    imported_modules.update(name for name in self.nodes if name.startswith(f"{candidate}."))
+        self.edges[module.name] = frozenset(imported_modules)
         local_functions = {
             name: f"{module.name}.{name}"
             for name in (
