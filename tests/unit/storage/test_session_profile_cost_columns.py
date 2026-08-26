@@ -73,3 +73,17 @@ def test_canonical_usage_projection_preserves_priced_and_unpriced_states(tmp_pat
     assert costs["claude-code-session:unpriced"].total_usd is None
     assert costs["claude-code-session:unpriced"].availability == "unpriced"
     conn.close()
+
+
+def test_cost_insight_keeps_unpriced_tokens_unknown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    write_parsed_session_to_archive(conn, _session("unpriced", "totally-unknown-model-xyz"))
+    from polylogue.storage.sqlite.archive_tiers.archive import _session_cost_insight_from_archive_row
+
+    row = conn.execute("SELECT * FROM sessions WHERE native_id = 'unpriced'").fetchone()
+    insight = _session_cost_insight_from_archive_row(
+        conn, row, session_usage_costs_for_connection(conn, [str(row["session_id"])])[str(row["session_id"])]
+    )
+    assert insight.estimate.total_usd is None
+    assert insight.estimate.unavailable_reason == "price_not_materialized"
+    conn.close()

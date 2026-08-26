@@ -137,6 +137,7 @@ def test_session_cost_aggregates_typed_message_facts() -> None:
     estimate = estimate_session_cost(session)
 
     assert estimate.status == "priced"
+    assert estimate.total_usd is not None
     assert estimate.normalized_model == "gpt-4o"
     assert estimate.total_usd == pytest.approx(0.015)
 
@@ -302,6 +303,7 @@ def test_paid_model_missing_cache_rate_is_flagged_not_silently_zero(monkeypatch:
     assert estimate.status == "priced"
     assert "missing_cache_read_price" in estimate.missing_reasons
     # Priced lanes still cost; the unpriced cache lane is $0 but now flagged.
+    assert estimate.total_usd is not None
     assert estimate.total_usd > 0
 
 
@@ -486,6 +488,9 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     )
     fallback_estimate = estimate_session_cost(fallback_session)
     assert fallback_estimate.usage == disjoint.usage
+    assert fallback_estimate.total_usd is not None
+    assert disjoint.total_usd is not None
+    assert naive.total_usd is not None
     assert fallback_estimate.total_usd == pytest.approx(disjoint.total_usd)
     # Naive double-bills the entire cached lane at the full input rate on top
     # of the cache-read rate -- on this ~96%-cached ratio the guard requires

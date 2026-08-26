@@ -780,7 +780,7 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
         "confidence": float(estimate.confidence),
         "confidence_tag": _confidence_tag(estimate.status),
         "currency": estimate.currency,
-        "total_usd": float(estimate.total_usd),
+        "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
         "basis": _basis_dict(estimate.basis),
         "usage": _usage_dict(estimate.usage),
         "per_model_breakdown": [

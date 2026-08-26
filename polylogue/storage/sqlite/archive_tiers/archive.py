@@ -7531,9 +7531,9 @@ def _session_cost_insight_from_archive_row(
 ) -> SessionCostInsight:
     session_id = str(row["session_id"])
     source_name = str(row["origin"])
-    total_usd = float(
-        (canonical.total_usd if canonical and canonical.total_usd is not None else row["cost_usd"]) or 0.0
-    )
+    total_usd = canonical.total_usd if canonical is not None else row["cost_usd"]
+    if total_usd is not None:
+        total_usd = float(total_usd)
     cost_provenance = canonical.provenance if canonical is not None else str(row["cost_provenance"] or "")
     try:
         raw_model_name = row["model_name"]
@@ -7549,9 +7549,8 @@ def _session_cost_insight_from_archive_row(
     # verdict) outranks a usage-evidence absence: sessions whose cost was
     # priced and stored must not report unavailable just because they carry
     # no per-model usage rows.
-    if total_usd > 0 or (
-        canonical is not None and canonical.availability in {"priced", "provider_money", "known_zero"}
-    ):
+    if canonical is not None and canonical.availability in {"priced", "provider_money", "known_zero"}:
+        assert total_usd is not None
         status = "exact" if cost_provenance in {"exact", "origin_reported"} else "priced"
         confidence = 1.0 if status == "exact" else (0.7 if row["cost_is_estimated"] else 0.9)
         basis = (
@@ -7566,8 +7565,8 @@ def _session_cost_insight_from_archive_row(
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
-        missing_reasons = ("no_price",)
-        unavailable_reason = "no_price"
+        missing_reasons = ("price_not_materialized",)
+        unavailable_reason = "price_not_materialized"
         provenance = ("session_usage_cost", canonical.availability)
     elif canonical is not None and canonical.availability == "no_tokens":
         status = "unavailable"
@@ -7580,8 +7579,8 @@ def _session_cost_insight_from_archive_row(
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
-        missing_reasons = ("archive_profile_no_cost",)
-        unavailable_reason = "no_tokens"
+        missing_reasons = ("price_not_materialized",)
+        unavailable_reason = "price_not_materialized"
         provenance = ("session_usage_cost",)
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     return SessionCostInsight(
