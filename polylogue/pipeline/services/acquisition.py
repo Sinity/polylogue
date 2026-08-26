@@ -62,11 +62,28 @@ class AcquisitionService:
     ) -> None:
         await persist_raw_record(self.repository, record, result=result)
 
-    async def _persist_source_cursors(self, source: Source) -> None:
-        """Slize B: Populate source_file_cursor stats for all source paths."""
+    async def _persist_source_cursors(
+        self,
+        source: Source,
+        *,
+        cursor_state: CursorStatePayload | None = None,
+    ) -> None:
+        """Persist stat cursors only for source paths acquired successfully."""
         if source.path is None:
             return
+        failed_paths: set[str] = set()
+        if cursor_state:
+            for failure in cursor_state.get("failed_files", []):
+                raw_path = str(failure["path"])
+                failed_paths.add(raw_path.partition(":")[0])
+            # An unscoped failure means the pass did not prove any path safe
+            # to skip.  Do not turn a failed persistence/read pass into a
+            # successful stat cursor for every file in the source.
+            if cursor_state.get("error_count"):
+                failed_paths.update(str(path) for path in _resolve_source_paths(source))
         for file_path in _resolve_source_paths(source):
+            if str(file_path) in failed_paths:
+                continue
             try:
                 st = file_path.stat()
                 await self.repository.upsert_source_file_cursor(
@@ -151,7 +168,7 @@ class AcquisitionService:
             # Slice B: persist cursor stat fields for all source files after
             # processing so the next run can skip unchanged files.
             if persist_cursors and not source.is_drive:
-                await self._persist_source_cursors(source)
+                await self._persist_source_cursors(source, cursor_state=cursor_state)
 
             if cursor_state:
                 result.cursors[source.name] = cursor_state

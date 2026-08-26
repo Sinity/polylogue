@@ -1564,8 +1564,6 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     # segments via extract_message_text/extract_text_from_segments.
     # The writer persists the same split blocks it classifies.
     message_type = _message_type_from_code_record(item, text_blocks_prose(content_blocks))
-    if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
-        message_type = MessageType.CONTEXT
     if not acc.saw_plain_user_head and envelope_role is Role.USER and message_type is MessageType.MESSAGE:
         acc.saw_plain_user_head = True
         acc.fresh_task_prompt_head = _is_fresh_task_prompt_head(item)

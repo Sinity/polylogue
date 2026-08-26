@@ -1488,6 +1488,38 @@ components:
           - type: 'null'
           default: null
           title: Exactness
+        requested_lanes:
+          default: []
+          items:
+            type: string
+          title: Requested Lanes
+          type: array
+        executed_lanes:
+          default: []
+          items:
+            type: string
+          title: Executed Lanes
+          type: array
+        unavailable_lanes:
+          default: []
+          items:
+            type: string
+          title: Unavailable Lanes
+          type: array
+        failed_lanes:
+          default: []
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          title: Failed Lanes
+          type: array
+        advisories:
+          default: []
+          items:
+            type: string
+          title: Advisories
+          type: array
       required:
       - hits
       - total

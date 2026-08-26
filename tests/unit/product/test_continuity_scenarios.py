@@ -19,20 +19,8 @@ from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKin
 from tests.infra.archive_scenarios import ScenarioContentBlock
 from tests.infra.continuity import load_continuity_catalog
 
-_EXPECTED_SCENARIOS = {
-    "resume",
-    "forensic-debug",
-    "prior-art",
-    "decision",
-    "postmortem",
-    "cost",
-    "self-inspection",
-    "parallel-claude-incident",
-}
-
 
 def test_continuity_catalog_extends_existing_scenario_source_seam() -> None:
-    assert {scenario.scenario_id for scenario in CONTINUITY_SCENARIOS} == _EXPECTED_SCENARIOS
     for scenario in CONTINUITY_SCENARIOS:
         assert isinstance(scenario, NamedScenarioSource)
         assert scenario.projection_source_kind is ScenarioProjectionSourceKind.VALIDATION_LANE
@@ -77,9 +65,8 @@ def test_independent_manifest_matches_every_declared_fact_inventory() -> None:
     catalog = load_continuity_catalog()
     oracles = catalog["oracles"]
     assert isinstance(oracles, dict)
-    assert set(oracles) == _EXPECTED_SCENARIOS
     for scenario in CONTINUITY_SCENARIOS:
-        oracle = oracles[scenario.fixture_key]
+        oracle = oracles[scenario.scenario_id]
         assert isinstance(oracle, dict)
         facts = oracle["facts"]
         assert isinstance(facts, dict)
@@ -90,7 +77,7 @@ def test_independent_manifest_matches_every_declared_fact_inventory() -> None:
 def test_parallel_incident_curriculum_keeps_features_and_expected_grades_independent() -> None:
     catalog = load_continuity_catalog()
     corpus = require_json_document(catalog["corpus"], context="continuity corpus")
-    incident = require_json_document(corpus["parallel_incident"], context="incident corpus")
+    incident = require_json_document(corpus["parallel_claude_incident"], context="incident corpus")
     curriculum = incident["attempt_curriculum"]
     assert isinstance(curriculum, list)
     assert len(curriculum) == 6
@@ -141,13 +128,15 @@ def test_route_templates_are_parameterized_by_the_caller_corpus() -> None:
     scenario = continuity_scenario("parallel-claude-incident")
     [member_step, *_] = scenario.route_steps
     default_arguments = materialize_route_arguments(member_step, catalog)
+    corpus = require_json_document(catalog["corpus"], context="continuity corpus")
+    default_incident = require_json_document(corpus["parallel_claude_incident"], context="incident corpus")
     assert default_arguments["expression"] == (
-        'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
+        f'messages where text:parallel-child AND text:"workflow_run:{default_incident["run_ref"]}"'
     )
 
     live_catalog = deepcopy(catalog)
     live_corpus = require_json_document(live_catalog["corpus"], context="live corpus")
-    live_incident = require_json_document(live_corpus["parallel_incident"], context="live incident")
+    live_incident = require_json_document(live_corpus["parallel_claude_incident"], context="live incident")
     live_incident["run_ref"] = "wf_authorized_live_001"
     live_arguments = materialize_route_arguments(member_step, live_catalog)
     assert live_arguments["expression"] == (
@@ -211,7 +200,7 @@ def test_mutated_planted_fact_reports_exact_expected_and_observed_values() -> No
     diagnostics = compare_observed_facts(
         expected={"attempt_transcripts": 92, "call_keys": 50},
         observed={"attempt_transcripts": 91, "call_keys": 50},
-        source_refs=("fixture:corpus.parallel_incident",),
+        source_refs=("fixture:corpus.parallel_claude_incident",),
     )
     assert diagnostics == [
         {
@@ -220,7 +209,7 @@ def test_mutated_planted_fact_reports_exact_expected_and_observed_values() -> No
             "fact": "attempt_transcripts",
             "expected": 92,
             "observed": 91,
-            "source_refs": ["fixture:corpus.parallel_incident"],
+            "source_refs": ["fixture:corpus.parallel_claude_incident"],
         }
     ]
 

@@ -1108,6 +1108,24 @@ def test_select_paths_for_processing_skips_known_mtimes_only_when_mtime_enabled(
     assert selected_without_mtime == [(first, None), (second, None)]
 
 
+def test_select_paths_for_processing_requires_every_zip_member_mtime(tmp_path: Path) -> None:
+    archive = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("first.json", b"{}")
+        zf.writestr("second.json", b"{}")
+    mtime = _get_file_mtime(archive)
+    assert mtime is not None
+
+    selected, skipped = _select_paths_for_processing(
+        [archive],
+        include_file_mtime=True,
+        known_mtimes={f"{archive}:first.json": mtime},
+    )
+
+    assert skipped == 0
+    assert selected == [(archive, mtime)]
+
+
 def test_log_source_iteration_summary_emits_only_relevant_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     infos: list[str] = []
     warnings: list[str] = []

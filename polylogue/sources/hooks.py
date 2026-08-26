@@ -49,6 +49,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from polylogue.core.enums import Origin, Provider
@@ -83,6 +84,60 @@ _MAX_TRANSCRIPT_LIKE_FIELD_CHARS = 2000
 
 class HookSpoolRecordError(ValueError):
     """A pending spool file is not a valid Claude Code/Codex/Hermes hook envelope."""
+
+
+class HookSpoolTopologyError(ValueError):
+    """The declared hook spool topology is not safe to seal."""
+
+
+@dataclass(frozen=True, slots=True)
+class HookSpoolSourceSpec:
+    """One stable logical identity for a hook spool root."""
+
+    source_id: str
+    role: Literal["primary-writable", "legacy-read-only"]
+    root: Path
+
+
+def validate_hook_spool_topology(
+    sources: tuple[HookSpoolSourceSpec, ...] | list[HookSpoolSourceSpec],
+    *,
+    sealed_primary_identity: tuple[int, int] | None = None,
+    require_existing: bool = False,
+) -> tuple[HookSpoolSourceSpec, ...]:
+    """Validate the finite declared topology before acquisition or sealing."""
+
+    declared = tuple(sources)
+    if not declared or sum(spec.role == "primary-writable" for spec in declared) != 1:
+        raise HookSpoolTopologyError("topology requires exactly one primary-writable source")
+    if any(spec.role not in {"primary-writable", "legacy-read-only"} for spec in declared):
+        raise HookSpoolTopologyError("hook spool source role must be primary-writable or legacy-read-only")
+    ids = [spec.source_id for spec in declared]
+    roots = [spec.root.resolve() for spec in declared]
+    if any(not source_id.strip() for source_id in ids):
+        raise HookSpoolTopologyError("source_id must be nonempty")
+    if len(set(ids)) != len(ids):
+        raise HookSpoolTopologyError("duplicate source_id in hook spool topology")
+    if len(set(roots)) != len(roots):
+        raise HookSpoolTopologyError("duplicate root path in hook spool topology")
+    for index, root in enumerate(roots):
+        if require_existing and not root.exists():
+            raise HookSpoolTopologyError(f"required hook spool root vanished: {root}")
+        if any(root in other.parents or other in root.parents for other in roots[index + 1 :]):
+            raise HookSpoolTopologyError("nested hook spool roots are not allowed")
+    primary = next(spec for spec in declared if spec.role == "primary-writable")
+    if primary.role != "primary-writable":  # defensive: keeps the type contract explicit
+        raise HookSpoolTopologyError("legacy source cannot be writable")
+    if sealed_primary_identity is not None:
+        try:
+            identity = (primary.root.stat().st_dev, primary.root.stat().st_ino)
+        except OSError as exc:
+            raise HookSpoolTopologyError(f"required hook spool root vanished: {primary.root}") from exc
+        if identity != sealed_primary_identity:
+            raise HookSpoolTopologyError("primary hook spool identity changed after seal")
+    return tuple(
+        HookSpoolSourceSpec(spec.source_id, spec.role, root) for spec, root in zip(declared, roots, strict=True)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +318,8 @@ def drain_hook_event_spool(
     *,
     root: Path | None = None,
     limit: int | None = None,
+    source_id: str = "primary-hook-spool",
+    role: Literal["primary-writable", "legacy-read-only"] = "primary-writable",
 ) -> HookSpoolDrainResult:
     """Persist pending events and acknowledge only committed records.
 
@@ -320,9 +377,10 @@ def drain_hook_event_spool(
             touched_shards.add(path.parent)
             try:
                 record = _read_record(path)
-                _persist_record(archive, path, record)
+                _persist_record(archive, path, record, source_id=source_id, source_root=pending, role=role)
                 archive.commit()
-                _acknowledge(path, root=root)
+                if role == "primary-writable":
+                    _acknowledge(path, root=root)
             except (HookSpoolRecordError, OSError, sqlite3.Error, ValueError):
                 with contextlib.suppress(Exception):
                     archive.rollback()
@@ -413,7 +471,15 @@ def _timestamp_ms(value: str) -> int:
         raise HookSpoolRecordError(f"invalid hook timestamp: {value!r}") from exc
 
 
-def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]) -> None:
+def _persist_record(
+    archive: ArchiveStore,
+    path: Path,
+    record: dict[str, object],
+    *,
+    source_id: str = "primary-hook-spool",
+    source_root: Path | None = None,
+    role: Literal["primary-writable", "legacy-read-only"] = "primary-writable",
+) -> None:
     provider_token = str(record["provider"])
     provider = Provider.from_string(provider_token)
     try:
@@ -434,6 +500,11 @@ def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]
         raise HookSpoolRecordError("hook spool envelope has an invalid observed timestamp")
     observed_at_ms = observed_at_ms_value
     source_path = str(path)
+    coordinate_root = source_root or path.parent
+    try:
+        relative_path = path.relative_to(coordinate_root).as_posix()
+    except ValueError as exc:
+        raise HookSpoolRecordError(f"hook carrier is outside declared root: {path}") from exc
     # A hook event is evidence WITHIN a session, keyed to it by
     # ``session_native_id`` -- never a session of its own. Persisting it as a
     # raw_sessions row (as this path once did) minted an empty standalone
@@ -455,6 +526,9 @@ def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]
             native_id=f"{record['session_id']}:{record['event_type']}:{record['event_id']}",
             session_native_id=str(record["session_id"]),
         ),
+        carrier_source_id=source_id,
+        carrier_relative_path=relative_path,
+        carrier_role=role,
     )
 
 
@@ -466,6 +540,7 @@ def _acknowledge(path: Path, *, root: Path | None) -> None:
     # same way ``pending`` is, without needing to parse the source path.
     acknowledged = acknowledged_hook_spool_dir(root) / _day_shard()
     acknowledged.mkdir(parents=True, exist_ok=True)
+    _fsync_directory(path.parent)
     os.replace(path, acknowledged / path.name)
     _fsync_directory(acknowledged)
 
@@ -499,9 +574,12 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "HookSpoolDrainResult",
     "HookSpoolRecordError",
+    "HookSpoolSourceSpec",
+    "HookSpoolTopologyError",
     "acknowledged_hook_spool_dir",
     "drain_hook_event_spool",
     "enqueue_hook_event",
     "hook_spool_root",
     "pending_hook_spool_dir",
+    "validate_hook_spool_topology",
 ]

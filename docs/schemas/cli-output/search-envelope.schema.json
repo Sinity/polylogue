@@ -922,6 +922,14 @@
       "title": "Action Affordances",
       "type": "array"
     },
+    "advisories": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Advisories",
+      "type": "array"
+    },
     "diagnostics": {
       "anyOf": [
         {
@@ -950,6 +958,25 @@
       ],
       "default": null,
       "title": "Exactness"
+    },
+    "executed_lanes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Executed Lanes",
+      "type": "array"
+    },
+    "failed_lanes": {
+      "default": [],
+      "items": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Failed Lanes",
+      "type": "array"
     },
     "hits": {
       "items": {
@@ -1028,6 +1055,14 @@
       "title": "Ranking Policy Version",
       "type": "string"
     },
+    "requested_lanes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Requested Lanes",
+      "type": "array"
+    },
     "result_fingerprint": {
       "anyOf": [
         {
@@ -1077,6 +1112,14 @@
         }
       ],
       "title": "Total"
+    },
+    "unavailable_lanes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Unavailable Lanes",
+      "type": "array"
     }
   },
   "required": [

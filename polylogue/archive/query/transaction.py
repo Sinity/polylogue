@@ -450,10 +450,33 @@ class QueryTransaction:
         # for the same logical request).
         self.result_ref = request.result_ref
 
+    @staticmethod
+    def _requires_user_tier(request: QueryTransactionRequest) -> bool:
+        """Identify assertion reads before their work can compile or execute SQL."""
+        if request.operation.startswith("assertion"):
+            return True
+        if request.operation != "query_units":
+            return False
+        expression = request.arguments.get("expression")
+        if not isinstance(expression, str):
+            return False
+        from polylogue.archive.query.expression import parse_unit_source_expression
+
+        source = parse_unit_source_expression(expression)
+        return source is not None and source.unit == "assertion"
+
+    def _prepare(self, archive: ArchiveStore) -> None:
+        if self._requires_user_tier(self.request):
+            archive.require_user_tier()
+
+    def _run_work(self, archive: ArchiveStore, work: Callable[[ArchiveStore], T]) -> T:
+        self._prepare(archive)
+        return work(archive)
+
     async def run(self, work: Callable[[ArchiveStore], T]) -> T:
         return await execute_archive_read(
             self.archive_root,
-            work,
+            lambda archive: self._run_work(archive, work),
             ctx=self.context,
             controller=self.controller,
             read_timeout=self.read_timeout,
@@ -462,7 +485,7 @@ class QueryTransaction:
     def run_sync(self, work: Callable[[ArchiveStore], T]) -> T:
         return execute_archive_read_sync(
             self.archive_root,
-            work,
+            lambda archive: self._run_work(archive, work),
             ctx=self.context,
             controller=self.controller,
             read_timeout=self.read_timeout,
@@ -566,6 +589,8 @@ def archive_read_context(
     )
     reader = InterruptibleSQLiteRead(transaction.context)
     with reader.open_context(archive_root) as archive:
+        if transaction._requires_user_tier(transaction.request):
+            archive.require_user_tier()
         yield archive
 
 

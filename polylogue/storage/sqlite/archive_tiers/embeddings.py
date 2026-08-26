@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-EMBEDDINGS_SCHEMA_VERSION = 4
+EMBEDDINGS_SCHEMA_VERSION = 5
 EMBEDDING_DIMENSION = 1024
 
-# v4 (polylogue-q88p, operator ruling 2026-07-20): vectors are keyed by
-# embedding_input_hash = H(model, embedder input text) -- identity-free by
-# construction, the same philosophy as the svfj block evidence hash
-# (`_block_content_hash`). v3 keyed message_embeddings/message_embeddings_meta
-# by message_id and bound freshness to messages.content_hash, which INCLUDES
-# session_id/position/variant_index; a rebuild or lineage-normalization shift
-# invalidated vectors whose underlying text never changed (the 04kl 777K-vector
-# rescue). Under v4, presence of a meta row for a given hash IS freshness --
-# there is no per-vector "stale" state anymore, and identical content across
-# forked/replayed sessions naturally dedups to one stored vector.
+# v5: vectors are addressed by the complete typed provider request and output
+# contract, including exact normalized input. Metadata is complete by schema,
+# so a legacy row with unknown output identity cannot authorize reuse.
 #
 # embeddings.db is a rebuildable derived tier (no migration chain): a schema
 # mismatch blue-green-replaces the tier from source
@@ -22,37 +15,37 @@ EMBEDDING_DIMENSION = 1024
 # edit, not an additive migration.
 EMBEDDINGS_DDL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
-    embedding_input_hash TEXT PRIMARY KEY,
+    vector_derivation_hash TEXT PRIMARY KEY,
     embedding float[{EMBEDDING_DIMENSION}],
     +model TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_embeddings_meta (
-    embedding_input_hash   BLOB PRIMARY KEY CHECK(length(embedding_input_hash) = 32),
+    vector_derivation_hash   BLOB PRIMARY KEY CHECK(length(vector_derivation_hash) = 32),
     model                  TEXT NOT NULL,
     dimension              INTEGER NOT NULL CHECK(dimension = {EMBEDDING_DIMENSION}),
     embedded_at_ms         INTEGER,
-    recipe_hash            BLOB CHECK(recipe_hash IS NULL OR length(recipe_hash) = 32),
-    output_contract_hash   BLOB CHECK(output_contract_hash IS NULL OR length(output_contract_hash) = 32)
+    recipe_hash            BLOB NOT NULL CHECK(length(recipe_hash) = 32),
+    output_contract_hash   BLOB NOT NULL CHECK(length(output_contract_hash) = 32)
 ) STRICT;
 
--- Rebuildable message_id -> embedding_input_hash mapping. Lives in the
+-- Rebuildable message_id -> vector_derivation_hash mapping. Lives in the
 -- embeddings tier (not index.db) so this rekey never bumps INDEX_SCHEMA_VERSION:
 -- the mapping is derived purely from a message's current embedder input text
 -- and this tier's own vectors, both already scoped to embeddings.db.
--- One message has exactly one *current* embedding_input_hash; many messages
+-- One message has exactly one *current* vector_derivation_hash; many messages
 -- (fork/resume/auto-compaction replays, or genuinely identical prose) may
 -- point at the same hash -- that convergence is the dedup win.
 CREATE TABLE IF NOT EXISTS message_embedding_refs (
     message_id            TEXT PRIMARY KEY,
     session_id            TEXT NOT NULL,
     origin                TEXT NOT NULL,
-    embedding_input_hash  BLOB NOT NULL CHECK(length(embedding_input_hash) = 32),
+    vector_derivation_hash  BLOB NOT NULL CHECK(length(vector_derivation_hash) = 32),
     embedded_at_ms        INTEGER
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_message_embedding_refs_hash
-ON message_embedding_refs(embedding_input_hash);
+ON message_embedding_refs(vector_derivation_hash);
 
 CREATE INDEX IF NOT EXISTS idx_message_embedding_refs_session
 ON message_embedding_refs(session_id);

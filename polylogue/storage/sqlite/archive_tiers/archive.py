@@ -53,6 +53,7 @@ from polylogue.archive.session_revision_membership import MembershipClassificati
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
@@ -423,6 +424,7 @@ class ArchiveSessionSearchHit:
     origin: str
     title: str | None
     snippet: str
+    lane_ranks: dict[str, int | None] | None = None
 
 
 # polylogue-qsb4: both traversals recurse natively over the `delegations`
@@ -1295,6 +1297,9 @@ class ArchiveStore:
         acquired_at_ms: int,
         hook_event: ArchiveHookEvent,
         source_index: int = 0,
+        carrier_source_id: str | None = None,
+        carrier_relative_path: str | None = None,
+        carrier_role: str = "primary-writable",
     ) -> str:
         """Persist a hook event as session-linked evidence, not a session.
 
@@ -1326,6 +1331,9 @@ class ArchiveStore:
             raw_id=raw_id,
             hook_event=hook_event,
             blob_publication_receipt_id=receipt_id,
+            carrier_source_id=carrier_source_id or "representative-hook-source",
+            carrier_relative_path=carrier_relative_path or source_path,
+            carrier_role=carrier_role,
             manage_transaction=True,
         )
 
@@ -2697,14 +2705,26 @@ class ArchiveStore:
             entry.total_usd += stored_cost_usd
             entry.note_source_updated_at(row["source_updated_at"])
             entry.note_sort_key(row["source_sort_key"])
-            entry.per_model[(model_name, normalized_model)] = CostModelBreakdown(
-                model_name=model_name,
-                normalized_model=normalized_model,
-                usage=usage,
-                basis=basis,
-                total_usd=stored_cost_usd,
-                session_count=session_count,
-            )
+            per_model_key = (model_name, normalized_model)
+            prior_breakdown = entry.per_model.get(per_model_key)
+            if prior_breakdown is None:
+                entry.per_model[per_model_key] = CostModelBreakdown(
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                    usage=usage,
+                    basis=basis,
+                    total_usd=stored_cost_usd,
+                    session_count=session_count,
+                )
+            else:
+                entry.per_model[per_model_key] = CostModelBreakdown(
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                    usage=prior_breakdown.usage.plus(usage),
+                    basis=prior_breakdown.basis.plus(basis),
+                    total_usd=prior_breakdown.total_usd + stored_cost_usd,
+                    session_count=prior_breakdown.session_count + session_count,
+                )
 
         rollups: list[CostRollupInsight] = []
         for entry in grouped.values():
@@ -4919,9 +4939,40 @@ class ArchiveStore:
             if self._read_only or self._inactive_candidate_durable_read_only
             else str(self.user_db_path)
         )
-        self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+        try:
+            self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+        except Exception as exc:
+            raise self._user_tier_unavailable(reason=f"cannot open SQLite database ({exc})") from exc
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()
+
+    def _user_tier_unavailable(self, *, reason: str) -> ArchiveTierUnavailableError:
+        return ArchiveTierUnavailableError(
+            tier="user.db",
+            path=str(self.user_db_path.resolve(strict=False)),
+            reason=reason,
+            guidance="restore or initialize the durable user tier at this path, then retry the query; "
+            "the reader will not create a replacement or search another archive root",
+        )
+
+    def require_user_tier(self) -> None:
+        """Validate the durable user tier before an assertion read executes SQL."""
+        if not self.user_db_path.exists():
+            raise self._user_tier_unavailable(reason="the file does not exist")
+        if not self.user_db_path.is_file():
+            raise self._user_tier_unavailable(reason="the path is not a regular file")
+        try:
+            self._attach_user_tier_if_present()
+            version = int(self._conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+            expected = archive_tier_spec(ArchiveTier.USER).version
+            if version != expected:
+                raise self._user_tier_unavailable(reason=f"schema version {version} does not match expected {expected}")
+            if not _table_exists(self._conn, "assertions", schema="user_tier"):
+                raise self._user_tier_unavailable(reason="the assertions table is missing")
+        except ArchiveTierUnavailableError:
+            raise
+        except Exception as exc:
+            raise self._user_tier_unavailable(reason=f"cannot validate SQLite schema ({exc})") from exc
 
     def count_sessions(
         self,

@@ -31,6 +31,7 @@ from polylogue.archive.query.completions import query_terminal_source_candidates
 from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_sources
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
+from tests.infra.workload_artifacts import SeededArchiveQueryLease
 
 SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
@@ -849,7 +850,7 @@ def test_dynamic_completers_seeded_archive_per_shell(
     comp_cls: type[ShellComplete],
     label: str,
     cwords: list[str],
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With a seeded archive, every dynamic completer returns at least one item on every shell.

@@ -32,6 +32,7 @@ from tests.infra.workload_artifacts import (
     BenchmarkWorkloadTier,
     CorpusArtifactManifest,
     SeededArchiveClone,
+    SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
     WorkloadProfile,
     _assert_lock_identity,
@@ -1418,7 +1419,7 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 
 
 def test_named_seeded_archive_ro_shares_the_authenticated_immutable_artifact(
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1435,7 +1436,8 @@ def test_named_seeded_archive_ro_shares_the_authenticated_immutable_artifact(
         "tests.infra.corpus_fixtures.clone_seeded_archive",
         lambda *_args, **_kwargs: pytest.fail("read-only fixture unexpectedly cloned the artifact"),
     )
-    db_path = named_seeded_archive_ro("cli-chatgpt")
+    lease = named_seeded_archive_ro("cli-chatgpt")
+    db_path = lease.path
 
     assert db_path.is_file()
     assert db_path.name == "index.db"

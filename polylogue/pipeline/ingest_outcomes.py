@@ -131,6 +131,26 @@ def parser_defect_disposition(*, evidence_ref: str, diagnostic: str | None) -> I
     )
 
 
+def downstream_failure_disposition(*, evidence_ref: str, diagnostic: str | None) -> IngestAttemptDisposition:
+    return IngestAttemptDisposition(
+        outcome=IngestOutcome.DOWNSTREAM_FAILURE,
+        evidence_ref=evidence_ref,
+        diagnostic=bounded_diagnostic(diagnostic),
+        remediation="downstream materialization failed; retry after the owning stage recovers",
+    )
+
+
+def interrupted_disposition(
+    *, evidence_ref: str = "ingest:interrupted", diagnostic: str | None = None
+) -> IngestAttemptDisposition:
+    return IngestAttemptDisposition(
+        outcome=IngestOutcome.INTERRUPTED,
+        evidence_ref=evidence_ref,
+        diagnostic=bounded_diagnostic(diagnostic),
+        remediation="resume the source generation from its durable item frontier",
+    )
+
+
 def legacy_unknown_disposition(diagnostic: str | None = None) -> IngestAttemptDisposition:
     return IngestAttemptDisposition(
         outcome=IngestOutcome.LEGACY_UNKNOWN,
@@ -196,6 +216,8 @@ __all__ = [
     "classify_decode_exception",
     "classify_parse_exception",
     "corrupt_input_disposition",
+    "downstream_failure_disposition",
+    "interrupted_disposition",
     "legacy_unknown_disposition",
     "parser_defect_disposition",
     "success_disposition",

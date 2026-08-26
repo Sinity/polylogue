@@ -53,14 +53,14 @@ def test_archive_tiers_embedding_writer_upserts_vector_meta_and_status(tmp_path:
         embedding=[0.0] * EMBEDDING_DIMENSION,
         model="voyage-4",
         embedded_at_ms=1_767_225_700_000,
-        embedding_input_hash=input_hash,
+        vector_derivation_hash=input_hash,
     )
 
     assert meta == ArchiveEmbeddingMeta(
         message_id=message_id,
         model="voyage-4",
         dimension=EMBEDDING_DIMENSION,
-        embedding_input_hash=input_hash,
+        vector_derivation_hash=input_hash,
         embedded_at_ms=1_767_225_700_000,
     )
     assert conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0] == 1
@@ -101,7 +101,7 @@ def test_archive_tiers_embedding_writer_batches_message_upserts(tmp_path: Path) 
                 embedding=[0.01] * EMBEDDING_DIMENSION,
                 model="voyage-4",
                 embedded_at_ms=1_767_225_700_000,
-                embedding_input_hash=bytes([index]) * 32,
+                vector_derivation_hash=bytes([index]) * 32,
             )
             for index in range(3)
         ],

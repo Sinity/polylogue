@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import replace
 from pathlib import Path
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
@@ -357,12 +356,10 @@ def test_archive_tiers_source_writer_replays_hook_events_idempotently(tmp_path: 
         native_id="session-1",
         payload=payload,
         acquired_at_ms=1_767_000_000_000,
-        hook_event=replace(hook_event, payload={"path": "/tmp/record.jsonl", "replayed": True}),
+        hook_event=hook_event,
     )
 
-    assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (
-        replace(hook_event, payload={"path": "/tmp/record.jsonl", "replayed": True}),
-    )
+    assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (hook_event,)
 
 
 def test_archive_tiers_source_writer_keeps_multiple_raw_captures_for_one_native_id(tmp_path: Path) -> None:

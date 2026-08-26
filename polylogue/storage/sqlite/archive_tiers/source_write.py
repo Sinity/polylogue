@@ -50,6 +50,10 @@ class ContentExcisedError(RuntimeError):
         )
 
 
+class HookEventConflictError(RuntimeError):
+    """A hook carrier or logical event attempted an immutable identity change."""
+
+
 PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
 
 
@@ -839,6 +843,9 @@ def write_source_hook_event(
     raw_id: str,
     hook_event: ArchiveHookEvent,
     blob_publication_receipt_id: str | None = None,
+    carrier_source_id: str = "representative-hook-source",
+    carrier_relative_path: str | None = None,
+    carrier_role: str = "primary-writable",
     manage_transaction: bool = True,
 ) -> str:
     """Persist a hook event WITHOUT minting a session.
@@ -868,14 +875,8 @@ def write_source_hook_event(
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
+    relative_path = carrier_relative_path or source_path
     with conn if manage_transaction else nullcontext():
-        # A replay can update an existing hook_event_id with a newer payload.
-        # Remove the previous content-addressed ref first so the upsert cannot
-        # leave an old hook_payload ref with no matching raw_hook_events blob.
-        conn.execute(
-            "DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
-            (hook_event.hook_event_id,),
-        )
         _insert_hook_event(conn, hook_event, blob_hash=blob_hash)
         _insert_blob_ref(
             conn,
@@ -888,6 +889,15 @@ def write_source_hook_event(
                 acquired_at_ms=acquired_at_ms,
                 publication_receipt_id=blob_publication_receipt_id,
             ),
+        )
+        _insert_hook_event_carrier(
+            conn,
+            source_id=carrier_source_id,
+            relative_path=relative_path,
+            hook_event=hook_event,
+            blob_hash=blob_hash,
+            role=carrier_role,
+            admitted_at_ms=acquired_at_ms,
         )
     return raw_id
 
@@ -907,6 +917,7 @@ def delete_source_hook_event(
     """
     conn.execute("PRAGMA foreign_keys = ON")
     with conn if manage_transaction else nullcontext():
+        conn.execute("DELETE FROM hook_event_carriers WHERE hook_event_id = ?", (hook_event_id,))
         cursor = conn.execute("DELETE FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,))
         conn.execute(
             "DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
@@ -1377,21 +1388,27 @@ def list_hook_events(
 def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> None:
     if ref.raw_id is None or ref.size_bytes is None or ref.acquired_at_ms is None:
         raise ValueError("raw_id, size_bytes, and acquired_at_ms are required for blob refs")
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO blob_refs (
-            blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            ref.blob_hash,
-            ref.raw_id,
-            ref.ref_type,
-            ref.source_path,
-            ref.size_bytes,
-            ref.acquired_at_ms,
-        ),
-    )
+    if ref.ref_type == "hook_payload":
+        # The logical hook row and its first-observed coordinate are immutable;
+        # replaying the same event through another carrier must not rewrite
+        # this representative blob-ref coordinate either.
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(blob_hash, ref_type, ref_id) DO NOTHING
+            """,
+            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO blob_refs (
+                blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+        )
     from polylogue.storage.blob_publication import consume_blob_publication_receipt
 
     consume_blob_publication_receipt(conn, ref.publication_receipt_id, ref.blob_hash)
@@ -1544,33 +1561,64 @@ def _insert_hook_event(
     *,
     blob_hash: bytes | None = None,
 ) -> None:
+    existing = conn.execute(
+        "SELECT origin, native_id, session_native_id, source_path, event_type, payload_json, observed_at_ms, blob_hash "
+        "FROM raw_hook_events WHERE hook_event_id = ?",
+        (hook_event.hook_event_id,),
+    ).fetchone()
+    incoming = (
+        _enum_value(hook_event.origin),
+        hook_event.native_id,
+        hook_event.session_native_id,
+        hook_event.event_type,
+        _json_dumps(hook_event.payload),
+        hook_event.observed_at_ms,
+        blob_hash,
+    )
+    if existing is not None:
+        existing_semantics = (existing[0], existing[1], existing[2], existing[4], existing[5], existing[6], existing[7])
+        if existing_semantics != incoming:
+            raise HookEventConflictError(f"hook event conflict for {hook_event.hook_event_id}")
+        return
     conn.execute(
         """
         INSERT INTO raw_hook_events (
             hook_event_id, origin, native_id, session_native_id, source_path, event_type,
             payload_json, observed_at_ms, blob_hash
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(hook_event_id) DO UPDATE SET
-            origin = excluded.origin,
-            native_id = excluded.native_id,
-            session_native_id = excluded.session_native_id,
-            source_path = excluded.source_path,
-            event_type = excluded.event_type,
-            payload_json = excluded.payload_json,
-            observed_at_ms = excluded.observed_at_ms,
-            blob_hash = COALESCE(excluded.blob_hash, raw_hook_events.blob_hash)
         """,
-        (
-            hook_event.hook_event_id,
-            _enum_value(hook_event.origin),
-            hook_event.native_id,
-            hook_event.session_native_id,
-            hook_event.source_path,
-            hook_event.event_type,
-            _json_dumps(hook_event.payload),
-            hook_event.observed_at_ms,
-            blob_hash,
-        ),
+        (hook_event.hook_event_id, incoming[0], incoming[1], incoming[2], hook_event.source_path, *incoming[3:]),
+    )
+
+
+def _insert_hook_event_carrier(
+    conn: sqlite3.Connection,
+    *,
+    source_id: str,
+    relative_path: str,
+    hook_event: ArchiveHookEvent,
+    blob_hash: bytes,
+    role: str,
+    admitted_at_ms: int,
+) -> None:
+    if role not in {"primary-writable", "legacy-read-only"}:
+        raise ValueError(f"invalid hook carrier role: {role}")
+    existing = conn.execute(
+        "SELECT hook_event_id, blob_hash, payload_digest, carrier_role FROM hook_event_carriers "
+        "WHERE source_id = ? AND relative_path = ?",
+        (source_id, relative_path),
+    ).fetchone()
+    payload_digest = hashlib.sha256(_json_dumps(hook_event.payload).encode()).digest()
+    incoming = (hook_event.hook_event_id, blob_hash, payload_digest, role)
+    if existing is not None:
+        if tuple(existing) != incoming:
+            raise HookEventConflictError(f"hook carrier conflict for {source_id}:{relative_path}")
+        return
+    conn.execute(
+        "INSERT INTO hook_event_carriers "
+        "(source_id, relative_path, hook_event_id, blob_hash, payload_digest, carrier_role, admitted_at_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (source_id, relative_path, hook_event.hook_event_id, blob_hash, payload_digest, role, admitted_at_ms),
     )
 
 

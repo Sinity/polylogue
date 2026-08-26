@@ -214,7 +214,7 @@ def _archive_attempt_status(status: str) -> str:
     if status == "abandoned":
         return "interrupted"
     if status == "completed_with_failures":
-        return "completed"
+        return "completed_with_failures"
     if status in {"running", "completed", "failed", "interrupted"}:
         return status
     return "failed"

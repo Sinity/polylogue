@@ -656,7 +656,7 @@ def test_cursor_archives_partial_success_as_completed_with_error(tmp_path: Path)
             (attempt_id,),
         ).fetchone()
 
-    assert row == ("completed", "completed", 1, 1, "/tmp/skipped-or-failed.jsonl")
+    assert row == ("completed_with_failures", "completed", 1, 1, "/tmp/skipped-or-failed.jsonl")
 
 
 def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:

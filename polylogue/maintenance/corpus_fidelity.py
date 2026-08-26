@@ -20,6 +20,10 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from polylogue.archive.topology.edge import topology_status_composes_sql
+from polylogue.sources.dispatch import lower_chatgpt_documents
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+
 DEFAULT_SAMPLE_LIMIT = 10
 
 #: Origin token whose raw payloads the parse-boundary conservation census reads.
@@ -175,7 +179,14 @@ def audit_revision_fidelity(
     *,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
 ) -> dict[str, Any]:
-    """Find indexed documents smaller than the best recorded revision."""
+    """Compare source membership with the logical, composed archive transcript.
+
+    ``messages`` is a physical storage count and is deliberately not used as
+    the revision oracle for prefix-sharing sessions.  The canonical archive
+    reader composes the parent through the recorded branch point and appends
+    the child's stored tail.  This check adds only the evidence classification
+    around that read path; it does not maintain a second lineage walker.
+    """
     best: dict[tuple[str, str], int] = {}
     for origin, provider_session_id, message_count in source.execute(
         """
@@ -191,6 +202,7 @@ def audit_revision_fidelity(
     messages = {
         str(row[0]): int(row[1]) for row in index.execute("SELECT session_id, COUNT(*) FROM messages GROUP BY 1")
     }
+    indexed_sessions = {str(row[0]) for row in index.execute("SELECT session_id FROM sessions")}
     events = {
         str(row[0]): int(row[1])
         for row in index.execute(
@@ -205,27 +217,102 @@ def audit_revision_fidelity(
     }
     shortfalls: collections.Counter[str] = collections.Counter()
     explained: collections.Counter[str] = collections.Counter()
+    state_counts: collections.Counter[str] = collections.Counter()
+    reason_counts: collections.Counter[str] = collections.Counter()
+    states: list[dict[str, Any]] = []
     worst: list[dict[str, Any]] = []
     for (origin, provider_session_id), best_count in best.items():
         session_id = f"{origin}:{provider_session_id}"
         have_messages = messages.get(session_id)
-        if have_messages is None or have_messages >= best_count:
-            continue
         have_events = events.get(session_id, 0)
-        if have_messages + have_events >= best_count:
+        state = "unresolved_shortfall"
+        reasons: list[str] = []
+        composed_count: int | None = None
+        inheritance = "none"
+        prefix_links = index.execute(
+            f"""
+            SELECT resolved_dst_session_id, branch_point_message_id
+            FROM session_links
+            WHERE src_session_id = ?
+              AND inheritance = 'prefix-sharing'
+              AND {topology_status_composes_sql()}
+            ORDER BY resolved_dst_session_id, branch_point_message_id
+            """,
+            (session_id,),
+        ).fetchall()
+
+        if session_id not in indexed_sessions:
+            reasons.append("indexed_session_missing")
+        elif len(prefix_links) > 1:
+            reasons.append("multiple_competing_prefix_links")
+        elif prefix_links:
+            inheritance = "prefix-sharing"
+            parent_id, branch_point_id = prefix_links[0]
+            if parent_id is None:
+                reasons.append("unresolved_parent")
+            elif branch_point_id is None:
+                reasons.append("missing_branch_point")
+            else:
+                try:
+                    envelope = read_archive_session_envelope(index, session_id)
+                    composed_count = len(envelope.messages)
+                    if not envelope.lineage_complete:
+                        reasons.append(str(envelope.lineage_truncation_reason or "incomplete_lineage"))
+                    elif composed_count != best_count:
+                        reasons.append("composed_count_mismatch")
+                    else:
+                        state = "prefix_composed"
+                except (KeyError, sqlite3.Error) as exc:
+                    reasons.append("lineage_read_failed:" + type(exc).__name__)
+        elif have_messages is None:
+            reasons.append("indexed_messages_missing")
+        elif have_messages == best_count:
+            state = "direct_comparable"
+        elif have_messages < best_count and have_messages + have_events >= best_count:
+            state = "event_reclassified"
+        elif have_messages > best_count:
+            reasons.append("indexed_count_exceeds_source")
+        else:
+            reasons.append("direct_count_shortfall")
+
+        if state == "event_reclassified":
             explained[origin] += 1
-            continue
-        shortfalls[origin] += 1
-        worst.append(
-            {
-                "session_id": session_id,
-                "indexed_messages": have_messages,
-                "indexed_events": have_events,
-                "best_recorded_messages": best_count,
-            }
+        elif state == "unresolved_shortfall":
+            shortfalls[origin] += 1
+        state_counts[state] += 1
+        for reason in reasons:
+            reason_counts[reason] += 1
+        record = {
+            "session_id": session_id,
+            "state": state,
+            "reasons": reasons,
+            "indexed_messages": have_messages,
+            "indexed_events": have_events,
+            "composed_messages": composed_count,
+            "inheritance": inheritance,
+            "best_recorded_messages": best_count,
+        }
+        states.append(record)
+        if state == "unresolved_shortfall":
+            worst.append(record)
+    worst.sort(
+        key=lambda item: (
+            item["indexed_messages"] is not None,
+            (item["indexed_messages"] or 0) - item["best_recorded_messages"],
         )
-    worst.sort(key=lambda item: item["indexed_messages"] - item["best_recorded_messages"])
+    )
     return {
+        "documents_examined": len(best),
+        "state_counts": dict(sorted(state_counts.items())),
+        "denominators": {
+            "source_memberships": len(best),
+            "direct_comparable_documents": state_counts["direct_comparable"],
+            "prefix_composed_documents": state_counts["prefix_composed"],
+            "event_reclassified_documents": state_counts["event_reclassified"],
+            "unresolved_shortfalls": state_counts["unresolved_shortfall"],
+        },
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "documents": states,
         "unexplained_shortfall": sum(shortfalls.values()),
         "explained_by_event_reclassification": sum(explained.values()),
         "unexplained_by_origin": dict(shortfalls.most_common()),
@@ -287,34 +374,6 @@ def _content_bearing_nodes(mapping: Mapping[str, Any]) -> dict[str, str]:
     return nodes
 
 
-def _iter_chatgpt_conversations(payload: object) -> list[Mapping[str, Any]]:
-    """Return every conversation document inside one acquired ChatGPT blob.
-
-    A ChatGPT export is a bundle (top-level list, or an object with a
-    ``conversations`` array); a browser capture or shared-page decode is a
-    single conversation object. All three lower to the same per-conversation
-    parse, so all three are enumerated here.
-    """
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, Mapping) and isinstance(item.get("mapping"), Mapping)]
-    if not isinstance(payload, Mapping):
-        return []
-    if isinstance(payload.get("mapping"), Mapping):
-        return [payload]
-    nested = payload.get("conversations")
-    if isinstance(nested, list):
-        return _iter_chatgpt_conversations(nested)
-    return []
-
-
-def _conversation_id(conversation: Mapping[str, Any]) -> str | None:
-    for key in ("id", "uuid", "conversation_id"):
-        value = conversation.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
 def audit_chatgpt_content_conservation(
     source: sqlite3.Connection,
     index: sqlite3.Connection,
@@ -358,10 +417,14 @@ def audit_chatgpt_content_conservation(
         indexed_native_ids[str(session_id)].add(str(native_id))
 
     # Newest revision wins: ascending acquisition order, later raws overwrite.
-    newest_nodes: dict[str, dict[str, str]] = {}
-    raws_scanned = 0
+    newest_documents: dict[str, tuple[dict[str, str], str]] = {}
+    source_rows_selected = 0
+    blobs_readable = 0
+    blobs_missing = 0
     bytes_scanned = 0
     unreadable_raws: list[str] = []
+    artifact_classes: collections.Counter[str] = collections.Counter()
+    unsupported_envelope_classes: collections.Counter[str] = collections.Counter()
     for raw_id, blob_hash in source.execute(
         """
         SELECT raw_id, blob_hash
@@ -371,21 +434,24 @@ def audit_chatgpt_content_conservation(
         """,
         (CHATGPT_CONSERVATION_ORIGIN,),
     ):
+        source_rows_selected += 1
+        artifact_classes["raw_session"] += 1
         try:
             blob = read_blob(bytes(blob_hash).hex())
             payload = json.loads(blob)
         except (OSError, ValueError, TypeError):
+            blobs_missing += 1
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
-        raws_scanned += 1
+        blobs_readable += 1
         bytes_scanned += len(blob)
-        for conversation in _iter_chatgpt_conversations(payload):
-            conversation_id = _conversation_id(conversation)
-            mapping = conversation.get("mapping")
-            if conversation_id is None or not isinstance(mapping, Mapping):
-                continue
-            newest_nodes[conversation_id] = _content_bearing_nodes(mapping)
+        documents = lower_chatgpt_documents(payload, str(raw_id))
+        if not documents:
+            unsupported_envelope_classes["unsupported_or_malformed"] += 1
+        for document in documents:
+            artifact_classes[document.artifact_class] += 1
+            newest_documents[document.document_id] = (_content_bearing_nodes(document.mapping), document.artifact_class)
 
     dropped_by_content_type: collections.Counter[str] = collections.Counter()
     conserved_by_content_type: collections.Counter[str] = collections.Counter()
@@ -393,14 +459,21 @@ def audit_chatgpt_content_conservation(
     documents_absent_from_index = 0
     documents_measured = 0
     documents_with_drops: set[str] = set()
-    for conversation_id, nodes in newest_nodes.items():
+    candidate_documents_matched = 0
+    candidate_documents_absent = 0
+    content_units_enumerated = 0
+    typed_unsupported_by_content_type: collections.Counter[str] = collections.Counter()
+    for conversation_id, (nodes, _artifact_class) in newest_documents.items():
         session_id = f"{CHATGPT_CONSERVATION_ORIGIN}:{conversation_id}"
         if session_id not in indexed_sessions:
             documents_absent_from_index += 1
+            candidate_documents_absent += 1
             continue
+        candidate_documents_matched += 1
         documents_measured += 1
         materialized = indexed_native_ids.get(session_id, set())
         for provider_message_id, content_type in nodes.items():
+            content_units_enumerated += 1
             if provider_message_id in materialized:
                 conserved_by_content_type[content_type] += 1
                 continue
@@ -416,7 +489,17 @@ def audit_chatgpt_content_conservation(
                 )
 
     return {
-        "raws_scanned": raws_scanned,
+        "source_rows_selected": source_rows_selected,
+        "blobs_readable": blobs_readable,
+        "blobs_missing": blobs_missing,
+        "artifact_classes": dict(sorted(artifact_classes.items())),
+        "unsupported_envelope_classes": dict(sorted(unsupported_envelope_classes.items())),
+        "documents_lowered": len(newest_documents),
+        "candidate_documents_matched": candidate_documents_matched,
+        "candidate_documents_absent": candidate_documents_absent,
+        "content_units_enumerated": content_units_enumerated,
+        "typed_unsupported_by_content_type": dict(sorted(typed_unsupported_by_content_type.items())),
+        "raws_scanned": blobs_readable,
         "bytes_scanned": bytes_scanned,
         "unreadable_raw_sample": unreadable_raws,
         "documents_measured": documents_measured,

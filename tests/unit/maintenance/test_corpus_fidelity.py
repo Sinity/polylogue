@@ -82,6 +82,19 @@ def test_real_production_route_is_green_and_read_only(
 
     assert not report.blocking
     assert all(check.status is OutcomeStatus.OK for check in report.checks)
+    revision = next(check for check in report.checks if check.name == "corpus-revision-fidelity")
+    assert isinstance(revision, ArchiveVerificationCheck)
+    denominators = revision.evidence["denominators"]
+    assert (
+        sum(value for key, value in denominators.items() if key != "source_memberships")
+        == denominators["source_memberships"]
+    )
+    assert set(revision.evidence["state_counts"]) <= {
+        "direct_comparable",
+        "prefix_composed",
+        "event_reclassified",
+        "unresolved_shortfall",
+    }
     assert hashlib.sha256((corpus_fidelity_archive.root / "source.db").read_bytes()).digest() == source_before
     assert hashlib.sha256((corpus_fidelity_archive.root / "index.db").read_bytes()).digest() == index_before
 
@@ -429,6 +442,7 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
     assert check.status is OutcomeStatus.OK
     assert check.evidence["unexplained_shortfall"] == 0
     assert check.evidence["explained_by_event_reclassification"] == 1
+    assert check.evidence["denominators"]["event_reclassified_documents"] == 1
 
 
 def test_revision_gate_rejects_unattributed_event_as_message_replacement(

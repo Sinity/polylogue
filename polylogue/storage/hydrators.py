@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 
+from polylogue.archive.attachment.availability import resolve_attachment_availability
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
@@ -22,6 +23,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import MessageId
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.runtime import (
     AttachmentRecord,
     MessageRecord,
@@ -61,14 +63,22 @@ def _working_directories_from_record(record: SessionRecord) -> tuple[str, ...]:
 
 def attachment_from_record(record: AttachmentRecord) -> Attachment:
     """Hydrate an Attachment domain model from an AttachmentRecord."""
+    availability = resolve_attachment_availability(
+        blob_hash=record.blob_hash,
+        acquisition_status=record.acquisition_status,
+        verify=get_blob_store().verify,
+        exists=get_blob_store().exists,
+    )
     return Attachment(
         id=record.attachment_id,
         name=record.display_name or record.attachment_id,
         mime_type=record.mime_type,
         size_bytes=record.size_bytes,
-        path=record.path,
+        path=None,
         source_url=record.source_url,
         caption=record.caption,
+        upload_origin=record.upload_origin,
+        availability=availability,
     )
 
 

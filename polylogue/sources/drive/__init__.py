@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +88,34 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
     if not any(safe_name.lower().endswith(ext) for ext in (".json", ".jsonl", ".ndjson")):
         safe_name += ".json"
     return dest_dir / safe_name
+
+
+def _read_valid_cache(path: Path) -> bytes | None:
+    """Return cached bytes only when the complete JSON document is readable."""
+    try:
+        raw = path.read_bytes()
+        if not raw.strip():
+            return None
+        if path.suffix.lower() in {".jsonl", ".ndjson"}:
+            if not all(line.strip() and json.loads(line) is not None for line in raw.splitlines() if line.strip()):
+                return None
+        else:
+            json.loads(raw)
+        return raw
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def _write_cache_atomically(path: Path, raw: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        temporary = Path(handle.name)
+        handle.write(raw)
+    try:
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def download_drive_files(
@@ -210,13 +239,6 @@ def iter_drive_raw_data(
         if heartbeat is not None:
             heartbeat()
 
-        if (
-            known_mtimes is not None
-            and file_meta.modified_time is not None
-            and known_mtimes.get(source_path) == file_meta.modified_time
-        ):
-            continue
-
         if blob_store is None:
             from polylogue.paths import blob_store_root
 
@@ -227,10 +249,18 @@ def iter_drive_raw_data(
         cache_path = drive_cache_file_path(source.path or Path(source.name), file_meta.name)
         blob_hash: str | None = None
         blob_size: int = 0
+        cache_exists = cache_path.exists()
+        cached_bytes = _read_valid_cache(cache_path) if cache_exists else None
+        if (
+            known_mtimes is not None
+            and file_meta.modified_time is not None
+            and known_mtimes.get(source_path) == file_meta.modified_time
+            and (not cache_exists or cached_bytes is not None)
+        ):
+            continue
 
-        if cache_path.exists():
-            raw_bytes = cache_path.read_bytes()
-        else:
+        raw_bytes = cached_bytes
+        if raw_bytes is None:
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
             except Exception as exc:
@@ -242,8 +272,7 @@ def iter_drive_raw_data(
                     exc,
                 )
                 continue
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_bytes(raw_bytes)
+            _write_cache_atomically(cache_path, raw_bytes)
 
         # Run the live-attachment injector on EVERY read, cache hit or not:
         # a cache file written before this feature existed (or by a run where
@@ -252,8 +281,7 @@ def iter_drive_raw_data(
         # forever just because the top-level document didn't need re-download.
         raw_bytes, mutated = _inject_live_drive_attachment_bytes(raw_bytes, drive_client, file_meta)
         if mutated:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_bytes(raw_bytes)
+            _write_cache_atomically(cache_path, raw_bytes)
         blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
         del raw_bytes
 

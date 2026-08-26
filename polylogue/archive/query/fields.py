@@ -30,6 +30,14 @@ CompletionSource: TypeAlias = Literal[
     "tool",
 ]
 
+# These are deliberately closed vocabularies.  They make the field catalog
+# useful as an executable declaration surface without making the query layer
+# depend on a generic registry or introducing another AST.
+QueryAuthority: TypeAlias = Literal["durable", "derived", "runtime"]
+QueryApplicability: TypeAlias = Literal["session", "message", "unit", "all"]
+QueryProjection: TypeAlias = Literal["spec", "plan", "storage", "mcp", "dsl", "api"]
+QueryCostShape: TypeAlias = Literal["constant", "indexed", "stats_join", "post_filter", "content_scan", "semantic"]
+
 OPTION_COMPLETION_SOURCES: frozenset[CompletionSource] = frozenset({"material_origin"})
 
 
@@ -155,6 +163,21 @@ class QueryFieldDescriptor:
     completion_label: str | None = None
     mcp_names: tuple[str, ...] = ()
     api_names: tuple[str, ...] = ()
+    # Declaration metadata.  Boundary names are intentionally separate: a
+    # spelling accepted by one layer must not become an accidental alias in
+    # another layer (notably filter_has_paste / has_paste_evidence / has_paste).
+    value_type: str = "text"
+    operators: tuple[str, ...] = ("=",)
+    authority: QueryAuthority = "derived"
+    applicability: QueryApplicability = "session"
+    projections: tuple[QueryProjection, ...] = ("spec", "plan")
+    pushdown: bool = False
+    cardinality: str = "many"
+    cost_shape: QueryCostShape = "constant"
+    stable_order: int = 0
+    examples: tuple[str, ...] = ()
+    spec_names: tuple[str, ...] = ()
+    storage_names: tuple[str, ...] = ()
 
     def spec_value(self, spec: object) -> object:
         if self.spec_attr is None:
@@ -520,6 +543,18 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
         requires_stats_join=True,
         blocks_simple_message_hit=True,
         mcp_names=("has_paste_evidence",),
+        spec_names=("filter_has_paste",),
+        storage_names=("has_paste",),
+        value_type="boolean",
+        operators=("=",),
+        authority="derived",
+        applicability="session",
+        projections=("spec", "plan", "storage", "mcp", "dsl"),
+        pushdown=True,
+        cardinality="one",
+        cost_shape="stats_join",
+        stable_order=26,
+        examples=("has:paste", "has_paste_evidence=true"),
     ),
     QueryFieldDescriptor(
         name="typed_only",
@@ -842,6 +877,141 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
 )
 
 
+# Stable declaration order is assigned once from the canonical catalog.  The
+# order is semantic (description/echo and generated projections rely on it),
+# never registration or hash-map order.
+def _declared_projections(descriptor: QueryFieldDescriptor) -> tuple[QueryProjection, ...]:
+    projections = set(descriptor.projections)
+    if descriptor.spec_attr is None:
+        projections.discard("spec")
+    if descriptor.plan_attr is None:
+        projections.discard("plan")
+    if descriptor.mcp_names:
+        projections.add("mcp")
+    if descriptor.record_attr or descriptor.sql_param:
+        projections.add("storage")
+    return tuple(item for item in ("spec", "plan", "storage", "mcp", "dsl", "api") if item in projections)
+
+
+QUERY_FIELD_DESCRIPTORS = tuple(
+    replace(
+        descriptor,
+        stable_order=index,
+        projections=_declared_projections(descriptor),
+        value_type=(
+            descriptor.value_type
+            if descriptor.value_type != "text"
+            else (
+                "boolean"
+                if descriptor.spec_attr and descriptor.spec_attr.startswith(("filter_", "typed_", "latest", "reverse"))
+                else "text"
+            )
+        ),
+        pushdown=descriptor.pushdown or descriptor.sql_param is not None,
+        cost_shape=(
+            descriptor.cost_shape
+            if descriptor.cost_shape != "constant"
+            else (
+                "stats_join"
+                if descriptor.requires_stats_join
+                else "post_filter"
+                if descriptor.requires_post_filter
+                else "content_scan"
+                if descriptor.requires_content_loading
+                else "indexed"
+                if descriptor.sql_param is not None
+                else "constant"
+            )
+        ),
+    )
+    for index, descriptor in enumerate(QUERY_FIELD_DESCRIPTORS, 1)
+)
+
+
+def _descriptor_spec_names(descriptor: QueryFieldDescriptor) -> tuple[str, ...]:
+    return descriptor.spec_names or ((descriptor.spec_attr,) if descriptor.spec_attr else ())
+
+
+def _descriptor_storage_names(descriptor: QueryFieldDescriptor) -> tuple[str, ...]:
+    return descriptor.storage_names or ((descriptor.sql_param,) if descriptor.sql_param else ())
+
+
+def query_boundary_names(boundary: Literal["mcp", "spec", "storage", "api", "dsl"]) -> frozenset[str]:
+    """Return names accepted at one explicit public/lowering boundary."""
+    names: set[str] = set()
+    for descriptor in QUERY_FIELD_DESCRIPTORS:
+        if boundary == "mcp":
+            names.update(descriptor.mcp_names)
+        elif boundary == "spec":
+            names.update(_descriptor_spec_names(descriptor))
+        elif boundary == "storage":
+            names.update(_descriptor_storage_names(descriptor))
+        elif boundary == "api":
+            names.update(descriptor.api_names)
+        else:
+            names.add(descriptor.name)
+    return frozenset(names)
+
+
+def query_boundary_alternatives(
+    name: str, boundary: Literal["mcp", "spec", "storage", "api", "dsl"]
+) -> tuple[str, ...]:
+    """Return declared spellings for *name*, excluding the current layer."""
+    matches = [
+        descriptor
+        for descriptor in QUERY_FIELD_DESCRIPTORS
+        if name
+        in {
+            *descriptor.mcp_names,
+            *_descriptor_spec_names(descriptor),
+            *_descriptor_storage_names(descriptor),
+            *descriptor.api_names,
+            descriptor.name,
+        }
+    ]
+    names: set[str] = set()
+    for descriptor in matches:
+        names.update(
+            {
+                *descriptor.mcp_names,
+                *_descriptor_spec_names(descriptor),
+                *_descriptor_storage_names(descriptor),
+                *descriptor.api_names,
+                descriptor.name,
+            }
+        )
+    names.difference_update(query_boundary_names(boundary))
+    return tuple(sorted(names))
+
+
+def query_declaration_diagnostics() -> tuple[str, ...]:
+    """Return actionable completeness diagnostics for the canonical catalog."""
+    diagnostics: list[str] = []
+    seen_orders: set[int] = set()
+    seen_names: set[str] = set()
+    for descriptor in QUERY_FIELD_DESCRIPTORS:
+        if descriptor.stable_order in seen_orders:
+            diagnostics.append(f"{descriptor.name}: duplicate stable_order {descriptor.stable_order}")
+        seen_orders.add(descriptor.stable_order)
+        if descriptor.name in seen_names:
+            diagnostics.append(f"{descriptor.name}: duplicate declaration name")
+        seen_names.add(descriptor.name)
+        if descriptor.spec_attr is None and "spec" in descriptor.projections:
+            diagnostics.append(f"{descriptor.name}: spec projection has no spec binding")
+        if descriptor.plan_attr is None and "plan" in descriptor.projections:
+            diagnostics.append(f"{descriptor.name}: plan projection has no plan binding")
+        if descriptor.mcp_names and "mcp" not in descriptor.projections:
+            diagnostics.append(f"{descriptor.name}: MCP names have no MCP projection")
+        if descriptor.record_attr is None and descriptor.sql_param is None and "storage" in descriptor.projections:
+            diagnostics.append(f"{descriptor.name}: storage projection has no record binding")
+    return tuple(diagnostics)
+
+
+# Public name for introspection and generated completeness checks.  It is the
+# existing executable catalog, not a second registry.
+QUERY_DECLARATIONS = QUERY_FIELD_DESCRIPTORS
+
+
 def describe_spec_fields(spec: object) -> list[str]:
     return [
         description
@@ -955,10 +1125,7 @@ def query_completion_sources() -> tuple[CompletionSource, ...]:
 
 
 def mcp_query_field_names() -> frozenset[str]:
-    names: set[str] = set()
-    for descriptor in QUERY_FIELD_DESCRIPTORS:
-        names.update(descriptor.mcp_names)
-    return frozenset(names)
+    return query_boundary_names("mcp")
 
 
 def api_query_field_names() -> frozenset[str]:
@@ -970,8 +1137,13 @@ def api_query_field_names() -> frozenset[str]:
 
 __all__ = [
     "CompletionSource",
+    "QUERY_DECLARATIONS",
     "QUERY_FIELD_DESCRIPTORS",
     "QueryFieldDescriptor",
+    "QueryAuthority",
+    "QueryApplicability",
+    "QueryCostShape",
+    "QueryProjection",
     "SqlPushdownParams",
     "SqlPushdownValue",
     "active_plan_field_names",
@@ -982,6 +1154,9 @@ __all__ = [
     "describe_spec_selection_fields",
     "has_message_content_type_filter",
     "mcp_query_field_names",
+    "query_boundary_alternatives",
+    "query_boundary_names",
+    "query_declaration_diagnostics",
     "plan_has_fields_matching",
     "plan_has_selection_filters",
     "query_completion_sources",

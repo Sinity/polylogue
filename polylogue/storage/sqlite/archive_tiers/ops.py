@@ -9,7 +9,11 @@ from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
-_OPS_RUN_STATUS_CHECK = literal_check("status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES))
+# Batch aggregation is a terminal run state distinct from both success and
+# failure: completed siblings and retryable failed siblings remain visible.
+_OPS_RUN_STATUS_CHECK = literal_check(
+    "status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES), "completed_with_failures"
+)
 _SLO_SAMPLE_LABEL_CHECK = check("label", SloSampleLabel)
 
 SLO_SAMPLES_DDL = f"""
