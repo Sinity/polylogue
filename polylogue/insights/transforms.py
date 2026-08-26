@@ -543,7 +543,7 @@ def compile_session_digest(
             message_count=len(messages),
             tool_summary_count=len(tool_summaries),
             subagent_report_count=len(subagent_reports),
-            run_state_count=1 if run_state is not None else 0,
+            run_state_count=0,
             event_count=len(events),
             decision_candidate_count=len(decisions),
         ),
