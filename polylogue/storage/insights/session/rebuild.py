@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiosqlite
 
@@ -101,6 +101,9 @@ from polylogue.storage.sqlite.queries.session_events import (
     sync_session_event_compaction_counts,
     sync_session_events_batch,
 )
+
+if TYPE_CHECKING:
+    from polylogue.markers.models import MarkerCandidate
 
 _ALL_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key_ms, 0) DESC, session_id"
 _ALL_SESSION_PROFILE_ROWS_SQL = """
@@ -211,6 +214,27 @@ SELECT
 FROM blocks
 WHERE session_id IN ({placeholders})
   AND block_type != 'text'
+ORDER BY session_id, message_id, position
+"""
+_SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE = """
+SELECT
+    block_id,
+    message_id,
+    session_id,
+    position AS block_index,
+    block_type AS type,
+    text,
+    tool_name,
+    tool_id,
+    tool_input,
+    NULL AS metadata,
+    semantic_type,
+    tool_result_is_error,
+    tool_result_exit_code
+FROM blocks
+WHERE session_id IN ({placeholders})
+  AND block_type = 'text'
+  AND text IS NOT NULL
 ORDER BY session_id, message_id, position
 """
 _SESSION_INSIGHT_COUNT_SQL = """
@@ -333,6 +357,7 @@ class SessionInsightArchiveBatch:
     session_events_by_session: dict[str, list[SessionEventRecord]]
     compaction_counts_by_session: dict[str, int]
     blocks: list[BlockRecord]
+    marker_blocks_by_session: dict[str, list[BlockRecord]]
     # Canonical per-model usage tally from ``session_model_usage`` -- the same
     # substrate table the archive's cost/usage rollups are built from.
     # Session-profile building prefers this over per-message fields so profile
@@ -356,6 +381,7 @@ class SessionInsightRecordBundle:
     run_count: int
     observed_event_count: int
     context_snapshot_count: int
+    marker_candidates: tuple[MarkerCandidate, ...] = ()
     repo_observations: tuple[object, ...] = ()
     """Repo observations for ``session_repos`` (#1253).
 
@@ -651,6 +677,7 @@ def load_sync_batch(
             (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
         ).fetchall()
     ]
+    marker_blocks_by_session = load_marker_blocks_sync(conn, session_ids)
     return SessionInsightArchiveBatch(
         sessions=sessions,
         messages=messages,
@@ -658,6 +685,7 @@ def load_sync_batch(
         session_events_by_session=sync_session_events_batch(conn, session_ids),
         compaction_counts_by_session=sync_session_event_compaction_counts(conn, session_ids),
         blocks=blocks,
+        marker_blocks_by_session=marker_blocks_by_session,
         model_usage_by_session=sync_model_usage_batch(conn, session_ids),
     )
 
@@ -694,6 +722,7 @@ async def load_async_batch(
             )
         ).fetchall()
     ]
+    marker_blocks_by_session = await load_marker_blocks_async(conn, session_ids)
     attachments = await get_attachments_batch(conn, list(session_ids))
     session_events = await get_session_events_batch(conn, list(session_ids))
     compaction_counts = await get_session_event_compaction_counts(conn, list(session_ids))
@@ -705,8 +734,47 @@ async def load_async_batch(
         session_events_by_session=session_events,
         compaction_counts_by_session=compaction_counts,
         blocks=blocks,
+        marker_blocks_by_session=marker_blocks_by_session,
         model_usage_by_session=model_usage,
     )
+
+
+def load_marker_blocks_sync(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, list[BlockRecord]]:
+    """Load complete authored-text blocks for the marker derivation pass."""
+    if not session_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in session_ids)
+    result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
+    for row in conn.execute(
+        _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+        tuple(session_ids),
+    ).fetchall():
+        block = _row_to_content_block(row)
+        result.setdefault(str(block.session_id), []).append(block)
+    return result
+
+
+async def load_marker_blocks_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, list[BlockRecord]]:
+    """Async twin of :func:`load_marker_blocks_sync`."""
+    if not session_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in session_ids)
+    result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
+    for row in await (
+        await conn.execute(
+            _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+            tuple(session_ids),
+        )
+    ).fetchall():
+        block = _row_to_content_block(row)
+        result.setdefault(str(block.session_id), []).append(block)
+    return result
 
 
 def hydrate_sessions(
@@ -737,12 +805,49 @@ def hydrate_sessions(
     return hydrated
 
 
+def _marker_candidates_for_blocks(blocks: Sequence[BlockRecord]) -> tuple[MarkerCandidate, ...]:
+    """Derive marker candidates from complete authored-text block rows."""
+    from polylogue.markers import scan_block
+
+    return tuple(
+        candidate
+        for block in blocks
+        if block.text
+        for candidate in scan_block(
+            str(block.message_id),
+            str(block.block_id),
+            block.text,
+        )
+    )
+
+
+def _marker_candidates_for_session(
+    session: Session,
+    marker_blocks: Sequence[BlockRecord],
+) -> tuple[MarkerCandidate, ...]:
+    """Scan hydrated message blocks plus the text rows omitted by hydration."""
+    from polylogue.markers import scan_block
+
+    candidates = list(_marker_candidates_for_blocks(marker_blocks))
+    seen_block_ids = {str(block.block_id) for block in marker_blocks}
+    for message in session.messages:
+        for block in message.blocks:
+            block_id = block.get("id")
+            text = block.get("text")
+            if not isinstance(block_id, str) or not isinstance(text, str) or not text or block_id in seen_block_ids:
+                continue
+            candidates.extend(scan_block(str(message.id), block_id, text))
+            seen_block_ids.add(block_id)
+    return tuple(candidates)
+
+
 def build_session_insight_records(
     session: Session,
     *,
     compaction_count: int | None = None,
     logical_session_id: str | None = None,
     model_usage: Sequence[ModelUsageTotals] | None = None,
+    marker_blocks: Sequence[BlockRecord] = (),
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionInsightRecordBundle:
     from polylogue.storage.insights.session.repo_observations import attribution_to_observations
@@ -750,6 +855,14 @@ def build_session_insight_records(
     def add_timing(name: str, started_at: float) -> None:
         if stage_timing_add is not None:
             stage_timing_add(name, started_at)
+
+    # Marker extraction is part of the same hydrated block walk as the other
+    # derived insight inputs. Text blocks are loaded separately because the
+    # existing profile hydration contract intentionally omits them from
+    # ``Session.messages[*].blocks`` (message.text already carries their
+    # display text). Their storage block ids remain the authoritative evidence
+    # refs for marker candidates.
+    marker_candidates = _marker_candidates_for_session(session, marker_blocks)
 
     t0 = time.perf_counter()
     analysis = build_session_analysis(session, stage_timing_add=stage_timing_add)
@@ -822,6 +935,7 @@ def build_session_insight_records(
         observed_event_count=len(run_projection.events),
         context_snapshot_count=len(run_projection.context_snapshots),
         repo_observations=repo_observations,
+        marker_candidates=marker_candidates,
     )
 
 
@@ -893,11 +1007,13 @@ def build_session_insight_record_bundles(
     compaction_counts_by_session: dict[str, int] | None = None,
     logical_session_ids_by_session: dict[str, str] | None = None,
     model_usage_by_session: dict[str, list[ModelUsageTotals]] | None = None,
+    marker_blocks_by_session: Mapping[str, Sequence[BlockRecord]] | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_session or {}
     logical_ids = logical_session_ids_by_session or {}
     model_usage = model_usage_by_session or {}
+    marker_blocks = marker_blocks_by_session or {}
     jobs = [
         functools.partial(
             build_session_insight_records,
@@ -905,6 +1021,7 @@ def build_session_insight_record_bundles(
             compaction_count=compaction_counts.get(str(session.id)),
             logical_session_id=logical_ids.get(str(session.id)),
             model_usage=model_usage.get(str(session.id)),
+            marker_blocks=marker_blocks.get(str(session.id), ()),
             stage_timing_add=stage_timing_add,
         )
         for session in sessions
@@ -1359,6 +1476,7 @@ def build_large_session_insight_record_bundle_sync(
     *,
     logical_session_id: str | None = None,
     materialized_at: str | None = None,
+    marker_blocks: Sequence[BlockRecord] = (),
 ) -> SessionInsightRecordBundle:
     built_at = materialized_at or now_iso()
     profile = _large_session_profile_record(
@@ -1375,6 +1493,7 @@ def build_large_session_insight_record_bundle_sync(
         run_count=0,
         observed_event_count=0,
         context_snapshot_count=0,
+        marker_candidates=_marker_candidates_for_blocks(marker_blocks),
     )
 
 
@@ -1384,6 +1503,7 @@ async def build_large_session_insight_record_bundle_async(
     *,
     logical_session_id: str | None = None,
     materialized_at: str | None = None,
+    marker_blocks: Sequence[BlockRecord] = (),
 ) -> SessionInsightRecordBundle:
     built_at = materialized_at or now_iso()
     row = await _session_count_row_async(conn, session_id)
@@ -1405,6 +1525,7 @@ async def build_large_session_insight_record_bundle_async(
         run_count=0,
         observed_event_count=0,
         context_snapshot_count=0,
+        marker_candidates=_marker_candidates_for_blocks(marker_blocks),
     )
 
 
@@ -1517,6 +1638,20 @@ def _materialize_progress_desc(
     if progress_total is not None:
         return f"Materializing: {profile_count}/{progress_total}"
     return f"Materializing: {profile_count}"
+
+
+def _lower_marker_candidates(
+    marker_conn: sqlite3.Connection,
+    record_bundles: Sequence[SessionInsightRecordBundle],
+) -> None:
+    """Persist derived marker candidates through the unified assertion writer."""
+    from polylogue.markers import lower_markers
+
+    candidates = tuple(candidate for bundle in record_bundles for candidate in bundle.marker_candidates)
+    if not candidates:
+        return
+    lower_markers(marker_conn, candidates)
+    marker_conn.commit()
 
 
 def _empty_rebuild_counts() -> SessionInsightCounts:
@@ -1790,6 +1925,7 @@ def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
     session_ids: Sequence[str] | None = None,
+    marker_conn: sqlite3.Connection | None = None,
     page_size: int = _SESSION_INSIGHT_REBUILD_PAGE_SIZE,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
@@ -1892,6 +2028,7 @@ def rebuild_session_insights_sync(
     for chunk_info in session_chunks:
         chunk = chunk_info.session_ids
         saw_session_ids = True
+        marker_blocks_by_session = load_marker_blocks_sync(conn, chunk) if marker_conn is not None else {}
         chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
         chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
@@ -1910,6 +2047,7 @@ def rebuild_session_insights_sync(
                     conn,
                     session_id,
                     logical_session_id=degraded_root_ids.get(session_id),
+                    marker_blocks=marker_blocks_by_session.get(session_id, ()),
                 )
                 for session_id in chunk_degraded_ids
             ]
@@ -1927,6 +2065,7 @@ def rebuild_session_insights_sync(
                         conn,
                         session_id,
                         logical_session_id=degraded_root_ids.get(session_id),
+                        marker_blocks=marker_blocks_by_session.get(session_id, ()),
                     )
                     for session_id in chunk_degraded_ids
                 )
@@ -1948,6 +2087,7 @@ def rebuild_session_insights_sync(
                         compaction_counts_by_session=batch.compaction_counts_by_session,
                         logical_session_ids_by_session=root_ids_by_session,
                         model_usage_by_session=batch.model_usage_by_session,
+                        marker_blocks_by_session=batch.marker_blocks_by_session,
                         stage_timing_add=add_timing,
                     )
                 )
@@ -1976,6 +2116,8 @@ def rebuild_session_insights_sync(
             {bundle.session_id: bundle.phase_records for bundle in record_bundles},
         )
         add_timing("write_phases", t0)
+        if marker_conn is not None:
+            _lower_marker_candidates(marker_conn, record_bundles)
         # Run-projection cache tables are no longer materialized (polylogue-dab).
         # Reads fall back to source-derived CTEs when the tables are absent.
         t0 = time.perf_counter()

@@ -185,7 +185,20 @@ class _CallGraph:
 
     def reachable_from(self, root: str) -> frozenset[str]:
         seen: set[str] = set()
-        pending = deque([root])
+        # Consumer-reachability declares entrypoints by module (for example a
+        # console script's ``module:function`` target is normalized to its
+        # module). Seed that module's top-level functions so traversal follows
+        # the callable production routes exported by the declared entrypoint.
+        pending = deque(
+            [
+                root,
+                *(
+                    node.qualified_name
+                    for node in self.nodes.values()
+                    if node.module == root and node.qualified_name.count(".") == root.count(".") + 1
+                ),
+            ]
+        )
         while pending:
             current = pending.popleft()
             if current in seen:

@@ -222,6 +222,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Agent Forensics", "agent-forensics.md", "Forensic investigation methods over agent work.", "internals"),
     _entry("Repository Layout", "repo-layout.md", "Every top-level entry and its purpose.", "internals"),
+    _entry(
+        "Marker Sigil Collision Scan",
+        "marker-sigil-collision-scan.md",
+        "Recorded live-corpus collision evidence for provider-neutral author markers.",
+        "internals",
+    ),
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
