@@ -53,6 +53,9 @@ def enrich_session_cost_insight(
     confident = ("exact", "priced")
     if insight.estimate.status in confident and estimate.status not in confident:
         return insight
+    if insight.estimate.status == "unavailable" and estimate.status == "unavailable":
+        # Preserve the canonical archive evidence and its typed absence reason.
+        return insight
     return insight.model_copy(
         update={
             "estimate": estimate.model_copy(

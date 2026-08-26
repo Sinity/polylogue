@@ -748,7 +748,9 @@ class PolylogueInsightsMixin:
         if plan is None:
             return None
         when = (now or datetime.now(UTC)).astimezone(UTC)
-        session_costs = await self.list_session_cost_insights()
+        # An outlook aggregates the archive population, not a presentation
+        # page; make the unbounded selection explicit.
+        session_costs = await self.list_session_cost_insights(SessionCostInsightQuery(limit=None))
         daily = session_costs_to_daily_usd(session_costs)
         return build_cycle_outlook(plan, daily, now=when, method=method)
 

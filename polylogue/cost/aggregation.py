@@ -38,7 +38,7 @@ def session_costs_to_daily_usd(insights: Iterable[SessionCostInsight]) -> list[D
     """
     daily_totals: dict[str, float] = defaultdict(float)
     for insight in insights:
-        if insight.estimate.total_usd <= 0.0:
+        if insight.estimate.total_usd is None or insight.estimate.total_usd <= 0.0:
             continue
         ts = insight.created_at
         if not ts:
