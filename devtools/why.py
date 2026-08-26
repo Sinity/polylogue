@@ -217,13 +217,8 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     if isinstance(aggregate, dict):
         selected = aggregate.get("selected_union_count")
         if selected is not None:
-            attested = aggregate.get("attested_unchanged_count")
-            attested_text = (
-                f" ({attested} attested by unchanged recorded green)" if isinstance(attested, int) and attested else ""
-            )
             print(
-                f"\nselected {selected} test(s); complete corpus covered: "
-                f"{aggregate.get('complete_corpus_covered')}{attested_text}",
+                f"\nselected {selected} test(s); complete corpus covered: {aggregate.get('complete_corpus_covered')}",
                 file=stream,
             )
 
