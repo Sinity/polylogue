@@ -37,6 +37,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
+from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
@@ -1502,7 +1503,9 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
-    stale_predicate = session_profile_stale_predicate("c", "sp")
+    stale_predicate = session_profile_stale_predicate(
+        "c", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
+    )
     rows = conn.execute(
         f"""
         SELECT c.session_id
@@ -2167,7 +2170,9 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
     placeholders = ", ".join("?" for _ in unique_ids)
-    stale_predicate = session_profile_stale_predicate("s", "sp")
+    stale_predicate = session_profile_stale_predicate(
+        "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
+    )
     rows = conn.execute(
         f"""
         SELECT s.session_id
@@ -2206,7 +2211,9 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
     # rollup predates a materializer-version bump (or was never stamped) still
     # needs a rebuild pass so it self-heals like every other session insight
     # instead of requiring a manual `ops reset --index`.
-    stale_predicate = session_profile_stale_predicate("s", "sp")
+    stale_predicate = session_profile_stale_predicate(
+        "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
+    )
     sql = f"""
         SELECT s.session_id
         FROM sessions AS s

@@ -50,6 +50,7 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "source_sort_key",
     "input_high_water_mark",
     "input_high_water_mark_source",
+    "input_content_hash",
     "input_row_count",
     "source_name",
     "title",
@@ -262,9 +263,13 @@ def _fallback_profile_payload_json(record: SessionProfileRecord) -> str | None:
 def session_profile_insert_columns(
     *,
     has_fallback_payload: bool,
+    has_content_hash: bool = True,
 ) -> tuple[str, ...]:
+    base_columns = tuple(
+        column for column in _SESSION_PROFILE_BASE_COLUMNS if has_content_hash or column != "input_content_hash"
+    )
     return _with_fallback_payload_column(
-        _SESSION_PROFILE_BASE_COLUMNS,
+        base_columns,
         _SESSION_PROFILE_PAYLOAD_COLUMNS,
         has_fallback_payload=has_fallback_payload,
     )
@@ -274,6 +279,7 @@ def session_profile_insert_values(
     record: SessionProfileRecord,
     *,
     has_fallback_payload: bool,
+    has_content_hash: bool = True,
 ) -> SqlBindings:
     base_values: list[SqlValue] = [
         record.session_id,
@@ -284,6 +290,7 @@ def session_profile_insert_values(
         record.source_sort_key,
         record.input_high_water_mark,
         record.input_high_water_mark_source,
+        *([record.input_content_hash] if has_content_hash else []),
         record.input_row_count,
         record.source_name,
         record.title,
@@ -598,10 +605,15 @@ def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindi
 def replace_session_profile_sync(conn: sqlite3.Connection, record: SessionProfileRecord) -> None:
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (record.session_id,))
     has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
-    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
+    has_content_hash = table_has_column(conn, "session_profiles", "input_content_hash")
+    columns = session_profile_insert_columns(
+        has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
+    )
     conn.execute(
         build_insert_sql("session_profiles", columns),
-        session_profile_insert_values(record, has_fallback_payload=has_fallback_payload),
+        session_profile_insert_values(
+            record, has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
+        ),
     )
 
 
@@ -614,10 +626,18 @@ def replace_session_profiles_bulk_sync(
     records = _dedupe_records_by_session(records)
     _delete_where_in(conn, "session_profiles", "session_id", [record.session_id for record in records])
     has_fallback_payload = table_has_column(conn, "session_profiles", "payload_json")
-    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
+    has_content_hash = table_has_column(conn, "session_profiles", "input_content_hash")
+    columns = session_profile_insert_columns(
+        has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
+    )
     conn.executemany(
         build_insert_sql("session_profiles", columns),
-        [session_profile_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
+        [
+            session_profile_insert_values(
+                record, has_fallback_payload=has_fallback_payload, has_content_hash=has_content_hash
+            )
+            for record in records
+        ],
     )
 
 
