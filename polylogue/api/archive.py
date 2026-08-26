@@ -24,7 +24,12 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
-from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
+from polylogue.archive.query.spec import (
+    normalize_action_sequence,
+    normalize_action_terms,
+    parse_query_date,
+    resolve_default_root_filter,
+)
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
@@ -702,6 +707,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "tags": spec.tags,
         "excluded_tags": spec.excluded_tags,
         "repo_names": spec.repo_names,
+        "project_refs": spec.project_refs,
         "has_types": spec.has_types,
         "has_tool_use": spec.filter_has_tool_use,
         "has_thinking": spec.filter_has_thinking,
@@ -717,6 +723,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "typed_only": spec.typed_only,
         "message_type": _archive_message_type(spec.message_type),
         "title": spec.title,
+        "session_id": spec.session_id,
         "min_messages": spec.min_messages,
         "max_messages": spec.max_messages,
         "min_words": spec.min_words,
@@ -725,6 +732,10 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "until_ms": _archive_query_date_ms("until", spec.until),
         "since_session_id": spec.since_session_id,
         "boolean_predicate": spec.boolean_predicate,
+        "root": resolve_default_root_filter(
+            spec.root,
+            boolean_predicate=spec.boolean_predicate,
+        ),
     }
     if limit is not None:
         kwargs["limit"] = limit
@@ -754,6 +765,15 @@ def _archive_list_summaries_for_spec(
 ) -> list[ArchiveSessionSummary]:
     query_text = _archive_text_query(spec)
     query_kwargs = _archive_query_kwargs(spec, default_limit=default_limit)
+    if spec.exclude_text_terms:
+        return _archive_list_summaries_with_post_filters(
+            archive,
+            spec,
+            query_text=query_text,
+            query_kwargs=query_kwargs,
+            limit=limit,
+            offset=offset,
+        )
     if limit is not None:
         query_kwargs["limit"] = limit
     if offset is not None:
@@ -762,6 +782,40 @@ def _archive_list_summaries_for_spec(
         query_kwargs.pop("sample", None)
         return [archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)]
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+
+
+def _archive_list_summaries_with_post_filters(
+    archive: Any,
+    spec: SessionQuerySpec,
+    *,
+    query_text: str | None,
+    query_kwargs: dict[str, object],
+    limit: int | None,
+    offset: int | None,
+) -> list[ArchiveSessionSummary]:
+    """Apply content-dependent spec filters after the SQL candidate query."""
+    query_kwargs = dict(query_kwargs)
+    query_kwargs.pop("limit", None)
+    query_kwargs["offset"] = 0
+    query_kwargs["limit"] = 1_000_000
+    if query_text is not None:
+        query_kwargs.pop("sample", None)
+        candidates = [
+            archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
+        ]
+    else:
+        candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+
+    sessions = [
+        _archive_session_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+        for summary in candidates
+    ]
+    matched = spec.to_plan()._apply_full_filters(sessions, sql_pushed=True)
+    matched_ids = {str(session.id) for session in matched}
+    filtered = [summary for summary in candidates if summary.session_id in matched_ids]
+    start = offset if offset is not None else 0
+    end = None if limit is None else start + limit
+    return filtered[start:end]
 
 
 def _archive_search_hits_for_spec(
@@ -780,6 +834,16 @@ def _archive_search_hits_for_spec(
 
 
 def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
+    if spec.exclude_text_terms:
+        return len(
+            _archive_list_summaries_for_spec(
+                archive,
+                spec,
+                default_limit=1_000_000,
+                limit=None,
+                offset=0,
+            )
+        )
     query_kwargs = _archive_query_kwargs(spec, default_limit=None)
     for key in ("limit", "offset", "sort", "reverse", "sample"):
         query_kwargs.pop(key, None)
