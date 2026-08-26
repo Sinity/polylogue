@@ -170,3 +170,18 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
                 query="anything",
                 max_sessions=1,
             )
+
+
+async def test_context_scheduler_ledger_has_a_facade_reader(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive-ledger-reader"
+    _seed(archive_root, provider_session_id="ledger-target", text="scheduler evidence")
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        from polylogue.context.compiler import ContextSpec
+
+        await poly.compile_context(ContextSpec(seed_refs=("session:codex-session:ledger-target",), max_tokens=100))
+        records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")
+
+    assert records
+    assert records[0].row.source == "archive-context"
+    assert records[0].row.execution_context_ref.startswith("sha256:")
