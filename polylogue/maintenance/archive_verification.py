@@ -44,7 +44,13 @@ from typing import Any, Literal
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.outcomes import BoundOutcomeOwner, OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.outcomes import (
+    BoundOutcomeOwner,
+    OutcomeCheck,
+    OutcomeReport,
+    OutcomeStatus,
+    compose_outcome_checks,
+)
 from polylogue.logging import get_logger
 from polylogue.maintenance.corpus_fidelity import (
     audit_absences,
@@ -809,6 +815,45 @@ def archive_verification_owner_adapters(
     )
 
 
+def archive_verification_migrated_owner_adapters(
+    archive_root: Path,
+    *,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+    index_path_override: Path | None = None,
+) -> tuple[BoundOutcomeOwner, ...]:
+    """Bind checks now owned by readiness, lifecycle, and durable tiers."""
+    return (
+        BoundOutcomeOwner(
+            name="tier-schema",
+            check=lambda: _check_tier_schema(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="pointer-coherence",
+            check=lambda: _check_pointer_coherence(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="enum-superset-check",
+            check=lambda: _check_enum_superset(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="embeddings-refs-liveness",
+            check=lambda: (
+                _check_embeddings_refs_liveness_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_embeddings_refs_liveness(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="user-tier-refs",
+            check=lambda: (
+                _check_user_tier_refs_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_user_tier_refs(archive_root, sample_limit)
+            ),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Check 4: FTS parity (archive-wide)
 # ---------------------------------------------------------------------------
@@ -1186,6 +1231,11 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
     """
     from polylogue.core.enums import Origin
 
+    # The generated archive-tier DDL is the canonical schema vocabulary.  Do
+    # not maintain a second sqlite_master-derived list of expected values:
+    # compare the live table declarations with the exact DDL that current
+    # schema specs would create.
+    canonical_ddls = {tier.value: ARCHIVE_TIER_SPECS[tier].ddl for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX)}
     origins = {o.value for o in Origin}
     bad: dict[str, Any] = {}
     examined_any = False
@@ -1207,11 +1257,20 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
         finally:
             conn.close()
 
+        canonical_ddl = canonical_ddls[ArchiveTier.SOURCE.value if db_name == "source.db" else ArchiveTier.INDEX.value]
         for table_name, ddl in rows:
             for match in _ORIGIN_CHECK_COLUMN_PATTERN.finditer(ddl or ""):
                 column, allowed_list = match.group(1), match.group(2)
                 allowed = set(re.findall(r"'([^']*)'", allowed_list))
-                missing = sorted(origins - allowed)
+                canonical_matches = [
+                    m
+                    for m in _ORIGIN_CHECK_COLUMN_PATTERN.finditer(canonical_ddl)
+                    if m.group(1).lower() == column.lower()
+                ]
+                canonical_allowed = (
+                    set(re.findall(r"'([^']*)'", canonical_matches[0].group(2))) if canonical_matches else origins
+                )
+                missing = sorted(canonical_allowed - allowed)
                 if missing:
                     bad[f"{db_name}:{table_name}.{column}"] = missing
 
@@ -3346,14 +3405,6 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         candidate_mode=_CROSS_TIER,
         candidate_run=_check_embeddings_refs_liveness_at_candidate,
         daemon_schedule=_MEDIUM,
-        waiver=ArchiveVerificationWaiver(
-            bead_id="polylogue-feu0",
-            reason=(
-                "4,186 message_embedding_refs point at messages no longer in index.db "
-                "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
-                "is a separate async lane from index materialization)"
-            ),
-        ),
         live_receipt_required=True,
     ),
     _registry_spec(
@@ -3764,10 +3815,31 @@ def verify_archive(
     # ArchiveVerificationReport.checks (inherited, invariant list[OutcomeCheck])
     # without a redundant narrower field redeclaration on the report dataclass.
     results: list[OutcomeCheck] = []
+    owner_results: dict[str, OutcomeCheck] = {}
+    owner_names = {
+        "tier-schema",
+        "pointer-coherence",
+        "enum-superset-check",
+        "embeddings-refs-liveness",
+        "user-tier-refs",
+    }
+    if any(spec.name in owner_names for spec in specs):
+        owner_results = {
+            check.name: check
+            for check in compose_outcome_checks(
+                archive_verification_migrated_owner_adapters(
+                    archive_root,
+                    sample_limit=sample_limit,
+                    index_path_override=index_path_override,
+                )
+            ).checks
+        }
     for spec in specs:
         try:
             result = (
-                spec.candidate_run(archive_root, index_path_override, sample_limit)
+                owner_results[spec.name]
+                if spec.name in owner_results
+                else spec.candidate_run(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None and spec.candidate_run is not None
                 else _check_blob_integrity(archive_root, sample_limit, active_index_context=active_index_context)
                 if spec.name == "blob-integrity"
@@ -3819,6 +3891,7 @@ __all__ = [
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
     "archive_verification_owner_adapters",
+    "archive_verification_migrated_owner_adapters",
     "read_raw_failure_lifecycle",
     "passes_strict_acceptance",
     "strict_acceptance_failures",
