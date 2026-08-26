@@ -748,9 +748,23 @@ class PolylogueInsightsMixin:
         if plan is None:
             return None
         when = (now or datetime.now(UTC)).astimezone(UTC)
-        session_costs = await self.list_session_cost_insights()
+        session_costs = await self.list_session_cost_insights(SessionCostInsightQuery(limit=None))
         daily = session_costs_to_daily_usd(session_costs)
-        return build_cycle_outlook(plan, daily, now=when, method=method)
+        unavailable_reason_counts: dict[str, int] = {}
+        for insight in session_costs:
+            reason = insight.estimate.unavailable_reason
+            if reason is not None:
+                unavailable_reason_counts[reason] = unavailable_reason_counts.get(reason, 0) + 1
+        return build_cycle_outlook(
+            plan,
+            daily,
+            now=when,
+            method=method,
+            sessions_considered=len(session_costs),
+            truncated=False,
+            unavailable_session_count=sum(unavailable_reason_counts.values()),
+            unavailable_reason_counts=unavailable_reason_counts,
+        )
 
     # ------------------------------------------------------------------
     # Session analysis primitives (#1691 / polylogue-9e5.24)

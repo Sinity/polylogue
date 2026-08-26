@@ -67,7 +67,7 @@ def compute_session_cost(
             total_output_tokens=estimate.usage.output_tokens,
             total_cache_read_tokens=estimate.usage.cache_read_tokens,
             total_cache_write_tokens=estimate.usage.cache_write_tokens,
-            total_api_cost_usd=round(estimate.total_usd, 6),
+            total_api_cost_usd=round(estimate.total_usd or 0.0, 6),
             total_credit_cost=0.0,
             total_subscription_equivalent_usd=round(
                 estimate.basis.subscription_equivalent_usd,
@@ -86,7 +86,7 @@ def compute_session_cost(
                     cache_read_tokens=estimate.usage.cache_read_tokens,
                     cache_write_tokens=estimate.usage.cache_write_tokens,
                     total_tokens=estimate.usage.total_tokens,
-                    api_cost_usd=round(estimate.total_usd, 6),
+                    api_cost_usd=round(estimate.total_usd or 0.0, 6),
                     subscription_equivalent_usd=round(
                         estimate.basis.subscription_equivalent_usd,
                         6,

@@ -32,6 +32,7 @@ CostUnavailableReason = Literal[
     "provider_zero",
     "subscription_unconfigured",
     "no_messages",
+    "price_not_materialized",
 ]
 
 # Discrete cost basis labels (#1136). A single estimate may carry non-zero
@@ -151,7 +152,7 @@ class CostEstimatePayload(PricingModel):
     # ``total_usd`` remains the legacy single-number summary for
     # backwards-compat. It draws from ``basis.provider_reported_usd`` when an
     # exact provider total is present, otherwise from ``basis.catalog_priced_usd``.
-    total_usd: float = 0.0
+    total_usd: float | None = None
     basis: CostBasisPayload = Field(default_factory=CostBasisPayload)
     usage: CostUsagePayload = Field(default_factory=CostUsagePayload)
     price: CostPricePayload | None = None
@@ -864,7 +865,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
     per_model_map: dict[tuple[str | None, str | None], CostModelBreakdown] = {}
     for estimate in message_estimates:
         usage = usage.plus(estimate.usage)
-        total_usd += estimate.total_usd
+        total_usd += estimate.total_usd or 0.0
         basis = basis.plus(estimate.basis)
         components.extend(estimate.components)
         missing_reasons.extend(estimate.missing_reasons)
@@ -877,7 +878,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
                 normalized_model=estimate.normalized_model,
                 usage=estimate.usage,
                 basis=estimate.basis,
-                total_usd=estimate.total_usd,
+                total_usd=estimate.total_usd or 0.0,
                 session_count=1,
             )
         else:
@@ -886,7 +887,7 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
                 normalized_model=existing.normalized_model,
                 usage=existing.usage.plus(estimate.usage),
                 basis=existing.basis.plus(estimate.basis),
-                total_usd=existing.total_usd + estimate.total_usd,
+                total_usd=existing.total_usd + (estimate.total_usd or 0.0),
                 session_count=existing.session_count,
             )
     per_model_breakdown = tuple(
@@ -931,7 +932,7 @@ def harmonize_session_cost(session: Session) -> tuple[float, bool]:
     """Return the legacy ``(cost_usd, is_estimated)`` session-cost tuple."""
 
     estimate = estimate_session_cost(session)
-    return estimate.total_usd, estimate.status != "exact"
+    return estimate.total_usd or 0.0, estimate.status != "exact"
 
 
 def generated_at() -> str:

@@ -139,6 +139,10 @@ class CycleOutlook(BaseModel):
     coverage_ratio: float = Field(ge=0.0, le=1.0)
     incomplete_days: tuple[date, ...]
     confidence: float = Field(ge=0.0, le=1.0)
+    sessions_considered: int = Field(default=0, ge=0)
+    truncated: bool = False
+    unavailable_session_count: int = Field(default=0, ge=0)
+    unavailable_reason_counts: Mapping[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +347,10 @@ def build_cycle_outlook(
     *,
     now: datetime,
     method: ProjectionMethod = ProjectionMethod.linear,
+    sessions_considered: int = 0,
+    truncated: bool = False,
+    unavailable_session_count: int = 0,
+    unavailable_reason_counts: Mapping[str, int] | None = None,
 ) -> CycleOutlook | None:
     """Project ``daily_usage`` over the plan's current cycle.
 
@@ -403,4 +411,8 @@ def build_cycle_outlook(
         coverage_ratio=coverage_ratio,
         incomplete_days=incomplete_days,
         confidence=confidence,
+        sessions_considered=sessions_considered,
+        truncated=truncated,
+        unavailable_session_count=unavailable_session_count,
+        unavailable_reason_counts=dict(unavailable_reason_counts or {}),
     )

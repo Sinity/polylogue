@@ -229,7 +229,7 @@ class TestEmptyCostPayload:
         payload = _empty_cost_payload("c-blank", "claude-code")
         assert payload["status"] == "unavailable"
         assert payload["confidence_tag"] == "q-unavailable"
-        assert payload["total_usd"] == 0.0
+        assert payload["total_usd"] is None
         assert payload["missing_reasons"] == ["no_session_cost_insight"]
         # Basis split is present-but-zero so the panel never reaches for a
         # missing dict on the client.

@@ -302,6 +302,7 @@ def test_paid_model_missing_cache_rate_is_flagged_not_silently_zero(monkeypatch:
     assert estimate.status == "priced"
     assert "missing_cache_read_price" in estimate.missing_reasons
     # Priced lanes still cost; the unpriced cache lane is $0 but now flagged.
+    assert estimate.total_usd is not None
     assert estimate.total_usd > 0
 
 
@@ -491,6 +492,7 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     # of the cache-read rate -- on this ~96%-cached ratio the guard requires
     # at least a 5x inflation (real corpus measured 7.69x; the exact multiple
     # depends on the input/cache_read price ratio, not hardcoded here).
+    assert naive.total_usd is not None and disjoint.total_usd is not None
     assert naive.total_usd > disjoint.total_usd * 5
 
 

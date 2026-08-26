@@ -2611,7 +2611,6 @@ class ArchiveStore:
                    MAX(s.sort_key_ms) AS source_sort_key
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             WHERE {" AND ".join(where)}
             GROUP BY s.origin,
                      u.model_name,
@@ -2636,7 +2635,6 @@ class ArchiveStore:
                    MAX(s.updated_at_ms) AS source_updated_at,
                    MAX(s.sort_key_ms) AS source_sort_key
             FROM sessions s
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN session_model_usage u ON u.session_id = s.session_id
             WHERE {" AND ".join(no_usage_where)}
             GROUP BY s.origin, CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END
@@ -7531,9 +7529,7 @@ def _session_cost_insight_from_archive_row(
 ) -> SessionCostInsight:
     session_id = str(row["session_id"])
     source_name = str(row["origin"])
-    total_usd = float(
-        (canonical.total_usd if canonical and canonical.total_usd is not None else row["cost_usd"]) or 0.0
-    )
+    total_usd = canonical.total_usd if canonical is not None else None
     cost_provenance = canonical.provenance if canonical is not None else str(row["cost_provenance"] or "")
     try:
         raw_model_name = row["model_name"]
@@ -7549,7 +7545,7 @@ def _session_cost_insight_from_archive_row(
     # verdict) outranks a usage-evidence absence: sessions whose cost was
     # priced and stored must not report unavailable just because they carry
     # no per-model usage rows.
-    if total_usd > 0 or (
+    if total_usd is not None and (
         canonical is not None and canonical.availability in {"priced", "provider_money", "known_zero"}
     ):
         status = "exact" if cost_provenance in {"exact", "origin_reported"} else "priced"
@@ -7566,8 +7562,8 @@ def _session_cost_insight_from_archive_row(
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
-        missing_reasons = ("no_price",)
-        unavailable_reason = "no_price"
+        missing_reasons = ("price_not_materialized",)
+        unavailable_reason = "price_not_materialized"
         provenance = ("session_usage_cost", canonical.availability)
     elif canonical is not None and canonical.availability == "no_tokens":
         status = "unavailable"
@@ -7580,8 +7576,8 @@ def _session_cost_insight_from_archive_row(
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
-        missing_reasons = ("archive_profile_no_cost",)
-        unavailable_reason = "no_tokens"
+        missing_reasons = ("price_not_materialized",)
+        unavailable_reason = "price_not_materialized"
         provenance = ("session_usage_cost",)
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     return SessionCostInsight(

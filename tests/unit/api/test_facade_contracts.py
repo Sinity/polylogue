@@ -5282,6 +5282,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         title="Priced archive cost",
         created_at="2026-02-02T02:40:00Z",
         updated_at="2026-02-02T02:45:00Z",
+        reported_cost_usd=1.25,
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
@@ -5330,7 +5331,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
             )
 
         costs = await archive.list_session_cost_insights(
-            SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="priced", limit=10)
+            SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="exact", limit=10)
         )
         unavailable = await archive.list_session_cost_insights(
             SessionCostInsightQuery(origin=Origin.CHATGPT_EXPORT.value, status="unavailable", limit=10)
@@ -5344,28 +5345,24 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert costs[0].session_id == priced_id
         assert costs[0].origin == Origin.CODEX_SESSION.value
         assert costs[0].title == "Priced archive cost"
-        assert costs[0].estimate.status == "priced"
+        assert costs[0].estimate.status == "exact"
         assert costs[0].estimate.total_usd == 1.25
-        assert costs[0].estimate.basis.catalog_priced_usd == 1.25
+        assert costs[0].estimate.basis.provider_reported_usd == 1.25
         assert costs[0].provenance.materializer_version == 9
         assert len(unavailable) == 1
         assert unavailable[0].estimate.status == "unavailable"
-        # The facade enriches the degraded storage read (cost_enrichment.py): the
-        # internal ``archive_profile_no_cost`` placeholder is replaced by the public
-        # missing-reason taxonomy re-derived from the session — here a
-        # message-bearing session with no token usage, matching the canonical
-        # facade contract pinned by ``test_insights_costs_json``.
-        assert unavailable[0].estimate.missing_reasons == ("missing_token_usage",)
+        assert unavailable[0].estimate.missing_reasons == ("no_tokens",)
+        assert unavailable[0].estimate.unavailable_reason == "no_tokens"
         assert model_filtered == []
         assert len(rollups) == 1
         assert rollups[0].origin == Origin.CODEX_SESSION.value
         assert rollups[0].session_count == 1
         assert rollups[0].priced_session_count == 1
         assert rollups[0].unavailable_session_count == 0
-        assert rollups[0].status_counts == {"priced": 1}
+        assert rollups[0].status_counts == {"exact": 1}
         assert rollups[0].total_usd == 1.25
-        assert rollups[0].basis.catalog_priced_usd == 1.25
-        assert rollups[0].confidence == 0.9
+        assert rollups[0].basis.provider_reported_usd == 1.25
+        assert rollups[0].confidence == 1.0
         assert {rollup.origin for rollup in all_rollups} == {
             Origin.CODEX_SESSION.value,
             Origin.CHATGPT_EXPORT.value,

@@ -779,7 +779,7 @@ def _cost_panel_payload(insight: Any) -> dict[str, object]:
         "confidence": float(estimate.confidence),
         "confidence_tag": _confidence_tag(estimate.status),
         "currency": estimate.currency,
-        "total_usd": float(estimate.total_usd),
+        "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
         "basis": _basis_dict(estimate.basis),
         "usage": _usage_dict(estimate.usage),
         "per_model_breakdown": [
@@ -809,7 +809,7 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
         "confidence": 0.0,
         "confidence_tag": "q-unavailable",
         "currency": "USD",
-        "total_usd": 0.0,
+        "total_usd": None,
         "basis": {
             "provider_reported_usd": 0.0,
             "api_equivalent_usd": 0.0,
@@ -826,7 +826,7 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
         },
         "per_model_breakdown": [],
         "missing_reasons": ["no_session_cost_insight"],
-        "unavailable_reason": "no_messages",
+        "unavailable_reason": "price_not_materialized",
         "provenance": [],
     }
 

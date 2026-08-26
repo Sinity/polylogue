@@ -212,7 +212,7 @@ def _session_per_model_entries(insight: SessionCostInsight) -> Sequence[CostMode
                 normalized_model=estimate.normalized_model,
                 usage=estimate.usage,
                 basis=estimate.basis,
-                total_usd=estimate.total_usd,
+                total_usd=estimate.total_usd or 0.0,
                 session_count=1,
             ),
         )
@@ -271,7 +271,7 @@ def aggregate_cost_rollup_insights(
             usage = usage.plus(estimate.usage)
             basis = basis.plus(estimate.basis)
             status_counts[estimate.status] += 1
-            total_usd += estimate.total_usd
+            total_usd += estimate.total_usd or 0.0
             if estimate.unavailable_reason is not None:
                 unavailable_reason_counts[estimate.unavailable_reason] += 1
             if estimate.priced:

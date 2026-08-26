@@ -45,6 +45,13 @@ def enrich_session_cost_insight(
     """
     from polylogue.api.archive import _archive_session_to_session
 
+    # Storage already carries the canonical SessionUsageCost verdict.  Do not
+    # replace an unavailable verdict with the older message-only estimator:
+    # that would lose the distinction between token evidence and a missing
+    # materialized price (and would make the public facade disagree with the
+    # archive read).
+    if insight.estimate.status == "unavailable":
+        return insight
     try:
         session = _archive_session_to_session(archive.read_session(insight.session_id))
     except KeyError:
