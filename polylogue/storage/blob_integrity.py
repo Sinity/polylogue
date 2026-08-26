@@ -639,17 +639,23 @@ def project_source_blob_liveness(
     *,
     index_db: Path | None = None,
     immutable: bool = False,
+    source_generation_id: str | None = None,
 ) -> BlobLivenessProjection:
     """Return a complete canonical source projection or refuse incomplete evidence."""
 
     immutable_query = "&immutable=1" if immutable else ""
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as source_conn:
         if index_db is None:
-            projection = project_live_blob_hashes(source_conn)
+            projection = project_live_blob_hashes(source_conn, source_generation_id=source_generation_id)
             index_conn = None
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
-                projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
+                projection = project_live_blob_hashes(
+                    source_conn,
+                    index_conn=index_conn,
+                    require_index=True,
+                    source_generation_id=source_generation_id,
+                )
                 return _historical_projection(source_conn, projection, index_conn=index_conn, require_index=True)
         return _historical_projection(source_conn, projection, index_conn=index_conn)
 
