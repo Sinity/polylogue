@@ -294,13 +294,14 @@ def test_unknown_route_has_no_contract() -> None:
 
 
 @pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
-def test_shell_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
-    """Local shell bootstrap remains frictionless on loopback."""
+def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
+    """Local browser bootstrap remains frictionless on loopback."""
 
     handler = _make_handler("GET", path)
     send_error, _ = capture_responses(handler)
     handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
+    handler._serve_webui_session_read = lambda session_id: None  # type: ignore[method-assign]
     handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
     handler._serve_attachment_library_page = lambda: None  # type: ignore[method-assign]
 
@@ -326,3 +327,37 @@ def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     handler.do_GET()
 
     send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/", "archive"),
+        ("/app", "archive"),
+        ("/sessions", "list"),
+        ("/sessions/codex-session:abc", "read"),
+        ("/s/codex-session:abc", "read"),
+        ("/search?q=term", "search"),
+    ],
+)
+def test_canonical_browser_routes_enter_typed_webui_handlers(path: str, expected: str) -> None:
+    """Canonical and deep-link routes must not fall back to the legacy shell."""
+
+    handler = _make_handler("GET", path)
+    handler._check_shell_bootstrap_access = lambda: True  # type: ignore[method-assign]
+    handler._serve_web_shell = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_session_read = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_search = MagicMock()  # type: ignore[method-assign]
+
+    handler.do_GET()
+
+    typed = {
+        "archive": handler._serve_webui_archive_overview,
+        "list": handler._serve_webui_session_list,
+        "read": handler._serve_webui_session_read,
+        "search": handler._serve_webui_search,
+    }[expected]
+    typed.assert_called_once()
+    handler._serve_web_shell.assert_not_called()

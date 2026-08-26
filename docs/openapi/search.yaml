@@ -4385,8 +4385,8 @@ x-polylogue-route-contracts:
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback
-  response_contract: text/html web shell
-  notes: HTML bootstrap only; shell JavaScript obtains an HttpOnly first-party credential before /api calls.
+  response_contract: semantic archive overview HTML
+  notes: Canonical typed WebUI overview; browser data access remains behind the authenticated /api boundary.
 - method: GET
   pattern: /app
   kind: browser_shell
@@ -4442,8 +4442,8 @@ x-polylogue-route-contracts:
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback
-  response_contract: text/html web shell
-  notes: Session deep-link bootstrap.
+  response_contract: semantic session read HTML
+  notes: Typed WebUI session deep-link; equivalent to /sessions/:session_id.
 - method: GET
   pattern: /w/:mode
   kind: browser_shell

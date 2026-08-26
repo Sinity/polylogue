@@ -1727,52 +1727,64 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        # WebUI v2 is a strangler mount: semantic SSR at /app plus only
-        # manifest-governed local assets. It shares the legacy shell's
-        # loopback/bootstrap auth posture while the archive JSON remains under
-        # the normal scoped credential checks.
-        if path == ["app"]:
+        # The typed WebUI is the canonical browser surface.  Keep the route
+        # aliases here deliberately boring: they all enter the same SSR
+        # handlers, asset-manifest boundary, and auth checks.  In particular,
+        # the root route must not select the interpolated reader based on a
+        # feature flag or fallback condition.
+        if path in ([""], ["app"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_archive_overview()
             return
-        if path == ["app", "observability"]:
+        if path in (["observability"], ["app", "observability"]):
             if not self._check_auth():
                 return
             self._serve_webui_observability()
             return
-        if path == ["app", "cost"]:
+        if path in (["cost"], ["app", "cost"]):
             if not self._check_auth():
                 return
             self._serve_webui_cost()
             return
-        if path == ["app", "sessions"]:
+        if path in (["sessions"], ["app", "sessions"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_list(params)
             return
-        if len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2]):
+        if (len(path) == 2 and path[0] == "sessions" and bool(path[1])) or (
+            len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2])
+        ):
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_webui_session_read(path[2])
+            self._serve_webui_session_read(path[-1])
             return
-        if path == ["app", "search"]:
+        if path in (["search"], ["app", "search"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_search(params)
             return
-        if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
+        if (len(path) == 2 and path[0] == "assets" and bool(path[1])) or (
+            len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2])
+        ):
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_webui_asset(path[2])
+            self._serve_webui_asset(path[-1])
             return
 
-        # Legacy web shell bootstrap (localhost only).
-        if (
-            path == [""]
-            or (len(path) == 2 and path[0] == "s" and bool(path[1]))
-            or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
-        ):
+        # The short session deep link is part of the typed reader contract.
+        # Keep its stable URL while routing it through the same SSR handler as
+        # the long form above.
+        if len(path) == 2 and path[0] == "s" and bool(path[1]):
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_session_read(path[1])
+            return
+
+        # Workspace, paste, and attachment entrypoints remain legacy-only
+        # capabilities until their typed replacements land. The canonical
+        # archive reader never delegates to this branch.
+        if len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_web_shell()
