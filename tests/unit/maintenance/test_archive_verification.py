@@ -277,7 +277,10 @@ def test_coherent_archive_is_all_ok(tmp_path: Path) -> None:
     assert report.warning_count == 0
     assert {check.name for check in report.checks} == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
     for check in report.checks:
-        assert check.status is OutcomeStatus.OK, f"{check.name}: {check.summary}"
+        # A check whose population is genuinely absent from the fixture
+        # reports SKIP (not-applicable), which is coherent; anything
+        # warning-or-worse is not.
+        assert check.status in {OutcomeStatus.OK, OutcomeStatus.SKIP}, f"{check.name}: {check.summary}"
 
 
 def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(tmp_path: Path) -> None:
