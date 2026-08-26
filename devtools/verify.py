@@ -43,6 +43,13 @@ from devtools.verification_graph import (
     publish_complete_root,
     publish_selected_child,
 )
+from devtools.verification_ledger import (
+    append_failure_ledger,
+    ledger_records,
+    policy_diagnostics,
+    read_failure_ledger,
+    read_verify_history,
+)
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
@@ -585,6 +592,14 @@ def _finish_and_record_verification(
         workload_receipt=workload_receipt,
     )
     _record_graph_authority(run, payload)
+    existing = read_failure_ledger(ROOT / ".cache/verify/failure-ledger.jsonl")
+    verify_history = read_verify_history(ROOT / ".cache/verify/history.jsonl")
+    records = ledger_records(payload, history=verify_history)
+    if records:
+        append_failure_ledger(records, path=ROOT / ".cache/verify/failure-ledger.jsonl")
+        payload["failure_ledger"] = policy_diagnostics((*existing, *records))
+        run._payload["failure_ledger"] = payload["failure_ledger"]
+        run.write()
     append_verify_history(payload)
     prune_successful_verify_runs(root=ROOT)
     return payload

@@ -44,6 +44,7 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
             "selection_widened": _selection_widened(selection),
             "missing_edges": _bounded_strings(missing_paths),
             "runtime_data_paths": _bounded_strings(runtime_data_paths),
+            "failure_ledger": _mapping(payload.get("failure_ledger")),
         },
         "semantic_status": _semantic_status(payload, verification_scope),
         "exit_code": _integer(payload.get("exit_code")),
