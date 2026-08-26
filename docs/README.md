@@ -71,7 +71,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
-| [Artifact Publication](artifact-publication.md) | Shared sealed-staging contract for cached fixtures, immutable trees, and generation stores. |
 | [Cost Model](cost-model.md) | Cost, usage, cache, and subscription-credit accounting semantics. |
 | [Agent Forensics](agent-forensics.md) | Forensic investigation methods over agent work. |
 | [Repository Layout](repo-layout.md) | Every top-level entry and its purpose. |
