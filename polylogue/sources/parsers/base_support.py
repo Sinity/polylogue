@@ -9,11 +9,122 @@ from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolRes
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
+    AdmissionDisposition,
+    AdmissionOutcome,
+    AdmissionRefusalReason,
+    AdmissionUnit,
+    AdmissionUnknownReason,
+    ParseAccounting,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
     ParsedWebConstruct,
 )
+
+
+class AdmissionLedger:
+    """Small mutable builder for the immutable parsed-session admission proof."""
+
+    def __init__(self) -> None:
+        self._expected: dict[AdmissionUnit, int] = {}
+        self._outcomes: list[AdmissionOutcome] = []
+
+    def expect(self, unit: AdmissionUnit, count: int) -> None:
+        if count < 0:
+            raise ValueError("admission denominators cannot be negative")
+        self._expected[unit] = self._expected.get(unit, 0) + count
+
+    def next_ordinal(self, unit: AdmissionUnit) -> int:
+        return sum(1 for outcome in self._outcomes if outcome.unit is unit)
+
+    def _record(
+        self,
+        unit: AdmissionUnit,
+        ordinal: int,
+        key: str,
+        disposition: AdmissionDisposition,
+        reason: AdmissionUnknownReason | AdmissionRefusalReason | None = None,
+    ) -> AdmissionOutcome:
+        outcome = AdmissionOutcome(
+            unit=unit,
+            ordinal=ordinal,
+            key=key,
+            disposition=disposition,
+            reason=reason,
+        )
+        self._outcomes.append(outcome)
+        return outcome
+
+    def materialized(self, unit: AdmissionUnit, ordinal: int, key: str) -> AdmissionOutcome:
+        return self._record(unit, ordinal, key, AdmissionDisposition.MATERIALIZED)
+
+    def unknown(
+        self,
+        unit: AdmissionUnit,
+        ordinal: int,
+        key: str,
+        reason: AdmissionUnknownReason = AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+    ) -> AdmissionOutcome:
+        return self._record(unit, ordinal, key, AdmissionDisposition.TYPED_UNKNOWN, reason)
+
+    def refusal(
+        self,
+        unit: AdmissionUnit,
+        ordinal: int,
+        key: str,
+        reason: AdmissionRefusalReason,
+    ) -> AdmissionOutcome:
+        return self._record(unit, ordinal, key, AdmissionDisposition.TYPED_REFUSAL, reason)
+
+    def close(self) -> ParseAccounting:
+        accounting = ParseAccounting(expected=dict(self._expected), outcomes=list(self._outcomes))
+        accounting.assert_conserved()
+        return accounting
+
+
+def typed_unknown(
+    unit: AdmissionUnit,
+    ordinal: int,
+    key: str,
+    *,
+    ledger: AdmissionLedger | None = None,
+    reason: AdmissionUnknownReason = AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+) -> AdmissionOutcome:
+    """Record an unknown through the one shared parser admission combinator."""
+    if ledger is None:
+        ledger = AdmissionLedger()
+        ledger.expect(unit, 1)
+    return ledger.unknown(unit, ordinal, key, reason)
+
+
+def typed_unknown_block(
+    value: object,
+    *,
+    wire_type: str | None = None,
+    ledger: AdmissionLedger | None = None,
+    ordinal: int = 0,
+) -> ParsedContentBlock:
+    """Retain an unrecognized structured segment without guessing its meaning."""
+    observed_type = wire_type
+    if observed_type is None and isinstance(value, dict):
+        raw_type = value.get("type") or value.get("content_type")
+        observed_type = raw_type if isinstance(raw_type, str) and raw_type else "unknown"
+    observed_type = observed_type or "unknown"
+    typed_unknown(
+        AdmissionUnit.BLOCK,
+        ordinal,
+        observed_type,
+        ledger=ledger,
+        reason=AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+    )
+    return ParsedContentBlock(
+        type=BlockType.DOCUMENT,
+        metadata={
+            "admission_disposition": AdmissionDisposition.TYPED_UNKNOWN.value,
+            "unknown_reason": AdmissionUnknownReason.UNRECOGNIZED_TYPE.value,
+            "wire_type": observed_type,
+        },
+    )
 
 
 def human_authored_override(
@@ -120,14 +231,58 @@ def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMe
     return filled
 
 
-def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
+def content_blocks_from_segments(
+    content: object,
+    *,
+    admission: AdmissionLedger | None = None,
+) -> list[ParsedContentBlock]:
     """Convert raw API content (str, list, dict) to ParsedContentBlock list."""
     if isinstance(content, str):
+        if admission is not None:
+            part_ordinal = admission.next_ordinal(AdmissionUnit.PART)
+            admission.expect(AdmissionUnit.PART, 1)
+            admission.materialized(AdmissionUnit.PART, part_ordinal, "text")
+            admission.expect(AdmissionUnit.BLOCK, 1 if content else 0)
+            if content:
+                admission.materialized(AdmissionUnit.BLOCK, admission.next_ordinal(AdmissionUnit.BLOCK), "text")
         return [ParsedContentBlock(type=BlockType.TEXT, text=content)] if content else []
     if not isinstance(content, list):
         return []
+    part_offset = admission.next_ordinal(AdmissionUnit.PART) if admission is not None else 0
+    if admission is not None:
+        admission.expect(AdmissionUnit.PART, len(content))
     blocks: list[ParsedContentBlock] = []
-    for seg in content:
+    known_types = {
+        "thinking",
+        "tool_use",
+        "tool_result",
+        "text",
+        "image",
+        "document",
+        "token_budget",
+        "voice_note",
+        "code",
+        "input_text",
+        "output_text",
+        "input_image",
+    }
+    for part_ordinal, seg in enumerate(content):
+        if admission is not None:
+            if isinstance(seg, str):
+                admission.materialized(AdmissionUnit.PART, part_offset + part_ordinal, "text")
+            elif (
+                isinstance(seg, dict)
+                and isinstance(seg.get("type", "text"), str)
+                and seg.get("type", "text") in known_types
+            ):
+                admission.materialized(AdmissionUnit.PART, part_offset + part_ordinal, str(seg.get("type", "text")))
+            else:
+                admission.unknown(
+                    AdmissionUnit.PART,
+                    part_offset + part_ordinal,
+                    "unsupported",
+                    AdmissionUnknownReason.UNSUPPORTED_SHAPE,
+                )
         if isinstance(seg, str):
             if seg:
                 blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=seg))
@@ -135,7 +290,11 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
         if not isinstance(seg, dict):
             continue
         seg_type = seg.get("type", "text")
-        if seg_type == "thinking":
+        if seg_type == "text":
+            text = seg.get("text") or ""
+            if text:
+                blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=str(text)))
+        elif seg_type == "thinking":
             text = seg.get("thinking") or seg.get("text") or ""
             signature = seg.get("signature")
             # polylogue-vf9x: since roughly 2026-06 the wire ships thinking
@@ -297,10 +456,34 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 if isinstance(language, str) and language:
                     metadata = {"language": language}
                 blocks.append(ParsedContentBlock(type=BlockType.CODE, text=str(text), metadata=metadata))
+        elif seg_type in ("input_text", "output_text", "input_image", "image"):
+            # Provider transport items are lowered by the owning parser:
+            # Codex supplies text through ``extract_codex_text`` and bounded
+            # image evidence through ``_codex_inline_image_blocks``.
+            continue
         else:
-            text = seg.get("text") or seg.get("content") or ""
-            if text:
-                blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=str(text)))
+            # Unknown structured content is still an input unit. Preserve its
+            # existence as an opaque DOCUMENT block with a typed disposition;
+            # callers must never infer prose from a future wire shape.
+            unknown_block = typed_unknown_block(seg, wire_type=str(seg_type))
+            if isinstance(seg.get("text"), str) and seg["text"]:
+                unknown_block = unknown_block.model_copy(update={"type": BlockType.TEXT, "text": seg["text"]})
+            blocks.append(unknown_block)
+    if admission is not None:
+        admission.expect(AdmissionUnit.BLOCK, len(blocks))
+        for block in blocks:
+            block_ordinal = admission.next_ordinal(AdmissionUnit.BLOCK)
+            if (
+                block.metadata
+                and block.metadata.get("admission_disposition") == AdmissionDisposition.TYPED_UNKNOWN.value
+            ):
+                admission.unknown(
+                    AdmissionUnit.BLOCK,
+                    block_ordinal,
+                    str(block.metadata.get("wire_type") or "unknown"),
+                )
+            else:
+                admission.materialized(AdmissionUnit.BLOCK, block_ordinal, block.type.value)
     return blocks
 
 

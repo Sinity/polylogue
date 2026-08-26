@@ -47,6 +47,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ids import MessageOwnerResolution, attachment_message_owner_key, message_owner_resolution
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
+    ParseAccounting,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
@@ -379,6 +380,7 @@ def write_parsed_session_to_archive(
     prepared: PreparedSessionRows | None = None,
     source_conn: sqlite3.Connection | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
+    unit_accounting: ParseAccounting | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
@@ -434,6 +436,13 @@ def write_parsed_session_to_archive(
     Direct callers retain the immediate-ready default.
     """
     t0 = time.perf_counter()
+
+    admission = unit_accounting or session.unit_accounting
+    if admission is not None:
+        try:
+            admission.assert_conserved()
+        except ValueError as exc:
+            raise ValueError(f"parse admission conservation refused: {exc}") from exc
 
     def add_timing(name: str, started_at: float) -> None:
         _add_stage_timing(

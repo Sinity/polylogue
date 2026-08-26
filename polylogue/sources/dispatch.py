@@ -1078,6 +1078,7 @@ def _chatgpt_bundle_record_specs(
     """
     matched: list[LoweredPayloadSpec] = []
     candidates = 0
+    rejected_candidates = 0
     for index, item in enumerate(payloads):
         record = _payload_record(item)
         if record is None:
@@ -1099,6 +1100,8 @@ def _chatgpt_bundle_record_specs(
         if _looks_like_chatgpt_mapping_candidate(record):
             candidates += 1
         if not chatgpt.looks_like_fragment(record):
+            if _looks_like_chatgpt_mapping_candidate(record):
+                rejected_candidates += 1
             continue
         matched.append(
             LoweredPayloadSpec(
@@ -1108,14 +1111,15 @@ def _chatgpt_bundle_record_specs(
                 payload=record,
             )
         )
-    if not matched and candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES:
+    if rejected_candidates and (matched or candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES):
         logger.warning(
-            "ChatGPT bundle payload %r: none of %d candidate records matched the "
-            "conversation-fragment shape (chatgpt.looks_like_fragment); if this array is a "
-            "conversations shard rather than a metadata sibling file, the ChatGPT export "
-            "shape may have changed and conversations are being silently dropped",
+            "ChatGPT bundle payload %r: rejected %d of %d candidate records after "
+            "matching %d conversation fragments; rejected siblings received typed "
+            "drift accounting and must not be treated as successfully parsed",
             fallback_id,
+            rejected_candidates,
             candidates,
+            len(matched),
         )
     return matched
 

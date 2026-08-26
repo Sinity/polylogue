@@ -76,7 +76,7 @@ polylogue/storage/sqlite/archive_tiers/archive.py:965
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:127
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:131
 polylogue/storage/sqlite/archive_tiers/bootstrap.py:186
-polylogue/storage/sqlite/archive_tiers/write.py:3827
+polylogue/storage/sqlite/archive_tiers/write.py:3836
 polylogue/storage/sqlite/migration_runner.py:2779
 polylogue/storage/usage.py:841
 polylogue/storage/usage.py:1496
