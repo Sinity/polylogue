@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.filter.types import SortField
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.fields import describe_spec_fields, query_spec_has_selection_filters
+from polylogue.archive.query.fields import (
+    describe_spec_fields,
+    query_boundary_alternatives,
+    query_spec_has_selection_filters,
+)
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -301,6 +305,7 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "tag",
         "exclude_tag",
         "repo",
+        "project",
         "has_type",
         "title",
         "conv_id",
@@ -349,7 +354,9 @@ def validate_params_known(params: Mapping[str, object], *, strict: bool = False)
         return
     for key in params:
         if key not in _RECOGNIZED_PARAMS:
-            raise QuerySpecError(key, f"unknown query parameter: {key!r}")
+            alternatives = query_boundary_alternatives(key, "spec")
+            suffix = f"; accepted alternatives: {', '.join(alternatives)}" if alternatives else ""
+            raise QuerySpecError(key, f"unknown query parameter: {key!r}{suffix}")
 
 
 def optional_sort_field(value: object) -> SortField | None:

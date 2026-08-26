@@ -9,6 +9,7 @@ from typing import Annotated, Any, TypeAlias
 from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
+from polylogue.archive.query.fields import mcp_query_field_names, query_boundary_alternatives
 from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
 from polylogue.operations.origin_filters import public_origin_filter_tokens
 
@@ -20,11 +21,19 @@ MCPCharacterLimit: TypeAlias = Annotated[int, Field(ge=1)] | None
 #: ``ge=1``/``ge=0`` guards already on limit/offset (#1749).
 MCPCountBound: TypeAlias = Annotated[int, Field(ge=0)] | None
 
-_QUERY_PARAM_ALIASES = {
-    "has_tool_use": "filter_has_tool_use",
-    "has_thinking": "filter_has_thinking",
-    "has_paste_evidence": "filter_has_paste",
-}
+
+def _mcp_aliases() -> dict[str, str]:
+    """Lower declared MCP names to their canonical SessionQuerySpec fields."""
+    aliases: dict[str, str] = {}
+    from polylogue.archive.query.fields import QUERY_DECLARATIONS
+
+    for descriptor in QUERY_DECLARATIONS:
+        target = descriptor.spec_attr
+        if target is None:
+            continue
+        for name in descriptor.mcp_names:
+            aliases[name] = target
+    return aliases
 
 
 def _validate_origin_filters(params: Mapping[str, object]) -> None:
@@ -46,7 +55,7 @@ def _validate_origin_filters(params: Mapping[str, object]) -> None:
 def normalize_query_params(params: Mapping[str, object]) -> dict[str, object]:
     """Normalize MCP query kwargs into substrate query-spec parameter names."""
     normalized = dict(params)
-    for source_key, target_key in _QUERY_PARAM_ALIASES.items():
+    for source_key, target_key in _mcp_aliases().items():
         if source_key in normalized:
             normalized[target_key] = normalized.pop(source_key)
     return normalized
@@ -61,6 +70,12 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     the correct spec fields, mirroring the CLI bare-query path in
     :meth:`~polylogue.cli.root_request.RootModeRequest.query_spec`.
     """
+    unknown = sorted(set(params) - mcp_query_field_names())
+    if unknown:
+        field = unknown[0]
+        alternatives = query_boundary_alternatives(field, "mcp")
+        accepted = ", ".join(alternatives) if alternatives else ", ".join(sorted(mcp_query_field_names()))
+        raise QuerySpecError(field, f"unknown MCP query parameter; accepted alternatives: {accepted}")
     normalized = normalize_query_params(params)
     _validate_origin_filters(normalized)
     if normalized.get("message_type") is not None:
@@ -70,6 +85,10 @@ def build_query_spec(**params: object) -> SessionQuerySpec:
     # ``from_params`` would treat it as a literal FTS term; the parser/lowerer
     # resolves field clauses to the appropriate spec fields first.
     query_str = str(normalized.pop("query", None) or "").strip()
+    # ``normalized`` is the declaration's internal spec/plan vocabulary (for
+    # example ``repo_names``), not the public structured vocabulary accepted by
+    # SessionQuerySpec.from_params.  The MCP boundary above is strict before
+    # this lowering, so no parameter can be silently discarded here.
     base = SessionQuerySpec.from_params(normalized)
     if not query_str:
         return base
@@ -189,7 +208,13 @@ def build_session_query_request(**kwargs: Any) -> MCPSessionQueryRequest:
     mutating filter state.
     """
     valid = {field.name for field in fields(MCPSessionQueryRequest)}
-    payload = {name: value for name, value in kwargs.items() if name in valid}
+    unexpected = sorted(set(kwargs) - valid)
+    if unexpected:
+        field = unexpected[0]
+        alternatives = query_boundary_alternatives(field, "mcp")
+        accepted = ", ".join(alternatives) if alternatives else ", ".join(sorted(mcp_query_field_names()))
+        raise QuerySpecError(field, f"unknown MCP query parameter; accepted alternatives: {accepted}")
+    payload = dict(kwargs)
     return MCPSessionQueryRequest(**payload)
 
 

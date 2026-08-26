@@ -13,6 +13,7 @@ from polylogue.archive.query.fields import (
     describe_spec_selection_fields,
     mcp_query_field_names,
     query_completion_sources,
+    query_declaration_diagnostics,
     storage_filters_require_stats_join,
 )
 from polylogue.archive.query.plan import SessionQueryPlan
@@ -215,6 +216,13 @@ def test_query_field_catalog_marks_completion_sources() -> None:
         "session_id",
         "tag",
         "tool",
+    )
+
+
+def test_query_declaration_catalog_is_complete_and_stably_ordered() -> None:
+    assert query_declaration_diagnostics() == ()
+    assert [descriptor.stable_order for descriptor in QUERY_FIELD_DESCRIPTORS] == list(
+        range(1, len(QUERY_FIELD_DESCRIPTORS) + 1)
     )
 
 
