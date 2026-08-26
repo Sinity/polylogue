@@ -69,6 +69,7 @@ def _insight_spec(
     request_model: type[BaseModel],
     *,
     facade_effect_fields: frozenset[str] = frozenset(),
+    dropped_fields: frozenset[str] = frozenset(),
 ) -> FacadeConservationSpec:
     return FacadeConservationSpec(
         name=f"insights.{method_name}",
@@ -76,6 +77,7 @@ def _insight_spec(
         request_model=request_model,
         module=insights_api,
         facade_effect_fields=facade_effect_fields,
+        dropped_fields=dropped_fields,
     )
 
 
@@ -97,6 +99,8 @@ FACADE_CONSERVATION_REGISTRY: tuple[FacadeConservationSpec, ...] = (
         "list_session_work_event_insights",
         SessionWorkEventInsightQuery,
         facade_effect_fields=frozenset({"session_date_since", "session_date_until"}),
+        # polylogue-3nah4: accepted query is currently not forwarded.
+        dropped_fields=frozenset({"query"}),
     ),
     _insight_spec(
         "list_session_phase_insights",
@@ -116,36 +120,26 @@ FACADE_CONSERVATION_REGISTRY: tuple[FacadeConservationSpec, ...] = (
         "find_stuck_session_latency_profile_insights",
         SessionLatencyProfileInsightQuery,
         facade_effect_fields=frozenset({"only_stuck"}),
+        # polylogue-o90gu: this route's session_id/offset are currently not
+        # forwarded to its lower reader.
+        dropped_fields=frozenset({"session_id", "offset"}),
     ),
     _insight_spec("list_cost_rollup_insights", CostRollupInsightQuery),
     _insight_spec("list_usage_timeline_insights", UsageTimelineInsightQuery),
     _insight_spec("list_archive_debt_insights", ArchiveDebtInsightQuery),
     # Archive-side routes prove the same harness works across the composed
     # facade's other mixin, including two request models outside insights.py.
-    _archive_spec("list_session_profile_insights", SessionProfileInsightQuery),
+    # polylogue-3nah4: accepted query is currently not forwarded.
+    FacadeConservationSpec(
+        name="archive.list_session_profile_insights",
+        method_name="list_session_profile_insights",
+        request_model=SessionProfileInsightQuery,
+        module=archive_api,
+        dropped_fields=frozenset({"query"}),
+    ),
     _archive_spec("insight_readiness_report", InsightReadinessQuery),
     _archive_spec("insight_rigor_audit", InsightRigorAuditQuery),
 )
-
-
-_KNOWN_XFAILS: dict[tuple[str, str], str] = {
-    (
-        "insights.list_session_work_event_insights",
-        "query",
-    ): "polylogue-3nah4: work-event query is accepted but not forwarded",
-    (
-        "archive.list_session_profile_insights",
-        "query",
-    ): "polylogue-3nah4: session-profile query is accepted but not forwarded",
-    (
-        "insights.find_stuck_session_latency_profile_insights",
-        "session_id",
-    ): "polylogue-o90gu: stuck-latency session_id is accepted but not forwarded",
-    (
-        "insights.find_stuck_session_latency_profile_insights",
-        "offset",
-    ): "polylogue-o90gu: stuck-latency offset is accepted but not forwarded",
-}
 
 
 def _sentinel_for(field_name: str, annotation: object) -> object:
@@ -319,12 +313,10 @@ def _cases() -> tuple[object, ...]:
     cases: list[object] = []
     for spec in FACADE_CONSERVATION_REGISTRY:
         for field_name in spec.request_model.model_fields:
-            marker = _KNOWN_XFAILS.get((spec.name, field_name))
             parameter = pytest.param(
                 spec,
                 field_name,
                 id=f"{spec.name}:{field_name}",
-                marks=pytest.mark.xfail(strict=True, reason=marker) if marker else (),
             )
             cases.append(parameter)
     return tuple(cases)
