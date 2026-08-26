@@ -37,6 +37,7 @@ from .base import (
     content_blocks_from_segments,
     fill_linear_parent_chain,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
 )
 
 logger = get_logger(__name__)
@@ -3012,6 +3013,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     )
 
 
+@parser_admission("codex")
 def parse(payload: Sequence[object], fallback_id: str) -> ParsedSession:
     return _parse_records(payload, fallback_id)
 

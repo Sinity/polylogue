@@ -33,6 +33,7 @@ from ..base import (
     attachment_from_meta,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
     synthetic_message_id,
 )
 from .common import (
@@ -476,6 +477,7 @@ def _design_user_message(
     return message, attachments, session_event
 
 
+@parser_admission("claude_design")
 def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
     raw_messages = payload.get("messages")
@@ -545,6 +547,7 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
 # ---------------------------------------------------------------------------
 
 
+@parser_admission("claude_memories")
 def parse_memories(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     """Parse one account's ``memories.json`` record into a synthetic session.
 
@@ -663,6 +666,7 @@ def _merge_session_attachments(
     return list(merged.values())
 
 
+@parser_admission("claude_ai")
 def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # memories.json records arrive tagged Provider.CLAUDE_AI too (bd
     # polylogue-zng9 deliberately reuses the existing claude.ai bundle

@@ -30,6 +30,7 @@ from .base_support import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
     synthetic_message_id,
     text_blocks_prose,
     typed_unknown,
@@ -65,4 +66,5 @@ __all__ = [
     "text_blocks_prose",
     "typed_unknown",
     "typed_unknown_block",
+    "parser_admission",
 ]

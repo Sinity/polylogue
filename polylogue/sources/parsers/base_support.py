@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import wraps
+from typing import Any, TypeVar
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolResultUnknownReason, WebConstructType
@@ -18,8 +20,12 @@ from .base_models import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
     ParsedWebConstruct,
 )
+
+_SessionParser = TypeVar("_SessionParser", bound=Callable[..., ParsedSession])
 
 
 class AdmissionLedger:
@@ -80,6 +86,92 @@ class AdmissionLedger:
         accounting = ParseAccounting(expected=dict(self._expected), outcomes=list(self._outcomes))
         accounting.assert_conserved()
         return accounting
+
+
+def _unknown_wire_type(value: object) -> str | None:
+    """Return a deliberately future-shaped wire type, if one is visible.
+
+    This is intentionally narrow.  Admission must not classify ordinary
+    provider metadata as unknown merely because it contains a ``type`` field;
+    the parser-specific lowering remains authoritative for known shapes.
+    """
+    if isinstance(value, dict):
+        for key in ("type", "content_type", "kind", "record_type"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and (
+                candidate.startswith(("future_", "unknown_", "unsupported_"))
+                or candidate in {"future", "unknown", "unsupported"}
+            ):
+                return candidate
+        for child in value.values():
+            found = _unknown_wire_type(child)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _unknown_wire_type(child)
+            if found is not None:
+                return found
+    return None
+
+
+def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser]:
+    """Put a common conservation boundary around every session parser.
+
+    Provider implementations are still responsible for their known wire
+    shapes.  This boundary handles the class-killer case: a future-shaped
+    outer envelope that the implementation does not recognize must become a
+    typed session event, never vanish beside otherwise-valid content.
+    """
+
+    def decorate(parser: _SessionParser) -> _SessionParser:
+        @wraps(parser)
+        def wrapped(*args: Any, **kwargs: Any) -> ParsedSession:
+            session = parser(*args, **kwargs)
+            payload = args[0] if args else kwargs.get("payload")
+            raw_items = (
+                list(payload) if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
+            )
+            unknowns = [
+                (index, wire_type)
+                for index, item in enumerate(raw_items, start=1)
+                if (wire_type := _unknown_wire_type(item)) is not None
+            ]
+
+            existing_types = {
+                str(event.payload.get("wire_type"))
+                for event in session.session_events
+                if event.payload.get("wire_type") is not None
+            }
+            events = list(session.session_events)
+            for index, wire_type in unknowns:
+                if wire_type in existing_types:
+                    continue
+                events.append(
+                    ParsedSessionEvent(
+                        event_type=f"{provider}_unknown_input",
+                        payload={"source_index": index, "wire_type": wire_type},
+                    )
+                )
+                existing_types.add(wire_type)
+
+            accounting = session.unit_accounting
+            if accounting is None:
+                ledger = AdmissionLedger()
+                ledger.expect(AdmissionUnit.OUTER_RECORD, len(raw_items))
+                for index, item in enumerate(raw_items):
+                    wire_type = _unknown_wire_type(item)
+                    if wire_type is None:
+                        ledger.materialized(AdmissionUnit.OUTER_RECORD, index, "parsed")
+                    else:
+                        ledger.unknown(AdmissionUnit.OUTER_RECORD, index, wire_type)
+                accounting = ledger.close()
+            accounting.assert_conserved()
+            return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+
+        return wrapped  # type: ignore[return-value]
+
+    return decorate
 
 
 def typed_unknown(

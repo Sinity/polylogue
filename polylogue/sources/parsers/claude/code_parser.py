@@ -42,6 +42,7 @@ from ..base import (
     ParsedSessionEvent,
     ParsedSessionRef,
     content_blocks_from_segments,
+    parser_admission,
     text_blocks_prose,
 )
 from .common import (
@@ -2094,6 +2095,7 @@ def order_session_events(events: Sequence[ParsedSessionEvent]) -> list[ParsedSes
     return [event for _, event in sorted(enumerate(events), key=sort_key)]
 
 
+@parser_admission("claude_code")
 def parse_code(
     payload: Iterable[object],
     fallback_id: str,

@@ -50,6 +50,7 @@ from .base import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
     synthetic_message_id,
 )
 
@@ -125,6 +126,7 @@ def looks_like_export(payload: object) -> bool:
     return any(looks_like_conversation(item) for item in conversations)
 
 
+@parser_admission("grok")
 def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     """Parse a single Grok export conversation entry into a session."""
     conversation = _mapping(payload.get("conversation"))

@@ -24,6 +24,7 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -658,6 +659,7 @@ def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptu
     return parsed.model_copy(update={"session_events": [*parsed.session_events, *events]})
 
 
+@parser_admission("browser_capture")
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)

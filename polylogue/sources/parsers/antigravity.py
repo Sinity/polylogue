@@ -28,6 +28,7 @@ from .base import (
     ParsedSession,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    parser_admission,
     synthetic_message_id,
 )
 
@@ -238,6 +239,7 @@ def markdown_export_payload(summary: AntigravitySessionSummary, markdown: str) -
     return payload
 
 
+@parser_admission("antigravity")
 def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     summary = AntigravitySessionSummary(
         cascade_id=_string(payload.get("cascadeId")) or fallback_id,
