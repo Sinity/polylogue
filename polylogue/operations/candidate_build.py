@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -32,17 +33,17 @@ from polylogue.surfaces.payloads import SurfacePayloadModel
 if TYPE_CHECKING:
     from polylogue.storage.index_generation import IndexGeneration
 
-CANDIDATE_BUILD_OPERATION = "candidate-build"
-CANDIDATE_BUILD_PROTOCOL = "polylogue.candidate-build/v1"
-CANDIDATE_BUILD_CLASS = "inactive-candidate"
-CANDIDATE_BUILD_POLICY = "inactive-candidate-v1"
+CANDIDATE_BUILD_OPERATION: Literal["candidate-build"] = "candidate-build"
+CANDIDATE_BUILD_PROTOCOL: Literal["polylogue.candidate-build/v1"] = "polylogue.candidate-build/v1"
+CANDIDATE_BUILD_CLASS: Literal["inactive-candidate"] = "inactive-candidate"
+CANDIDATE_BUILD_POLICY: Literal["inactive-candidate-v1"] = "inactive-candidate-v1"
 
 _IDENTIFIER_RE = re.compile(r"^[^/\\\x00]+$")
 _DIGEST_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _PLAN_STATUSES = frozenset({OperationStatus.ACCEPTED, OperationStatus.PENDING, OperationStatus.RUNNING})
 
 
-def _identifier(value: str, *, label: str) -> str:
+def _identifier(value: object, *, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string")
     value = value.strip()
@@ -124,7 +125,7 @@ class CandidateBuildRequest(SurfacePayloadModel):
         return _ordered_unique(value, label=info.field_name)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, object]) -> CandidateBuildRequest:
+    def from_dict(cls, raw: Mapping[str, object]) -> CandidateBuildRequest:
         """Validate one untrusted request object at a surface boundary."""
 
         return cls.model_validate(raw)
@@ -258,7 +259,7 @@ class CandidateBuildPlan(SurfacePayloadModel):
         return _sha256(self.to_dict())
 
     @classmethod
-    def from_dict(cls, raw: dict[str, object]) -> CandidateBuildPlan:
+    def from_dict(cls, raw: Mapping[str, object]) -> CandidateBuildPlan:
         return cls.model_validate(raw)
 
 
@@ -409,7 +410,7 @@ class CandidateBuildReceipt(SurfacePayloadModel):
         return json_document(self.model_dump(mode="json"))
 
     @classmethod
-    def from_dict(cls, raw: dict[str, object]) -> CandidateBuildReceipt:
+    def from_dict(cls, raw: Mapping[str, object]) -> CandidateBuildReceipt:
         return cls.model_validate(raw)
 
 
@@ -423,7 +424,7 @@ class CandidateBuildWireRequest(SurfacePayloadModel):
     request: CandidateBuildRequest
 
     @classmethod
-    def from_dict(cls, raw: dict[str, object]) -> CandidateBuildWireRequest:
+    def from_dict(cls, raw: Mapping[str, object]) -> CandidateBuildWireRequest:
         return cls.model_validate(raw)
 
     def to_dict(self) -> JSONDocument:
@@ -474,7 +475,7 @@ def plan_candidate_build(
 
 
 def lower_candidate_build_wire(
-    raw: dict[str, object],
+    raw: Mapping[str, object],
     *,
     surface: Literal["cli", "daemon", "mcp", "api"],
 ) -> CandidateBuildRequest:

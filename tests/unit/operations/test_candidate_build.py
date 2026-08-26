@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from polylogue.core.enums import OperationStatus
+from polylogue.core.json import JSONValue
 from polylogue.operations import (
     CandidateBuildBudget,
     CandidateBuildError,
@@ -25,6 +26,7 @@ from polylogue.operations import (
     lower_candidate_build_wire,
     plan_candidate_build,
 )
+from polylogue.storage.index_generation import IndexGeneration
 
 
 def _seal() -> SourceSeal:
@@ -50,24 +52,30 @@ def _request() -> CandidateBuildRequest:
     )
 
 
-def _generation() -> SimpleNamespace:
-    return SimpleNamespace(
+def _generation(*, state: str = "inactive") -> IndexGeneration:
+    return IndexGeneration(
         generation_id="gen-1",
         owner_id="owner-1",
         archive_root="/archive",
         index_path="/archive/.index-generations/gen-1/index.db",
-        state="inactive",
+        state=state,
+        created_at_ms=1,
     )
 
 
 def test_catalog_names_every_candidate_contract_type() -> None:
     spec = build_runtime_operation_catalog().by_name()["candidate-build"]
-    assert spec.request_contract.endswith("CandidateBuildRequest")
-    assert spec.plan_contract.endswith("CandidateBuildPlan")
-    assert spec.progress_contract.endswith("CandidateBuildProgress")
-    assert spec.result_contract.endswith("CandidateBuildResult")
-    assert spec.error_contract.endswith("CandidateBuildError")
-    assert spec.receipt_contract.endswith("CandidateBuildReceipt")
+    contracts: tuple[tuple[str | None, str], ...] = (
+        (spec.request_contract, "CandidateBuildRequest"),
+        (spec.plan_contract, "CandidateBuildPlan"),
+        (spec.progress_contract, "CandidateBuildProgress"),
+        (spec.result_contract, "CandidateBuildResult"),
+        (spec.error_contract, "CandidateBuildError"),
+        (spec.receipt_contract, "CandidateBuildReceipt"),
+    )
+    for contract, suffix in contracts:
+        assert contract is not None
+        assert contract.endswith(suffix)
     assert spec.surfaces == ("daemon", "cli", "mcp", "api")
 
 
@@ -118,7 +126,7 @@ def test_request_identity_is_order_independent_and_binds_every_authority_field()
         {"source_mutation": True},
     ],
 )
-def test_request_rejects_forbidden_capabilities(forbidden: dict[str, object]) -> None:
+def test_request_rejects_forbidden_capabilities(forbidden: Mapping[str, JSONValue]) -> None:
     payload = _request().to_dict()
     payload.update(forbidden)
     with pytest.raises(ValidationError):
@@ -166,13 +174,12 @@ def test_plan_rejects_stale_seal_and_active_target() -> None:
             context,
         )
     with pytest.raises(ValueError, match="inactive"):
-        active = SimpleNamespace(**{**vars(_generation()), "state": "active"})
         plan_candidate_build(
             _request(),
             CandidateBuildPlanningContext(
                 archive_root=context.archive_root,
                 source_seal=context.source_seal,
-                generation=active,
+                generation=_generation(state="active"),
                 budget=context.budget,
             ),
         )
