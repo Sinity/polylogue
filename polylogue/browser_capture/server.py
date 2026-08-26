@@ -12,6 +12,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
@@ -88,6 +89,31 @@ logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
 _SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+
+
+class _MissionControlArchivePayload(TypedDict):
+    status: str
+    session_id: str | None
+    ref: str | None
+
+
+class _MissionControlCostPayload(TypedDict):
+    status: str
+    total_usd: float | None
+    provenance: list[str]
+
+
+class _MissionControlAssertionsPayload(TypedDict):
+    status: str
+    items: list[dict[str, object]]
+
+
+class _MissionControlPayload(TypedDict):
+    status: str
+    archive: _MissionControlArchivePayload
+    cost: _MissionControlCostPayload
+    assertions: _MissionControlAssertionsPayload
+    reason: NotRequired[str]
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -816,8 +842,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             spool_path=self.server.config.spool_path,
             archive_root=self.server.config.archive_root,
         )
-        indexed = state.get("indexed_session_id")
-        projection = {
+        indexed_value = state.get("indexed_session_id")
+        indexed = indexed_value if isinstance(indexed_value, str) else None
+        archive_root = self.server.config.archive_root
+        projection: _MissionControlPayload = {
             "status": "available" if indexed else "uncaptured",
             "archive": {
                 "status": "available" if indexed else "uncaptured",
@@ -827,15 +855,20 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             "cost": {"status": "unknown", "total_usd": None, "provenance": []},
             "assertions": {"status": "unknown", "items": []},
         }
-        if indexed:
+        if indexed and archive_root is None:
+            logger.warning(
+                "browser_capture.mission_control_degraded",
+                error="archive root is not configured",
+            )
+            projection["status"] = "unknown"
+            projection["reason"] = "archive_projection_unavailable"
+        elif indexed and archive_root is not None:
             try:
                 from polylogue import Polylogue
                 from polylogue.api.sync.bridge import run_coroutine_sync
                 from polylogue.insights.archive import SessionCostInsightQuery
 
-                poly = Polylogue(
-                    archive_root=self.server.config.archive_root, db_path=self.server.config.archive_root / "index.db"
-                )
+                poly = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
                 costs = run_coroutine_sync(poly.list_session_cost_insights(SessionCostInsightQuery(session_id=indexed)))
                 if costs:
                     estimate = costs[0].estimate
