@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
+from polylogue.storage.archive_tuple_location import InactiveTierDestination
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.embeddings.identity import (
     EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
@@ -34,6 +35,12 @@ from polylogue.storage.embeddings.identity import (
     register_embedding_identity_sql,
     sql_string_literal,
 )
+from polylogue.storage.embeddings.tuple_generation import (
+    EmbeddingTupleGeneration,
+)
+from polylogue.storage.embeddings.tuple_generation import (
+    prepare_inactive_embedding_generation as _prepare_inactive_embedding_generation,
+)
 from polylogue.storage.introspection import index_exists as _index_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -43,6 +50,22 @@ def ensure_embedding_lifecycle(archive_root: Path, *, active_path: Path | None =
     from polylogue.storage.embeddings.generations import ensure_embedding_lifecycle as _ensure
 
     return _ensure(archive_root, active_path=active_path)
+
+
+def prepare_inactive_archive_embedding_generation(
+    destination: InactiveTierDestination,
+    *,
+    recipe: EmbeddingRecipe,
+    source_generation: str,
+    index_generation: str,
+) -> EmbeddingTupleGeneration:
+    """Construct the embeddings member of a daemon-owned inactive tuple."""
+    return _prepare_inactive_embedding_generation(
+        destination,
+        recipe=recipe,
+        source_generation=source_generation,
+        index_generation=index_generation,
+    )
 
 
 def resolve_embedding_failure_with_lifecycle(
@@ -1975,6 +1998,7 @@ __all__ = [
     "embed_archive_session_sync",
     "iter_pending_sessions",
     "mark_all_archive_sessions_needs_reindex",
+    "prepare_inactive_archive_embedding_generation",
     "select_pending_session_window",
     "select_pending_archive_session_window",
 ]
