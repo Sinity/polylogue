@@ -17,6 +17,7 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import signal
 import struct
 import subprocess
 import sys
@@ -25,6 +26,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 # Conditional pyte import with fallback
 try:
@@ -53,6 +55,14 @@ class PtyResult:
         return grid_to_text(self.grid, strip_trailing=strip_trailing)
 
 
+class PtyEventLike(Protocol):
+    """Structural event contract accepted by the PTY runner."""
+
+    after_s: float
+    kind: str
+    value: str
+
+
 def run_in_pty(
     args: list[str],
     *,
@@ -60,6 +70,7 @@ def run_in_pty(
     cols: int = 80,
     env: dict[str, str] | None = None,
     timeout: float = 30.0,
+    events: tuple[PtyEventLike, ...] = (),
 ) -> PtyResult:
     """Run polylogue CLI in a pseudo-terminal and capture output.
 
@@ -146,6 +157,25 @@ def run_in_pty(
     start_time = time.time()
     output_chunks: list[bytes] = []
 
+    next_event = 0
+
+    def _apply_event(event: PtyEventLike, process: subprocess.Popen[bytes]) -> None:
+        kind = event.kind
+        value = event.value
+        if kind == "write":
+            os.write(master_fd, value.encode("utf-8"))
+        elif kind == "resize":
+            event_rows, event_cols = (int(part) for part in value.lower().split("x", 1))
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", event_rows, event_cols, 0, 0))
+        elif kind == "interrupt":
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+        elif kind == "terminate":
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+        else:
+            raise ValueError(f"unknown PTY event kind: {kind!r}")
+
     try:
         # Start subprocess in PTY
         process = subprocess.Popen(
@@ -168,6 +198,10 @@ def run_in_pty(
             if elapsed > timeout:
                 process.kill()
                 raise TimeoutError(f"Command timed out after {timeout}s: {' '.join(command)}")
+
+            while next_event < len(events) and elapsed >= float(events[next_event].after_s):
+                _apply_event(events[next_event], process)
+                next_event += 1
 
             try:
                 chunk = os.read(master_fd, 4096)

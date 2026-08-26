@@ -14,6 +14,68 @@ from tests.infra.strategies.summaries import (
 _META_KEY_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789-_"
 _META_VALUE_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,:;?!-_/"
 _FIELD_NAMES = ("id", "provider", "title", "date", "tags", "summary", "messages")
+_UNICODE_WORD = st.text(
+    alphabet=st.characters(
+        whitelist_categories=("L", "M", "N", "P", "Zs"),
+        whitelist_characters="🙂東京\u200d",
+    ),
+    min_size=1,
+    max_size=32,
+)
+
+
+@dataclass(frozen=True)
+class CliInteractionCase:
+    """Generated argv/query input for parser and renderer differential laws."""
+
+    argv: tuple[str, ...]
+    query: str
+    cursor: int
+    projection: str
+    renderer: str
+    page_size: int
+    page_token: str | None
+    near_miss: bool
+
+
+@st.composite
+def cli_interaction_case_strategy(draw: st.DrawFn) -> CliInteractionCase:
+    """Generate valid and invalid-near command lines at arbitrary cursors."""
+    field = draw(st.sampled_from(("title", "origin", "repo", "date")))
+    value = draw(_UNICODE_WORD)
+    query = f'{field}:"{value}"'
+    near_miss = draw(st.booleans())
+    if near_miss:
+        query = draw(
+            st.sampled_from(
+                (
+                    query[:-1],
+                    query.replace(":", "", 1),
+                    query + " then",
+                    query + " \\",
+                )
+            )
+        )
+    argv = ("find", query)
+    cursor = draw(st.integers(min_value=0, max_value=len(query)))
+    return CliInteractionCase(
+        argv=argv,
+        query=query,
+        cursor=cursor,
+        projection=draw(st.sampled_from(("default", "terminal-unit-envelope", "search-hits"))),
+        renderer=draw(st.sampled_from(("plain", "json", "ndjson", "yaml", "csv"))),
+        page_size=draw(st.integers(min_value=1, max_value=100)),
+        page_token=draw(st.one_of(st.none(), st.text(alphabet=_META_KEY_ALPHABET, min_size=1, max_size=16))),
+        near_miss=near_miss,
+    )
+
+
+@st.composite
+def executable_cli_example_strategy(draw: st.DrawFn) -> tuple[str, ...]:
+    """Generate a bounded executable example from the public query grammar."""
+    field = draw(st.sampled_from(("title", "origin", "repo")))
+    value = draw(st.text(alphabet=_META_VALUE_ALPHABET, min_size=1, max_size=18))
+    return ("find", f'{field}:"{value}"', "then", draw(st.sampled_from(("read", "select"))))
 
 
 @dataclass(frozen=True)

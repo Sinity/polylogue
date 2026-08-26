@@ -124,6 +124,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
 | `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |

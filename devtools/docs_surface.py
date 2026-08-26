@@ -360,6 +360,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery.",
         "design",
     ),
+    _entry(
+        "CLI Interaction Oracle Deletion Ledger",
+        "plans/cli-interaction-deletion-ledger.md",
+        "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
+        "design",
+    ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),
     _entry("Time Machine", "design/time-machine.md", "Vision note for reconstructing work over time.", "design"),
     _entry("Whole Product", "design/whole-product.md", "Product vision and system relationships.", "design"),
