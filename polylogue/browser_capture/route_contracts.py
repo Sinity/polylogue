@@ -25,6 +25,7 @@ BrowserCaptureRouteKind = Literal[
     "capabilities",
     "status",
     "archive_state",
+    "mission_control",
     "capture_ingest",
     "browser_action_capabilities",
     "browser_action_enqueue",
@@ -90,6 +91,15 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "provider + provider_session_id query parameters",
         "BrowserCaptureArchiveStatePayload",
         "Reports whether a provider session is spooled, using a receiver-local artifact ref.",
+    ),
+    BrowserCaptureRouteContract(
+        "GET",
+        "/v1/mission-control",
+        "mission_control",
+        "bearer_if_configured",
+        "provider + provider_session_id query parameters",
+        "typed Layer 2 intelligence projection",
+        "Reads canonical archive, usage provenance, and judged assertions; never inspects provider DOM.",
     ),
     BrowserCaptureRouteContract(
         "POST",

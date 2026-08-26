@@ -1505,6 +1505,44 @@ async function getJson(path, timeoutMs = null) {
   }
 }
 
+// Layer 2 is a read-only projection.  It deliberately uses the daemon's
+// canonical session id and typed read routes; provider DOM text and local
+// storage ledgers are not authority for cost, assertions, or archive links.
+async function missionIntelligenceProjection(state, configuredUrl) {
+  const indexedSessionId = state?.archive_state?.indexed_session_id || null;
+  const base = String(configuredUrl || "").replace(/\/+$/, "");
+  const unavailable = (status, reason) => ({
+    status,
+    reason,
+    archive: { status: indexedSessionId ? "available" : "uncaptured", session_id: indexedSessionId },
+    cost: { status: "unknown", total_usd: null, provenance: [] },
+    assertions: { status: "unknown", items: [] },
+  });
+  if (state?.error === "unauthorized") return unavailable("unauthorized", "receiver_authorization_required");
+  if (state?.online === false) return unavailable("offline", "receiver_unavailable");
+  if (!indexedSessionId) return unavailable("uncaptured", "canonical_session_not_indexed");
+
+  const encodedProvider = encodeURIComponent(state.provider || "");
+  const encodedSession = encodeURIComponent(state.provider_session_id || "");
+  let projection;
+  try {
+    projection = await getJson(`/v1/mission-control?provider=${encodedProvider}&provider_session_id=${encodedSession}`, 7000);
+  } catch (error) {
+    return unavailable(error?.status === 401 ? "unauthorized" : "offline", error?.message || "projection_unavailable");
+  }
+  return {
+    ...projection,
+    archive: { ...projection.archive, url: `${base}/?q=${encodeURIComponent(indexedSessionId)}` },
+    cost: {
+      ...(projection.cost || {}),
+      status: projection.cost?.status === "unavailable" ? "unknown" : (projection.cost?.status || "unknown"),
+      total_usd: projection.cost?.status === "unavailable" ? null : (projection.cost?.total_usd ?? null),
+      provenance: Array.isArray(projection.cost?.provenance) ? projection.cost.provenance : [],
+    },
+    assertions: projection.assertions || { status: "unknown", items: [] },
+  };
+}
+
 async function backfillReceiverPreflight() {
   let capability;
   try {
@@ -2972,6 +3010,7 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const settings = await receiverSettings();
+  const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
 
   return {
     ok: true,
@@ -3005,6 +3044,7 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
       persistence_supported: false,
       reason: "receiver_assertion_route_not_advertised",
     },
+    intelligence,
   };
 }
 

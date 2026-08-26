@@ -299,6 +299,15 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 ),
             )
             return
+        if parsed.path == "/v1/mission-control":
+            params = parse_qs(parsed.query)
+            provider = params.get("provider", [""])[0]
+            session_id = params.get("provider_session_id", [""])[0]
+            if not provider or not session_id:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "missing_provider_or_session")
+                return
+            self._mission_control(provider, session_id)
+            return
         if parsed.path == "/v1/capture-health":
             self._capture_health_list()
             return
@@ -798,6 +807,55 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 receiver_id=receiver_identity(self.server.config),
             ).model_dump(mode="json"),
         )
+
+    def _mission_control(self, provider: str, provider_session_id: str) -> None:
+        """Return the receiver-authoritative, read-only Layer 2 projection."""
+        state = existing_capture_state(
+            provider,
+            provider_session_id,
+            spool_path=self.server.config.spool_path,
+            archive_root=self.server.config.archive_root,
+        )
+        indexed = state.get("indexed_session_id")
+        projection = {
+            "status": "available" if indexed else "uncaptured",
+            "archive": {
+                "status": "available" if indexed else "uncaptured",
+                "session_id": indexed,
+                "ref": f"session:{indexed}" if indexed else None,
+            },
+            "cost": {"status": "unknown", "total_usd": None, "provenance": []},
+            "assertions": {"status": "unknown", "items": []},
+        }
+        if indexed:
+            try:
+                from polylogue import Polylogue
+                from polylogue.api.sync.bridge import run_coroutine_sync
+                from polylogue.insights.archive import SessionCostInsightQuery
+
+                poly = Polylogue(
+                    archive_root=self.server.config.archive_root, db_path=self.server.config.archive_root / "index.db"
+                )
+                costs = run_coroutine_sync(poly.list_session_cost_insights(SessionCostInsightQuery(session_id=indexed)))
+                if costs:
+                    estimate = costs[0].estimate
+                    projection["cost"] = {
+                        "status": estimate.status if estimate.status != "unavailable" else "unknown",
+                        "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
+                        "provenance": list(estimate.provenance),
+                    }
+                claims = run_coroutine_sync(
+                    poly.list_assertion_claim_payloads(target_ref=f"session:{indexed}", limit=5)
+                )
+                projection["assertions"] = {
+                    "status": "available",
+                    "items": [claim.model_dump(mode="json") for claim in claims],
+                }
+            except Exception as exc:  # read projection must degrade, never become success
+                logger.warning("browser_capture.mission_control_degraded", error=repr(exc))
+                projection["status"] = "unknown"
+                projection["reason"] = "archive_projection_unavailable"
+        self._send_json(HTTPStatus.OK, projection)
 
     def _capture_health_report(self) -> None:
         payload = self._read_json_body()

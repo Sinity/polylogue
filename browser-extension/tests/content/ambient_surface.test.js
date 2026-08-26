@@ -37,6 +37,12 @@ function missionFixture(overrides = {}) {
       detail: "already_safe",
     }],
     assertions: { selection_candidate_supported: true, persistence_supported: false },
+    intelligence: {
+      status: "available",
+      archive: { status: "available", session_id: "chatgpt:conversation-1", ref: "session:chatgpt:conversation-1", url: "http://127.0.0.1:8765/?q=chatgpt%3Aconversation-1" },
+      cost: { status: "exact", total_usd: 0.125, provenance: ["provider_reported"] },
+      assertions: { status: "available", items: [{ body_text: "Use typed receiver identity", status: "active", confidence: 0.9 }] },
+    },
     ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
     ...overrides,
   };
@@ -106,7 +112,7 @@ describe("ambient capture status surface", () => {
 
     const panel = api.shadow.querySelector("[role='dialog']");
     expect(panel.getAttribute("aria-labelledby")).toBe("polylogue-ambient-title");
-    expect(panel.getAttribute("aria-modal")).toBe("false");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
     expect(runtime.sendMessage).toHaveBeenCalledWith({
       type: "polylogue.missionControl.status",
       refresh: true,
@@ -131,6 +137,40 @@ describe("ambient capture status surface", () => {
     const assertion = [...api.shadow.querySelectorAll("button")]
       .find((button) => button.textContent.includes("Save assertion"));
     expect(assertion.disabled).toBe(true);
+  });
+
+  it("renders the daemon projection with provenance and never treats unknown cost as zero", async () => {
+    const dom = freshDom();
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    api.open();
+    expect(api.shadow.textContent).toContain("$0.125");
+    expect(api.shadow.textContent).toContain("Provenance: provider_reported");
+    expect(api.shadow.textContent).toContain("Use typed receiver identity");
+    expect(api.shadow.textContent).toContain("Policy: display-only");
+
+    api.render({ ...missionFixture(), intelligence: {
+      status: "offline",
+      archive: { status: "uncaptured" },
+      cost: { status: "unknown", total_usd: null, provenance: [] },
+      assertions: { status: "unknown", items: [] },
+    }});
+    expect(api.shadow.textContent).toContain("Offline — archive projection unavailable");
+    expect(api.shadow.textContent).toContain("Session cost: unknown");
+    expect(api.shadow.textContent).not.toContain("Session cost: $0.000");
+  });
+
+  it("toggles with Alt+P and traps Tab focus inside the slide-over", async () => {
+    const dom = freshDom();
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "p", altKey: true, bubbles: true }));
+    const panel = api.shadow.querySelector(".panel");
+    expect(panel.hidden).toBe(false);
+    const nodes = [...api.shadow.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    nodes.at(-1).focus();
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, composed: true }));
+    expect(api.shadow.activeElement).toBe(nodes[0]);
   });
 
   it("opens non-modally, closes on Escape, and restores focus to the chip", async () => {

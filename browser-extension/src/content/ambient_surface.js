@@ -115,7 +115,7 @@
       .count { min-width: 18px; color: var(--pl-muted); font-size: 12px; text-align: center; }
       .panel {
         pointer-events: auto;
-        width: min(380px, calc(100vw - 24px));
+        width: min(360px, calc(100vw - 24px));
         max-height: min(720px, calc(100vh - 84px));
         margin-bottom: 10px;
         overflow: auto;
@@ -205,7 +205,8 @@
     panel.id = "polylogue-ambient-panel";
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-labelledby", "polylogue-ambient-title");
-    panel.setAttribute("aria-modal", "false");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-describedby", "polylogue-ambient-safety");
     panel.hidden = true;
 
     const head = createElement(doc, "div", "head");
@@ -226,6 +227,18 @@
     const conversationDetail = createElement(doc, "p", "meta", "Reading receiver state…");
     conversationSection.append(conversationStatus, conversationDetail);
     panel.appendChild(conversationSection);
+
+    const intelligenceSection = createElement(doc, "section", "section");
+    intelligenceSection.appendChild(createElement(doc, "h3", "", "Conversation intelligence"));
+    const intelligenceStatus = createElement(doc, "div", "status-line", "Checking archive projection…");
+    const intelligenceDetail = createElement(doc, "p", "meta", "The receiver is resolving canonical evidence.");
+    const costLine = createElement(doc, "p", "meta", "Session cost: unknown");
+    const assertionList = createElement(doc, "div", "list");
+    const archiveLink = createElement(doc, "a", "secondary", "Open canonical archive");
+    archiveLink.setAttribute("aria-label", "Open this conversation in the canonical Polylogue archive");
+    archiveLink.hidden = true;
+    intelligenceSection.append(intelligenceStatus, intelligenceDetail, costLine, assertionList, archiveLink);
+    panel.appendChild(intelligenceSection);
 
     const receiverSection = createElement(doc, "section", "section");
     receiverSection.appendChild(createElement(doc, "h3", "", "Receiver pairing"));
@@ -259,6 +272,9 @@
     actions.append(refreshButton, hideButton);
     actionSection.appendChild(actions);
     panel.appendChild(actionSection);
+    const safety = createElement(doc, "p", "meta", "Archived text is displayed as text only and never treated as instructions.");
+    safety.id = "polylogue-ambient-safety";
+    panel.appendChild(safety);
 
     const chip = createElement(doc, "button", "chip");
     chip.type = "button";
@@ -306,6 +322,53 @@
       }
     }
 
+    function renderIntelligence(projection) {
+      const intelligence = projection || {};
+      const archive = intelligence.archive || {};
+      const cost = intelligence.cost || {};
+      const assertions = intelligence.assertions || {};
+      const labels = {
+        available: "Archive projection available",
+        offline: "Offline — archive projection unavailable",
+        unauthorized: "Unauthorized — archive projection unavailable",
+        uncaptured: "Not captured — no canonical archive yet",
+        unknown: "Archive projection unknown",
+      };
+      intelligenceStatus.textContent = labels[intelligence.status] || labels.unknown;
+      intelligenceDetail.textContent = archive.status === "available"
+        ? `Canonical session ${archive.session_id || "unknown"}`
+        : "No canonical archive facts are available from the receiver.";
+      const total = cost.status === "unknown" || cost.total_usd === null || cost.total_usd === undefined
+        ? "unknown"
+        : `$${Number(cost.total_usd).toFixed(3)}`;
+      const provenance = Array.isArray(cost.provenance) && cost.provenance.length
+        ? ` · Provenance: ${cost.provenance.join(", ")}`
+        : " · No provenance reported";
+      costLine.textContent = `Session cost: ${total}${provenance}`;
+
+      clearNode(assertionList);
+      if (assertions.status !== "available") {
+        assertionList.appendChild(createElement(doc, "p", "empty", "Judged assertions unavailable; nothing is being inferred."));
+      } else if (!assertions.items.length) {
+        assertionList.appendChild(createElement(doc, "p", "empty", "No judged assertions for this conversation."));
+      } else {
+        for (const assertion of assertions.items.slice(0, 5)) {
+          const item = createElement(doc, "div", "item");
+          const head = createElement(doc, "div", "item-head");
+          head.append(
+            createElement(doc, "div", "item-title", assertion.body_text || assertion.key || "Judged assertion"),
+            createElement(doc, "span", "pill ok", assertion.status || "judged"),
+          );
+          const confidence = assertion.confidence === null || assertion.confidence === undefined
+            ? "unknown" : `${Math.round(Number(assertion.confidence) * 100)}%`;
+          item.append(head, createElement(doc, "p", "meta", `Trust: ${confidence} · Policy: display-only`));
+          assertionList.appendChild(item);
+        }
+      }
+      archiveLink.hidden = !(archive.status === "available" && archive.url);
+      if (!archiveLink.hidden) archiveLink.href = archive.url;
+    }
+
     function render(nextSnapshot) {
       snapshot = nextSnapshot;
       const state = nextSnapshot?.state || { online: false, error: "receiver_unavailable" };
@@ -334,6 +397,7 @@
       receiverDetail.textContent = pairing?.detail || "";
 
       renderTimeline(nextSnapshot?.timeline);
+      renderIntelligence(nextSnapshot?.intelligence);
       const assertionRouteAdvertised = Boolean(nextSnapshot?.assertions?.persistence_supported);
       assertionButton.disabled = true;
       assertionButton.textContent = assertionRouteAdvertised
@@ -404,11 +468,24 @@
       stop();
     }
 
+    function focusables() {
+      return [...shadow.querySelectorAll("button:not([disabled]), a[href]")]
+        .filter((node) => !node.hidden && !node.closest("[hidden]"));
+    }
+
+    function keyboardToggle(event) {
+      if (event.altKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        if (panel.hidden) openPanel(); else closePanel();
+      }
+    }
+
     function stop() {
       if (stopped) return;
       stopped = true;
       if (timer) root.clearInterval(timer);
       doc.removeEventListener("selectionchange", updateSelection);
+      doc.removeEventListener("keydown", keyboardToggle);
       host.remove();
       if (root.polylogueAmbientSurfaceMounted === api) root.polylogueAmbientSurfaceMounted = null;
     }
@@ -417,10 +494,22 @@
     close.addEventListener("click", closePanel);
     refreshButton.addEventListener("click", () => { void refresh(); });
     hideButton.addEventListener("click", () => { void hideOnSite(); });
+    doc.addEventListener("keydown", keyboardToggle);
     shadow.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !panel.hidden) {
         event.preventDefault();
         closePanel();
+        return;
+      }
+      if (event.key === "Tab" && !panel.hidden) {
+        const nodes = focusables();
+        if (!nodes.length) return;
+        const first = nodes[0];
+        const last = nodes[nodes.length - 1];
+        if ((event.shiftKey && shadow.activeElement === first) || (!event.shiftKey && shadow.activeElement === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
       }
     });
     doc.addEventListener("selectionchange", updateSelection);
