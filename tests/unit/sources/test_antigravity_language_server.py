@@ -318,7 +318,7 @@ def test_iter_language_server_exports_yields_parsed_sessions(
     }
     fake = _FakeClientForExports(summaries, markdown)
 
-    sessions = list(iter_language_server_exports(tmp_path, client=fake))  # type: ignore[arg-type]
+    sessions = list(iter_language_server_exports(tmp_path, client=fake))
 
     assert [c.provider_session_id for c in sessions] == [
         "cascade-1",
@@ -353,7 +353,7 @@ def test_iter_language_server_exports_only_cascade_ids_filters_corpus(
     sessions = list(
         iter_language_server_exports(
             tmp_path,
-            client=fake,  # type: ignore[arg-type]
+            client=fake,
             only_cascade_ids=frozenset({"cascade-2"}),
         )
     )
@@ -373,7 +373,7 @@ def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
     sessions = list(
         iter_language_server_exports(
             tmp_path,
-            client=fake,  # type: ignore[arg-type]
+            client=fake,
             only_cascade_ids=frozenset(),
         )
     )
@@ -431,6 +431,12 @@ def test_export_results_reject_source_mutation_during_conversion(tmp_path: Path)
     _touch_conversation_pb(tmp_path, "cascade-1")
 
     class _MutatingClient:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
         def search_sessions(self, **_kwargs: object) -> list[AntigravitySessionSummary]:
             return []
 

@@ -17,6 +17,7 @@ from enum import StrEnum
 from glob import glob
 from pathlib import Path
 from types import TracebackType
+from typing import Protocol
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -158,6 +159,16 @@ class AntigravitySessionSummary:
             snippet=_string(payload.get("snippet")),
             last_modified_time=_string(payload.get("lastModifiedTime")),
         )
+
+
+class _AntigravityLanguageServerExportClient(Protocol):
+    def start(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]: ...
+
+    def export_markdown(self, cascade_id: str) -> str: ...
 
 
 class AntigravityLanguageServerClient:
@@ -342,7 +353,7 @@ def parse_markdown_export(
 def iter_language_server_exports(
     root: Path,
     *,
-    client: AntigravityLanguageServerClient | None = None,
+    client: _AntigravityLanguageServerExportClient | None = None,
     only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[ParsedSession]:
     """Yield successful conversions, preserving the historical strict API."""
@@ -364,7 +375,7 @@ def iter_language_server_exports(
 def iter_language_server_export_results(
     root: Path,
     *,
-    client: AntigravityLanguageServerClient | None = None,
+    client: _AntigravityLanguageServerExportClient | None = None,
     only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[AntigravityExportOutcome]:
     """Yield one typed outcome for every manifested conversation protobuf.

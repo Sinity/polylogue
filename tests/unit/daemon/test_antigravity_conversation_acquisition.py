@@ -8,9 +8,12 @@ route as batch acquisition.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+
+import pytest
 
 from polylogue.config import Source
 from polylogue.sources.live import WatchSource
@@ -44,7 +47,7 @@ def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Pat
 
 def test_shared_source_iterator_never_promotes_brain_artifacts(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "antigravity"
     (root / "conversations").mkdir(parents=True)
@@ -57,7 +60,7 @@ def test_shared_source_iterator_never_promotes_brain_artifacts(
         antigravity.AntigravitySessionSummary(cascade_id="cascade"),
     )
 
-    def outcomes(*_args, **_kwargs):
+    def outcomes(*_args: object, **_kwargs: object) -> Iterator[antigravity.AntigravityExportOutcome]:
         yield antigravity.AntigravityExportOutcome(root / "conversations/cascade.pb", "cascade", session)
 
     monkeypatch.setattr(antigravity, "iter_language_server_export_results", outcomes)
@@ -76,7 +79,15 @@ def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> N
         (conversations / f"{cascade_id}.pb").write_bytes(cascade_id.encode())
 
     class Client:
-        def search_sessions(self, **_kwargs):
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def search_sessions(
+            self, *, limit: int = 10000, query: str = ""
+        ) -> list[antigravity.AntigravitySessionSummary]:
             return []
 
         def export_markdown(self, cascade_id: str) -> str:
@@ -95,7 +106,7 @@ def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> N
 
 def test_common_live_batch_admits_conversation_through_vendor_route(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "antigravity"
     conversation = root / "conversations" / "cascade.pb"
@@ -109,7 +120,9 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
         def close(self) -> None:
             return None
 
-        def search_sessions(self, **_kwargs):
+        def search_sessions(
+            self, *, limit: int = 10000, query: str = ""
+        ) -> list[antigravity.AntigravitySessionSummary]:
             return []
 
         def export_markdown(self, cascade_id: str) -> str:
