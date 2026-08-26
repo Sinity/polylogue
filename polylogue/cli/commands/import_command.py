@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 # observable through the inbox / ``polylogue ops status`` surfaces.
 _ACCEPTED_STATUSES = frozenset({"accepted", "pending", "scheduled", "queued"})
 _DEMO_WAIT_POLL_INTERVAL_S = 0.25
+_DEMO_AUGMENT_TIMEOUT_S = 120.0
 
 
 def _default_daemon_url() -> str:
@@ -141,6 +142,43 @@ def _verify_demo_now(*, require_overlays: bool = False) -> DemoVerifyResult:
         problem_text = "; ".join(result.problems) if result.problems else "semantic checks did not pass"
         fail("import", f"Demo archive verification failed: {problem_text}")
     return result
+
+
+def _request_demo_augmentation(daemon_url: str, *, with_overlays: bool) -> None:
+    """Ask the daemon to apply demo-only writes under its writer lease."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+
+    config = load_polylogue_config()
+    headers = {"Content-Type": "application/json"}
+    token = resolve_api_auth_token(
+        getattr(config, "api_auth_token", None),
+        allow_no_auth=getattr(config, "api_allow_no_auth", False),
+    )
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(
+        f"{daemon_url}/api/demo/augment",
+        data=json.dumps({"with_overlays": with_overlays}).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=_DEMO_AUGMENT_TIMEOUT_S) as response:
+            payload = json.loads(response.read())
+    except HTTPError as exc:
+        fail("import", _daemon_http_error_message(exc, daemon_url=daemon_url, staged=archive_root()))
+    except TimeoutError as exc:
+        fail("import", _daemon_submit_timeout_message(daemon_url, staged=archive_root(), exc=exc))
+    except URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            fail("import", _daemon_submit_timeout_message(daemon_url, staged=archive_root(), exc=exc.reason))
+        fail("import", _daemon_unreachable_message(daemon_url, str(exc.reason)))
+    except OSError as exc:
+        fail("import", _daemon_unreachable_message(daemon_url, str(exc)))
+
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        fail("import", "Daemon rejected demo augmentation; refusing to claim a verified archive.")
 
 
 #: Seconds to wait for the daemon to accept an ingest submission. Staging a
@@ -371,8 +409,6 @@ def import_command(
     )
 
     if wait:
-        from polylogue.demo import apply_demo_post_ingest_augmentation
-
         env.ui.console.print(f"[bold]Waiting:[/bold] demo archive convergence (timeout {wait_timeout_s:g}s)")
         _wait_for_demo_archive_ready(timeout_s=wait_timeout_s)
 
@@ -383,12 +419,7 @@ def import_command(
         # archive matches ``polylogue demo seed``'s semantic contract exactly
         # (polylogue-z1c6). Idempotent: safe even if a prior --wait already
         # applied it against this archive root.
-        apply_demo_post_ingest_augmentation(archive_root())
-
-        if with_overlays:
-            from polylogue.scenarios import seed_demo_user_overlays
-
-            seed_demo_user_overlays(archive_root())
+        _request_demo_augmentation(daemon_url, with_overlays=with_overlays)
 
         result = _verify_demo_now(require_overlays=with_overlays)
         env.ui.console.print(

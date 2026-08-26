@@ -394,6 +394,7 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
         ),
         _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
+        _StaticPostRoute("/api/demo/augment", ("api", "demo", "augment"), "_handle_demo_augment"),
         _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
         _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
         _StaticPostRoute(
@@ -5577,6 +5578,44 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # adapter parity tests.
         response["request"] = request.to_dict()
         self._send_json(HTTPStatus.ACCEPTED, response)
+
+    @daemon_safe_handler
+    def _handle_demo_augment(self) -> None:
+        """POST /api/demo/augment — apply deterministic demo writes as daemon owner."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+        if not isinstance(body, dict) or not isinstance(body.get("with_overlays", False), bool):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        bridge = getattr(self.server, "write_bridge", None)
+        if bridge is None:
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
+            return
+
+        from polylogue.demo import apply_demo_post_ingest_augmentation
+        from polylogue.paths import archive_root
+
+        with_overlays = bool(body.get("with_overlays", False))
+
+        def augment() -> None:
+            apply_demo_post_ingest_augmentation(archive_root())
+            if with_overlays:
+                from polylogue.scenarios import seed_demo_user_overlays
+
+                seed_demo_user_overlays(archive_root())
+
+        cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
+            "http.demo.augment",
+            120.0,
+            augment,
+        )
+        self._send_json(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": with_overlays})
 
     @daemon_safe_handler
     def _handle_maintenance_plan(self) -> None:

@@ -381,7 +381,11 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
         del timeout
         assert req.data is not None
         request_data = cast("bytes", req.data)
-        staged_path = json.loads(request_data.decode("utf-8"))["path"]
+        payload = json.loads(request_data.decode("utf-8"))
+        if req.full_url.endswith("/api/demo/augment"):
+            events.append("augment-daemon")
+            return _FakeDaemonResponse({"ok": True, "augmented": True, "overlays": False})
+        staged_path = payload["path"]
         events.append("daemon")
         return _FakeDaemonResponse(
             {
@@ -398,10 +402,6 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
         captured["timeout_s"] = timeout_s
         captured["require_overlays"] = require_overlays
         events.append("wait-base")
-
-    def fake_augment(archive_root: Path) -> None:
-        assert archive_root.exists()
-        events.append("augment")
 
     fake_result = DemoVerifyResult(
         archive_root=workspace_env["archive_root"],
@@ -422,14 +422,13 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     with (
         patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
-        patch("polylogue.demo.apply_demo_post_ingest_augmentation", side_effect=fake_augment),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--timeout", "12.5"])
 
     assert result.exit_code == 0, result.output
     assert captured == {"timeout_s": 12.5, "require_overlays": False}
-    assert events == ["daemon", "wait-base", "augment", "verify"]
+    assert events == ["daemon", "wait-base", "augment-daemon", "verify"]
     staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
     assert str(staged) in result.output
     assert "Demo archive verified" in result.output
@@ -457,7 +456,11 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
         del timeout
         assert req.data is not None
-        staged_path = json.loads(cast("bytes", req.data).decode("utf-8"))["path"]
+        payload = json.loads(cast("bytes", req.data).decode("utf-8"))
+        if req.full_url.endswith("/api/demo/augment"):
+            events.append("augment-daemon")
+            return _FakeDaemonResponse({"ok": True, "augmented": True, "overlays": True})
+        staged_path = payload["path"]
         events.append("daemon")
         return _FakeDaemonResponse(
             {
@@ -474,15 +477,6 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
         assert timeout_s == 30.0
         assert require_overlays is False
         events.append("wait-base")
-
-    def fake_augment(archive_root: Path) -> None:
-        assert archive_root.exists()
-        events.append("augment")
-
-    def fake_seed(archive_root: Path) -> object:
-        assert archive_root.exists()
-        events.append("seed-overlays")
-        return object()
 
     fake_result = DemoVerifyResult(
         archive_root=workspace_env["archive_root"],
@@ -503,14 +497,12 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence(
     with (
         patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
-        patch("polylogue.demo.apply_demo_post_ingest_augmentation", side_effect=fake_augment),
-        patch("polylogue.scenarios.seed_demo_user_overlays", side_effect=fake_seed),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--with-overlays"])
 
     assert result.exit_code == 0, result.output
-    assert events == ["daemon", "wait-base", "augment", "seed-overlays", "verify-overlays"]
+    assert events == ["daemon", "wait-base", "augment-daemon", "verify-overlays"]
     assert "sessions=19 messages=31" in result.output
     assert "overlays=yes" in result.output
 

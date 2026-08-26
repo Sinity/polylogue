@@ -168,14 +168,10 @@ async def _wait_for_demo_searchable(archive_root: Path, *, timeout_s: float = 30
     raise AssertionError(f"pytest query never surfaced {DEMO_CLAUDE_CODE_SESSION_ID}: last hits={sorted(hit_ids)}")
 
 
-# KNOWN FAILURE, tracked. Marked xfail rather than deleted or silently
-# skipped: xfail is REPORTED, so the debt stays counted every run and an
-# unexpected pass is visible. Fails on exact master as well as this branch.
 @pytest.mark.xfail(
     reason=(
-        "polylogue-bsp9m: `import --demo --wait` writes to a daemon-owned archive and trips the "
-        "ownership lock, so the run reports 'Scheduled: ...archive-ownership.lock' instead of the "
-        "expected verification failure"
+        "live daemon demo corpus still has the independently tracked incremental raw-census gap "
+        "(polylogue-52l2), which can prevent base semantic convergence"
     ),
     strict=False,
 )
@@ -276,15 +272,9 @@ async def test_import_demo_converges_through_live_daemon_path(
             # wrapping through ``revision_backfill._parse_one``).
             assert gemini_native_id == ("demo-00",)
 
-            # Regression guard for the missing shared post-ingest
-            # augmentation stage: provider usage injection must run for the
-            # daemon path too, not only ``polylogue demo seed``. The
-            # daemon's OWN insight-materialization convergence can race a
-            # one-shot CLI augmentation pass (it may recompute
-            # ``session_profiles`` from token columns that were not yet
-            # injected at that moment) -- apply_demo_post_ingest_augmentation
-            # itself now self-heals against this (bounded re-apply loop), so
-            # a single read-back after --wait already returned is sufficient.
+            # Regression guard for the daemon-owned post-ingest augmentation:
+            # provider usage injection must run through the daemon route too,
+            # not only through ``polylogue demo seed``.
             with sqlite3.connect(archive_root / "index.db") as conn:
                 total_cost_row = conn.execute(
                     "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
