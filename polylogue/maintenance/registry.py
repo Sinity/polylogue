@@ -64,6 +64,15 @@ def _state_dir(config: Config) -> Path:
     return Path(config.archive_root) / _STATE_DIRNAME
 
 
+def _fsync_directory(path: Path) -> None:
+    """Flush a directory after publishing a replacement entry."""
+    directory = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def persist_operation_snapshot(config: Config, operation: BackfillOperation, *, dry_run: bool) -> Path:
     """Persist a synchronous operation so its returned id is immediately inspectable."""
     directory = _state_dir(config)
@@ -84,6 +93,7 @@ def persist_operation_snapshot(config: Config, operation: BackfillOperation, *, 
     )
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
+    _fsync_directory(path.parent)
     return path
 
 
