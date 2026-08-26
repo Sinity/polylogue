@@ -89,14 +89,17 @@ class TestMaintenanceAPIRoutes:
         handler = _make_handler("/api/demo/augment", body={"with_overlays": True})
         calls: list[str] = []
 
+        from collections.abc import Callable
+        from typing import Any, cast
+
         class Bridge:
-            def run_sync_with_timeout(self, actor, timeout, function):
+            def run_sync_with_timeout(self, actor: str, timeout: float, function: Callable[[], object]) -> None:
                 assert actor == "http.demo.augment"
                 assert timeout == 120.0
                 calls.append("bridge")
                 function()
 
-        handler.server.write_bridge = Bridge()
+        handler.server.write_bridge = cast(Any, Bridge())
         with (
             patch("polylogue.demo.apply_demo_post_ingest_augmentation") as augment,
             patch("polylogue.scenarios.seed_demo_user_overlays") as overlays,
