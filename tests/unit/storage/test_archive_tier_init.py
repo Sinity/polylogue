@@ -176,17 +176,15 @@ def test_cached_index_prototype_replays_same_version_convergence(
     assert counts["index.prototype_hit"] == 1
 
 
-def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Path) -> None:
-    """Only ops.db re-executes its WHOLE schema on a same-version open.
+def test_tier_init_counts_use_ops_convergence_after_schema_is_known(tmp_path: Path) -> None:
+    """OPS performs one compatibility reapply, then uses cheap convergence.
 
-    ``initialize_archive_database`` treats an existing same-version tier three
-    different ways: INDEX gets its targeted benign-DDL convergence, USER gets
-    its annotation-schema ensure, and OPS alone routes back through
-    ``initialize_archive_tier`` -- which, finding a non-empty database, runs
-    the entire tier DDL again for its ``IF NOT EXISTS`` idempotence. Every one
-    of those is a redundant executescript plus its commit fsync, and this
-    counter is what makes the asymmetry measurable rather than a code-reading
-    exercise.
+    A database created before the sentinel exists still gets one full,
+    idempotent DDL pass so additive same-version tables are not lost.  That
+    pass records the applied DDL digest; later opens run only the existing
+    convergence repairs. Anti-vacuity: removing the fallback would make a
+    legacy OPS database silently miss additive tables, while removing the
+    sentinel check would return to one whole DDL pass per open.
     """
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
@@ -198,8 +196,11 @@ def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Pat
 
     counts = bootstrap.archive_tier_init_counts()
 
-    # First call creates each tier; the two that follow are same-version opens.
-    assert counts["ops.ddl_reapply"] == 2
+    # The first call creates and fingerprints the tier; both subsequent opens
+    # are convergence-only. Legacy files without the sentinel still use the
+    # guarded fallback described above.
+    assert "ops.ddl_reapply" not in counts
+    assert counts["ops.schema_convergence"] == 2
     assert "index.ddl_reapply" not in counts
 
 
