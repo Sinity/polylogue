@@ -1030,16 +1030,12 @@ def _source_v20_ddl_with_stale_origin_check() -> str:
     # fixture instead of the behaviour it tests.
     raw_sessions_match = re.search(r"CREATE TABLE IF NOT EXISTS raw_sessions \(.*?\n\) STRICT;\n", stale, re.S)
     assert raw_sessions_match is not None
-    raw_sessions_close = raw_sessions_match.group(0)[-len("\n) STRICT;\n") :]
-    assert raw_sessions_close in stale
-    stale = stale.replace(
-        raw_sessions_close,
-        raw_sessions_close
-        + "\nALTER TABLE raw_sessions ADD COLUMN capture_mode TEXT CHECK ((capture_mode IN ('chatgpt', "
+    capture_mode_alter = (
+        "\nALTER TABLE raw_sessions ADD COLUMN capture_mode TEXT CHECK ((capture_mode IN ('chatgpt', "
         "'claude-ai', 'claude-design', 'claude-code', 'codex', 'gemini', 'gemini-cli', 'hermes', 'antigravity', "
-        "'beads', 'grok', 'drive', 'unknown') OR capture_mode IS NULL));\n",
-        1,
+        "'beads', 'grok', 'drive', 'unknown') OR capture_mode IS NULL));\n"
     )
+    stale = stale[: raw_sessions_match.end()] + capture_mode_alter + stale[raw_sessions_match.end() :]
     return stale
 
 

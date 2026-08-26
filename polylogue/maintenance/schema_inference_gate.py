@@ -1349,11 +1349,18 @@ def _fidelity_evidence(report: object) -> dict[str, object]:
     missing_checks = sorted(required_checks - by_name.keys())
     if missing_checks:
         reasons.append(f"corpus fidelity checks missing from report: {', '.join(missing_checks)}")
+    allowed_not_applicable_skips = {
+        "chatgpt-content-conservation": "no_chatgpt_population",
+    }
     for name in corpus_checks:
         check = by_name.get(name)
         if check is None:
             continue
         status = check.get("status")
+        if status == "skip":
+            evidence = _as_dict(check.get("evidence"))
+            if evidence.get("outcome_reason") == allowed_not_applicable_skips.get(name):
+                continue
         if status not in {"ok", "error"}:
             reasons.append(f"corpus fidelity check {name} did not run successfully: status={status!r}")
 
@@ -1447,7 +1454,12 @@ def _fidelity_evidence(report: object) -> dict[str, object]:
     if attachment.get("status") == "error" and not refs_unfetched:
         reasons.append("corpus-attachment-fidelity reported error without a residual explanation")
 
-    skipped = [name for name, check in by_name.items() if check.get("status") == "skip"]
+    skipped = [
+        name
+        for name, check in by_name.items()
+        if check.get("status") == "skip"
+        and _as_dict(check.get("evidence")).get("outcome_reason") != allowed_not_applicable_skips.get(name)
+    ]
     if skipped:
         reasons.append(f"corpus fidelity checks skipped: {', '.join(sorted(skipped))}")
     return {
