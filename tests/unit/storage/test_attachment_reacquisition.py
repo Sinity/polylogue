@@ -304,6 +304,63 @@ def test_apply_reacquires_and_marks_unavailable_with_verified_backup(
     assert "ghost-attachment-id" not in actions
 
 
+def test_apply_receipt_records_only_rows_mutated_after_prepared_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The receipt must not claim a candidate skipped by its guarded UPDATE.
+
+    Anti-vacuity: the pre-fix implementation appended both candidate actions
+    before the transaction and wrote them after commit, so making both rows
+    stale between classification and the lock would still produce false
+    action claims in the manifest.
+    """
+    blob_store = BlobStore(tmp_path / "blob")
+    index_conn = _index_conn(tmp_path / "index.db")
+    source_conn = _source_conn(tmp_path / "source.db")
+    recoverable_id, _session_id = _write_unfetched_extracted_content_attachment(
+        tmp_path, index_conn, source_conn, blob_store
+    )
+    _write_bare_unfetched_attachment(
+        index_conn, attachment_id="sandbox-attachment-id", source_url="sandbox:/mnt/data/report.json"
+    )
+    index_conn.close()
+    source_conn.close()
+
+    validation_calls = 0
+
+    def _make_candidates_stale(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 2:
+            connection.execute(
+                "UPDATE attachments SET acquisition_status = 'acquired' WHERE attachment_id = ?",
+                (recoverable_id,),
+            )
+            connection.execute(
+                "UPDATE attachments SET acquisition_status = 'unavailable' WHERE attachment_id = 'sandbox-attachment-id'"
+            )
+            connection.commit()
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.storage.attachment_reacquisition.validate_backup_manifest_covers_derived_tier",
+        _make_candidates_stale,
+    )
+    manifest_path = tmp_path / "manifest.jsonl"
+    result = apply_attachment_reacquisition(
+        tmp_path,
+        manifest_path=manifest_path,
+        backup_manifest=tmp_path / "verified-backup" / "manifest.json",
+        dry_run=False,
+    )
+
+    assert result.reacquired_count == 0
+    assert result.marked_unavailable_count == 0
+    rows = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    assert {row["phase"] for row in rows} == {"prepared"}
+    assert {row["action"] for row in rows} == {"reacquire", "mark_unavailable"}
+
+
 def test_apply_refuses_without_backup_manifest(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blob")
     index_conn = _index_conn(tmp_path / "index.db")
