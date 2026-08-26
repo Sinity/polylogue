@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECT
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
 if TYPE_CHECKING:
+    from polylogue.operations.candidate_build import CandidateBuildRequest
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
     from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
 
@@ -64,6 +65,17 @@ logger = get_logger(__name__)
 _ACTIVE_EXTERNAL_INVENTORY_TOKEN: contextvars.ContextVar[dict[str, object] | None] = contextvars.ContextVar(
     "rebuild_external_inventory_token", default=None
 )
+
+
+def candidate_build_schema_identity() -> tuple[int, tuple[str, ...]]:
+    """Return the daemon-owned source/index schema identity for candidates."""
+
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    index_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+    return source_version, (f"source:{source_version}", f"index:{index_version}")
 
 
 class RebuildProvenanceError(RuntimeError):
@@ -753,11 +765,12 @@ class RebuildIndexRequest:
     selected_session_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
-    # Candidate construction is capability-negative: it may build an inactive
-    # generation, but can never acquire promotion authority.  The daemon sets
-    # this explicitly; keeping it separate from ``promote`` prevents a caller
-    # from accidentally treating a candidate build as an accepted rebuild.
-    candidate_build: bool = False
+    # Candidate construction is capability-negative: the daemon supplies the
+    # canonical operation request, and this legacy execution adapter can only
+    # consume it as an inactive build.  A boolean mode was intentionally
+    # removed: it carried no source/package/schema identity and made the
+    # broad rebuild request the accidental authority boundary.
+    candidate_operation: CandidateBuildRequest | None = None
     # A daemon-owned mode, not a client-selected list of candidate checks.
     canary: bool = False
     candidate_acceptance_checks: tuple[str, ...] | None = None
@@ -1289,8 +1302,13 @@ def _operation_evidence(
 
 def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
     """Reject selection and transaction combinations that cannot be promoted safely."""
-    if request.candidate_build and request.promote:
-        raise ValueError("candidate builds require --no-promote and cannot accept or replace the active index")
+    if request.candidate_operation is not None:
+        if request.promote:
+            raise ValueError("candidate builds require --no-promote and cannot accept or replace the active index")
+        if request.raw_ids or request.only_missing or request.max_blob_mb is not None:
+            raise ValueError("candidate build selection is daemon-owned")
+        if request.candidate_acceptance_checks is not None:
+            raise ValueError("candidate build acceptance profile is daemon-owned")
     if request.raw_ids and request.only_missing:
         raise ValueError("--raw-id cannot be combined with --only-missing")
     if request.selected_session_ids and not request.raw_ids:

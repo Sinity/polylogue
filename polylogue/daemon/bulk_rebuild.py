@@ -50,6 +50,7 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.maintenance.rebuild_index import (
     _REBUILD_TERMINAL_NOT_RESUMABLE,
     _reconcile_active_generation_transaction,
+    candidate_build_schema_identity,
     validate_rebuild_source_admission,
 )
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
@@ -483,10 +484,68 @@ async def run_daemon_bulk_rebuild_pass(
             logger.warning("bulk-rebuild: deferring writer admission while parse-stage worker(s) remain active")
             return None
 
+    candidate_operation = None
+    if candidate_build:
+        # Candidate mode is lowered through the canonical operation contract
+        # before reaching the shared replay engine.  The boolean remains an
+        # internal daemon routing decision only; it is not a wire/request
+        # capability and it cannot carry caller-selected paths or knobs.
+        from polylogue.operations.candidate_build import (
+            CandidateBuildBudget,
+            CandidateBuildObligation,
+            CandidateBuildPlanningContext,
+            CandidateBuildRequest,
+            SourceSeal,
+            plan_candidate_build,
+        )
+
+        root_stat = root.stat()
+        source_tier = location.configured_tier("source")
+        source_schema_version, schema_declarations = candidate_build_schema_identity()
+        source_seal = SourceSeal(
+            archive_identity=f"dev:{root_stat.st_dev}:ino:{root_stat.st_ino}",
+            source_identity=source_tier.stable_id,
+            source_snapshot=transaction.source_snapshot,
+            source_schema_version=source_schema_version,
+        )
+        candidate_request = CandidateBuildRequest(
+            source_seal=source_seal,
+            package="polylogue-index",
+            code="polylogue-rebuild-runtime",
+            schemas=schema_declarations,
+            parser_declarations=("origin-parser-fingerprints",),
+            lowering_declarations=("archive-lowering-fingerprints",),
+            origin_declarations=("canonical-origin-specs",),
+            recipe_version="rebuild-recipe-v1",
+            semantic_version="rebuild-semantics-v1",
+        )
+        generation = await asyncio.to_thread(store.load, transaction.generation_id)
+        candidate_plan = plan_candidate_build(
+            candidate_request,
+            CandidateBuildPlanningContext(
+                archive_root=root,
+                source_seal=source_seal,
+                generation=generation,
+                budget=CandidateBuildBudget(
+                    source_bytes=0,
+                    work_units=batch_size,
+                    memory_bytes=max_payload_bytes,
+                ),
+                obligations=(
+                    CandidateBuildObligation(name="source-seal"),
+                    CandidateBuildObligation(name="lineage"),
+                    CandidateBuildObligation(name="inactive-generation"),
+                ),
+            ),
+        )
+        if candidate_plan.request_digest != candidate_request.identity_digest:
+            raise RuntimeError("candidate build plan lost request identity")
+        candidate_operation = candidate_request
+
     request = RebuildIndexRequest(
         archive_root=root,
         promote=not candidate_build,
-        candidate_build=candidate_build,
+        candidate_operation=candidate_operation,
         operation_id=transaction.operation_id,
         schema_inference_receipt_path=receipt_path,
         message_owner_scope_backfill_receipt_path=message_owner_receipt_path,
