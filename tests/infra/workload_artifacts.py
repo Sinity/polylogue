@@ -51,6 +51,10 @@ from polylogue.sources.origin_specs import (
     replay_routing_fingerprint,
 )
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
+from polylogue.storage.blob_integrity import scan_blob_integrity
+from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
@@ -58,7 +62,9 @@ from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-_ARTIFACT_PROTOCOL_VERSION = 2
+# v3 includes the explicit disposition of unreferenced publication bytes
+# before a seeded archive is sealed.
+_ARTIFACT_PROTOCOL_VERSION = 3
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -2832,6 +2838,36 @@ def _build_seeded_archive_inner(
                         # contract is the real admission/write route, which the
                         # exact sequential escape hatch preserves.
                         asyncio.run(parse_sources_archive(staging, sources, parse_workers=1))
+                blob_report = scan_blob_integrity(
+                    staging / "source.db",
+                    store=BlobStore(staging / "blob"),
+                    full=True,
+                    configured_root=staging,
+                )
+                orphan_finding = next(
+                    (finding for finding in blob_report.findings if finding.kind == "orphan_blobs"), None
+                )
+                if orphan_finding is not None:
+                    orphan_hashes = set(orphan_finding.sample)
+                    receipts = inspect_blob_publication_receipts(
+                        staging / "source.db", staging / "blob", index_db_path=staging / "index.db"
+                    )
+                    abandoned = abandon_blob_publication_receipts(
+                        staging / "source.db",
+                        staging / "blob",
+                        [receipt.publication_id for receipt in receipts if receipt.blob_hash in orphan_hashes],
+                        confirmed=True,
+                        index_db_path=staging / "index.db",
+                    )
+                    deleted, _deleted_bytes, blockers = unlink_unreferenced_blob_hashes_under_exclusion(
+                        staging / "source.db", staging / "index.db", staging / "blob", orphan_hashes
+                    )
+                    if blockers or abandoned.abandoned != orphan_finding.count or deleted != orphan_finding.count:
+                        raise AssertionError(
+                            "seeded archive orphan disposition failed: "
+                            f"found={orphan_finding.count} abandoned={abandoned.abandoned} deleted={deleted} "
+                            f"blockers={blockers}"
+                        )
                 inspect_raw_authority_frontier(
                     Config(
                         archive_root=staging,
