@@ -1098,6 +1098,57 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     ]
 
 
+def test_archive_insight_materialization_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
+    """The daemon's production insight stage reaches the marker lowering seam."""
+    from polylogue.daemon.convergence_stages import _archive_insights_execute_ids
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "marker-materialization"
+    initialize_active_archive_root(archive_root)
+    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
+    index_db = archive_root / "index.db"
+    session_id = _sid("conv-marker-materialization", "codex-session")
+    with open_connection(index_db) as conn:
+        store_records(
+            session=make_session(
+                "conv-marker-materialization",
+                source_name="codex",
+                title="Marker materialization",
+            ),
+            messages=[
+                make_message(
+                    "conv-marker-materialization:msg-1",
+                    "conv-marker-materialization",
+                    text="::finding: the production route reached the marker scanner",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    with open_connection(index_db) as conn:
+        result = _archive_insights_execute_ids(conn, [session_id], archive_root=archive_root)
+        assert result
+
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        row = conn.execute(
+            """
+            SELECT kind, status, author_kind, target_ref, evidence_refs_json, body_text
+            FROM assertions
+            WHERE key = 'finding'
+            """
+        ).fetchone()
+
+    assert row is not None
+    assert tuple(row[:3]) == ("finding", "candidate", "agent")
+    message_id = archive_message_id(session_id, "msg-1", position=0)
+    assert row[3] == f"message:{message_id}"
+    assert "block:" in row[4]
+    assert row[5] == "the production route reached the marker scanner"
+
+
 def test_session_insight_load_includes_compaction_session_events_for_profile_classifiers(tmp_path: Path) -> None:
     db_path = _current_index_db(tmp_path, "refresh-session-event-load")
     with open_connection(db_path) as conn:

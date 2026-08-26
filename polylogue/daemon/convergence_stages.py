@@ -2378,13 +2378,23 @@ def _archive_insights_execute_ids(
     # use plain sqlite3.connect() without row_factory, so set it here.
     conn.row_factory = sqlite3.Row
     stage_timings_s: dict[str, float] = {}
-    counts = rebuild_session_insights_sync(
-        conn,
-        session_ids=list(session_ids),
-        page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix="insights",
-    )
+    marker_conn: sqlite3.Connection | None = None
+    if archive_root is not None:
+        user_db = archive_root / "user.db"
+        if user_db.exists():
+            marker_conn = _open_archive_insight_write_connection(user_db)
+    try:
+        counts = rebuild_session_insights_sync(
+            conn,
+            session_ids=list(session_ids),
+            marker_conn=marker_conn,
+            page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix="insights",
+        )
+    finally:
+        if marker_conn is not None:
+            marker_conn.close()
     # The rebuild commits its own rows. Publish and commit the final exact FTS
     # state in the same production stage before reporting success.
     message_fts_ready = _record_fts_freshness_after_insights(conn)
