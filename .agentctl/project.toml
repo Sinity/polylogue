@@ -9,8 +9,12 @@ root_markers = ["pyproject.toml", "polylogue"]
 kind = "nix-develop"
 command = ["nix", "develop", "--accept-flake-config", "--command"]
 preflight = ["devtools", "status", "--stderr"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "POLYLOGUE_ARCHIVE_ROOT", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
+require = ["POLYLOGUE_ARCHIVE_ROOT"]
+
+[environment.values]
+POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 
 [workspace]
 provider = "git-worktree"
@@ -19,6 +23,9 @@ default_base = "origin/master"
 identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
 checkpoint_untracked = true
 verification_operations = ["verify_affected", "verify_quick", "verify_all"]
+
+[workspace.provision]
+copy = [".cache/testmon/testmondata"]
 
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]
