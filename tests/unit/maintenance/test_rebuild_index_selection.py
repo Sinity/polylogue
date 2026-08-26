@@ -122,10 +122,49 @@ class TestValidateRebuildIndexRequestSharedService:
         validate_rebuild_index_request(request)
 
     def test_candidate_build_is_capability_negative(self, tmp_path: Path) -> None:
-        request = RebuildIndexRequest(archive_root=tmp_path, candidate_build=True, promote=False)
+        from polylogue.operations import CandidateBuildRequest, SourceSeal
+
+        request = RebuildIndexRequest(
+            archive_root=tmp_path,
+            candidate_operation=CandidateBuildRequest(
+                source_seal=SourceSeal(
+                    archive_identity="archive",
+                    source_identity="source",
+                    source_snapshot="snapshot",
+                    source_schema_version=1,
+                ),
+                package="package",
+                code="code",
+                schemas=("schema",),
+                parser_declarations=("parser",),
+                lowering_declarations=("lowering",),
+                origin_declarations=("origin",),
+                recipe_version="recipe",
+                semantic_version="semantic",
+            ),
+            promote=False,
+        )
         validate_rebuild_index_request(request)
 
     def test_candidate_build_cannot_claim_promotion(self, tmp_path: Path) -> None:
-        request = RebuildIndexRequest(archive_root=tmp_path, candidate_build=True, promote=True)
+        from polylogue.operations import CandidateBuildRequest, SourceSeal
+
+        candidate = CandidateBuildRequest(
+            source_seal=SourceSeal(
+                archive_identity="archive",
+                source_identity="source",
+                source_snapshot="snapshot",
+                source_schema_version=1,
+            ),
+            package="package",
+            code="code",
+            schemas=("schema",),
+            parser_declarations=("parser",),
+            lowering_declarations=("lowering",),
+            origin_declarations=("origin",),
+            recipe_version="recipe",
+            semantic_version="semantic",
+        )
+        request = RebuildIndexRequest(archive_root=tmp_path, candidate_operation=candidate, promote=True)
         with pytest.raises(ValueError, match="candidate builds require --no-promote"):
             validate_rebuild_index_request(request)
