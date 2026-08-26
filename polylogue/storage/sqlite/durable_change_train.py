@@ -80,6 +80,7 @@ DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
     ArchiveTier.AUDIT: 1,
 }
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
+_DURABLE_TRAIN_MANIFEST_NAME_RE = re.compile(r"^(?P<tier>source|user|audit)-(?P<slot>\d{3,})\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
 _DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _SOURCE_CONTINUITY_PENDING_FORMAT = "polylogue.source-continuity-pending.v1"
@@ -93,10 +94,24 @@ _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 
 
-def _is_audit_continuity_receipt(path: Path) -> bool:
-    """Return whether a maintenance receipt is not a durable train manifest."""
+def _durable_train_manifest_paths(manifest_root: Path, tier: ArchiveTier | None = None) -> tuple[Path, ...]:
+    """Return only positively typed durable-train entries.
 
-    return path.name in {"audit-adoption.json", "audit-continuity.json"} or path.name.startswith("audit-restore.")
+    Durable train authority is identified by its tier and numeric train slot.
+    Other maintenance receipts may live alongside the train state, but are
+    never handed to the train parser.  In particular, this is an allow-shaped
+    ownership rule rather than a denylist of receipt filenames.
+    """
+    if not manifest_root.is_dir():
+        return ()
+    prefix = f"{tier.value}-" if tier is not None else ""
+    paths: list[Path] = []
+    for path in sorted(manifest_root.glob(f"{prefix}*.json")):
+        match = _DURABLE_TRAIN_MANIFEST_NAME_RE.fullmatch(path.name)
+        if match is None or (tier is not None and match.group("tier") != tier.value):
+            continue
+        paths.append(path)
+    return tuple(paths)
 
 
 _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER = ".bootstrap.pending"
@@ -449,7 +464,7 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(not _is_audit_continuity_receipt(path) for path in marker_root.glob("*.json")):
+    if marker_path.exists() or _durable_train_manifest_paths(marker_root):
         raise DurableChangeTrainError(f"cannot record fresh durable bootstrap over existing train state: {marker_root}")
     if pending_path.is_file():
         _validate_fresh_durable_bootstrap_intent(archive_root)
@@ -482,7 +497,7 @@ def _record_fresh_durable_bootstrap_intent(archive_root: Path) -> None:
     marker_root = archive_root / ".maintenance-state" / "durable-change-trains"
     marker_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_MARKER
     pending_path = marker_root / _FRESH_DURABLE_BOOTSTRAP_PENDING_MARKER
-    if marker_path.exists() or any(not _is_audit_continuity_receipt(path) for path in marker_root.glob("*.json")):
+    if marker_path.exists() or _durable_train_manifest_paths(marker_root):
         raise DurableChangeTrainError(
             f"cannot record fresh durable bootstrap intent over existing train state: {marker_root}"
         )
@@ -626,7 +641,7 @@ def _adopt_pre_marker_durable_bootstrap(archive_root: Path) -> None:
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if (manifest_root / _FRESH_DURABLE_BOOTSTRAP_MARKER).is_file():
         return
-    if any(not _is_audit_continuity_receipt(path) for path in manifest_root.glob("*.json")):
+    if _durable_train_manifest_paths(manifest_root):
         return
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
         tier_path = archive_root / f"{tier.value}.db"
@@ -883,7 +898,7 @@ def assert_source_continuity_apply_allowed(
         return
     unreleased: list[Path] = []
     released: list[DurableChangeTrain] = []
-    for candidate in sorted(manifest_root.glob("source-*.json")):
+    for candidate in _durable_train_manifest_paths(manifest_root, ArchiveTier.SOURCE):
         train = load_durable_change_train_manifest(candidate)
         rollback_failed_train = (
             train.state is DurableChangeTrainState.FAILED
@@ -1743,7 +1758,9 @@ def _refresh_released_source_train_continuity_locked(
             current = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
 
         manifest_candidates = sorted(
-            (archive_root / ".maintenance-state" / "durable-change-trains").glob("source-*.json")
+            _durable_train_manifest_paths(
+                archive_root / ".maintenance-state" / "durable-change-trains", ArchiveTier.SOURCE
+            )
         )
         if not manifest_candidates:
             raise DurableSourceTrainMissingError("source continuity refresh found no released source train")
@@ -3134,9 +3151,7 @@ def _released_train_manifests_by_target(
     manifests_by_target: dict[int, DurableChangeTrain] = {}
     if not manifest_root.is_dir():
         return manifests_by_target
-    for path in sorted(manifest_root.glob(f"{tier.value}-*.json")):
-        if _is_audit_continuity_receipt(path):
-            continue
+    for path in _durable_train_manifest_paths(manifest_root, tier):
         train = load_durable_change_train_manifest(path)
         if train.target_version in manifests_by_target:
             raise DurableChangeTrainError(
@@ -3487,9 +3502,7 @@ def _reconcile_durable_change_train_startup_locked(
     canonical_inventory_by_tier: dict[ArchiveTier, _migration_runner.DurableSchemaInventory] = {}
     manifests_by_tier: dict[ArchiveTier, dict[int, DurableChangeTrain]] = {}
     validated_tiers: set[ArchiveTier] = set()
-    manifest_paths = tuple(
-        path for path in sorted(manifest_root.glob("*.json")) if not _is_audit_continuity_receipt(path)
-    )
+    manifest_paths = _durable_train_manifest_paths(manifest_root)
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
 
     def record_reconciled(path: Path) -> None:
@@ -3555,9 +3568,7 @@ def _reconcile_durable_change_train_startup_locked(
         if current_version <= adoption_floor:
             continue
         manifests_by_tier[tier] = _released_train_manifests_by_target(manifest_root, tier)
-        tier_manifest_paths = tuple(
-            path for path in manifest_root.glob(f"{tier.value}-*.json") if not _is_audit_continuity_receipt(path)
-        )
+        tier_manifest_paths = _durable_train_manifest_paths(manifest_root, tier)
         if tier is ArchiveTier.AUDIT and not tier_manifest_paths:
             # An established archive may have received audit.db through the
             # verified adoption route before the source continuity half was
