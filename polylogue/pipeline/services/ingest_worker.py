@@ -670,11 +670,6 @@ def _enrich_parsed_sessions(
 
     Canonical raw-record ingest historically bypassed provider assembly, so
     daemon-ingested Codex sessions kept native-id titles (polylogue-ih67).
-    ``context.raw_source`` is always the blob path here, so discovery keys
-    off the recorded acquisition path (``raw_record.source_path``). When
-    that path's runtime root is absent (foreign machine, deleted source),
-    discovery yields nothing and only the parsed-content fallbacks apply.
-
     ``ingest_record`` (this function's caller) runs inside a
     ProcessPoolExecutor worker (AC#4: subprocess-safe parse plans). When the
     main-process batch orchestrator has already resolved a frozen sidecar
@@ -683,8 +678,9 @@ def _enrich_parsed_sessions(
     snapshot is authoritative and no disk read happens here at all: an empty
     dict is a valid "nothing found" resolution, not a cue to fall back.
     ``None`` means the resolver never ran for this record (non-Codex, or a
-    caller that bypasses the batch resolver, e.g. focused unit tests) and
-    the prior on-demand disk-discovery behavior applies unchanged.
+    caller that bypasses the batch resolver); it is treated as ordinary
+    absence, so assembly still runs against an empty snapshot and only the
+    parsed-content fallbacks apply.
 
     Returns ``(sessions, sessions_unenriched)`` -- the second element is
     ``True`` only when on-demand discovery raised and the caller fell back
@@ -697,13 +693,12 @@ def _enrich_parsed_sessions(
     spec = get_assembly_spec(plan.provider)
     if spec is None:
         return parsed_sessions, False
-    if context.raw_record.sidecar_snapshot is not None:
-        sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot)
-        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
     # Workers are forbidden from consulting the ambient source tree.  The
-    # acquisition cut carries an optional, generation-bound snapshot; a
-    # missing snapshot is ordinary absence, not permission to rediscover it.
-    return parsed_sessions, False
+    # acquisition cut carries an optional, generation-bound snapshot.  A
+    # missing snapshot is ordinary absence, not permission to rediscover it;
+    # the empty snapshot still allows provider assembly's content fallback.
+    sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot or {})
+    return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
 
 
 def _materialize_parsed_sessions(

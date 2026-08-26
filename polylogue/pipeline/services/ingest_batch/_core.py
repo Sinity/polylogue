@@ -46,7 +46,10 @@ from polylogue.pipeline.services.ingest_worker import (
     SessionWritePayload,
     ingest_record,
 )
-from polylogue.pipeline.services.process_pool import process_pool_executor, resolve_ingest_batch_dispatch
+from polylogue.pipeline.services.process_pool import (
+    process_pool_executor,
+    select_ingest_worker_count,
+)
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
     PublicationEncodingError,
@@ -56,7 +59,6 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
-from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -684,6 +686,13 @@ def _drive_structural_growth_predecessor(
     strictly additive typed-lineage improvement, never a narrowing of what
     the legacy path already proves.
     """
+    # Import lazily: importing the Drive package also initializes the live
+    # watcher package, whose acquisition helpers depend on the batch worker.
+    # This classifier is only needed for this Drive-specific lineage branch;
+    # keeping it out of the batch module's import graph preserves the
+    # ingest-worker entry point's acyclic startup path.
+    from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
+
     new_row = source_conn.execute(
         "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
@@ -1536,17 +1545,12 @@ def _iter_ingest_results_chunk(
                 progress.in_flight_raw_ids.clear()
 
 
-def _resolved_ingest_worker_limit(value: int | None) -> int:
-    return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
-
-
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
-    total_blob_size = sum(record.blob_size for record in raw_artifacts)
-    return resolve_ingest_batch_dispatch(
-        total_blob_bytes=total_blob_size,
-        record_count=len(raw_artifacts),
-        worker_limit=_resolved_ingest_worker_limit(ingest_workers),
-    ).worker_count
+    return select_ingest_worker_count(
+        raw_artifacts,
+        ingest_workers,
+        default_worker_limit=_DEFAULT_INGEST_WORKER_LIMIT,
+    )
 
 
 def _new_ingest_batch_summary(

@@ -6,24 +6,20 @@ from pathlib import Path
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import (
-    ArchiveHistorySidecar,
     ArchiveHookEvent,
     ArchiveRawArtifactEnvelope,
     ArchiveRawSessionEnvelope,
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
     deterministic_blob_hash,
-    deterministic_history_sidecar_id,
     deterministic_raw_session_id,
     list_hook_events,
     list_raw_artifacts,
     read_archive_raw_session_envelope,
     read_capture_mode_resolution,
-    read_history_sidecar,
     read_hook_event,
     read_raw_artifact,
     upsert_raw_artifact,
-    write_history_sidecar,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -41,14 +37,6 @@ def _connect(path: Path) -> sqlite3.Connection:
 def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "source.db")
     payload = b'{"kind":"session","messages":["hello"]}'
-    sidecar_payload: dict[str, object] = {"history": [{"event": "paste", "message_id": "m1"}]}
-    sidecar_id = write_history_sidecar(
-        conn,
-        origin=Origin.CLAUDE_CODE_SESSION,
-        source_path="/tmp/record.jsonl",
-        payload=sidecar_payload,
-        observed_at_ms=1_767_000_000_010,
-    )
     computed_blob_hash = deterministic_blob_hash(payload)
     expected_raw_id = deterministic_raw_session_id(
         Origin.CLAUDE_CODE_SESSION,
@@ -122,12 +110,6 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
     assert {blob.ref_type for blob in envelope.blob_refs} == {"raw_payload", "attachment"}
     assert envelope.artifact_ids == ("artifact-1",)
     assert envelope.hook_event_ids == ("hook-1",)
-    assert envelope.history_sidecar_ids == (sidecar_id,)
-
-    sidecar = read_history_sidecar(conn, sidecar_id)
-    assert isinstance(sidecar, ArchiveHistorySidecar)
-    assert sidecar.payload == sidecar_payload
-    assert sidecar.content_hash == deterministic_blob_hash(b'{"history":[{"event":"paste","message_id":"m1"}]}')
 
     artifact = read_raw_artifact(conn, "artifact-1")
     assert artifact == ArchiveRawArtifactEnvelope(
@@ -471,12 +453,6 @@ def test_archive_tiers_source_writer_deterministic_ids() -> None:
     assert raw_id_a == raw_id_b
     assert raw_id_a != deterministic_raw_session_id(
         Origin.CHATGPT_EXPORT, "/tmp/record.jsonl", 1, blob_hash, native_id="same"
-    )
-    assert deterministic_history_sidecar_id(Origin.CLAUDE_CODE_SESSION, "/tmp/history.jsonl", blob_hash) == (
-        deterministic_history_sidecar_id(Origin.CLAUDE_CODE_SESSION, "/tmp/history.jsonl", blob_hash)
-    )
-    assert deterministic_history_sidecar_id(Origin.CLAUDE_CODE_SESSION, "/tmp/history.jsonl", blob_hash) != (
-        deterministic_history_sidecar_id(Origin.CODEX_SESSION, "/tmp/history.jsonl", blob_hash)
     )
 
 
