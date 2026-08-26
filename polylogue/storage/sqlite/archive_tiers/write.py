@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import urlparse
 
+from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
@@ -53,6 +54,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
@@ -123,6 +125,25 @@ class ArchiveAttachmentRow:
     upload_origin: str | None = None
     source_url: str | None = None
     caption: str | None = None
+    blob_hash: bytes | None = None
+    acquisition_status: str | None = None
+    generation_id: str | None = None
+    availability: AttachmentAvailability | None = None
+
+
+def _attachment_availability(
+    blob_hash: bytes | None,
+    acquisition_status: str | None,
+    generation_id: str | None = None,
+) -> AttachmentAvailability:
+    store = get_blob_store()
+    return resolve_attachment_availability(
+        blob_hash=blob_hash,
+        acquisition_status=acquisition_status,
+        verify=store.verify,
+        exists=store.exists,
+        generation_id=generation_id,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1396,6 +1417,7 @@ def read_archive_session_envelope(
         """
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
                a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
                r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
@@ -1416,6 +1438,12 @@ def read_archive_session_envelope(
                 upload_origin=attachment["upload_origin"],
                 source_url=attachment["source_url"],
                 caption=attachment["caption"],
+                blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
+                acquisition_status=attachment["acquisition_status"],
+                availability=_attachment_availability(
+                    bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
+                    attachment["acquisition_status"],
+                ),
             )
         )
 
@@ -1675,6 +1703,7 @@ def _fetch_message_window(
         f"""
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
                a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
                r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
@@ -1695,6 +1724,12 @@ def _fetch_message_window(
                 upload_origin=attachment["upload_origin"],
                 source_url=attachment["source_url"],
                 caption=attachment["caption"],
+                blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
+                acquisition_status=attachment["acquisition_status"],
+                availability=_attachment_availability(
+                    bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
+                    attachment["acquisition_status"],
+                ),
             )
         )
     return [

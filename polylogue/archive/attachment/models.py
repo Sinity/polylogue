@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from polylogue.archive.attachment.availability import AttachmentAvailability
+
 
 class Attachment(BaseModel):
     id: str
@@ -13,6 +15,8 @@ class Attachment(BaseModel):
     path: str | None = None
     source_url: str | None = None
     caption: str | None = None
+    upload_origin: str | None = None
+    availability: AttachmentAvailability | None = None
 
 
 __all__ = ["Attachment"]
