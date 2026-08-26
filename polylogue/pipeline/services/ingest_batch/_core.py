@@ -1121,6 +1121,7 @@ def _write_session(
         session_to_write,
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
+        fallback_timestamp=payload.fallback_timestamp,
         source_conn=source_conn,
         merge_append=merge_append,
         force_replace=(
