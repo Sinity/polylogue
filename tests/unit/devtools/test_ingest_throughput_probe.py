@@ -64,6 +64,22 @@ def test_measure_emits_expected_shape(provider: str, tmp_path: Path) -> None:
     # Workload tag is the corpus path for these fixtures.
     assert report["workload"] == "corpus"
 
+    # The legacy report and the shared receipt are one observation, not two
+    # independently measured workloads.  This catches unit drift (MiB vs
+    # bytes) and prevents a mutation from dropping the common adapter.
+    receipt = report["workload_receipt"]
+    assert receipt["spec"]["measurement_scope"] == "process-tree"
+    phase = receipt["phases"][0]
+    assert phase["peak_rss_bytes"] == round(report["peak_rss_mb"] * 1024 * 1024)
+    assert phase["cpu_ms"] == report["cpu_seconds_total"] * 1000.0
+    assert phase["progress_completed"] == report["total_messages"]
+    if report["proc_io_available"]:
+        assert phase["read_io_bytes"] == report["proc_io"]["read_bytes"]
+        assert phase["write_io_bytes"] == report["proc_io"]["write_bytes"]
+    else:
+        assert "read_io_bytes" in phase["unavailable"]
+        assert "write_io_bytes" in phase["unavailable"]
+
     # Per-stage attribution is populated for a real ingest run.
     stage_timings = report["stage_timings_s"]
     assert isinstance(stage_timings, dict)
@@ -91,6 +107,7 @@ def test_measure_emits_expected_shape(provider: str, tmp_path: Path) -> None:
     assert report["cpu_utilization"] >= 0.0
     assert isinstance(report["peak_rss_mb"], float)
     assert report["peak_rss_mb"] > 0.0
+    assert report["workload_receipt"]["status"] == "succeeded"
 
     # rusage-derived resource deltas are present and well-typed.
     resources = report["resources"]
