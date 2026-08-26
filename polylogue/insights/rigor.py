@@ -312,20 +312,12 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         notes=(
             "Structural-only activity labels (polylogue-ve9z, 2026-07-16): "
-            "``inference.heuristic_label`` is now derived exclusively from "
-            "action-category (tool-use) evidence in "
-            "archive/session/extraction.py::_classify_range. The keyword "
-            "_TEXT_SIGNAL_TABLE (planning/debugging/testing/... prose "
-            "matching over user text) was DELETED per the polylogue-ve9z "
-            "ladder decision: its accuracy was never measured, and its "
-            "sibling keyword heuristic scored 50.5% (coin flip) against "
-            "structural truth in the 9e5.9 measurement. Ranges without "
-            "decisive action evidence now label as the coarse honest "
-            "defaults (SESSION for no-tools ranges, IMPLEMENTATION with low "
-            "confidence for weak signals) instead of a keyword guess. Finer "
-            "intent labels may return only via the ladder: versioned "
-            "AnalysisDefinition rule classifiers, agent-declared markers "
-            "(37t.2), or judged annotations."
+            "``inference.heuristic_label`` is derived from action-category "
+            "(tool-use) evidence in archive/session/extraction.py::_classify_range. "
+            "Ranges without decisive action evidence use coarse defaults. "
+            "The deterministic session digest does not extract run state or "
+            "decision candidates from message prose. Those judgments require "
+            "a model-authored product or an explicit typed annotation."
         ),
     ),
     RigorContract(

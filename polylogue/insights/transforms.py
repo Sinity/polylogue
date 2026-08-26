@@ -9,7 +9,6 @@ read-model candidates.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections import Counter
@@ -103,21 +102,6 @@ _TEST_PASS_RE = re.compile(r"\b(?P<count>\d+)\s+passed\b", re.IGNORECASE)
 _TEST_FAIL_RE = re.compile(r"\b(?P<count>\d+)\s+failed\b", re.IGNORECASE)
 _CHECK_PASS_RE = re.compile(r"\b(?P<name>[A-Za-z0-9_.() -]+)\s+\.\.\.\s+ok\b")
 _COMMIT_SHA_RE = re.compile(r"\b(?P<sha>[0-9a-f]{7,40})\b", re.IGNORECASE)
-_DECISION_RE = re.compile(r"\b(decision|decided|choose|chosen):?\s+(?P<text>.+)", re.IGNORECASE)
-_STATUS_HEADING_RE = re.compile(r"^\s*(goal|done|in flight|blockers?|next):\s*(?P<text>.+)$", re.IGNORECASE)
-_INSTRUCTION_DUMP_MARKER_RE = re.compile(
-    r"\b(agents\.md|claude\.md|system prompt|developer instruction|turbo mandate|must not|must always|"
-    r"you are chatgpt|you are working in|verification budget|completion report required)\b",
-    re.IGNORECASE,
-)
-_PRODUCT_DECISION_ANCHOR_RE = re.compile(
-    r"\b(product decision|implementation decision|durable decision|we decided|decision record|adr|accepted decision)\b",
-    re.IGNORECASE,
-)
-_RUNSTATE_SECTION_RE = re.compile(
-    r"^\s*(goal|done|in flight|blockers?|next(?: action)?s?):\s*(?P<text>.*)$",
-    re.IGNORECASE,
-)
 
 
 def _utc_now_iso() -> str:
@@ -503,9 +487,11 @@ def compile_session_digest(
         tuple(_extract_subagent_reports(session, messages)),
         session_links,
     )
-    run_state = _extract_run_state(session, messages)
     events = tuple(_extract_events(session, messages))
-    decisions = tuple(_extract_decision_candidates(session, messages))
+    # These fields were previously mined from message prose. They are model
+    # judgments, not archive structure, so new digests leave them empty.
+    run_state = None
+    decisions: tuple[DecisionCandidate, ...] = ()
     run_projection = build_run_projection(
         session_id=str(session.id),
         source_origin=str(session.origin),
@@ -1925,196 +1911,6 @@ def _outcome_event(
         handler_kind=handler_kind,
         status=status,
     )
-
-
-def _extract_run_state(session: Session, messages: Sequence[Message]) -> RunStateSummary | None:
-    goal: str | None = None
-    done: list[str] = []
-    in_flight: list[str] = []
-    blockers: list[str] = []
-    next_actions: list[str] = []
-    refs: list[TransformRawRef] = []
-
-    for message in messages:
-        parsed = _parse_run_state_text(message.text or "")
-        if parsed is None:
-            continue
-        parsed_goal, parsed_done, parsed_in_flight, parsed_blockers, parsed_next = parsed
-        if parsed_goal:
-            goal = parsed_goal
-        _extend_unique(done, parsed_done)
-        _extend_unique(in_flight, parsed_in_flight)
-        _extend_unique(blockers, parsed_blockers)
-        _extend_unique(next_actions, parsed_next)
-        refs.append(_message_ref(session, message))
-
-    if not refs:
-        return None
-    text_derived_fields = _present_field_names(
-        done=tuple(done),
-        in_flight=tuple(in_flight),
-        blockers=tuple(blockers),
-        next_actions=tuple(next_actions),
-    )
-    if goal:
-        text_derived_fields = ("goal", *text_derived_fields)
-    return RunStateSummary(
-        goal=goal,
-        done=tuple(done),
-        in_flight=tuple(in_flight),
-        blockers=tuple(blockers),
-        next_actions=tuple(next_actions),
-        raw_refs=tuple(refs),
-        text_derived_fields=text_derived_fields,
-    )
-
-
-def _parse_run_state_text(
-    text: str,
-) -> tuple[str | None, list[str], list[str], list[str], list[str]] | None:
-    goal: str | None = None
-    done: list[str] = []
-    in_flight: list[str] = []
-    blockers: list[str] = []
-    next_actions: list[str] = []
-    current_section: str | None = None
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            current_section = None
-            continue
-        heading = _RUNSTATE_SECTION_RE.match(line)
-        if heading is not None:
-            current_section = _run_state_section_key(heading.group(1))
-            value = _clean_run_state_item(heading.group("text"))
-            if value:
-                if current_section == "goal":
-                    goal = value
-                elif current_section == "done":
-                    done.append(value)
-                elif current_section == "in_flight":
-                    in_flight.append(value)
-                elif current_section == "blockers":
-                    blockers.append(value)
-                elif current_section == "next":
-                    next_actions.append(value)
-            continue
-        if current_section is None:
-            continue
-        value = _clean_run_state_item(line)
-        if not value:
-            continue
-        if current_section == "goal":
-            goal = value if goal is None else f"{goal}; {value}"
-        elif current_section == "done":
-            done.append(value)
-        elif current_section == "in_flight":
-            in_flight.append(value)
-        elif current_section == "blockers":
-            blockers.append(value)
-        elif current_section == "next":
-            next_actions.append(value)
-
-    if not any((goal, done, in_flight, blockers, next_actions)):
-        return None
-    return goal, done, in_flight, blockers, next_actions
-
-
-def _run_state_section_key(value: str) -> Literal["goal", "done", "in_flight", "blockers", "next"]:
-    normalized = value.lower().strip()
-    if normalized == "goal":
-        return "goal"
-    if normalized == "done":
-        return "done"
-    if normalized == "in flight":
-        return "in_flight"
-    if normalized.startswith("blocker"):
-        return "blockers"
-    return "next"
-
-
-def _clean_run_state_item(value: str) -> str:
-    return _preview(value.strip().lstrip("-*").strip(), limit=240)
-
-
-def _extend_unique(target: list[str], values: Iterable[str]) -> None:
-    seen = set(target)
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        target.append(value)
-
-
-def _extract_decision_candidates(session: Session, messages: Sequence[Message]) -> Iterable[DecisionCandidate]:
-    seen: set[tuple[str, str]] = set()
-    for message in messages:
-        ref = _message_ref(session, message)
-        dump_rejection_reason = _instruction_dump_rejection_reason(message.text or "")
-        for line in (message.text or "").splitlines():
-            decision = _DECISION_RE.search(line)
-            if decision:
-                text = _preview(decision.group("text"), limit=240)
-                status, reason = _candidate_review_status_and_reason(line, dump_rejection_reason)
-                item = DecisionCandidate(
-                    kind="decision",
-                    text=text,
-                    raw_refs=(ref,),
-                    status=status,
-                    reason=reason,
-                    candidate_ref=_candidate_ref(
-                        session_id=str(session.id), message_id=str(message.id), kind="decision", text=text
-                    ),
-                )
-                key = (item.kind, item.text)
-                if key not in seen:
-                    seen.add(key)
-                    yield item
-            status_match = _STATUS_HEADING_RE.search(line)
-            if status_match:
-                text = f"{status_match.group(1).lower()}: {_preview(status_match.group('text'), limit=240)}"
-                candidate_status, reason = _candidate_review_status_and_reason(line, dump_rejection_reason)
-                item = DecisionCandidate(
-                    kind="run_state",
-                    text=text,
-                    raw_refs=(ref,),
-                    status=candidate_status,
-                    reason=reason,
-                    candidate_ref=_candidate_ref(
-                        session_id=str(session.id), message_id=str(message.id), kind="run_state", text=text
-                    ),
-                )
-                key = (item.kind, item.text)
-                if key not in seen:
-                    seen.add(key)
-                    yield item
-
-
-def _candidate_review_status_and_reason(
-    line: str,
-    dump_rejection_reason: str | None,
-) -> tuple[DecisionCandidateReviewStatus, str | None]:
-    if dump_rejection_reason is None:
-        return "accepted", None
-    if _PRODUCT_DECISION_ANCHOR_RE.search(line):
-        return "accepted", "product_decision_anchor"
-    return "rejected", dump_rejection_reason
-
-
-def _instruction_dump_rejection_reason(text: str) -> str | None:
-    line_count = len(text.splitlines())
-    word_count = len(text.split())
-    marker_count = len(_INSTRUCTION_DUMP_MARKER_RE.findall(text))
-    imperative_count = sum(1 for token in ("MUST", "NEVER", "Do not", "Do NOT", "You are", "Run ") if token in text)
-    if (line_count >= 30 or word_count >= 600) and (marker_count >= 2 or imperative_count >= 4):
-        return "instruction_dump_without_local_decision_evidence"
-    return None
-
-
-def _candidate_ref(*, session_id: str, message_id: str, kind: str, text: str) -> str:
-    digest = hashlib.sha256(f"{session_id}\0{message_id}\0{kind}\0{text}".encode()).hexdigest()[:16]
-    return f"candidate:{digest}"
 
 
 def _session_raw_bytes(session: Session, messages: Sequence[Message]) -> int:
