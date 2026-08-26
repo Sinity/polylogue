@@ -17,6 +17,7 @@ from typing import Literal, cast
 from pydantic import Field, model_validator
 
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
+from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
@@ -317,6 +318,7 @@ def compile_assertion_context_segment(
     status: object = None,
     context_policy: object = None,
     evidence_ref_texts: Sequence[str] = (),
+    integrity_verdict: EvidenceIntegrityVerdict | None = None,
 ) -> ContextSegment:
     """Compile one injectable assertion claim into a context segment.
 
@@ -335,6 +337,11 @@ def compile_assertion_context_segment(
         context_policy=context_policy,
         source_authority=_ASSERTION_SEGMENT_SOURCE_AUTHORITY,
     )
+    # A requested policy is never sufficient to make an assertion injectable.
+    # The shared evaluator is the additional gate for callers that have an
+    # evidence graph; unsupported verdicts remain explicitly quoted.
+    if integrity_verdict is not None and not integrity_verdict.supported:
+        trust_class = "quoted"
     kind_text = str(getattr(kind, "value", kind))
     text = body_text or "(empty assertion)"
     markdown = (
@@ -352,6 +359,7 @@ def compile_assertion_context_segment(
             evidence_refs.append(EvidenceRef.parse(ref_text))
         except ValueError:
             continue
+    caveats = () if integrity_verdict is None else (f"evidence-integrity:{integrity_verdict.status}",)
     return ContextSegment(
         segment_id=f"assertion:{assertion_id}",
         kind="assertion",
@@ -364,6 +372,7 @@ def compile_assertion_context_segment(
         token_estimate=_estimate_tokens(markdown),
         lossiness="assertion_claim_body",
         trust_class=trust_class,
+        caveats=caveats,
     )
 
 
