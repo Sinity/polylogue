@@ -90,9 +90,17 @@ def _environment_contaminated(payload: Mapping[str, Any], step: Mapping[str, Any
     )
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 def classify_failure(payload: Mapping[str, Any], check_id: str, *, history: Iterable[Mapping[str, Any]] = ()) -> str:
     """Classify using evidence precedence; absence of evidence stays unknown."""
-    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    steps = _as_list(payload.get("steps"))
     step = next(
         (
             item
@@ -114,13 +122,13 @@ def classify_failure(payload: Mapping[str, Any], check_id: str, *, history: Iter
     rows = (*tuple(history), {"check_id": check_id, "outcome": "failed", "git_head": payload.get("git_head")})
     observations: list[dict[str, Any]] = []
     for historic in rows:
-        historic_steps = historic.get("steps") if isinstance(historic.get("steps"), list) else []
+        historic_steps = _as_list(historic.get("steps"))
         for historic_step in historic_steps:
             if not isinstance(historic_step, Mapping):
                 continue
             name = str(historic_step.get("name") or historic_step.get("step_id") or "verification")
-            statistics = historic_step.get("statistics") if isinstance(historic_step.get("statistics"), Mapping) else {}
-            outcomes = statistics.get("outcomes") if isinstance(statistics.get("outcomes"), Mapping) else {}
+            statistics = _as_mapping(historic_step.get("statistics"))
+            outcomes = _as_mapping(statistics.get("outcomes"))
             if name == check_id:
                 observations.extend(
                     {"check_id": name, "outcome": "failed", "git_head": historic.get("git_head")}
@@ -151,13 +159,13 @@ def classify_failure(payload: Mapping[str, Any], check_id: str, *, history: Iter
 
 def _failed_checks(payload: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any]]]:
     result: list[tuple[str, Mapping[str, Any]]] = []
-    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    steps = _as_list(payload.get("steps"))
     for step in steps:
         if not isinstance(step, Mapping) or step.get("exit") in (None, 0):
             continue
         name = str(step.get("name") or step.get("step_id") or "verification")
-        statistics = step.get("statistics") if isinstance(step.get("statistics"), Mapping) else {}
-        outcomes = statistics.get("outcomes") if isinstance(statistics.get("outcomes"), Mapping) else {}
+        statistics = _as_mapping(step.get("statistics"))
+        outcomes = _as_mapping(statistics.get("outcomes"))
         failed_count = int(outcomes.get("failed", 0) or 0)
         if failed_count:
             for index in range(failed_count):
