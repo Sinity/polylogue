@@ -16,7 +16,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import click
@@ -1508,6 +1508,31 @@ def _fetch_daemon_payload(
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
+    if path == "/api/cli/query" or path.startswith("/api/query-units?"):
+        operation = "cli.query"
+        operation_body = body or {}
+        if path.startswith("/api/query-units?"):
+            operation = "query.units"
+            operation_body = {"params": parse_qs(urlsplit(path).query, keep_blank_values=True)}
+        envelope = client.operation(
+            operation,
+            operation_body,
+            archive_root=str(config.archive_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        if envelope is None:
+            return None
+        error = envelope.get("error")
+        if error is not None:
+            return None
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            return None
+        if client.last_elapsed_ms is not None:
+            result = dict(result)
+            result["_daemon_elapsed_ms"] = client.last_elapsed_ms
+        return result
     if (
         client.probe(
             archive_root=str(config.archive_root),
