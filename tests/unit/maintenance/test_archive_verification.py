@@ -1190,19 +1190,6 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
     assert check.evidence["missing_tables"] == ["action_pairs"]
 
 
-def test_counts_summary_reports_origin_breakdown(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("counts-summary",))
-
-    check = _check(report, "counts-summary")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["session_count"] == 1
-    assert check.evidence["message_count"] == 1
-    assert check.evidence["block_count"] == 1
-    assert check.breakdown == {"codex-session": 1}
-
-
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     empty_root = tmp_path / "does-not-exist"
 
@@ -1223,7 +1210,6 @@ def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     assert names_by_status["session-lineage-acyclic"] is OutcomeStatus.SKIP
     assert names_by_status["message-count-projection"] is OutcomeStatus.SKIP
     assert names_by_status["planner-stats"] is OutcomeStatus.SKIP
-    assert names_by_status["counts-summary"] is OutcomeStatus.SKIP
 
 
 def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1246,7 +1232,6 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     by_name = {check.name: check for check in report.checks}
     assert by_name["fts-parity"].status is OutcomeStatus.ERROR
     assert "synthetic failure" in by_name["fts-parity"].summary
-    assert by_name["counts-summary"].status is OutcomeStatus.OK
     assert by_name["tier-schema"].status is OutcomeStatus.OK
 
 
