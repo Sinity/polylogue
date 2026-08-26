@@ -158,13 +158,15 @@ def strict_acceptance_failures(
     report: ArchiveVerificationReport,
     *,
     required_checks: Sequence[str] | None = None,
+    allow_not_applicable: bool = False,
 ) -> tuple[str, ...]:
     """Return every result that prevents a strict acceptance decision.
 
     Strict acceptance is deliberately separate from :attr:`blocking`.
     Acceptance proves a candidate is complete enough to activate: every
-    required check must be present and ``ok``. Warnings, skips, and errors all
-    fail this predicate.
+    required check must be present and ``ok``. Warnings, errors, and ordinary
+    skips all fail this predicate. A caller may explicitly allow a typed
+    not-applicable result, such as an origin-scoped check with no population.
     """
     required = (
         tuple(dict.fromkeys(required_checks))
@@ -180,6 +182,12 @@ def strict_acceptance_failures(
             continue
         if check.status is OutcomeStatus.OK:
             continue
+        if (
+            allow_not_applicable
+            and check.status is OutcomeStatus.SKIP
+            and getattr(check, "evidence", {}).get("outcome_reason") == "no_chatgpt_population"
+        ):
+            continue
         failures.append(f"{check.name} [{check.status.value}]: {check.summary}")
     return tuple(failures)
 
@@ -188,9 +196,14 @@ def passes_strict_acceptance(
     report: ArchiveVerificationReport,
     *,
     required_checks: Sequence[str] | None = None,
+    allow_not_applicable: bool = False,
 ) -> bool:
     """Return whether a report is complete and wholly ``ok`` for activation."""
-    return not strict_acceptance_failures(report, required_checks=required_checks)
+    return not strict_acceptance_failures(
+        report,
+        required_checks=required_checks,
+        allow_not_applicable=allow_not_applicable,
+    )
 
 
 def _tier_path(archive_root: Path, tier: ArchiveTier) -> Path:
