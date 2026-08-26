@@ -3304,6 +3304,7 @@ def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) ->
             codex_state.parse_codex_state_db(state_path, immutable=True),
             source_path=source_path,
             acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
+            observation_order=archive.raw_revision_observation_order(raw_id)[1],
         )
     archive.replace_raw_membership_census(
         raw_id,

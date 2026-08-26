@@ -265,6 +265,7 @@ class JsonlBoundary:
     prefix_size: int
     record_count: int
     incomplete_tail: bool
+    malformed_record: bool = False
 
 
 def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
@@ -304,7 +305,7 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
             try:
                 json.loads(line)
             except (UnicodeDecodeError, json.JSONDecodeError):
-                return JsonlBoundary(complete_end, records, True)
+                return JsonlBoundary(complete_end, records, True, True)
             complete_end = offset + 1
             records += 1
     trailing = payload[record_start:].strip()
@@ -312,7 +313,7 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
         try:
             json.loads(trailing)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            pass
+            return JsonlBoundary(complete_end, records, True, True)
         else:
             return JsonlBoundary(len(payload), records + 1, False)
     return JsonlBoundary(complete_end, records, complete_end != len(payload))

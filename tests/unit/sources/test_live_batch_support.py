@@ -1220,12 +1220,12 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
     assert replay.scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms IS NOT NULL FROM raw_sessions").fetchone() == (1,)
-        assert conn.execute(
-            "SELECT hook_event_id, event_type FROM raw_hook_events ORDER BY hook_event_id"
-        ).fetchall() == [
-            ("codex-thread-spawn-edge:codex-thread:codex-child", "codex_thread_spawn_edge"),
-            ("codex-thread-title:codex-thread", "codex_thread_title"),
-        ]
+        rows = conn.execute("SELECT hook_event_id, event_type FROM raw_hook_events ORDER BY hook_event_id").fetchall()
+    assert [(event_type, event_id.split(":observation-", 1)[0]) for event_id, event_type in rows] == [
+        ("codex_thread_spawn_edge", "codex-thread-spawn-edge:codex-thread:codex-child"),
+        ("codex_thread_title", "codex-thread-title:codex-thread"),
+    ]
+    assert all(":observation-" in event_id for event_id, _event_type in rows)
 
 
 @pytest.mark.parametrize("state_name", ["state.db", "verification_evidence.db"])
