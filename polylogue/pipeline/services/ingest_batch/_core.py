@@ -79,8 +79,10 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
+    _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
+    _parsed_message_signature,
     _repair_stale_session_observations,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
@@ -390,9 +392,16 @@ def _append_delta_payload(
     payload: SessionWritePayload,
 ) -> tuple[ParsedSession | None, int]:
     existing_native_ids = _existing_native_message_ids(conn, payload.session_id)
+    existing_logical = _composed_db_signatures(conn, payload.session_id)
     delta_messages: list[ParsedMessage] = []
+    logical_prefix = 0
     for message in payload.parsed_session.messages:
         native_id = _normalized_message_native_id(message)
+        signature = _parsed_message_signature(message)
+        is_replayed_prefix = logical_prefix < len(existing_logical) and existing_logical[logical_prefix][1] == signature
+        if is_replayed_prefix:
+            logical_prefix += 1
+            continue
         if native_id is not None and native_id in existing_native_ids:
             continue
         delta_messages.append(message.model_copy(update={"position": None}))
