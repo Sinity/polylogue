@@ -3334,7 +3334,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
 
     def _archive_summary_payload(self, summary: ArchiveSessionSummary) -> dict[str, object]:
+        from polylogue.surfaces.query_rows import session_row
+
         session_id = str(summary.session_id)
+        row = session_row(summary)
         target_ref = TargetRefPayload.session(session_id)
         return {
             "id": session_id,
@@ -3349,6 +3352,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "updated_at": summary.updated_at,
             "message_count": summary.message_count,
             "word_count": summary.word_count,
+            "terminal_state": row.outcome,
+            "total_cost_usd": row.cost_usd,
+            "relative_time": row.relative_time,
             "repo": summary.git_repository_url,
             "cwd_display": next(iter(summary.working_directories), None),
             "tags": list(summary.tags),

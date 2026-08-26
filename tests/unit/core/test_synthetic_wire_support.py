@@ -314,15 +314,17 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
             corrupted_messages: list[ParsedMessage] = []
             for message in parsed_session.messages:
                 blocks = []
+                message_text = message.text
                 for block in message.blocks:
                     if block.text == segment:
                         dropped_segment = True
                         blocks.append(block.model_copy(update={"text": ""}))
                     else:
                         blocks.append(block)
-                corrupted_messages.append(
-                    message.model_copy(update={"text": (message.text or "").replace(segment, ""), "blocks": blocks})
-                )
+                if isinstance(message_text, str) and segment in message_text:
+                    dropped_segment = True
+                    message_text = message_text.replace(segment, "")
+                corrupted_messages.append(message.model_copy(update={"text": message_text, "blocks": blocks}))
             corrupted_sessions.append(parsed_session.model_copy(update={"messages": corrupted_messages}))
         return corrupted_sessions
 

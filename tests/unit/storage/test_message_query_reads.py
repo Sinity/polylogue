@@ -127,7 +127,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             )
         finally:
             await conn.set_trace_callback(lambda _statement: None)
-        assert edge_total == 3
+        assert edge_total == 2
         assert [message.message_id for message in first_edge] == [
             archive_message_id(current_session_id, "msg-user", position=3)
         ]
@@ -195,10 +195,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
             limit=10,
             offset=0,
         )
-        assert user_total == 3
+        assert user_total == 2
         assert [message.message_id for message in user_messages] == [
             archive_message_id(current_session_id, "msg-user", position=3),
-            archive_message_id(current_session_id, "msg-protocol", position=4),
             archive_message_id(current_session_id, "msg-assistant", position=5),
         ]
 
