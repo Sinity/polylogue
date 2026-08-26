@@ -359,9 +359,12 @@
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
       identityForNode: (node) => window.polylogueCapture.identityObservation({
         provider: "claude-ai", conversationId: conversationIdFromUrl(),
-        messageId: node.getAttribute("data-message-id") || node.getAttribute("data-turn-id"),
+        // Only an explicit provider-native message id is authoritative. DOM
+        // order, test ids, and visible text cannot authorize a badge.
+        messageId: node.getAttribute("data-message-id"),
         text: node.innerText || node.textContent || "", adapterName: nativeAdapterName,
-        fidelity: node.getAttribute("data-message-id") || node.getAttribute("data-turn-id") ? "native" : "unknown",
+        adapterVersion: chrome.runtime.getManifest().version,
+        fidelity: node.getAttribute("data-message-id") ? "native" : "unknown",
       }),
       onSave: () => {
         capture("message_layer_save").catch(() => undefined);
