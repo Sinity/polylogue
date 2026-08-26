@@ -36,6 +36,13 @@ from devtools.testmon_bootstrap import (
 )
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
+from devtools.verification_graph import (
+    attest_corpus,
+    graph_identity,
+    latest_eligible_root,
+    publish_complete_root,
+    publish_selected_child,
+)
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
@@ -577,9 +584,82 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
+    _record_graph_authority(run, payload)
     append_verify_history(payload)
     prune_successful_verify_runs(root=ROOT)
     return payload
+
+
+def _record_graph_authority(run: VerifyRun, payload: dict[str, Any]) -> None:
+    """Attach immutable graph evidence after, and only after, run finalization."""
+    nodeids: list[str] = []
+    for step in payload.get("steps", []):
+        if not isinstance(step, Mapping):
+            continue
+        artifact = step.get("artifact_dir")
+        if not isinstance(artifact, str):
+            continue
+        report = _read_json(ROOT / artifact / PYTEST_CANONICAL_REPORT_NAME)
+        for test in (report or {}).get("tests", []):
+            if isinstance(test, Mapping) and isinstance(test.get("nodeid"), str):
+                nodeids.append(test["nodeid"])
+    selection = payload.get("testmon_selection")
+    selection = selection if isinstance(selection, Mapping) else {}
+    environment = selection.get("environment_digest")
+    if not isinstance(environment, str) or not nodeids:
+        return
+    corpus = attest_corpus(nodeids, root=ROOT)
+    digest = graph_identity(
+        tree=payload.get("git_head"),
+        code=payload.get("git_head"),
+        dependency_lock=environment,
+        installed_distributions=environment,
+        interpreter=f"{sys.implementation.name}:{sys.version}",
+        toolchain=sys.executable,
+        plugins=environment,
+        harness=environment,
+        corpus_attestation=corpus.digest,
+        schemas=environment,
+        configuration=environment,
+        platform=sys.platform,
+        execution_policy=payload.get("tier"),
+    )
+    aggregate = payload.get("pytest_aggregate")
+    aggregate = aggregate if isinstance(aggregate, Mapping) else {}
+    complete = aggregate.get("complete_corpus_covered") is True
+    graph_payload: dict[str, Any] = {
+        "graph_digest": digest,
+        "corpus": {"digest": corpus.digest, "count": len(corpus.nodeids)},
+        "selected": payload.get("tier") not in {"all", "quick", "commit"},
+    }
+    if complete and payload.get("exit_code") == 0:
+        published = publish_complete_root(
+            ROOT,
+            graph_digest=digest,
+            corpus=corpus,
+            run_id=run.run_id,
+            terminal_status="success",
+            complete=True,
+        )
+        graph_payload["authority"] = "root" if published else "root-existing"
+    elif payload.get("tier") == "affected":
+        parent = latest_eligible_root(ROOT)
+        if parent is not None:
+            child = publish_selected_child(
+                ROOT,
+                parent_digest=parent[0],
+                graph_digest=digest,
+                selection=corpus.nodeids,
+                change_lineage={"base": parent[0], "head": payload.get("git_head")},
+                outcome={"exit_code": payload.get("exit_code"), "status": payload.get("status")},
+                run_id=run.run_id,
+            )
+            graph_payload.update({"authority": "child", "parent_digest": parent[0], "child": str(child)})
+        else:
+            graph_payload["authority"] = "refused-no-parent"
+    payload["verification_graph"] = graph_payload
+    run._payload["verification_graph"] = graph_payload
+    run.write()
 
 
 def _aggregate_pytest_results(
@@ -687,6 +767,27 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     exit_code=2,
                     duration_s=time.monotonic() - started,
                     diagnosis="native_testmon_graph_unavailable",
+                    verification_scope=scope.value,
+                    final_git_head=git_head(ROOT),
+                )
+                _emit(payload, use_json=args.json, operation=agentctl_operation)
+                return 2
+            if not args.all_tests and latest_eligible_root(ROOT) is None:
+                # A native testmon database is not selected-test authority.
+                # Refuse explicitly rather than widening to the full corpus.
+                run.record_selection(
+                    selection_mode=mode,
+                    state_status=preparation.local_state.status,
+                    state_reason="no immutable complete parent graph root is available; selected verification refused",
+                    missing_executable_paths=preparation.local_state.missing_executable_paths,
+                    runtime_data_paths=impact.runtime_data_paths,
+                    environment_digest=preparation.environment_name,
+                )
+                payload = _finish_and_record_verification(
+                    run=run,
+                    exit_code=2,
+                    duration_s=time.monotonic() - started,
+                    diagnosis="verification_graph_parent_unavailable",
                     verification_scope=scope.value,
                     final_git_head=git_head(ROOT),
                 )
