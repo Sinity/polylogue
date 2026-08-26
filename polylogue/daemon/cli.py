@@ -35,11 +35,6 @@ from polylogue.daemon.api_auth import (
     resolve_api_auth_token,
 )
 from polylogue.daemon.browser_capture import browser_capture_command
-
-# Compatibility import for external callers. The daemon's real startup path
-# below uses ``_run_startup_fts_readiness`` and the ordinary domain owner;
-# this historical symbol is not used by daemon startup wiring.
-from polylogue.daemon.fts_startup import ensure_fts_startup_readiness as _ensure_fts_startup_readiness
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,
@@ -4047,7 +4042,6 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
 
 
 __all__ = [
-    "_ensure_fts_startup_readiness",
     "health_command",
     "main",
     "run_command",

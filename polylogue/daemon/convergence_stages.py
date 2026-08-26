@@ -2297,15 +2297,14 @@ def _archive_insights_execute_ids(
         if user_db.exists():
             marker_conn = _open_archive_insight_write_connection(user_db)
     try:
-        rebuild_kwargs = {
-            "session_ids": list(session_ids),
-            "page_size": _DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-            "stage_timings_s": stage_timings_s,
-            "stage_timing_prefix": "insights",
-        }
-        if marker_conn is not None:
-            rebuild_kwargs["marker_conn"] = marker_conn
-        counts = rebuild_session_insights_sync(conn, **rebuild_kwargs)
+        counts = rebuild_session_insights_sync(
+            conn,
+            session_ids=list(session_ids),
+            marker_conn=marker_conn,
+            page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix="insights",
+        )
     finally:
         if marker_conn is not None:
             marker_conn.close()

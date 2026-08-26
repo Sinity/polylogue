@@ -111,12 +111,30 @@ def _has_content_hash(conn: sqlite3.Connection) -> bool:
     return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)"))
 
 
+_ARCHIVE_MESSAGE_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+_SESSION_WORK_EVENT_FTS_TRIGGERS = (
+    "session_work_events_fts_ai",
+    "session_work_events_fts_ad",
+    "session_work_events_fts_au",
+)
+
+
+def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Return the FTS triggers expected by the schema currently present."""
+    expected: list[str] = []
+    if table_exists(conn, "blocks") and table_exists(conn, "messages_fts"):
+        expected.extend(_ARCHIVE_MESSAGE_FTS_TRIGGERS)
+    if all(table_exists(conn, table_name) for table_name in ("session_work_events", "session_work_events_fts")):
+        expected.extend(_SESSION_WORK_EVENT_FTS_TRIGGERS)
+    return tuple(expected)
+
+
 def _schema_compatible(conn: sqlite3.Connection) -> bool:
     if not all(
         table_exists(conn, name) for name in ("blocks", "messages_fts", "messages_fts_docsize", "messages_fts_identity")
     ):
         return False
-    expected = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
+    expected = _ARCHIVE_MESSAGE_FTS_TRIGGERS
     placeholders = ", ".join("?" for _ in expected)
     row = conn.execute(
         f"SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ({placeholders})", expected
@@ -318,7 +336,7 @@ class FtsDerivationAdapter:
         duplicate_rows = int(conn.execute(duplicate_sql, duplicate_params).fetchone()[0])
         status = FtsKeyStatus.VALID
         detail: str | None = None
-        if not compatible or missing_rows or wrong_rows or duplicate_rows:
+        if missing_rows or wrong_rows or duplicate_rows:
             status = FtsKeyStatus.STALE
             detail = "FTS membership or identity differs from canonical blocks"
         elif excess_rows:
@@ -472,4 +490,5 @@ __all__ = [
     "FtsOutcome",
     "FtsPartitionInput",
     "FtsPartitionInspection",
+    "active_fts_triggers_sync",
 ]
