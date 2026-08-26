@@ -241,6 +241,32 @@ def test_embeddings_prototype_restore_keeps_sqlite_vec_ready(tmp_path: Path) -> 
     assert counts["embeddings.prototype_hit"] == 1
 
 
+def test_embeddings_init_fails_before_vec_ddl_when_extension_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing sqlite-vec must not be masked by vec0 DDL parsing.
+
+    Anti-vacuity: removing the guard in ``_initialize_archive_tier_ddl`` makes
+    initialization execute the ``+model`` vec0 declaration without the
+    extension and raises SQLite's misleading ``near \"+\"`` syntax error.
+    """
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    bootstrap._TIER_PROTOTYPES.clear()
+
+    def _fail_vec_load(conn: sqlite3.Connection) -> tuple[bool, Exception | None]:
+        del conn
+        return False, RuntimeError("simulated sqlite-vec load failure")
+
+    monkeypatch.setattr(bootstrap, "try_load_sqlite_vec", _fail_vec_load)
+
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        with pytest.raises(RuntimeError, match="archive embeddings initialization requires sqlite-vec"):
+            bootstrap.initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone() == (0,)
+
+
 # ---------------------------------------------------------------------------
 # Same-version reapply invariants (polylogue-c1jgh)
 # ---------------------------------------------------------------------------
