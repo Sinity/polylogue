@@ -15,6 +15,7 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
     """Project verifier semantics without duplicating AgentCTL job metadata."""
     selection = _mapping(payload.get("testmon_selection"))
     aggregate = _mapping(payload.get("pytest_aggregate"))
+    graph = _mapping(payload.get("verification_graph"))
     missing_paths = _strings(selection.get("missing_executable_paths"))
     runtime_data_paths = _strings(selection.get("runtime_data_paths"))
     verification_scope = _string(payload.get("verification_scope"))
@@ -28,8 +29,10 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
         },
         "testmon_environment": {
             "environment_digest": _string(selection.get("environment_digest")),
-            "graph_content_digest": None,
-            "graph_content_digest_available": False,
+            "graph_content_digest": _string(graph.get("graph_digest")),
+            "graph_content_digest_available": isinstance(graph.get("graph_digest"), str),
+            "graph_authority": _string(graph.get("authority")),
+            "graph_parent_digest": _string(graph.get("parent_digest")),
             "state": _string(selection.get("state_status")),
             "reason": _string(selection.get("state_reason")),
         },
