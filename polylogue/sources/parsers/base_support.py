@@ -235,8 +235,15 @@ def content_blocks_from_segments(
     content: object,
     *,
     admission: AdmissionLedger | None = None,
+    lower_transport_text: bool = False,
 ) -> list[ParsedContentBlock]:
-    """Convert raw API content (str, list, dict) to ParsedContentBlock list."""
+    """Convert raw API content (str, list, dict) to ParsedContentBlock list.
+
+    Provider parsers normally lower transport-only text items themselves. A
+    parser that needs the shared converter to retain those items can opt in;
+    this keeps the default behavior for providers whose overlay has richer
+    transport-item handling.
+    """
     if isinstance(content, str):
         if admission is not None:
             part_ordinal = admission.next_ordinal(AdmissionUnit.PART)
@@ -460,6 +467,10 @@ def content_blocks_from_segments(
             # Provider transport items are lowered by the owning parser:
             # Codex supplies text through ``extract_codex_text`` and bounded
             # image evidence through ``_codex_inline_image_blocks``.
+            if lower_transport_text and seg_type in {"input_text", "output_text"}:
+                text = seg.get("text") or ""
+                if text:
+                    blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=str(text)))
             continue
         else:
             # Unknown structured content is still an input unit. Preserve its
