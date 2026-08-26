@@ -29,4 +29,4 @@ polylogue/storage/index_generation.py:592
 polylogue/storage/sqlite/durable_change_train.py:551
 polylogue/storage/sqlite/durable_change_train.py:789
 polylogue/storage/sqlite/durable_change_train.py:826
-polylogue/storage/sqlite/migration_runner.py:3979
+polylogue/storage/sqlite/migration_runner.py:3985

@@ -572,6 +572,9 @@ class IngestOutcome(PolylogueStrEnum):
     CORRUPT_INPUT = "corrupt_input"
     TRANSIENT_ERROR = "transient_error"
     PARSER_DEFECT = "parser_defect"
+    DOWNSTREAM_FAILURE = "downstream_failure"
+    CANCELED = "canceled"
+    INTERRUPTED = "interrupted"
     LEGACY_UNKNOWN = "legacy_unknown"
 
     @classmethod
@@ -594,6 +597,9 @@ INGEST_OUTCOME_RETRYABLE: dict[IngestOutcome, bool | None] = {
     IngestOutcome.CORRUPT_INPUT: False,
     IngestOutcome.TRANSIENT_ERROR: True,
     IngestOutcome.PARSER_DEFECT: False,
+    IngestOutcome.DOWNSTREAM_FAILURE: True,
+    IngestOutcome.CANCELED: True,
+    IngestOutcome.INTERRUPTED: True,
     IngestOutcome.LEGACY_UNKNOWN: None,
 }
 

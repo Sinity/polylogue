@@ -46,12 +46,12 @@ polylogue/operations/daemon_workload_probe.py:2242
 polylogue/operations/daemon_workload_probe.py:2358
 polylogue/schemas/drift_sentinel_sampling.py:72
 polylogue/schemas/drift_sentinel_sampling.py:116
-polylogue/sources/live/batch.py:1722
-polylogue/sources/live/batch.py:3660
-polylogue/sources/live/batch.py:3690
-polylogue/sources/live/batch.py:3801
-polylogue/sources/live/batch.py:4131
-polylogue/sources/live/batch.py:4159
+polylogue/sources/live/batch.py:1723
+polylogue/sources/live/batch.py:3661
+polylogue/sources/live/batch.py:3691
+polylogue/sources/live/batch.py:3802
+polylogue/sources/live/batch.py:4132
+polylogue/sources/live/batch.py:4160
 polylogue/sources/live/batch_observability.py:152
 polylogue/sources/live/convergence_debt_retry.py:97
 polylogue/sources/live/convergence_debt_retry.py:124
@@ -76,7 +76,7 @@ polylogue/storage/sqlite/archive_tiers/archive.py:966
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:127
 polylogue/storage/sqlite/archive_tiers/archive_plan.py:131
 polylogue/storage/sqlite/archive_tiers/bootstrap.py:186
-polylogue/storage/sqlite/migration_runner.py:2779
+polylogue/storage/sqlite/migration_runner.py:2785
 polylogue/storage/usage.py:841
 polylogue/storage/usage.py:1496
 polylogue/storage/usage.py:1524

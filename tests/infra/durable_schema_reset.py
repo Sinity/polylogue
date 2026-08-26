@@ -29,6 +29,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
     migrations = Path(__file__).parents[2] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
     table_pattern = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     index_pattern = re.compile(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
+    view_pattern = re.compile(r"CREATE VIEW (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     rebuild_pattern = re.compile(
         r"(?:DROP TABLE (?:IF EXISTS )?([A-Za-z_][A-Za-z0-9_]*)"
         r"|ALTER TABLE ([A-Za-z_][A-Za-z0-9_]*)\s+RENAME)",
@@ -46,6 +47,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
         rebuilt = {name for m in rebuild_pattern.finditer(text) for name in m.groups() if name}
         created = [("table", m.group(1)) for m in table_pattern.finditer(text) if m.group(1) not in rebuilt]
         created += [("index", m.group(1)) for m in index_pattern.finditer(text)]
+        created += [("view", m.group(1)) for m in view_pattern.finditer(text)]
         if slot <= version:
             below.update(name for _kind, name in created)
         else:
@@ -66,6 +68,10 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
 
     seen: set[str] = set()
     for kind, name in above:
+        if kind == "view" and name not in below and name not in seen:
+            seen.add(name)
+            conn.execute(f"DROP VIEW IF EXISTS {name}")
+    for kind, name in above:
         if name in below or name in seen:
             continue
         seen.add(name)
@@ -77,7 +83,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
                 for (object_name,) in rows:
                     conn.execute(f"DROP {dependent_kind.upper()} IF EXISTS {object_name}")
             conn.execute(f"DROP TABLE IF EXISTS {name}")
-        else:
+        elif kind == "index":
             conn.execute(f"DROP INDEX IF EXISTS {name}")
     dropped_tables = {name for kind, name in above if kind == "table" and name not in below}
     for table, column in dict.fromkeys(columns_above):

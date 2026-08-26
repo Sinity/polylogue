@@ -8,4 +8,4 @@ polylogue/operations/durable_change_train.py:608
 polylogue/operations/durable_change_train.py:1271
 polylogue/storage/index_generation.py:134
 polylogue/storage/index_generation.py:584
-polylogue/storage/sqlite/migration_runner.py:3968
+polylogue/storage/sqlite/migration_runner.py:3974
