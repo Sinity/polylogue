@@ -640,7 +640,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("raw-authority-blocker",),
                 required_capabilities=("archive.raw_authority.resolve_blocker",),
                 destructive_class="reset",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("durable",),
                 allowed_recovery=("reconcile_required",),
             ),
@@ -670,7 +670,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("source",),
                 required_capabilities=("archive.raw_authority_recovery",),
                 destructive_class="reset",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("durable",),
                 allowed_recovery=("none",),
             ),
@@ -699,7 +699,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("index",),
                 required_capabilities=("archive.raw_authority_recovery",),
                 destructive_class="reset",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("derived",),
                 allowed_recovery=("none",),
             ),
@@ -847,7 +847,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Permanently delete one session and all associated data. Routed through "
             "OperationExecutor/SessionDeleteActuator on every surface: PREPARE previews "
-            "the exact target set, EXECUTE requires a confirm-flag-strength authorization "
+            "the exact target set, EXECUTE requires a bound preview-token authorization "
             "bound to that plan's hash."
         ),
         surfaces=("facade", "cli", "mcp", "daemon"),
@@ -869,7 +869,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("session",),
                 required_capabilities=("archive.delete_session",),
                 destructive_class="delete",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("derived",),
                 allowed_recovery=("rebuild",),
             ),
@@ -881,7 +881,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Durable, cross-tier (source/index/embeddings/user) removal of one session that "
             "records a removed-hash marker so unmodified-source re-ingest cannot resurrect it. "
-            "Routed through OperationExecutor/SessionExcisionActuator; requires --yes/confirm-flag."
+            "Routed through OperationExecutor/SessionExcisionActuator; requires a bound preview token."
         ),
         surfaces=("cli",),
         mutates_state=True,
@@ -897,7 +897,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("session",),
                 required_capabilities=("archive.excise_session",),
                 destructive_class="excise",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("durable",),
                 allowed_recovery=("none",),
             ),
@@ -925,7 +925,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("session",),
                 required_capabilities=("archive.request_session_lifecycle",),
                 destructive_class="additive",
-                required_confirmation="confirm_flag",
+                required_confirmation="role_only",
                 allowed_durabilities=("durable",),
                 allowed_recovery=("retry_convergent",),
             ),
@@ -937,7 +937,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Tombstone one or more sessions: durable user.db suppression plus rebuildable "
             "index.db row removal. Routed through OperationExecutor/IdentityResetActuator; "
-            "requires --yes/confirm-flag. Distinct from excision: re-ingest of unmodified "
+            "requires a bound preview token. Distinct from excision: re-ingest of unmodified "
             "source content can still repopulate index.db rows, but the suppression hides them."
         ),
         surfaces=("cli",),
@@ -954,7 +954,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 target_kinds=("session",),
                 required_capabilities=("archive.identity_reset",),
                 destructive_class="reset",
-                required_confirmation="confirm_flag",
+                required_confirmation="bound_token",
                 allowed_durabilities=("durable",),
                 allowed_recovery=("reconcile_required",),
             ),

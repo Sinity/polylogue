@@ -686,6 +686,10 @@ class OperationExecutor:
         self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         self._archive_root = archive_root
+        # The audit tier is authoritative in production.  Keep the same
+        # binding locally for daemonless/library executors so a caller cannot
+        # forge a token-bearing dataclass after AUTHORIZE.
+        self._issued_authorizations: dict[str, MutationAuthorization] = {}
         self._prevalidated_executions: ContextVar[tuple[tuple[object, MutationPlan], ...]] = ContextVar(
             "operation_executor_prevalidated_executions", default=()
         )
@@ -788,7 +792,13 @@ class OperationExecutor:
             raise CapabilityDeniedError(f"principal lacks declared capabilities: {missing}")
         if self._now_ms() >= plan.expires_at_ms:
             raise TokenExpiredError("cannot authorize an expired preview")
-        strength = confirmation_strength or plan.required_confirmation
+        # A destructive plan is never authorized with the interim boolean
+        # strength.  Callers that omit the strength receive the canonical
+        # bound token; an explicit weaker strength remains an actionable
+        # rejection so adapters cannot silently downgrade the contract.
+        strength = confirmation_strength or (
+            "bound_token" if plan.destructive_class in {"reset", "delete", "excise"} else plan.required_confirmation
+        )
         if _STRENGTH_ORDER[strength] < _STRENGTH_ORDER[plan.required_confirmation]:
             raise ConfirmationRequiredError(
                 f"{binding.spec.name!r} requires {plan.required_confirmation!r}, got {strength!r}"
@@ -812,6 +822,8 @@ class OperationExecutor:
                 preview, principal, authorization, issued_at_ms=self._now_ms()
             )
             authorization = replace(authorization, authorization_id=authorization_id)
+        assert authorization.token is not None
+        self._issued_authorizations[authorization.token] = authorization
         return authorization
 
     def execute_bound(
@@ -827,6 +839,16 @@ class OperationExecutor:
         validate_mutation_plan_integrity(preview.plan)
         if authorization.preview_ref != preview.preview_ref or authorization.token is None:
             raise AuthorizationMismatchError("authorization is not bound to this preview")
+        issued = self._issued_authorizations.get(authorization.token)
+        if self._audit is None and (issued is None or issued != authorization):
+            raise AuthorizationMismatchError("authorization token was not issued for this executor")
+        if (
+            preview.plan.destructive_class in {"reset", "delete", "excise"}
+            and authorization.confirmation_strength != "bound_token"
+        ):
+            raise ConfirmationRequiredError(
+                f"{binding.spec.name!r} destructive execution requires a bound preview token"
+            )
         if (
             self._audit is None
             and authorization.expires_at_ms is not None
@@ -854,6 +876,10 @@ class OperationExecutor:
                 f"{binding.spec.name!r} preview {preview.plan.plan_hash!r} is stale; "
                 f"live state now resolves to {fresh_plan.plan_hash!r}"
             )
+        # Tokens are one-shot even for daemonless/library executors. Durable
+        # audit rows enforce this in production; this local consume closes
+        # the equivalent replay path when no audit repository is configured.
+        self._issued_authorizations.pop(authorization.token, None)
         if self._audit is not None:
             self._recover_overlapping_operations(binding.actuator, args, fresh_plan)
             # polylogue-39pdi: the ``recovered_applied`` barrier records that a
@@ -1104,6 +1130,12 @@ class OperationExecutor:
         i.e. the live target set moved between AUTHORIZE and EXECUTE.
         """
 
+        if (
+            plan.targets
+            and plan.destructive_class in {"reset", "delete", "excise"}
+            and (authorization.token is None or authorization.confirmation_strength != "bound_token")
+        ):
+            raise ConfirmationRequiredError("destructive execution requires a bound preview token")
         if authorization.plan_hash != plan.plan_hash:
             raise AuthorizationMismatchError(
                 f"authorization bound to plan {authorization.plan_hash!r} does not match plan {plan.plan_hash!r}"

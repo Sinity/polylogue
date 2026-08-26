@@ -223,7 +223,7 @@ def _apply_identity_reset(session_ids: list[str], *, reason: str) -> tuple[int, 
     binding = runtime_operation_binding(actuator)
     principal = MutationPrincipal("user:cli", frozenset({"archive.identity_reset"}), "cli", "write")
     preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
     receipt = executor.execute_bound(binding, preview, authorization, args)
     domain = receipt.domain_receipt
     suppressed = cast("int", domain.get("suppressed_count", receipt.affected_count))

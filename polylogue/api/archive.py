@@ -2686,7 +2686,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         ``confirmation_strength="role_only"`` -- only the actuator, its
         args, and the capability string vary from call to call.
         ``delete_session_safe`` authorizes with a caller-supplied ``actor``
-        and ``confirmation_strength="confirm_flag"`` instead (it exposes a
+        and ``confirmation_strength="bound_token"`` instead (it exposes a
         stronger confirmation contract to its own callers), so it stays
         outside this helper. Returns ``(receipt, plan)`` because a couple of
         callers read ``plan.context`` back after the archive handle closes.
@@ -6624,7 +6624,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             binding = runtime_operation_binding(actuator)
             principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
             preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
             receipt = executor.execute_bound(binding, preview, authorization, args)
         deleted = receipt.affected_count > 0
         return DeleteSessionResult(
