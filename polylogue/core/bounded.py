@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import subprocess
-from collections.abc import Awaitable, Callable, Sequence
-from typing import TypeAlias, TypeVar
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from typing import IO, Any, TypeAlias, TypedDict, TypeVar, Unpack
 
 T = TypeVar("T")
 
@@ -31,6 +32,42 @@ class BoundedTimeoutError(TimeoutError):
 TimeoutHandler: TypeAlias = type[BaseException] | BaseException | Callable[[float], BaseException]
 
 
+class _RunOptions(TypedDict, total=False):
+    """The caller-controlled options accepted by ``subprocess.run``."""
+
+    bufsize: int
+    executable: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None
+    stdin: int | IO[Any] | None
+    stdout: int | IO[Any] | None
+    stderr: int | IO[Any] | None
+    preexec_fn: Callable[[], object] | None
+    close_fds: bool
+    shell: bool
+    cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None
+    env: (
+        Mapping[str, str | bytes | os.PathLike[str] | os.PathLike[bytes]]
+        | Mapping[bytes, str | bytes | os.PathLike[str] | os.PathLike[bytes]]
+        | None
+    )
+    universal_newlines: bool | None
+    startupinfo: Any
+    creationflags: int
+    restore_signals: bool
+    start_new_session: bool
+    pass_fds: Collection[int]
+    capture_output: bool
+    encoding: str | None
+    errors: str | None
+    input: str | bytes | bytearray | memoryview | None
+    text: bool | None
+    user: str | int | None
+    group: str | int | None
+    extra_groups: Iterable[str | int] | None
+    umask: int
+    pipesize: int
+    process_group: int | None
+
+
 def _validate_budget(budget: float) -> float:
     if isinstance(budget, bool) or not isinstance(budget, (int, float)):
         raise TypeError("budget must be a positive finite number of seconds")
@@ -45,8 +82,8 @@ def run_bounded(
     budget: float,
     *,
     check_exit: bool = True,
-    **kwargs: object,
-) -> subprocess.CompletedProcess[object]:
+    **kwargs: Unpack[_RunOptions],
+) -> subprocess.CompletedProcess[str | bytes]:
     """Run *argv* with a required timeout and checked exit status by default.
 
     ``kwargs`` are the ordinary ``subprocess.run`` options (for example
@@ -57,12 +94,13 @@ def run_bounded(
     if "timeout" in kwargs or "check" in kwargs:
         raise TypeError("run_bounded owns timeout and check; use budget and check_exit")
     try:
-        return subprocess.run(
+        result: subprocess.CompletedProcess[str | bytes] = subprocess.run(
             [str(argument) for argument in argv],
             timeout=seconds,
             check=check_exit,
             **kwargs,
         )
+        return result
     except subprocess.TimeoutExpired as exc:
         raise BoundedTimeoutError(seconds, operation=argv) from exc
 
@@ -72,8 +110,11 @@ def _timeout_exception(handler: TimeoutHandler | None, budget: float) -> BaseExc
         return BoundedTimeoutError(budget)
     if isinstance(handler, BaseException):
         return handler
-    if isinstance(handler, type) and issubclass(handler, BaseException):
-        return handler()
+    if isinstance(handler, type):
+        if not issubclass(handler, BaseException):
+            raise TypeError("on_timeout class must derive from BaseException")
+        exception_type: type[BaseException] = handler
+        return exception_type()
     return handler(budget)
 
 
