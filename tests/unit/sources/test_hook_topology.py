@@ -11,6 +11,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
     HookSpoolTopologyError,
+    hook_spool_sources,
     validate_hook_spool_topology,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -40,6 +41,20 @@ def test_hook_topology_requires_one_flat_primary_and_read_only_legacy_roots(tmp_
         )
     with pytest.raises(HookSpoolTopologyError, match="primary-writable"):
         validate_hook_spool_topology([HookSpoolSourceSpec("legacy", "legacy-read-only", legacy)])
+
+
+def test_default_hook_topology_enumerates_primary_and_declared_legacy(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    legacy = tmp_path / "legacy"
+    primary.mkdir()
+    legacy.mkdir()
+
+    specs = hook_spool_sources(primary_root=primary, legacy_roots=(legacy,))
+
+    assert [(spec.source_id, spec.role, spec.root) for spec in specs] == [
+        ("primary-hook-spool", "primary-writable", primary.resolve()),
+        ("legacy-hook-spool-0", "legacy-read-only", legacy.resolve()),
+    ]
 
 
 def test_hook_carriers_preserve_two_coordinates_and_reject_coordinate_conflict(tmp_path: Path) -> None:
