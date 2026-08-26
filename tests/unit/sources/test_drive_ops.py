@@ -33,7 +33,7 @@ from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources import DriveFile, download_drive_files
 from polylogue.sources.dispatch import parse_payload
-from polylogue.sources.drive import iter_drive_raw_data
+from polylogue.sources.drive import drive_cache_file_path, iter_drive_raw_data
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -120,6 +120,30 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
     assert [path.name for path in result.downloaded_files] == ["session.json"]
     assert result.downloaded_files[0].read_bytes() == b'{"id":"good"}'
     assert result.failed_files == [{"file_id": "bad", "name": "broken.jsonl", "error": "denied"}]
+
+
+def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged(tmp_path: Path) -> None:
+    payload = {"chunkedPrompt": {"chunks": [{"role": "user", "text": "fresh"}]}}
+    client = _DriveSessionClient(
+        files=[DriveFile("file-1", "session.json", "application/json", "2025-01-01T00:00:00Z", 64)],
+        payload_bytes={"file-1": json.dumps(payload).encode()},
+    )
+    cache = drive_cache_file_path(tmp_path, "session.json")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(b"{")
+
+    records = list(
+        iter_drive_raw_data(
+            source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
+            client=client,
+            known_mtimes={str(cache): "2025-01-01T00:00:00Z"},
+            blob_store=BlobStore(tmp_path / "blob"),
+        )
+    )
+
+    assert len(records) == 1
+    assert client.download_bytes_calls == ["file-1"]
+    assert json.loads(cache.read_bytes()) == payload
 
 
 def test_iter_drive_raw_data_injects_live_attachment_bytes_into_raw_payload(tmp_path: Path) -> None:

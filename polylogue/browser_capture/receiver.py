@@ -590,6 +590,27 @@ def _check_spool_quota(
         )
 
 
+def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
+    """Prevent a stale, smaller snapshot from replacing a richer spool item."""
+    incoming_updated = _timestamp_ms(incoming.session.updated_at)
+    existing_updated = _timestamp_ms(existing.session.updated_at)
+    incoming_captured = _timestamp_ms(incoming.provenance.captured_at)
+    existing_captured = _timestamp_ms(existing.provenance.captured_at)
+    incoming_turns = len(incoming.session.turns)
+    existing_turns = len(existing.session.turns)
+    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
+        return False
+    if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
+        return False
+    if incoming_turns < existing_turns:
+        return False
+    return (
+        incoming_updated != existing_updated
+        or incoming_captured != existing_captured
+        or incoming_turns != existing_turns
+    )
+
+
 def write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     *,
@@ -625,6 +646,18 @@ def write_capture_envelope(
                     replaced=True,
                     deduplicated=True,
                     dedup_content_hash=dedup_content_hash,
+                    capture_instance_id=envelope.provenance.extension_instance_id,
+                )
+            if existing is not None and not _capture_is_newer_or_richer(envelope, existing):
+                return BrowserCaptureWriteResult(
+                    provider=envelope.provider.value,
+                    provider_session_id=envelope.provider_session_id,
+                    path=target,
+                    artifact_ref=capture_artifact_ref(envelope, root),
+                    bytes_written=target.stat().st_size,
+                    replaced=True,
+                    deduplicated=True,
+                    dedup_content_hash=capture_dedup_content_hash(existing),
                     capture_instance_id=envelope.provenance.extension_instance_id,
                 )
         else:
