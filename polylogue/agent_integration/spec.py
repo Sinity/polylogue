@@ -1,18 +1,9 @@
-"""Typed authority for the six-tool-era standing agent manual.
+"""Typed authority for the executable standing agent manual.
 
-This module keeps the architecture delivered by the beads-06 package—typed
-capabilities, checked queries, recipes, client delivery declarations, and
-rendered package assets—but replaces its 103-tool vocabulary with a normalized
-view of the t46.8 target declarations.  The view is deliberately tolerant of
-the in-flight declaration names in the current snapshot:
-
-* ``graph`` is folded into ``read`` until t46.8.2 lands the six-tool surface.
-* ``maintenance`` is presented as the mission-owned ``operate`` transaction
-  until t46.8.3 renames the declaration.
-
-The manual input schemas below are cutover contract parameters, not claims that
-the compatibility server already registers those signatures.  The verifier
-checks them against live FastMCP signatures once all target tools are present.
+This module owns typed capabilities, checked queries, recipes, client delivery
+declarations, and rendered package assets. Its contracts are derived from the
+live ten-tool MCP declaration algebra and checked against registered FastMCP
+signatures.
 """
 
 from __future__ import annotations
@@ -33,18 +24,18 @@ from polylogue.mcp.declarations import (
 )
 from polylogue.sources.origin_specs import public_origin_meanings
 
-ASSET_VERSION = "2026-07-17.6tool-r01"
+ASSET_VERSION = "2026-08-26.10tool-r01"
 AgentClient = Literal["claude-code", "codex", "gemini", "hermes"]
 GuidanceMode = Literal["full", "mcp-only", "off"]
 QuerySurface = Literal["session", "terminal"]
-SchemaStatus = Literal["cutover-parameterized", "live-verified"]
+SchemaStatus = Literal["not-ready", "live-verified"]
 ArgumentKind = Literal["string", "integer", "boolean", "array", "object"]
 
-TARGET_SCHEMA_STATUS: SchemaStatus = "cutover-parameterized"
+TARGET_SCHEMA_STATUS: SchemaStatus = "live-verified"
 CLIENTS: tuple[AgentClient, ...] = ("claude-code", "codex", "gemini", "hermes")
 GUIDANCE_MODES: tuple[GuidanceMode, ...] = ("full", "mcp-only", "off")
 DEFAULT_READ_TOOLS: tuple[str, ...] = ("query", "read", "get", "explain", "context", "status")
-PRIVILEGED_TOOLS: tuple[str, ...] = ("write", "judge", "run", "operate")
+PRIVILEGED_TOOLS: tuple[str, ...] = ("write", "judge", "run", "maintenance")
 ALL_TARGET_TOOLS: tuple[str, ...] = (*DEFAULT_READ_TOOLS, *PRIVILEGED_TOOLS)
 CONTINUATION_SENTINEL = "$continuation"
 
@@ -120,7 +111,7 @@ class CheckedQuery:
 
 @dataclass(frozen=True, slots=True)
 class RecipeStep:
-    """One six-tool continuity step."""
+    """One executable continuity step."""
 
     tool: str
     arguments: Arguments
@@ -238,7 +229,7 @@ def _contract(
 
 
 _QUERY_SOURCES = _sources("query")
-_READ_SOURCES = _sources("read", optional=("graph",))
+_READ_SOURCES = _sources("read")
 _GET_SOURCES = _sources("get")
 _EXPLAIN_SOURCES = _sources("explain")
 _CONTEXT_SOURCES = _sources("context")
@@ -246,7 +237,7 @@ _STATUS_SOURCES = _sources("status")
 _WRITE_SOURCES = _sources("write")
 _JUDGE_SOURCES = _sources("judge")
 _RUN_SOURCES = _sources("run")
-_OPERATE_SOURCES = _sources("operate") if "operate" in _target_declaration_index() else _sources("maintenance")
+_MAINTENANCE_SOURCES = _sources("maintenance")
 
 TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
@@ -254,10 +245,19 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         source_names=_QUERY_SOURCES,
         purpose="Execute the real expression DSL or a declared typed plan and return a bounded, semantics-labelled result set.",
         arguments=(
-            _arg("expression", "string", True, "Parser-owned DSL expression; omit when resuming with continuation."),
+            _arg("expression", "string", False, "Parser-owned DSL expression; omit when resuming with continuation."),
             _arg("limit", "integer", False, "Requested page size, subject to server and transport bounds."),
             _arg("projection", "string", False, "Declared result projection such as session-summary or cost-rollup."),
             _arg("continuation", "string", False, "Opaque token from the preceding response; send alone."),
+            _arg("origin", "string", False, "Public origin filter."),
+            _arg("tag", "string", False, "Tag filter."),
+            _arg("repo", "string", False, "Repository filter."),
+            _arg("since", "string", False, "Lower time bound."),
+            _arg("until", "string", False, "Upper time bound."),
+            _arg("sort", "string", False, "Declared sort for session projections."),
+            _arg("min_messages", "integer", False, "Minimum message count."),
+            _arg("max_messages", "integer", False, "Maximum message count."),
+            _arg("min_words", "integer", False, "Minimum authored word count."),
         ),
         examples=(
             _example(
@@ -283,7 +283,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="read",
         source_names=_READ_SOURCES,
-        purpose="Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph.",
+        purpose="Read a stable URI/object/evidence ref through a declared view, including topology and evidence projections.",
         arguments=(
             _arg("ref", "string", True, "Stable object, evidence, result-set, or URI reference."),
             _arg("view", "string", False, "Declared projection/view for the referenced object."),
@@ -336,6 +336,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             ),
             _arg("expression", "string", False, "Query expression to parse and lower when subject=query."),
             _arg("ref", "string", False, "Object/ref whose authority or addressing needs explanation."),
+            _arg("offset", "integer", False, "Offset into paged explanation results."),
+            _arg("search", "string", False, "Optional explanation search text."),
+            _arg("limit", "integer", False, "Maximum explanation rows."),
         ),
         examples=(
             _example(
@@ -360,6 +363,13 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "budget_tokens", "integer", False, "Upper bound for compiled context, not a claim-completeness limit."
             ),
             _arg("result_ref", "string", False, "Existing result set to compile without rerunning discovery."),
+            _arg("repo_path", "string", False, "Repository path used for project context."),
+            _arg("cwd", "string", False, "Working directory used for project context."),
+            _arg("recent_files", "array", False, "Recently touched files used for continuity."),
+            _arg("session_id", "string", False, "Current agent session identity."),
+            _arg("limit", "integer", False, "Bound on related context candidates."),
+            _arg("recipient_ref", "string", False, "Recipient identity for delivery receipts."),
+            _arg("assertion_ref", "string", False, "Assertion identity to include in context."),
         ),
         examples=(
             _example(
@@ -406,9 +416,14 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         purpose="Apply one declaration-owned reversible mutation with actor, target, conflict policy, and receipt.",
         arguments=(
             _arg("operation", "string", True, "Declared reversible write operation."),
-            _arg("target_ref", "string", True, "Exact mutation target."),
-            _arg("value", "object", True, "Typed operation payload."),
-            _arg("expected_generation", "string", False, "Optimistic conflict guard where the operation declares one."),
+            _arg("session_id", "string", False, "Exact mutation session target."),
+            _arg("session_ids", "array", False, "Batch mutation session targets."),
+            _arg("tag", "string", False, "Tag value for tag operations."),
+            _arg("tags", "array", False, "Tag values for bulk operations."),
+            _arg("key", "string", False, "Metadata or annotation key."),
+            _arg("value", "string", False, "Scalar operation value."),
+            _arg("confirm", "boolean", False, "Explicit confirmation for governed deletion."),
+            _arg("fields", "object", False, "Structured operation fields."),
         ),
         examples=(
             _example(
@@ -416,8 +431,8 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "Add a review tag through the governed write chokepoint",
                 "A mutation receipt with actor, target, effect identity, and resulting generation; no destructive confirmation is invented.",
                 operation="tag.add",
-                target_ref="session:codex-session:demo-lineage-fork",
-                value={"tag": "review"},
+                session_id="codex-session:demo-lineage-fork",
+                value="review",
             ),
         ),
         supports_continuation=False,
@@ -428,10 +443,14 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         source_names=_JUDGE_SOURCES,
         purpose="Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance.",
         arguments=(
-            _arg("candidate_ref", "string", True, "Exact assertion-candidate identity."),
-            _arg("decision", "string", True, "Declared judgment decision."),
-            _arg("reason", "string", True, "Evidence-grounded judgment rationale."),
-            _arg("expected_generation", "string", False, "Conflict guard for concurrent review."),
+            _arg("items", "array", False, "Batch of assertion candidates and decisions."),
+            _arg("candidate_ref", "string", False, "Exact assertion-candidate identity."),
+            _arg("decision", "string", False, "Declared judgment decision."),
+            _arg("reason", "string", False, "Evidence-grounded judgment rationale."),
+            _arg("inject", "boolean", False, "Whether to inject accepted judgment context."),
+            _arg("replacement_kind", "string", False, "Replacement assertion kind."),
+            _arg("replacement_body_text", "string", False, "Replacement assertion body."),
+            _arg("replacement_value", "object", False, "Structured replacement assertion value."),
         ),
         examples=(
             _example(
@@ -452,8 +471,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         purpose="Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
         arguments=(
             _arg("ref", "string", True, "Saved-query or recipe ref."),
-            _arg("arguments", "object", False, "Typed recipe parameters."),
-            _arg("continuation", "string", False, "Opaque token from the preceding run response; send alone."),
+            _arg("limit", "integer", False, "Bound on saved-query results."),
         ),
         examples=(
             _example(
@@ -461,36 +479,41 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "Run a saved read-only cost audit",
                 "A result_ref and receipt for the declared recipe; mutation authority is never gained from the recipe wrapper.",
                 ref="recipe:cost-audit",
-                arguments={"repo": "polylogue", "since": "2026-07-01"},
+                limit=20,
             ),
         ),
-        supports_continuation=True,
+        supports_continuation=False,
         emits_result_ref=True,
     ),
     _contract(
-        name="operate",
-        source_names=_OPERATE_SOURCES,
+        name="maintenance",
+        source_names=_MAINTENANCE_SOURCES,
         purpose="Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.",
         arguments=(
             _arg("operation", "string", True, "Declared maintenance operation."),
-            _arg("phase", "string", True, "preview, execute, status, or reconcile."),
-            _arg("target", "object", False, "Bound target selector used during preview."),
-            _arg("preview_ref", "string", False, "Preview receipt supplied unchanged for execution."),
-            _arg(
-                "confirmation_token",
-                "string",
-                False,
-                "Short-lived token bound to actor, archive, operation version, expiry, target set, and preview digest.",
-            ),
+            _arg("targets", "array", False, "Maintenance targets."),
+            _arg("dry_run", "boolean", False, "Preview without applying effects."),
+            _arg("session_ids", "array", False, "Session targets."),
+            _arg("origin", "string", False, "Public origin filter."),
+            _arg("source_family", "string", False, "Source-family filter."),
+            _arg("source_root", "string", False, "Source-root filter."),
+            _arg("since", "string", False, "Lower time bound."),
+            _arg("until", "string", False, "Upper time bound."),
+            _arg("failure_kind", "string", False, "Failure classification filter."),
+            _arg("parser_version", "string", False, "Parser-version filter."),
+            _arg("operation_id", "string", False, "Exact operation identity."),
+            _arg("target_outcomes", "object", False, "Observed target outcomes."),
+            _arg("reason", "string", False, "Operator reason."),
+            _arg("confirm", "boolean", False, "Explicit confirmation for governed execution."),
         ),
         examples=(
             _example(
-                "operate-preview",
+                "maintenance-preview",
                 "Preview an index rebuild before authorization",
                 "A non-mutating preview receipt with target digest and the data required to obtain a bound confirmation token.",
-                operation="index.rebuild",
-                phase="preview",
-                target={"scope": "derived-index"},
+                operation="preview",
+                targets=["index"],
+                dry_run=True,
             ),
         ),
         supports_continuation=False,
@@ -500,7 +523,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
 
 TOOL_CONTRACT_BY_NAME: dict[str, ToolContract] = {contract.name: contract for contract in TOOL_CONTRACTS}
 if tuple(TOOL_CONTRACT_BY_NAME) != ALL_TARGET_TOOLS:
-    raise RuntimeError("agent tool contracts must remain in six-tool then privileged capability order")
+    raise RuntimeError("agent tool contracts must remain in default-read then privileged order")
 
 CAPABILITY_FAMILIES: tuple[CapabilityFamily, ...] = (
     CapabilityFamily("authority", "Archive identity, source coverage, freshness, and readiness", None, "status"),
@@ -801,7 +824,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
         "Install the generated deep reference as an owned local file.",
         "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged.",
-        "Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.",
+        "Only the generated content, target manifest, ten-tool vocabulary, continuation recipe, and cache digest change.",
     ),
     ClientDelivery(
         "codex",
@@ -809,7 +832,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text.",
         "Install the generated deep reference beside the managed guidance.",
         "Override precedence detection, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The managed block is regenerated from the six-tool declarations; no 103-tool name list remains.",
+        "The managed block is regenerated from the ten-tool declarations; no retired tool-name list remains.",
     ),
     ClientDelivery(
         "gemini",
@@ -817,7 +840,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install a marked managed block in GEMINI.md as persistent instruction.",
         "Install the generated deep reference as an owned local file.",
         "JSON merge ownership, marker ownership, idempotency, and lossless uninstall are unchanged.",
-        "The persistent instruction and target manifest switch to the six-tool contract.",
+        "The persistent instruction and target manifest use the ten-tool contract.",
     ),
     ClientDelivery(
         "hermes",
@@ -825,7 +848,7 @@ CLIENT_DELIVERIES: tuple[ClientDelivery, ...] = (
         "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
         "Include the generated deep reference in the owned skill directory.",
         "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged.",
-        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.",
+        "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the ten-tool surface.",
     ),
 )
 
@@ -900,11 +923,10 @@ def integration_spec_payload() -> dict[str, object]:
             "polylogue://agent/manifest",
         ],
         "schema_status": TARGET_SCHEMA_STATUS,
-        "post_cutover_regeneration": [
-            "Replace or verify every parameterized argument against the final FastMCP schemas.",
-            "Run the live signature lane, then set TARGET_SCHEMA_STATUS to live-verified only after exact parity.",
-            "Run devtools render agent-manual and devtools render all --check.",
-            "Run devtools verify agent-integration --require-live after the target tools and schema marker agree.",
+        "verification": [
+            "Every generated argument is checked against the registered FastMCP signature.",
+            "Run devtools render agent-manual and devtools render all --check after declaration changes.",
+            "Run devtools verify agent-integration --require-live before publishing the package.",
         ],
     }
 

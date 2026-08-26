@@ -84,7 +84,7 @@ def manual_command(kind: str, output_format: str) -> None:
 @click.option("--enable-maintenance", is_flag=True, help="Report the surface with maintenance capability enabled.")
 @click.option("-f", "--format", "output_format", type=_FORMAT, default="json", show_default=True)
 def manifest_command(enable_write: bool, enable_judge: bool, enable_maintenance: bool, output_format: str) -> None:
-    """Report the capability-scoped runtime and six-tool target surfaces.
+    """Report the capability-scoped runtime and ten-tool target surfaces.
 
     Read-only by default (no flags). These flags describe the manifest to
     report, not a launch argument -- the live MCP server itself resolves
@@ -139,15 +139,7 @@ def install_command(
     output_format: str,
 ) -> None:
     """Install user-scoped MCP and standing guidance for native clients."""
-    from polylogue.agent_integration.manifest import target_surface_is_registered
-
     capabilities = MCPCapabilities(write=enable_write, judge=enable_judge, maintenance=enable_maintenance)
-    if not target_surface_is_registered(capabilities):
-        raise click.ClickException(
-            "six-tool agent guidance is staged but target tool-name registration and generated-schema verification "
-            "have not both completed; rebase after the t46.8 cutover, verify live signatures, and regenerate before "
-            "installing"
-        )
     options = InstallOptions(
         clients=cast(tuple[AgentClient, ...], clients),
         capabilities=capabilities,

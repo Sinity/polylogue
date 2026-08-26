@@ -31,8 +31,7 @@ if TYPE_CHECKING:
 
 
 def _instructions_for_capabilities(capabilities: MCPCapabilities) -> str:
-    """Return compatibility guidance now and the standing manual after cutover."""
-    from polylogue.agent_integration.manifest import target_surface_is_registered
+    """Return the generated standing manual with the active capability gates."""
 
     enabled = [name for name in ("write", "judge", "maintenance") if getattr(capabilities, name)]
     capability_text = ", ".join(enabled) if enabled else "none (read-only)"
@@ -41,12 +40,6 @@ def _instructions_for_capabilities(capabilities: MCPCapabilities) -> str:
         f"This server is read-only by default; enabled privileged capabilities: {capability_text}. "
         "There is no role ladder -- each capability is an independent config opt-in and a hard boundary."
     )
-    if not target_surface_is_registered(capabilities):
-        return (
-            f"{base} The six-tool manual package is staged but is not active because target tool-name "
-            "registration and generated-schema verification have not both completed. Use live discovery "
-            "and polylogue://capabilities/query."
-        )
     from polylogue.agent_integration.assets import read_agent_asset
 
     return f"{base}\n\n{read_agent_asset('standing-manual.md')}"

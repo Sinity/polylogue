@@ -1,5 +1,5 @@
 {
-  "content_version": "2026-07-17.6tool-r01",
+  "content_version": "2026-08-26.10tool-r01",
   "default_read_tools": [
     "query",
     "read",
@@ -12,7 +12,7 @@
     "write",
     "judge",
     "run",
-    "operate"
+    "maintenance"
   ],
   "schema_version": 1,
   "transactions": [
@@ -22,7 +22,7 @@
           "description": "Parser-owned DSL expression; omit when resuming with continuation.",
           "kind": "string",
           "name": "expression",
-          "required_initial": true
+          "required_initial": false
         },
         {
           "description": "Requested page size, subject to server and transport bounds.",
@@ -40,6 +40,60 @@
           "description": "Opaque token from the preceding response; send alone.",
           "kind": "string",
           "name": "continuation",
+          "required_initial": false
+        },
+        {
+          "description": "Public origin filter.",
+          "kind": "string",
+          "name": "origin",
+          "required_initial": false
+        },
+        {
+          "description": "Tag filter.",
+          "kind": "string",
+          "name": "tag",
+          "required_initial": false
+        },
+        {
+          "description": "Repository filter.",
+          "kind": "string",
+          "name": "repo",
+          "required_initial": false
+        },
+        {
+          "description": "Lower time bound.",
+          "kind": "string",
+          "name": "since",
+          "required_initial": false
+        },
+        {
+          "description": "Upper time bound.",
+          "kind": "string",
+          "name": "until",
+          "required_initial": false
+        },
+        {
+          "description": "Declared sort for session projections.",
+          "kind": "string",
+          "name": "sort",
+          "required_initial": false
+        },
+        {
+          "description": "Minimum message count.",
+          "kind": "integer",
+          "name": "min_messages",
+          "required_initial": false
+        },
+        {
+          "description": "Maximum message count.",
+          "kind": "integer",
+          "name": "max_messages",
+          "required_initial": false
+        },
+        {
+          "description": "Minimum authored word count.",
+          "kind": "integer",
+          "name": "min_words",
           "required_initial": false
         }
       ],
@@ -75,7 +129,7 @@
         "sample",
         "aggregate"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "query"
       ],
@@ -122,14 +176,14 @@
         }
       ],
       "name": "read",
-      "purpose": "Read a stable URI/object/evidence ref through a declared view, including topology that the in-flight declarations still call graph.",
+      "purpose": "Read a stable URI/object/evidence ref through a declared view, including topology and evidence projections.",
       "required_capability": null,
       "result_semantics": [
         "single_object",
         "exhaustive_page",
         "bounded_context"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "read"
       ],
@@ -168,7 +222,7 @@
       "result_semantics": [
         "single_object"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "get"
       ],
@@ -193,6 +247,24 @@
           "kind": "string",
           "name": "ref",
           "required_initial": false
+        },
+        {
+          "description": "Offset into paged explanation results.",
+          "kind": "integer",
+          "name": "offset",
+          "required_initial": false
+        },
+        {
+          "description": "Optional explanation search text.",
+          "kind": "string",
+          "name": "search",
+          "required_initial": false
+        },
+        {
+          "description": "Maximum explanation rows.",
+          "kind": "integer",
+          "name": "limit",
+          "required_initial": false
         }
       ],
       "emits_result_ref": false,
@@ -213,7 +285,7 @@
       "result_semantics": [
         "single_object"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "explain"
       ],
@@ -244,6 +316,48 @@
           "kind": "string",
           "name": "result_ref",
           "required_initial": false
+        },
+        {
+          "description": "Repository path used for project context.",
+          "kind": "string",
+          "name": "repo_path",
+          "required_initial": false
+        },
+        {
+          "description": "Working directory used for project context.",
+          "kind": "string",
+          "name": "cwd",
+          "required_initial": false
+        },
+        {
+          "description": "Recently touched files used for continuity.",
+          "kind": "array",
+          "name": "recent_files",
+          "required_initial": false
+        },
+        {
+          "description": "Current agent session identity.",
+          "kind": "string",
+          "name": "session_id",
+          "required_initial": false
+        },
+        {
+          "description": "Bound on related context candidates.",
+          "kind": "integer",
+          "name": "limit",
+          "required_initial": false
+        },
+        {
+          "description": "Recipient identity for delivery receipts.",
+          "kind": "string",
+          "name": "recipient_ref",
+          "required_initial": false
+        },
+        {
+          "description": "Assertion identity to include in context.",
+          "kind": "string",
+          "name": "assertion_ref",
+          "required_initial": false
         }
       ],
       "emits_result_ref": true,
@@ -265,7 +379,7 @@
       "result_semantics": [
         "bounded_context"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "context"
       ],
@@ -316,7 +430,7 @@
         "single_object",
         "aggregate"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "status"
       ],
@@ -331,21 +445,51 @@
           "required_initial": true
         },
         {
-          "description": "Exact mutation target.",
+          "description": "Exact mutation session target.",
           "kind": "string",
-          "name": "target_ref",
-          "required_initial": true
+          "name": "session_id",
+          "required_initial": false
         },
         {
-          "description": "Typed operation payload.",
-          "kind": "object",
+          "description": "Batch mutation session targets.",
+          "kind": "array",
+          "name": "session_ids",
+          "required_initial": false
+        },
+        {
+          "description": "Tag value for tag operations.",
+          "kind": "string",
+          "name": "tag",
+          "required_initial": false
+        },
+        {
+          "description": "Tag values for bulk operations.",
+          "kind": "array",
+          "name": "tags",
+          "required_initial": false
+        },
+        {
+          "description": "Metadata or annotation key.",
+          "kind": "string",
+          "name": "key",
+          "required_initial": false
+        },
+        {
+          "description": "Scalar operation value.",
+          "kind": "string",
           "name": "value",
-          "required_initial": true
+          "required_initial": false
         },
         {
-          "description": "Optimistic conflict guard where the operation declares one.",
-          "kind": "string",
-          "name": "expected_generation",
+          "description": "Explicit confirmation for governed deletion.",
+          "kind": "boolean",
+          "name": "confirm",
+          "required_initial": false
+        },
+        {
+          "description": "Structured operation fields.",
+          "kind": "object",
+          "name": "fields",
           "required_initial": false
         }
       ],
@@ -354,10 +498,8 @@
         {
           "arguments": {
             "operation": "tag.add",
-            "target_ref": "session:codex-session:demo-lineage-fork",
-            "value": {
-              "tag": "review"
-            }
+            "session_id": "codex-session:demo-lineage-fork",
+            "value": "review"
           },
           "id": "write-tag",
           "result_note": "A mutation receipt with actor, target, effect identity, and resulting generation; no destructive confirmation is invented.",
@@ -370,7 +512,7 @@
       "result_semantics": [
         "mutation"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "write"
       ],
@@ -379,27 +521,51 @@
     {
       "arguments": [
         {
+          "description": "Batch of assertion candidates and decisions.",
+          "kind": "array",
+          "name": "items",
+          "required_initial": false
+        },
+        {
           "description": "Exact assertion-candidate identity.",
           "kind": "string",
           "name": "candidate_ref",
-          "required_initial": true
+          "required_initial": false
         },
         {
           "description": "Declared judgment decision.",
           "kind": "string",
           "name": "decision",
-          "required_initial": true
+          "required_initial": false
         },
         {
           "description": "Evidence-grounded judgment rationale.",
           "kind": "string",
           "name": "reason",
-          "required_initial": true
+          "required_initial": false
         },
         {
-          "description": "Conflict guard for concurrent review.",
+          "description": "Whether to inject accepted judgment context.",
+          "kind": "boolean",
+          "name": "inject",
+          "required_initial": false
+        },
+        {
+          "description": "Replacement assertion kind.",
           "kind": "string",
-          "name": "expected_generation",
+          "name": "replacement_kind",
+          "required_initial": false
+        },
+        {
+          "description": "Replacement assertion body.",
+          "kind": "string",
+          "name": "replacement_body_text",
+          "required_initial": false
+        },
+        {
+          "description": "Structured replacement assertion value.",
+          "kind": "object",
+          "name": "replacement_value",
           "required_initial": false
         }
       ],
@@ -422,7 +588,7 @@
       "result_semantics": [
         "mutation"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "judge"
       ],
@@ -437,15 +603,9 @@
           "required_initial": true
         },
         {
-          "description": "Typed recipe parameters.",
-          "kind": "object",
-          "name": "arguments",
-          "required_initial": false
-        },
-        {
-          "description": "Opaque token from the preceding run response; send alone.",
-          "kind": "string",
-          "name": "continuation",
+          "description": "Bound on saved-query results.",
+          "kind": "integer",
+          "name": "limit",
           "required_initial": false
         }
       ],
@@ -453,10 +613,7 @@
       "examples": [
         {
           "arguments": {
-            "arguments": {
-              "repo": "polylogue",
-              "since": "2026-07-01"
-            },
+            "limit": 20,
             "ref": "recipe:cost-audit"
           },
           "id": "run-cost-recipe",
@@ -471,11 +628,11 @@
         "exhaustive_page",
         "mutation"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "run"
       ],
-      "supports_continuation": true
+      "supports_continuation": false
     },
     {
       "arguments": [
@@ -486,27 +643,87 @@
           "required_initial": true
         },
         {
-          "description": "preview, execute, status, or reconcile.",
-          "kind": "string",
-          "name": "phase",
-          "required_initial": true
+          "description": "Maintenance targets.",
+          "kind": "array",
+          "name": "targets",
+          "required_initial": false
         },
         {
-          "description": "Bound target selector used during preview.",
+          "description": "Preview without applying effects.",
+          "kind": "boolean",
+          "name": "dry_run",
+          "required_initial": false
+        },
+        {
+          "description": "Session targets.",
+          "kind": "array",
+          "name": "session_ids",
+          "required_initial": false
+        },
+        {
+          "description": "Public origin filter.",
+          "kind": "string",
+          "name": "origin",
+          "required_initial": false
+        },
+        {
+          "description": "Source-family filter.",
+          "kind": "string",
+          "name": "source_family",
+          "required_initial": false
+        },
+        {
+          "description": "Source-root filter.",
+          "kind": "string",
+          "name": "source_root",
+          "required_initial": false
+        },
+        {
+          "description": "Lower time bound.",
+          "kind": "string",
+          "name": "since",
+          "required_initial": false
+        },
+        {
+          "description": "Upper time bound.",
+          "kind": "string",
+          "name": "until",
+          "required_initial": false
+        },
+        {
+          "description": "Failure classification filter.",
+          "kind": "string",
+          "name": "failure_kind",
+          "required_initial": false
+        },
+        {
+          "description": "Parser-version filter.",
+          "kind": "string",
+          "name": "parser_version",
+          "required_initial": false
+        },
+        {
+          "description": "Exact operation identity.",
+          "kind": "string",
+          "name": "operation_id",
+          "required_initial": false
+        },
+        {
+          "description": "Observed target outcomes.",
           "kind": "object",
-          "name": "target",
+          "name": "target_outcomes",
           "required_initial": false
         },
         {
-          "description": "Preview receipt supplied unchanged for execution.",
+          "description": "Operator reason.",
           "kind": "string",
-          "name": "preview_ref",
+          "name": "reason",
           "required_initial": false
         },
         {
-          "description": "Short-lived token bound to actor, archive, operation version, expiry, target set, and preview digest.",
-          "kind": "string",
-          "name": "confirmation_token",
+          "description": "Explicit confirmation for governed execution.",
+          "kind": "boolean",
+          "name": "confirm",
           "required_initial": false
         }
       ],
@@ -514,24 +731,24 @@
       "examples": [
         {
           "arguments": {
-            "operation": "index.rebuild",
-            "phase": "preview",
-            "target": {
-              "scope": "derived-index"
-            }
+            "dry_run": true,
+            "operation": "preview",
+            "targets": [
+              "index"
+            ]
           },
-          "id": "operate-preview",
+          "id": "maintenance-preview",
           "result_note": "A non-mutating preview receipt with target digest and the data required to obtain a bound confirmation token.",
           "title": "Preview an index rebuild before authorization"
         }
       ],
-      "name": "operate",
+      "name": "maintenance",
       "purpose": "Preview, authorize, execute, inspect, and reconcile administrative maintenance through preview-bound confirmation.",
       "required_capability": "maintenance",
       "result_semantics": [
         "maintenance"
       ],
-      "schema_status": "cutover-parameterized",
+      "schema_status": "live-verified",
       "source_declarations": [
         "maintenance"
       ],

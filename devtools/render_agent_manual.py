@@ -1,4 +1,4 @@
-"""Render or check the declaration-generated six-tool agent manual assets."""
+"""Render or check the declaration-generated agent manual assets."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def render_standing_manual() -> str:
         "",
         "Polylogue is the local evidence system for prior AI work. Use it whenever the task depends on what was tried, decided, changed, observed, paid for, or left unfinished. Do not wait for the operator to say “search the archive.” First establish archive authority, then retrieve evidence, then cite stable refs. Do not use Polylogue for facts that the current repository or live system can answer more directly.",
         "",
-        "This manual targets the six-tool default read surface: `query`, `read`, `get`, `explain`, `context`, and `status`. The current source snapshot still carries an in-flight seven-row declaration (`graph` is separate) and calls the administrative transaction `maintenance`; this generated contract folds graph into `read` and names the administrative transaction `operate`. Final FastMCP signatures remain a post-cutover verification gate.",
+        "This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`, `context`, `status`, `write`, `judge`, `run`, and `maintenance`. Names and argument contracts are generated from the live declarations and checked against registered FastMCP signatures.",
         "",
         "## Cold-start decision route",
         "",
@@ -146,7 +146,7 @@ def render_standing_manual() -> str:
             "",
             "Coverage is not implied by token existence. `status` must report whether the requested origins are configured, ingested, fresh, converged, and suitable for the requested evidence type. State missing or stale coverage in the answer.",
             "",
-            "## The six tools",
+            "## The ten tools",
             "",
             "| Tool | Use it for | Required capability | Result semantics |",
             "|---|---|---|---|",
@@ -227,13 +227,13 @@ def render_standing_manual() -> str:
             "| _(none; default)_ | the six default tools | Read, explain, status, and bounded context only. |",
             "| `write` | `write`, `run` | Declaration-owned reversible mutations and governed saved-query/recipe execution. A recipe inherits the authority of every nested operation. |",
             "| `judge` | `judge` | Candidate judgment with preserved provenance and explicit conflict handling. Independent of `write`. |",
-            "| `maintenance` | `operate` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |",
+            "| `maintenance` | `maintenance` | Preview/status/reconcile and administrative execution. Independent of `write`/`judge`. |",
             "",
-            "Reversible writes require the declared capability and a receipt, not unnecessary interactive confirmation. Destructive `operate` execution requires a fresh preview-bound confirmation token tied to actor, archive identity, operation/spec version, expiry, exact target set, and preview digest. Changing any bound value must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is compatibility-only and must not be taught as the canonical gate.",
+            "Reversible writes require the declared capability and a receipt. Destructive `maintenance` execution requires the governed confirmation required by the selected operation; changing a bound target or authority must return an explicit stale/rejected result before mutation. A legacy `confirm=true` boolean is not the canonical gate.",
             "",
-            "Canonical destructive flow: call `operate` with `phase=preview`; inspect the target disclosure and preview receipt; obtain the bound confirmation token through the operation authority; then call `operate` with `phase=execute`, the unchanged `preview_ref`, and that token. The final field names are blocked on t46.9/t46.8.3 and are verified after cutover.",
+            "Canonical maintenance flow: call `maintenance` with the declared operation in preview/dry-run mode; inspect the receipt and target disclosure; then execute only with the governed confirmation required by that operation.",
             "",
-            "## Continuity recipes (six tools only)",
+            "## Continuity recipes",
             "",
         ]
     )
@@ -278,7 +278,7 @@ def render_standing_manual() -> str:
             "`polylogue agent` manages this manual and the native client integration; it never touches the archive itself.",
             "",
             "- `polylogue agent manual`: Print the packaged standing manual or deeper reference.",
-            "- `polylogue agent manifest`: Report the capability-scoped runtime and six-tool target surfaces.",
+            "- `polylogue agent manifest`: Report the capability-scoped runtime and ten-tool target surfaces.",
             "- `polylogue agent install`: Install user-scoped MCP and standing guidance for native clients.",
             "- `polylogue agent status`: Inspect ownership state and native configuration without mutation.",
             "- `polylogue agent doctor`: Run blocking native syntax, ownership, executable, and identity checks.",
@@ -286,7 +286,7 @@ def render_standing_manual() -> str:
             "",
             "## Cache and regeneration contract",
             "",
-            f"Content version: `{ASSET_VERSION}`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. After the target runtime names land, run the live-signature lane, update the parameterized contracts, set `TARGET_SCHEMA_STATUS` to `live-verified` only after exact parity, regenerate, then run `devtools verify agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.",
+            f"Content version: `{ASSET_VERSION}`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. Run the live-signature lane after declaration changes, then run `devtools verify agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.",
             "",
         ]
     )
@@ -299,13 +299,13 @@ def render_deep_reference() -> str:
     token = continuation_example_token()
     lines: list[str] = [
         f"<!-- Generated by `devtools render agent-manual`. Content version: {ASSET_VERSION}. -->",
-        "# Polylogue six-tool agent integration reference",
+        "# Polylogue agent integration reference",
         "",
-        "This is the exhaustive companion to the standing manual. The standing manual remains complete enough for ordinary use; this file records declaration mappings, parameterized schemas, all examples, recipes, client ownership, and post-cutover verification.",
+        "This is the exhaustive companion to the standing manual. The standing manual remains complete enough for ordinary use; this file records declaration mappings, schemas, all examples, recipes, client ownership, and verification.",
         "",
         "## Adjudication boundary",
         "",
-        "The architecture is beads-06’s `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. Its 103-tool-era content is replaced rather than forked; the current snapshot has since grown to 104 compatibility handlers. Current t46.8 declarations remain in flight, so `read` absorbs source row `graph` and `operate` aliases source row `maintenance`. No compatibility handler is deleted by this package.",
+        "The architecture is the `polylogue.agent_integration` system: typed spec, packaged generated assets, native installer, capability-scoped manifest, CLI, Home Manager module, and verification lanes. The ten-tool declaration algebra is the source of truth for names, arguments, roles, and result semantics.",
         "",
         "## Target transaction declarations",
         "",
@@ -349,7 +349,7 @@ def render_deep_reference() -> str:
     lines.extend(_fenced_json(_call_payload("query", {"continuation": token})))
     lines.extend(
         [
-            "The token decodes to offset 20 and `result:0123456789abcdef01234567`; the verifier checks both. Any final cutover adapter that accepts reconstructed filters instead of the opaque token, changes result_ref across pages, or requires an old tool name fails the live lane.",
+            "The token decodes to offset 20 and `result:0123456789abcdef01234567`; the verifier checks both. An adapter that reconstructs filters instead of accepting the opaque token, changes result_ref across pages, or requires a retired tool name fails the live lane.",
             "",
             "## Parser catalog",
             "",
@@ -405,7 +405,7 @@ def render_deep_reference() -> str:
                 f"- standing manual: {delivery.standing_delivery}",
                 f"- reference: {delivery.reference_delivery}",
                 f"- unchanged: {delivery.unchanged}",
-                f"- six-tool delta: {delivery.six_tool_delta}",
+                f"- surface delta: {delivery.six_tool_delta}",
                 "",
             ]
         )
@@ -419,16 +419,15 @@ def render_deep_reference() -> str:
             "",
             "## Post-cutover regeneration checklist",
             "",
-            "1. Rebase after t46.8.2/t46.8.3 finalize the six read handlers and privileged names.",
-            "2. Replace/verify every `cutover-parameterized` argument against the registered FastMCP input signatures. In particular confirm continuation-only input, `read` graph/topology selection, context result-ref input, and preview/execute fields for `operate`.",
+            "1. Keep every generated argument contract equal to the registered FastMCP input signatures, including optionality and capability gates.",
+            "2. Run `devtools verify agent-integration --require-live` after declaration changes.",
             "3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.",
-            "4. Run `devtools verify agent-integration --lane live-fastmcp-signatures --json`; use its exact signature diff to update the parameterized contracts.",
-            "5. Only after that lane reports exact signature parity, set `TARGET_SCHEMA_STATUS` in `polylogue/agent_integration/spec.py` to `live-verified` and run `devtools render agent-manual`; commit all packaged assets and docs mirrors.",
-            "6. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools, the live schema marker, and exact FastMCP signature parity.",
-            "7. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
-            "8. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.",
+            "4. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools and exact FastMCP signature parity.",
+            "5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.",
+            "6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
+            "7. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.",
             "",
-            "Blocked until those schemas land: exact live FastMCP signature parity, live continuation invocation, preview-bound operate execution, and cold-model trials after the current 104-tool compatibility discovery surface is retired. The generated parser, declaration mapping, asset determinism, installer, and static manual compilation are testable now.",
+            "Static compilation, declaration mapping, asset determinism, installer behavior, and live signature parity are verified here. Behavioral cold-agent trials remain an evidence obligation for the broader program.",
             "",
         ]
     )
@@ -439,7 +438,7 @@ def _static_manifest() -> dict[str, object]:
     return {
         "schema_version": 2,
         "content_version": ASSET_VERSION,
-        "description": "Static six-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` also reports current declaration reconciliation.",
+        "description": "Static ten-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
         "clients": list(CLIENTS),
         "mcp_capability_flags": ["write", "judge", "maintenance"],
         "default_read_tools": list(DEFAULT_READ_TOOLS),

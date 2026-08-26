@@ -42,7 +42,7 @@
       "client": "claude-code",
       "mcp_config": "Merge only the named polylogue entry in the native Claude MCP configuration.",
       "reference_delivery": "Install the generated deep reference as an owned local file.",
-      "six_tool_delta": "Only the generated content, target manifest, six-tool vocabulary, continuation recipe, and cache digest change.",
+      "six_tool_delta": "Only the generated content, target manifest, ten-tool vocabulary, continuation recipe, and cache digest change.",
       "standing_delivery": "Install a SessionStart hook whose additionalContext is the complete generated standing manual.",
       "unchanged": "Hook ownership, idempotent merge, capability/env selection, drift detection, and lossless uninstall are unchanged."
     },
@@ -50,7 +50,7 @@
       "client": "codex",
       "mcp_config": "Merge only [mcp_servers.polylogue] in the native Codex TOML configuration.",
       "reference_delivery": "Install the generated deep reference beside the managed guidance.",
-      "six_tool_delta": "The managed block is regenerated from the six-tool declarations; no 103-tool name list remains.",
+      "six_tool_delta": "The managed block is regenerated from the ten-tool declarations; no retired tool-name list remains.",
       "standing_delivery": "Install a marked managed block in the effective global AGENTS.override.md or AGENTS.md without overwriting operator text.",
       "unchanged": "Override precedence detection, marker ownership, idempotency, and lossless uninstall are unchanged."
     },
@@ -58,7 +58,7 @@
       "client": "gemini",
       "mcp_config": "Merge only mcpServers.polylogue in Gemini settings JSON.",
       "reference_delivery": "Install the generated deep reference as an owned local file.",
-      "six_tool_delta": "The persistent instruction and target manifest switch to the six-tool contract.",
+      "six_tool_delta": "The persistent instruction and target manifest use the ten-tool contract.",
       "standing_delivery": "Install a marked managed block in GEMINI.md as persistent instruction.",
       "unchanged": "JSON merge ownership, marker ownership, idempotency, and lossless uninstall are unchanged."
     },
@@ -66,7 +66,7 @@
       "client": "hermes",
       "mcp_config": "Merge only mcp_servers.polylogue in Hermes YAML.",
       "reference_delivery": "Include the generated deep reference in the owned skill directory.",
-      "six_tool_delta": "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the six-tool surface.",
+      "six_tool_delta": "The skill body, recipes, capability opt-ins, and cache digest are regenerated for the ten-tool surface.",
       "standing_delivery": "Install the complete generated manual inside the owned productivity/polylogue SKILL.md.",
       "unchanged": "YAML merge ownership, skill ownership, idempotency, and lossless uninstall are unchanged."
     }
@@ -77,7 +77,7 @@
     "gemini",
     "hermes"
   ],
-  "content_version": "2026-07-17.6tool-r01",
+  "content_version": "2026-08-26.10tool-r01",
   "default_read_tools": [
     "query",
     "read",
@@ -151,19 +151,13 @@
       "token": "unknown-export"
     }
   ],
-  "post_cutover_regeneration": [
-    "Replace or verify every parameterized argument against the final FastMCP schemas.",
-    "Run the live signature lane, then set TARGET_SCHEMA_STATUS to live-verified only after exact parity.",
-    "Run devtools render agent-manual and devtools render all --check.",
-    "Run devtools verify agent-integration --require-live after the target tools and schema marker agree."
-  ],
   "privileged_tools": [
     "write",
     "judge",
     "run",
-    "operate"
+    "maintenance"
   ],
-  "schema_status": "cutover-parameterized",
+  "schema_status": "live-verified",
   "schema_version": 2,
   "state_schema_version": 1,
   "target_prompts": [
@@ -326,6 +320,11 @@
     "write",
     "judge",
     "run",
-    "operate"
+    "maintenance"
+  ],
+  "verification": [
+    "Every generated argument is checked against the registered FastMCP signature.",
+    "Run devtools render agent-manual and devtools render all --check after declaration changes.",
+    "Run devtools verify agent-integration --require-live before publishing the package."
   ]
 }
