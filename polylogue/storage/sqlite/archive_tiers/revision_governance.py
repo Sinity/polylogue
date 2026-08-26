@@ -397,6 +397,7 @@ def _write_parsed_precedence_result(
                 session,
                 content_hash=content_hash,
                 raw_id=raw_id,
+                fallback_timestamp=raw_revision_file_mtime(store, raw_id),
                 merge_append=source_index < 0,
                 force_replace=force_replace,
                 stage_timings_s=stage_timings_s,

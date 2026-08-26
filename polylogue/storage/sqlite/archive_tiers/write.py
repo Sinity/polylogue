@@ -389,6 +389,7 @@ def write_parsed_session_to_archive(
     *,
     content_hash: str | None = None,
     raw_id: str | None = None,
+    fallback_timestamp: str | None = None,
     merge_append: bool = False,
     force_replace: bool = False,
     stage_timings_s: dict[str, float] | None = None,
@@ -502,9 +503,12 @@ def write_parsed_session_to_archive(
     # the already-set created_at_ms untouched).
     # Keep the writer's effective freshness identical to ingest/replay
     # normalization: producer fields, then authored messages, then semantic
-    # session events. No wall-clock or file-mtime fallback is available here;
-    # callers that have acquisition evidence must normalize before this point.
-    session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(session)
+    # session events, then explicitly supplied acquisition evidence. Never use
+    # the ingest wall clock as a substitute for missing source evidence.
+    session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(
+        session,
+        fallback_timestamp=fallback_timestamp,
+    )
     producer_created, producer_updated = producer_timestamp_flags(session)
     # incoming_freshness_ms now reflects the same fallback: previously a
     # provider that omitted both session timestamps produced

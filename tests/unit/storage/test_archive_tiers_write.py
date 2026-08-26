@@ -4348,6 +4348,45 @@ def test_writer_derives_session_timestamps_from_message_evidence_when_provider_o
     assert row["sort_key_ms"] == expected_max
 
 
+def test_writer_uses_explicit_acquisition_fallback_when_session_has_no_timeline(
+    tmp_path: Path,
+) -> None:
+    """The production writer must consume file evidence at its SQL seam.
+
+    This is deliberately unnormalized input: removing ``fallback_timestamp``
+    from the writer call (or silently dropping it before the INSERT) must
+    recreate the NULL-created-at defect.  The fallback is acquisition evidence,
+    never an ingest wall-clock substitution.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="claude-no-wire-time",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="captured without provider timestamp",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="captured")],
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(
+        conn,
+        session,
+        raw_id="raw-claude-no-wire-time",
+        fallback_timestamp="2026-08-01T12:34:56Z",
+    )
+
+    row = _session_timestamps(conn, session_id)
+    expected = 1_785_587_696_000  # 2026-08-01T12:34:56Z
+    assert row["created_at_ms"] == expected
+    assert row["updated_at_ms"] == expected
+    assert row["sort_key_ms"] == expected
+
+
 def test_writer_does_not_override_provider_supplied_session_timestamps_with_derived_values(
     tmp_path: Path,
 ) -> None:
