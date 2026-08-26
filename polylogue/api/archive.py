@@ -3820,6 +3820,62 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         assertion_refs = tuple(dict.fromkeys(ref for segment in segments for ref in segment.assertion_refs))
         caveats = tuple(dict.fromkeys(caveat for segment in segments for caveat in segment.caveats))
 
+        # All compiled material crosses the same admission kernel used by live
+        # sources.  The compiler remains responsible for producing typed
+        # archive segments; the scheduler alone decides what can be admitted
+        # and receipts every candidate.  Archive-derived segments are quoted
+        # evidence by construction, never executable instructions.
+        from polylogue.context.scheduler import ContextItem, schedule_context
+        from polylogue.core.refs import ExecutionContextRef
+
+        class _CompiledSegmentsSource:
+            name = "archive-context"
+
+            def candidates(self, *, moment: str, target_session: str | None) -> Sequence[ContextItem]:
+                del moment
+                return tuple(
+                    ContextItem(
+                        ref=segment.segment_id,
+                        content=segment.markdown or "",
+                        token_cost=segment.token_estimate,
+                        ordinal_score=index,
+                        source=self.name,
+                        trust_class="quoted",
+                        material_class="evidence",
+                        target_session=target_session,
+                    )
+                    for index, segment in enumerate(segments)
+                )
+
+        execution_context = ExecutionContextRef.from_observation(
+            {"purpose": spec.purpose, "redaction_policy": spec.redaction_policy, "read_views": spec.read_views},
+            unknown_fields=("runtime",),
+        )
+        admission = schedule_context(
+            (_CompiledSegmentsSource(),),
+            moment=spec.purpose,
+            target_session=session_ids[0] if session_ids else None,
+            execution_context=execution_context,
+            # ``compile_context`` has already applied its historical
+            # character/message degradation before admission.  Its markdown
+            # framing is intentionally retained even for a one-token content
+            # budget, so the scheduler receipts the post-degradation image
+            # without re-dropping those compatibility segments.
+            token_budget=max(token_total, 1),
+            now_ms=0,
+        )
+        try:
+            from polylogue.context.scheduler import record_context_ledger
+
+            ops_conn = open_connection(_active_archive_root(self.config) / "ops.db")
+            try:
+                record_context_ledger(ops_conn, admission, observed_at_ms=0)
+            finally:
+                ops_conn.close()
+        except (OSError, sqlite3.Error):
+            # Frozen/read-only archive views still return the compiled image.
+            pass
+
         return ContextImage(
             spec=spec,
             segments=tuple(segments),
@@ -3828,7 +3884,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             assertion_refs=assertion_refs,
             omitted=tuple(omitted),
             caveats=caveats,
-            token_estimate=token_total,
+            token_estimate=admission.token_cost,
+            execution_context_ref=execution_context,
+            ledger=admission.ledger,
+            build_ref=admission.build_ref,
         )
 
     async def list_read_view_profiles(self) -> list[JSONDocument]:

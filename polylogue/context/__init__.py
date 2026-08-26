@@ -10,6 +10,12 @@ __all__ = [
     "ContextSpec",
     "compose_context_preamble",
     "context_snapshot_record_from_image",
+    "ContextAssembly",
+    "ContextItem",
+    "ContextLedgerRow",
+    "ContextSource",
+    "schedule_context",
+    "record_context_ledger",
 ]
 
 
@@ -26,4 +32,29 @@ def __getattr__(name: str) -> object:
         from polylogue.context.preamble import compose_context_preamble
 
         return compose_context_preamble
+    if name in {
+        "ContextAssembly",
+        "ContextItem",
+        "ContextLedgerRow",
+        "ContextSource",
+        "schedule_context",
+        "record_context_ledger",
+    }:
+        from polylogue.context.scheduler import (
+            ContextAssembly,
+            ContextItem,
+            ContextLedgerRow,
+            ContextSource,
+            record_context_ledger,
+            schedule_context,
+        )
+
+        return {
+            "ContextAssembly": ContextAssembly,
+            "ContextItem": ContextItem,
+            "ContextLedgerRow": ContextLedgerRow,
+            "ContextSource": ContextSource,
+            "schedule_context": schedule_context,
+            "record_context_ledger": record_context_ledger,
+        }[name]
     raise AttributeError(name)

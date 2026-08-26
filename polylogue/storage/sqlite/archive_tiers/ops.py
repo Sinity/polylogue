@@ -402,7 +402,20 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- convergence step that detects and repairs a stale live CHECK; it reuses
 -- this exact DDL fragment (``SCHEMA_DRIFT_SAMPLES_DDL``) so the two can never
 -- drift apart from each other.
-{SCHEMA_DRIFT_SAMPLES_DDL}"""
+{SCHEMA_DRIFT_SAMPLES_DDL}
+
+CREATE TABLE IF NOT EXISTS context_injection_ledger (
+    ledger_id TEXT PRIMARY KEY, build_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
+    decision TEXT NOT NULL CHECK(decision IN ('included', 'degraded', 'dropped')),
+    source TEXT NOT NULL, item_ref TEXT NOT NULL, token_cost INTEGER NOT NULL CHECK(token_cost >= 0),
+    source_local_rank INTEGER NOT NULL CHECK(source_local_rank > 0),
+    budget_before INTEGER NOT NULL CHECK(budget_before >= 0), budget_after INTEGER NOT NULL CHECK(budget_after >= 0),
+    disclosure_verdict TEXT NOT NULL, authority_verdict TEXT NOT NULL, authority_reason TEXT NOT NULL,
+    policy_refs_json TEXT NOT NULL, target_session TEXT, execution_context_ref TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_context_injection_ledger_build
+ON context_injection_ledger(build_ref, observed_at_ms);
+"""
 
 OPS_BENIGN_DDL_CONVERGENCE_PLAN: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC)",

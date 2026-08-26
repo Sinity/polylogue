@@ -18,7 +18,7 @@ from pydantic import Field, model_validator
 
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
 from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
-from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.refs import EvidenceRef, ExecutionContextRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
 from polylogue.surfaces.compaction import estimate_tokens
@@ -124,6 +124,9 @@ class ContextImage(ArchiveInsightModel):
     caveats: tuple[str, ...] = ()
     token_estimate: int = 0
     size_estimate: dict[str, int] = Field(default_factory=dict)
+    execution_context_ref: ExecutionContextRef | None = None
+    ledger: tuple[object, ...] = ()
+    build_ref: str | None = None
 
 
 class ContextSnapshotRecord(ArchiveInsightModel):
