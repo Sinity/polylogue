@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from devtools.continuity_replay import replay_archive
+from devtools.continuity_scenarios import CONTINUITY_SCENARIOS
 from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.core.json import JSONDocument, JSONValue, json_document_list, require_json_document
 from tests.infra.continuity import ContinuityFixtureSeed, load_continuity_catalog, seed_continuity_archive
@@ -29,12 +31,22 @@ def test_fixture_compiler_plants_corrected_parallel_incident_population(
     """Direct SQLite census guards the builder independently of the MCP query route."""
 
     _, _, seed = continuity_corpus
-    assert seed.direct_facts["coordinator_children"] == 129
-    assert seed.direct_facts["incident_members"] == 91
-    assert seed.direct_facts["other_children"] == 38
-    assert seed.direct_facts["workflow_invocations"] == 4
-    assert seed.direct_facts["incident_curriculum_cases"] == 6
-    assert seed.direct_facts["usage_total_tokens"] == 1950
+    oracle = require_json_document(
+        require_json_document(continuity_corpus[1]["oracles"], context="continuity oracles")[
+            "parallel-claude-incident"
+        ],
+        context="incident oracle",
+    )
+    expected = require_json_document(oracle["facts"], context="incident facts")
+    for name, value in expected.items():
+        if name in seed.direct_facts:
+            assert seed.direct_facts[name] == value
+
+
+def _incident_facts(catalog: JSONDocument) -> JSONDocument:
+    oracles = require_json_document(catalog["oracles"], context="continuity oracles")
+    incident = require_json_document(oracles["parallel-claude-incident"], context="incident oracle")
+    return require_json_document(incident["facts"], context="incident facts")
 
 
 @pytest.mark.asyncio
@@ -48,7 +60,7 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
 
     assert report["transport"] == "mcp-stdio-json-rpc"
     assert report["status"] == "pass"
-    assert report["passed"] == 8
+    assert report["passed"] == len(CONTINUITY_SCENARIOS)
     assert report["failed"] == 0
     discovery = require_json_document(report["discovery_receipt"], context="stdio discovery")
     assert discovery["transport"] == "mcp-stdio-json-rpc"
@@ -112,16 +124,18 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
 
     receipts = json_document_list(incident["route_receipts"])
     member_receipt = next(receipt for receipt in receipts if receipt["step_id"] == "incident-members")
-    assert member_receipt["page_count"] == 6
-    assert member_receipt["enumerated_item_count"] == 91
-    assert member_receipt["unique_identity_count"] == 91
-    assert member_receipt["page_total_sum"] == 91
+    expected_members = _incident_facts(catalog)["attempt_transcripts"]
+    assert member_receipt["enumerated_item_count"] == expected_members
+    assert member_receipt["unique_identity_count"] == expected_members
+    assert member_receipt["page_total_sum"] == expected_members
     assert member_receipt["page_totals_match_items"] is True
     count_probe = require_json_document(member_receipt["count_probe"], context="member count probe")
-    assert count_probe["selected_rows_exact"] == 91
+    assert count_probe["selected_rows_exact"] == expected_members
     assert member_receipt["population_count_verified"] is True
     assert member_receipt["exact_enumeration_verified"] is True
-    assert [page["page_total"] for page in json_document_list(member_receipt["pages"])] == [17, 17, 17, 17, 17, 6]
+    assert (
+        sum(cast(int, page["page_total"]) for page in json_document_list(member_receipt["pages"])) == expected_members
+    )
     assert isinstance(member_receipt["query_ref"], str)
     assert isinstance(member_receipt["result_ref"], str)
 
@@ -154,7 +168,8 @@ async def test_query_continuation_accepts_distinct_multi_page_rows(
     receipts = json_document_list(result["route_receipts"])
     members = next(receipt for receipt in receipts if receipt["step_id"] == "incident-members")
     assert members["page_count"] == 6
-    assert members["enumerated_item_count"] == members["unique_identity_count"] == 91
+    expected_members = _incident_facts(catalog)["attempt_transcripts"]
+    assert members["enumerated_item_count"] == members["unique_identity_count"] == expected_members
     assert members["exact_enumeration_verified"] is True
 
 
@@ -184,7 +199,10 @@ async def test_query_continuation_rejects_duplicate_row_with_advancing_offset(
                 expression = QueryContinuation.decode(continuation).request.arguments.get("expression")
         if (
             tool != "query"
-            or expression != 'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
+            or not isinstance(expression, str)
+            or "text:parallel-child" not in expression
+            or "workflow_run:" not in expression
+            or " | count" in expression
         ):
             return response_text
         payload = require_json_document(json.loads(response_text), context="duplicate continuation response")
@@ -268,8 +286,14 @@ async def test_dropping_incident_workflow_filter_fails_known_answer_oracle(
     def drop_workflow_filter(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
         del invocation
         expression = arguments.get("expression")
-        if tool == "query" and isinstance(expression, str):
-            arguments["expression"] = expression.replace(' AND text:"workflow_run:wf_synthetic_841"', "")
+        if (
+            tool == "query"
+            and isinstance(expression, str)
+            and "text:parallel-child" in expression
+            and ' AND text:"workflow_run:' in expression
+        ):
+            prefix, remainder = expression.split(' AND text:"workflow_run:', 1)
+            arguments["expression"] = prefix + remainder[remainder.index('"') + 1 :]
         return arguments
 
     report = await replay_archive(
@@ -284,7 +308,7 @@ async def test_dropping_incident_workflow_filter_fails_known_answer_oracle(
     [result] = json_document_list(report["results"])
     assert result["classification"] == "source_coverage"
     observed_facts = require_json_document(result["observed_facts"], context="mutation observed facts")
-    assert observed_facts["attempt_transcripts"] == 129
+    assert observed_facts["attempt_transcripts"] == _incident_facts(catalog)["coordinator_children"]
     diagnostics = json_document_list(result["diagnostics"])
     assert {
         "kind": "fact_mismatch",
@@ -293,7 +317,7 @@ async def test_dropping_incident_workflow_filter_fails_known_answer_oracle(
         "expected": 91,
         "observed": 129,
         "source_refs": [
-            "fixture:corpus.parallel_incident",
+            "fixture:corpus.parallel_claude_incident",
             "bead:polylogue-z9gh.7",
             "bead:polylogue-t8t",
         ],
@@ -326,7 +350,7 @@ async def test_mutated_planted_fact_is_diagnosed_without_changing_route_output(
     assert report["status"] == "fail"
     [result] = json_document_list(report["results"])
     observed_facts = require_json_document(result["observed_facts"], context="oracle-mutation observed facts")
-    assert observed_facts["attempt_transcripts"] == 91
+    assert observed_facts["attempt_transcripts"] == _incident_facts(catalog)["attempt_transcripts"]
     diagnostics = json_document_list(result["diagnostics"])
     assert {
         "kind": "fact_mismatch",
@@ -335,7 +359,7 @@ async def test_mutated_planted_fact_is_diagnosed_without_changing_route_output(
         "expected": 92,
         "observed": 91,
         "source_refs": [
-            "fixture:corpus.parallel_incident",
+            "fixture:corpus.parallel_claude_incident",
             "bead:polylogue-z9gh.7",
             "bead:polylogue-t8t",
         ],

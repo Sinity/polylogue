@@ -17,6 +17,7 @@ import pytest
 
 from devtools import continuity_replay
 from devtools.continuity_evidence import main, run_continuity_evidence
+from devtools.continuity_scenarios import CONTINUITY_SCENARIOS
 from tests.infra.continuity import continuity_catalog_path, load_continuity_catalog, seed_continuity_archive
 
 
@@ -29,7 +30,7 @@ async def test_continuity_evidence_end_to_end_synthetic_lane() -> None:
 
     continuity = report["continuity"]
     assert isinstance(continuity, dict)
-    assert continuity["scenario_count"] == 8
+    assert continuity["scenario_count"] == len(CONTINUITY_SCENARIOS)
     assert continuity["status"] == "pass"
 
     discovery = report["discovery_coverage"]

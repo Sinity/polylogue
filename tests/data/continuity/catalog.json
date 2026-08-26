@@ -25,7 +25,7 @@
       "tool": "Edit"
     },
     "origin": "codex-session",
-    "parallel_incident": {
+    "parallel_claude_incident": {
       "attempt_curriculum": [
         {
           "case": "candidate-list",
@@ -114,6 +114,9 @@
       "session_key": "continuity-resume",
       "text": "continuity-resume-marker Next step: add the cancellation regression test before changing the parser."
     },
+    "self_inspection": {
+      "source": "declaration-fixture"
+    },
     "timestamp": "2026-01-15T12:00:00+00:00"
   },
   "fixture_id": "continuity-synthetic-v2",
@@ -197,7 +200,7 @@
         "message:codex-session:ext-continuity-incident-coordinator:n:incident-curriculum-correct-delegation"
       ],
       "source_refs": [
-        "fixture:corpus.parallel_incident",
+        "fixture:corpus.parallel_claude_incident",
         "bead:polylogue-z9gh.7",
         "bead:polylogue-t8t"
       ]
