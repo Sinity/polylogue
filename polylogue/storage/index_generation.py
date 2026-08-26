@@ -1052,37 +1052,44 @@ class IndexGenerationStore:
             root.mkdir(parents=False, exist_ok=False)
         except FileExistsError:
             raise RuntimeError(f"generation already exists: {generation_id}") from None
-        _assert_no_symlink_ancestry(root, label="generation directory")
-        for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
-            source = self.archive_root / filename
-            if source.exists() or source.is_symlink():
-                target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
-                link = root / filename
-                link.symlink_to(target, target_is_directory=is_directory)
-                try:
-                    linked = link.stat()
-                except OSError as exc:
-                    raise RuntimeError(f"linked durable tier disappeared: {filename}") from exc
-                if (linked.st_dev, linked.st_ino) != identity:
-                    raise RuntimeError(f"durable tier changed during linking: {filename}")
-                # The source pathname is still an authority boundary after the
-                # link is installed.  Do not proceed if it was replaced between
-                # capture and post-link verification.
-                _require_path_identity(source, identity, label=f"durable tier {filename}")
-        index_path = root / "index.db"
-        initialize_archive_database(index_path, ArchiveTier.INDEX)
-        generation = IndexGeneration(
-            generation_id=generation_id,
-            owner_id=owner,
-            archive_root=str(self.archive_root.resolve(strict=False)),
-            index_path=str(index_path),
-            state="inactive",
-            created_at_ms=created_at_ns // 1_000_000,
-            source_snapshot=source_snapshot,
-            created_at_ns=created_at_ns,
-        )
-        self._write(generation)
-        return generation
+        try:
+            _assert_no_symlink_ancestry(root, label="generation directory")
+            for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+                source = self.archive_root / filename
+                if source.exists() or source.is_symlink():
+                    target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
+                    link = root / filename
+                    link.symlink_to(target, target_is_directory=is_directory)
+                    try:
+                        linked = link.stat()
+                    except OSError as exc:
+                        raise RuntimeError(f"linked durable tier disappeared: {filename}") from exc
+                    if (linked.st_dev, linked.st_ino) != identity:
+                        raise RuntimeError(f"durable tier changed during linking: {filename}")
+                    # The source pathname is still an authority boundary after the
+                    # link is installed.  Do not proceed if it was replaced between
+                    # capture and post-link verification.
+                    _require_path_identity(source, identity, label=f"durable tier {filename}")
+            index_path = root / "index.db"
+            initialize_archive_database(index_path, ArchiveTier.INDEX)
+            generation = IndexGeneration(
+                generation_id=generation_id,
+                owner_id=owner,
+                archive_root=str(self.archive_root.resolve(strict=False)),
+                index_path=str(index_path),
+                state="inactive",
+                created_at_ms=created_at_ns // 1_000_000,
+                source_snapshot=source_snapshot,
+                created_at_ns=created_at_ns,
+            )
+            self._write(generation)
+            return generation
+        except BaseException:
+            # The metadata is the enumeration record.  Never leave a partially
+            # materialized directory that cannot be loaded or reclaimed.
+            with suppress(OSError):
+                shutil.rmtree(root)
+            raise
 
     def load(self, generation_id: str) -> IndexGeneration:
         self._validate_lifecycle_id(generation_id, "generation")
