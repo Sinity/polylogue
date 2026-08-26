@@ -24,11 +24,11 @@ from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import (
     EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
-    EMBEDDING_INPUT_HASH_SQL_FUNCTION,
     EMBEDDING_SOURCE_HASH_SQL_FUNCTION,
+    VECTOR_DERIVATION_HASH_SQL_FUNCTION,
     EmbeddingRecipe,
+    EmbeddingRequestSpec,
     EmbeddingSourceDigest,
-    embedding_input_hash,
     message_embedding_derivation_key,
     register_embedding_identity_sql,
     sql_string_literal,
@@ -424,7 +424,7 @@ def _archive_embedding_freshness_predicate(
     exact eligible source session is pending.
 
     v4 (polylogue-q88p): per-message freshness is presence-based --
-    ``desired_messages.embedding_input_hash`` (identity-free: computed from
+    ``desired_messages.vector_derivation_hash`` (identity-free: computed from
     the message's *current* embedder input text) either has a
     ``message_embeddings_meta`` row or it does not. There is no per-vector
     "stale" comparison anymore: a hash with a meta row IS fresh, because the
@@ -457,7 +457,7 @@ def _archive_embedding_freshness_predicate(
             "attempt_state",
             "message_count",
         }
-        required_meta = {"embedding_input_hash"}
+        required_meta = {"vector_derivation_hash"}
         if (
             not state_table
             or not meta_table
@@ -471,14 +471,14 @@ def _archive_embedding_freshness_predicate(
     relation = archive_embeddable_messages_relation(conn, alias="desired_source", model=recipe.model)
     cte_sql = f"""
         WITH desired_messages AS (
-            SELECT desired_source.message_id, desired_source.session_id, desired_source.embedding_input_hash
+            SELECT desired_source.message_id, desired_source.session_id, desired_source.vector_derivation_hash
             FROM {relation}
         ),
         desired_sessions AS (
             SELECT
                 session_id,
                 COUNT(*) AS message_count,
-                {EMBEDDING_SOURCE_HASH_SQL_FUNCTION}(embedding_input_hash) AS source_hash
+                {EMBEDDING_SOURCE_HASH_SQL_FUNCTION}(vector_derivation_hash) AS source_hash
             FROM desired_messages
             GROUP BY session_id
         )
@@ -515,7 +515,7 @@ def _archive_embedding_freshness_predicate(
             FROM desired_messages AS dm
             WHERE dm.session_id = s.session_id
               AND NOT EXISTS (
-                  SELECT 1 FROM {meta_table} AS em WHERE em.embedding_input_hash = dm.embedding_input_hash
+                  SELECT 1 FROM {meta_table} AS em WHERE em.vector_derivation_hash = dm.vector_derivation_hash
               )
         )
     )"""
@@ -1156,7 +1156,7 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
     compat fallback, which targets an embeddings.db that has not yet been
     rebuilt onto the v4 schema) only need ``message_id``/``session_id``/
     ``content_hash`` and omit it. Passing ``model`` additionally projects
-    ``embedding_input_hash`` -- computed via the registered SQL function from
+    ``vector_derivation_hash`` -- computed via the registered SQL function from
     exactly the same prose expression that will be sent to the embedder --
     for callers that need the identity-free vector key (the freshness
     predicate, embedding materialization, rescue).
@@ -1180,13 +1180,13 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
         )
         prose_expr = message_prose_sql(base_alias, separator="char(10)||char(10)", block_types=("text",))
         hash_expr = (
-            f"{EMBEDDING_INPUT_HASH_SQL_FUNCTION}({model_literal}, {prose_expr})" if model is not None else "NULL"
+            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({model_literal}, {prose_expr})" if model is not None else "NULL"
         )
         selected_columns = (
             f"{base_alias}.message_id AS message_id, "
             f"{base_alias}.session_id AS session_id, "
             f"{content_hash_expr} AS content_hash, "
-            f"{hash_expr} AS embedding_input_hash"
+            f"{hash_expr} AS vector_derivation_hash"
         )
         return f"""
         (
@@ -1204,13 +1204,15 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
         """
     if "text" in message_columns:
         hash_expr = (
-            f"{EMBEDDING_INPUT_HASH_SQL_FUNCTION}({model_literal}, {base_alias}.text)" if model is not None else "NULL"
+            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({model_literal}, {base_alias}.text)"
+            if model is not None
+            else "NULL"
         )
         selected_columns = (
             f"{base_alias}.message_id AS message_id, "
             f"{base_alias}.session_id AS session_id, "
             f"{content_hash_expr} AS content_hash, "
-            f"{hash_expr} AS embedding_input_hash"
+            f"{hash_expr} AS vector_derivation_hash"
         )
         return f"""
         (
@@ -1224,7 +1226,7 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
         f"{base_alias}.message_id AS message_id, "
         f"{base_alias}.session_id AS session_id, "
         f"{content_hash_expr} AS content_hash, "
-        "NULL AS embedding_input_hash"
+        "NULL AS vector_derivation_hash"
     )
     return f"""
     (
@@ -1416,7 +1418,7 @@ class _ProviderRequestError(RuntimeError):
 
 
 def _archive_embedding_source_hash_from_pairs(pairs: Iterable[tuple[str, bytes]]) -> bytes:
-    """Session source identity from ``(message_id, embedding_input_hash)`` pairs.
+    """Session source identity from ``(message_id, vector_derivation_hash)`` pairs.
 
     Only the hash VALUES are digested (message_id is accepted for caller
     convenience -- e.g. a ``dict[message_id, hash].items()`` -- but excluded
@@ -1431,13 +1433,13 @@ def _archive_embedding_source_hash_from_pairs(pairs: Iterable[tuple[str, bytes]]
 
 
 def _archive_embedding_source_hash(rows: list[sqlite3.Row]) -> bytes:
-    """Source identity from a relation carrying a precomputed ``embedding_input_hash`` column."""
+    """Source identity from a relation carrying a precomputed ``vector_derivation_hash`` column."""
 
     normalized: list[tuple[str, bytes]] = []
     for row in rows:
-        input_hash = row["embedding_input_hash"]
+        input_hash = row["vector_derivation_hash"]
         if input_hash is None:
-            raise ValueError("embedding_input_hash is required for embedding source identity")
+            raise ValueError("vector_derivation_hash is required for embedding source identity")
         normalized.append((str(row["message_id"]), bytes(input_hash)))
     return _archive_embedding_source_hash_from_pairs(normalized)
 
@@ -1452,13 +1454,13 @@ def _read_archive_embedding_source_snapshot(
 
     Queried fresh (not from the Python-side hashes computed before the
     provider call) so a text/message-set change racing the embed pass is
-    caught: the relation recomputes ``embedding_input_hash`` from whatever
+    caught: the relation recomputes ``vector_derivation_hash`` from whatever
     text is in ``index.db`` right now.
     """
     relation = archive_embeddable_messages_relation(conn, alias="current_source", model=model)
     rows = conn.execute(
         f"""
-        SELECT current_source.message_id, current_source.embedding_input_hash
+        SELECT current_source.message_id, current_source.vector_derivation_hash
         FROM {relation}
         WHERE current_source.session_id = ?
         ORDER BY current_source.message_id
@@ -1595,7 +1597,9 @@ def _embed_archive_session_sync(
         # re-derived from stored identity, and reused for both the write and
         # the session source-identity digest.
         input_hash_by_message_id: dict[str, bytes] = {
-            str(row["message_id"]): embedding_input_hash(model=text_provider.model, input_text=str(row["text"]))
+            str(row["message_id"]): EmbeddingRequestSpec(
+                recipe=recipe, input_text=str(row["text"])
+            ).vector_derivation_hash
             for row in embeddable
         }
         source_hash = _archive_embedding_source_hash_from_pairs(input_hash_by_message_id.items())
@@ -1633,11 +1637,11 @@ def _embed_archive_session_sync(
                         embedding=vector,
                         model=text_provider.model,
                         embedded_at_ms=now_ms,
-                        embedding_input_hash=input_hash,
+                        vector_derivation_hash=input_hash,
                         recipe_hash=attempt.recipe_hash,
                         derivation_key=message_embedding_derivation_key(
                             message_id=message_id,
-                            embedding_input_hash=input_hash,
+                            vector_derivation_hash=input_hash,
                             recipe=recipe,
                         ).digest(),
                         generation=attempt.generation,

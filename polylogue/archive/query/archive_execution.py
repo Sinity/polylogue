@@ -337,8 +337,13 @@ def _semantic_hits(
     if vector_provider is None and config is not None:
         vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
     if vector_provider is None:
-        # No vector backend → empty semantic leg (graceful degradation, #1743).
-        return []
+        from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+        raise EmbeddingRetrievalNotReadyError(
+            "semantic retrieval is unavailable: no configured/constructible vector backend; "
+            "configure Voyage/sqlite-vec and retry",
+            readiness_status="disabled",
+        )
     limit = plan.limit if plan.limit is not None else 50
     scored = vector_provider.query(text, limit=max(limit + plan.offset, limit) * 3)
     return archive.semantic_summaries(
@@ -367,7 +372,23 @@ def _archive_summaries(
         return _summaries_from_hits(archive, hits)
 
     if plan.similar_text is not None or plan.retrieval_lane in {"semantic", "hybrid"}:
-        hits = _semantic_hits(plan, archive, config=config, archive_root=archive_root)
+        try:
+            hits = _semantic_hits(plan, archive, config=config, archive_root=archive_root)
+        except Exception as exc:
+            from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+            if plan.retrieval_lane != "hybrid" or not isinstance(exc, EmbeddingRetrievalNotReadyError):
+                raise
+            # Hybrid policy permits a partial lexical result; its search-hit
+            # execution envelope records the unavailable vector lane.
+            hits = archive.search_summaries(
+                _plan_text_query(plan) or "",
+                limit=limit,
+                offset=plan.offset,
+                sort=sort,
+                reverse=reverse,
+                **filter_kwargs,
+            )
         return _summaries_from_hits(archive, hits)
 
     query_text = _plan_text_query(plan)
@@ -644,14 +665,21 @@ def archive_search_hits(
         if vector_provider is None and config is not None:
             vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
         if vector_provider is None:
-            # Graceful-degradation contract (#1743): a semantic or hybrid request
-            # against an archive with no usable vector backend yields an empty
-            # result set rather than raising. The resolved lane is preserved so
-            # the caller still reports which lane was requested; a pure-semantic
-            # request returns no hits and a hybrid request degrades to no fused
-            # rows (the lexical leg below is skipped only because there is no
-            # semantic leg to fuse it with).
-            return [], "semantic" if plan.retrieval_lane != "hybrid" else "hybrid"
+            from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+            if plan.retrieval_lane != "hybrid":
+                raise EmbeddingRetrievalNotReadyError(
+                    "semantic retrieval is unavailable: no configured/constructible vector backend; "
+                    "configure Voyage/sqlite-vec and retry",
+                    readiness_status="disabled",
+                )
+            # Hybrid is explicitly allowed to degrade, but must retain the
+            # lexical evidence.  The envelope records the missing vector lane.
+            pool = max(limit + offset, limit) * 3
+            lexical_hits = archive.search_summaries(
+                text, limit=pool, offset=0, sort=plan.sort, reverse=plan.reverse, **filter_kwargs
+            )
+            return _pair_hits(archive, lexical_hits[offset : offset + limit]), "dialogue"
 
         semantic_query = plan.similar_text or text
         pool = max(limit + offset, limit) * 3
@@ -678,8 +706,17 @@ def archive_search_hits(
             [(hit.session_id, 0.0) for hit in semantic_hits],
         )
         page = fused[offset : offset + limit]
+        text_ranks = {hit.session_id: rank for rank, hit in enumerate(lexical_hits, start=1)}
+        vector_ranks = {hit.session_id: rank for rank, hit in enumerate(semantic_hits, start=1)}
         ranked = [
-            _replace(hit_by_session[session_id], rank=offset + index)
+            _replace(
+                hit_by_session[session_id],
+                rank=offset + index,
+                lane_ranks={
+                    "text": text_ranks.get(session_id),
+                    "vector": vector_ranks.get(session_id),
+                },
+            )
             for index, (session_id, _score) in enumerate(page, start=1)
             if session_id in hit_by_session
         ]

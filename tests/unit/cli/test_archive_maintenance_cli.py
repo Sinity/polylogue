@@ -1418,7 +1418,7 @@ def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
                     embedding=[0.01] * EMBEDDING_DIMENSION,
                     model="voyage-4",
                     embedded_at_ms=1_700_000_000_000,
-                    embedding_input_hash=hashlib.sha256(orphan_message_id.encode("utf-8")).digest(),
+                    vector_derivation_hash=hashlib.sha256(orphan_message_id.encode("utf-8")).digest(),
                 )
             ],
         )

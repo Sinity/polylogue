@@ -8,7 +8,7 @@ renumbers a message (same text, different position/native id) silently
 invalidated its vector, forcing a wasted re-embed through the paid Voyage API
 (the 04kl 777K-vector incident).
 
-``embedding_input_hash = H(model, embedder input text)`` excludes every
+``vector_derivation_hash = H(model, embedder input text)`` excludes every
 identity field by construction. This test proves the end-to-end consequence:
 embed a session for real (through the archive materialization route, not a
 unit-level hash comparison), then simulate an index rebuild that reassigns

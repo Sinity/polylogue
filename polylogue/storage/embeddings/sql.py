@@ -47,7 +47,7 @@ PENDING_MESSAGES_SQL = """
       AND m.word_count > 0
 """
 # v4 (polylogue-q88p): a message's vector is looked up through
-# message_embedding_refs (message_id -> embedding_input_hash), not directly
+# message_embedding_refs (message_id -> vector_derivation_hash), not directly
 # by message_id -- message_embeddings/message_embeddings_meta are keyed by
 # the content-addressed hash and are shared/deduped across messages.
 EMBEDDED_MESSAGES_SQL = "SELECT COUNT(*) FROM message_embedding_refs"
@@ -55,8 +55,8 @@ MISSING_META_MESSAGES_SQL = """
     SELECT COUNT(*)
     FROM message_embedding_refs r
     LEFT JOIN message_embeddings_meta em
-      ON em.embedding_input_hash = r.embedding_input_hash
-    WHERE em.embedding_input_hash IS NULL
+      ON em.vector_derivation_hash = r.vector_derivation_hash
+    WHERE em.vector_derivation_hash IS NULL
 """
 EMBEDDED_AT_BOUNDS_SQL = """
     SELECT MIN(embedded_at_ms) AS oldest_embedded_at, MAX(embedded_at_ms) AS newest_embedded_at

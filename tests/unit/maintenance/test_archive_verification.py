@@ -277,7 +277,10 @@ def test_coherent_archive_is_all_ok(tmp_path: Path) -> None:
     assert report.warning_count == 0
     assert {check.name for check in report.checks} == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
     for check in report.checks:
-        assert check.status is OutcomeStatus.OK, f"{check.name}: {check.summary}"
+        # A check whose population is genuinely absent from the fixture
+        # reports SKIP (not-applicable), which is coherent; anything
+        # warning-or-worse is not.
+        assert check.status in {OutcomeStatus.OK, OutcomeStatus.SKIP}, f"{check.name}: {check.summary}"
 
 
 def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(tmp_path: Path) -> None:
@@ -1190,19 +1193,6 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
     assert check.evidence["missing_tables"] == ["action_pairs"]
 
 
-def test_counts_summary_reports_origin_breakdown(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("counts-summary",))
-
-    check = _check(report, "counts-summary")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["session_count"] == 1
-    assert check.evidence["message_count"] == 1
-    assert check.evidence["block_count"] == 1
-    assert check.breakdown == {"codex-session": 1}
-
-
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     empty_root = tmp_path / "does-not-exist"
 
@@ -1223,7 +1213,6 @@ def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     assert names_by_status["session-lineage-acyclic"] is OutcomeStatus.SKIP
     assert names_by_status["message-count-projection"] is OutcomeStatus.SKIP
     assert names_by_status["planner-stats"] is OutcomeStatus.SKIP
-    assert names_by_status["counts-summary"] is OutcomeStatus.SKIP
 
 
 def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1246,7 +1235,6 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     by_name = {check.name: check for check in report.checks}
     assert by_name["fts-parity"].status is OutcomeStatus.ERROR
     assert "synthetic failure" in by_name["fts-parity"].summary
-    assert by_name["counts-summary"].status is OutcomeStatus.OK
     assert by_name["tier-schema"].status is OutcomeStatus.OK
 
 
@@ -1413,7 +1401,7 @@ def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -
     try:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
             """,
             (b"g" * 32,),
@@ -2226,9 +2214,10 @@ def test_chatgpt_conservation_excludes_documents_absent_from_the_index(tmp_path:
     report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
 
     check = _check(report, "chatgpt-content-conservation")
-    assert check.status is OutcomeStatus.OK
+    assert check.status is OutcomeStatus.ERROR
     assert check.evidence["documents_absent_from_index"] == 1
     assert check.evidence["documents_measured"] == 0
+    assert check.evidence["outcome_reason"] == "zero_candidate_overlap"
 
 
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)

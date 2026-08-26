@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import socketserver
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
+from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.http import (
     _ARCHIVE_QUERY_MAX_QUEUED,
     _ARCHIVE_QUERY_MAX_WORKERS,
@@ -38,7 +38,8 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         # reads before crossing that boundary so the original OSError remains
         # authoritative.
         self.socket_path = socket_path
-        self.archive_query_executor: ThreadPoolExecutor | None = None
+        self.execution_kernel: BoundedComputeAdapter | None = None
+        self.archive_query_executor = None
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with __import__("contextlib").suppress(FileNotFoundError):
@@ -52,9 +53,12 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             self._owned_write_runtime = _StandaloneWriteRuntime()
             write_bridge = self._owned_write_runtime.bridge
         self.write_bridge = write_bridge
-        self.archive_query_executor = ThreadPoolExecutor(
-            max_workers=_ARCHIVE_QUERY_MAX_WORKERS, thread_name_prefix="archive-query"
+        self.execution_kernel = BoundedComputeAdapter(
+            max_workers=_ARCHIVE_QUERY_MAX_WORKERS,
+            queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
+            thread_name_prefix="polylogue-compute",
         )
+        self.archive_query_executor = self.execution_kernel.executor
         self.archive_query_admission = threading.BoundedSemaphore(
             _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
@@ -64,9 +68,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self.coordination_cache_building: set[tuple[str, int]] = set()
 
     def server_close(self) -> None:
-        executor = getattr(self, "archive_query_executor", None)
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+        kernel = getattr(self, "execution_kernel", None)
+        if kernel is not None:
+            kernel.shutdown(wait=False, cancel_futures=True)
         owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         if owned_write_runtime is not None:
             owned_write_runtime.close()

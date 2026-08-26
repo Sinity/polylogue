@@ -13,13 +13,13 @@ import socket
 import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path, PurePath
 from time import monotonic
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -35,6 +35,12 @@ from polylogue.daemon import user_state_http, workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
+)
+from polylogue.daemon.execution import (
+    BoundedComputeAdapter,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+    current_cancellation,
 )
 from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
@@ -416,7 +422,10 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
 def _cli_read_post_routes() -> tuple[_StaticPostRoute, ...]:
     """Read-only POST routes whose request bodies carry CLI parameter maps."""
 
-    return (_StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),)
+    return (
+        _StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),
+        _StaticPostRoute("/api/operation", ("api", "operation"), "_handle_daemon_operation"),
+    )
 
 
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
@@ -1078,6 +1087,17 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 QueryErrorPayload(error="archive_query_timeout", detail=str(exc)).model_dump(mode="json"),
                 extra_headers={"Retry-After": "2"},
             )
+        except DaemonBackpressureError as exc:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+                extra_headers={"Retry-After": "1"},
+            )
+        except DaemonOperationCancelled as exc:
+            self._send_json(
+                HTTPStatus.REQUEST_TIMEOUT,
+                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+            )
         except _CLIENT_DISCONNECT_ERRORS:
             logger.debug("daemon http client disconnected in %s", fn.__name__)
         except Exception:
@@ -1610,6 +1630,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # lease must remain held until the real substrate call finishes.
             return asyncio.run(self._run_archive_query(handler))
 
+        # Route through the daemon's single bounded compute adapter. Test
+        # doubles that predate the adapter retain the old attributes below;
+        # production servers always take this path.
+        kernel = getattr(self.server, "execution_kernel", None)
+        if isinstance(kernel, BoundedComputeAdapter):
+            from polylogue.daemon.execution import CancellationHandle
+
+            cancellation = CancellationHandle()
+            submitted = kernel.submit(
+                lambda: asyncio.run(self._run_archive_query(handler)),
+                admission_class="interactive-read",
+                cancellation=cancellation,
+            )
+            try:
+                return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
+            except FutureTimeoutError as exc:
+                cancellation.cancel()
+                raise TimeoutError(
+                    f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                    "the daemon may be busy with catch-up ingestion/embedding"
+                ) from exc
+
+        # Compatibility path for narrow in-process handler doubles. The real
+        # server never uses this branch.
         # Route through the server's bounded archive-query executor (#0hqs)
         # rather than running asyncio.run() directly on this connection's own
         # thread: caps concurrent DB work at _ARCHIVE_QUERY_MAX_WORKERS
@@ -4878,12 +4922,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """
 
         conn = getattr(archive, "_conn", None)
+        cancellation = current_cancellation()
+        if cancellation is not None and conn is not None:
+            cancellation.register_connection(conn)
 
         def _deadline_expired() -> bool:
             return deadline_s is not None and monotonic() >= deadline_s
 
         def _raise_if_interrupted() -> None:
             self._raise_if_client_disconnected()
+            if cancellation is not None and cancellation.cancelled:
+                raise DaemonOperationCancelled("archive read cancelled")
             if _deadline_expired():
                 raise TimeoutError("archive query deadline exceeded")
 
@@ -4891,6 +4940,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         def _sqlite_progress() -> int:
             if self._client_disconnected():
+                return 1
+            if cancellation is not None and cancellation.cancelled:
                 return 1
             return 1 if _deadline_expired() else 0
 
@@ -4910,6 +4961,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         finally:
             if conn is not None:
                 conn.set_progress_handler(None, 0)
+                if cancellation is not None:
+                    cancellation.unregister_connection(conn)
 
     @daemon_safe_handler
     def _handle_user_state(self, handler: Callable[..., None], *args: object) -> None:
@@ -4973,6 +5026,197 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if expression:
             params["query"] = [expression]
         self._handle_list_sessions(params)
+
+    @daemon_safe_handler
+    def _handle_daemon_operation(self) -> None:
+        """Execute one archive-scoped operation and return one typed envelope.
+
+        This is the CLI/MCP control-plane seam.  Existing handlers remain the
+        semantic owners; this adapter only validates the request and captures
+        their canonical result into the operation envelope.
+        """
+        from polylogue.config import load_polylogue_config
+        from polylogue.operations.daemon_protocol import (
+            DaemonOperationEnvelope,
+            DaemonOperationRequest,
+            archive_identity,
+        )
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0 or content_length > 65_536:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing or too large")
+            return
+        try:
+            raw = json.loads(self.rfile.read(content_length))
+            request = DaemonOperationRequest.from_dict(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return
+
+        archive_root = Path(load_polylogue_config().archive_root)
+        archive, generation, readiness = archive_identity(
+            archive_root,
+            schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        if request.archive_root is not None and Path(request.archive_root).resolve() != archive_root.resolve():
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "archive_identity_mismatch",
+                "the daemon is serving a different archive root",
+            )
+            return
+        if request.index_schema_version not in (None, INDEX_SCHEMA_VERSION):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "schema_version_mismatch",
+                "the daemon archive schema does not match the client",
+            )
+            return
+        if request.daemon_version not in (None, POLYLOGUE_VERSION):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "daemon_version_mismatch",
+                "the daemon build does not match the client",
+            )
+            return
+
+        supported = {"cli.query", "query.units", "status", "completion"}
+        if request.operation not in supported:
+            self._send_operation_error(
+                HTTPStatus.NOT_FOUND,
+                request,
+                archive,
+                generation,
+                readiness,
+                "operation_not_found",
+                f"unsupported daemon operation: {request.operation}",
+            )
+            return
+
+        captured: list[tuple[HTTPStatus, object]] = []
+        original_send_json = self._send_json
+
+        def capture(status: HTTPStatus, payload: object, **_kwargs: object) -> None:
+            captured.append((status, payload))
+
+        self._send_json = capture  # type: ignore[method-assign]
+        original_path = self.path
+        original_rfile = self.rfile
+        original_headers = self.headers
+        try:
+            self.path = "/api/cli/query"
+            if request.operation == "cli.query":
+                body = json.dumps({"params": request.payload.get("params", request.payload)}).encode()
+                self.rfile = BytesIO(body)
+                self.headers = {"Content-Length": str(len(body))}  # type: ignore[assignment]
+                self._handle_cli_query()
+            elif request.operation == "query.units":
+                raw_params = request.payload.get("params", request.payload)
+                if not isinstance(raw_params, dict):
+                    self._send_operation_error(
+                        HTTPStatus.BAD_REQUEST,
+                        request,
+                        archive,
+                        generation,
+                        readiness,
+                        "invalid_request",
+                        "query.units params must be an object",
+                    )
+                    return
+                params = {
+                    str(key): [str(item) for item in value] if isinstance(value, list | tuple) else [str(value)]
+                    for key, value in raw_params.items()
+                }
+                self.path = "/api/query-units"
+                self._handle_query_units(params)
+            elif request.operation == "status":
+                self._handle_status({})
+            else:
+                params = {
+                    str(key): [str(item) for item in value] if isinstance(value, list | tuple) else [str(value)]
+                    for key, value in request.payload.items()
+                }
+                self._handle_query_completions(params)
+        finally:
+            self.path = original_path
+            self.rfile = original_rfile
+            self.headers = original_headers
+            self._send_json = original_send_json  # type: ignore[method-assign]
+
+        if not captured:
+            self._send_operation_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                request,
+                archive,
+                generation,
+                readiness,
+                "missing_result",
+                "operation handler returned no result",
+            )
+            return
+        status, result = captured[-1]
+        if int(status) >= 400:
+            error = result if isinstance(result, dict) else {"error": "operation_failed"}
+            envelope = DaemonOperationEnvelope(
+                operation=request.operation,
+                archive=archive,
+                generation=generation,
+                readiness=readiness,
+                authority={"mode": "daemon", "writes": "daemon-owned"},
+                progress={"state": "failed"},
+                error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
+            )
+            self._send_json(status, envelope.to_dict())
+            return
+        envelope = DaemonOperationEnvelope(
+            operation=request.operation,
+            archive=archive,
+            generation=generation,
+            readiness=readiness,
+            authority={"mode": "daemon", "writes": "daemon-owned"},
+            progress={"state": "complete"},
+            result=result,
+        )
+        self._send_json(HTTPStatus.OK, envelope.to_dict())
+
+    def _send_operation_error(
+        self,
+        status: HTTPStatus,
+        request: object,
+        archive: dict[str, object],
+        generation: dict[str, object],
+        readiness: dict[str, object],
+        code: str,
+        detail: str,
+    ) -> None:
+        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope
+
+        operation = getattr(request, "operation", "unknown")
+        envelope = DaemonOperationEnvelope(
+            operation=str(operation),
+            archive=archive,
+            generation=generation,
+            readiness=readiness,
+            authority={"mode": "daemon", "writes": "daemon-owned"},
+            progress={"state": "failed"},
+            error={"code": code, "detail": detail},
+        )
+        self._send_json(status, envelope.to_dict())
 
     @daemon_safe_handler
     def _handle_cli_delete_prepare(self) -> None:
@@ -5740,10 +5984,16 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             self._owned_write_runtime = _StandaloneWriteRuntime()
             write_bridge = self._owned_write_runtime.bridge
         self.write_bridge: DaemonWriteThreadBridge = write_bridge
-        self.archive_query_executor: ThreadPoolExecutor = ThreadPoolExecutor(
-            max_workers=_ARCHIVE_QUERY_MAX_WORKERS, thread_name_prefix="archive-query"
+        self.execution_kernel = BoundedComputeAdapter(
+            max_workers=_ARCHIVE_QUERY_MAX_WORKERS,
+            queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
+            thread_name_prefix="polylogue-compute",
         )
-        self.archive_query_admission: threading.BoundedSemaphore = threading.BoundedSemaphore(
+        # Compatibility attributes are retained for existing narrow handler
+        # doubles and diagnostics; production submission goes through the
+        # adapter above.
+        self.archive_query_executor = self.execution_kernel.executor
+        self.archive_query_admission = threading.BoundedSemaphore(
             _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
         )
         self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
@@ -5760,7 +6010,13 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         # wedged query can still delay process exit until systemd's
         # TimeoutStopSec forces a SIGKILL -- acceptable (bounded, not
         # unbounded) and unchanged from today's plain-thread behavior.
-        self.archive_query_executor.shutdown(wait=False, cancel_futures=True)
+        kernel = getattr(self, "execution_kernel", None)
+        if isinstance(kernel, BoundedComputeAdapter):
+            kernel.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor = getattr(self, "archive_query_executor", None)
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
         owned_write_runtime = getattr(self, "_owned_write_runtime", None)
         self._owned_write_runtime = None
         if owned_write_runtime is not None:
