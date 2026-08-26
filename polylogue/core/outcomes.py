@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Protocol
 
 from polylogue.core.json import JSONDocument, json_document
 
@@ -25,6 +26,26 @@ class OutcomeStatus(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+OutcomeCheckFn = Callable[[], "OutcomeCheck"]
+
+
+class OutcomeOwner(Protocol):
+    """The small callable/result seam used by independently owned checks."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def check(self) -> OutcomeCheckFn | None: ...
+
+
+class OutcomeCompositionFailureKind(str, Enum):
+    """Why an owner could not contribute a result to a composition."""
+
+    OWNER_OMITTED = "owner-omitted"
+    OWNER_RAISED = "owner-raised"
 
 
 @dataclass
@@ -70,6 +91,54 @@ class OutcomeCheck:
         icon = icon_map.get(self.status)
         prefix = f"{icon} " if icon else ""
         return f"{prefix}[{label}] {self.name}: {self.summary}"
+
+
+@dataclass
+class OutcomeCompositionFailure(OutcomeCheck):
+    """Typed failure result that does not stop sibling owners from running."""
+
+    failure_kind: OutcomeCompositionFailureKind = OutcomeCompositionFailureKind.OWNER_RAISED
+
+    def to_dict(self) -> JSONDocument:
+        payload = dict(super().to_dict())
+        payload["failure_kind"] = self.failure_kind.value
+        return json_document(payload)
+
+
+@dataclass(frozen=True)
+class BoundOutcomeOwner:
+    """Named domain adapter bound to the inputs for one verification run."""
+
+    name: str
+    check: OutcomeCheckFn | None
+
+
+def compose_outcome_checks(owners: Iterable[OutcomeOwner]) -> OutcomeReport:
+    """Run named owners independently, preserving typed failures and siblings."""
+    results: list[OutcomeCheck] = []
+    for owner in owners:
+        if owner.check is None:
+            results.append(
+                OutcomeCompositionFailure(
+                    name=owner.name,
+                    status=OutcomeStatus.ERROR,
+                    summary="domain owner omitted its check",
+                    failure_kind=OutcomeCompositionFailureKind.OWNER_OMITTED,
+                )
+            )
+            continue
+        try:
+            results.append(owner.check())
+        except Exception as exc:
+            results.append(
+                OutcomeCompositionFailure(
+                    name=owner.name,
+                    status=OutcomeStatus.ERROR,
+                    summary=f"domain owner raised {type(exc).__name__}: {exc}",
+                    failure_kind=OutcomeCompositionFailureKind.OWNER_RAISED,
+                )
+            )
+    return OutcomeReport(checks=results)
 
 
 @dataclass(frozen=True)
@@ -142,8 +211,13 @@ class OutcomeReport:
 
 
 __all__ = [
+    "BoundOutcomeOwner",
     "OutcomeCheck",
     "OutcomeCounts",
+    "OutcomeCompositionFailure",
+    "OutcomeCompositionFailureKind",
+    "OutcomeOwner",
     "OutcomeReport",
     "OutcomeStatus",
+    "compose_outcome_checks",
 ]
