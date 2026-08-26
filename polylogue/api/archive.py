@@ -2344,6 +2344,9 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         display_name=summary.display_name,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
+        terminal_state=summary.terminal_state,
+        total_cost_usd=summary.total_cost_usd,
+        cost_provenance=summary.cost_provenance,
     )
 
 

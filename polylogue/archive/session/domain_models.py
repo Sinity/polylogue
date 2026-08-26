@@ -62,6 +62,9 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     branch_type: BranchType | None = None
     message_count: int | None = None
     dialogue_count: int | None = None
+    terminal_state: str | None = None
+    total_cost_usd: float | None = None
+    cost_provenance: str | None = None
     # #1240: tags are sourced from the M2M session_tags table when
     # hydrated through the repository. Empty by default so that legacy
     # constructors keep working.

@@ -6,23 +6,16 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime
 from typing import TYPE_CHECKING, Literal, NoReturn
 
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.archive.query.search_hits import bound_display_title
-from polylogue.cli.query_contracts import (
-    result_date,
-    result_id,
-    result_origin,
-    result_title,
-)
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.json import JSONDocument, dumps
 from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.surfaces.query_rows import session_row
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import QuerySpecError
@@ -44,6 +37,9 @@ class SelectSessionRow:
     message_count: int = 0
     repo: str | None = None
     cwd_display: str | None = None
+    outcome: str = "unknown"
+    cost_usd: float | None = None
+    relative_time: str = "unknown"
 
     @property
     def label(self) -> str:
@@ -53,9 +49,9 @@ class SelectSessionRow:
     @property
     def preview(self) -> str:
         date = self.date or "unknown"
-        context = ""
+        context = f"  Outcome: {self.outcome}  When: {self.relative_time}"
         if self.repo or self.cwd_display:
-            context = f"  Repo: {self.repo or 'unknown'}  CWD: {self.cwd_display or 'unknown'}"
+            context += f"  Repo: {self.repo or 'unknown'}  CWD: {self.cwd_display or 'unknown'}"
         return (
             f"Origin: {self.origin}  Date: {date}  Messages: {self.message_count}  "
             f"Title: {self.title}  ID: {self.session_id}{context}"
@@ -70,23 +66,25 @@ class SelectSessionRow:
             "message_count": self.message_count,
             "repo": self.repo,
             "cwd_display": self.cwd_display,
+            "outcome": self.outcome,
+            "cost_usd": self.cost_usd,
+            "relative_time": self.relative_time,
         }
 
 
 def select_row_from_result(result: Session | SessionSummary) -> SelectSessionRow:
-    date = result_date(result)
-    title = bound_display_title(result_title(result))
-    directories = getattr(result, "working_directories", ()) or ()
-    cwd_display = next((str(directory).strip() for directory in directories if str(directory).strip()), None)
-    repository = getattr(result, "git_repository_url", None)
+    projected = session_row(result)
     return SelectSessionRow(
-        session_id=result_id(result),
-        origin=result_origin(result),
-        title=title,
-        date=date.strftime("%Y-%m-%d") if isinstance(date, datetime) else None,
-        message_count=int(getattr(result, "message_count", None) or len(getattr(result, "messages", ()))),
-        repo=str(repository) if repository else None,
-        cwd_display=cwd_display,
+        session_id=projected.id,
+        origin=projected.origin,
+        title=projected.title,
+        date=projected.date,
+        message_count=projected.message_count,
+        repo=projected.repo,
+        cwd_display=projected.cwd_display,
+        outcome=projected.outcome,
+        cost_usd=projected.cost_usd,
+        relative_time=projected.relative_time,
     )
 
 

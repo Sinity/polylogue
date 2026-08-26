@@ -44,6 +44,7 @@ from polylogue.surfaces.payloads import (
     model_json_document,
     session_list_envelope_from_summary,
 )
+from polylogue.surfaces.query_rows import search_row, session_row
 
 logger = get_logger(__name__)
 
@@ -153,9 +154,8 @@ def _session_list_line(conv: Session) -> str:
 
 
 def _summary_list_line(summary: SessionSummary, message_count: int) -> str:
-    date = _display_date(summary.display_date)
-    title = _display_title(summary.display_title, str(summary.id)[:20], max_width=50)
-    return f"{str(summary.id)[:24]:24s}  {date:10s}  {str(summary.origin):20s}  {title} ({message_count} msgs)"
+    row = session_row(summary, message_count=message_count)
+    return f"{row.id[:24]:24s}  {(row.date or 'unknown'):10s}  {row.origin:20s}  {row.title} ({row.message_count} msgs) [{row.outcome}]"
 
 
 def _search_hit_list_line(hit: SessionSearchHit, message_count: int) -> str:
@@ -411,10 +411,12 @@ def open_result(
 
 
 def summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument:
-    return session_list_envelope_from_summary(
+    payload = session_list_envelope_from_summary(
         summary,
         message_count=message_count,
     ).selected()
+    payload.update(session_row(summary, message_count=message_count).as_dict())
+    return payload
 
 
 def format_summary_list(
@@ -434,7 +436,7 @@ def format_summary_list(
                 str(summary.id),
                 _display_date(summary.display_date),
                 str(summary.origin),
-                bound_display_title(summary.display_title, str(summary.id)),
+                session_row(summary, message_count=message_counts.get(str(summary.id), 0)).title,
                 message_counts.get(str(summary.id), 0),
                 ",".join(summary.tags) if summary.tags else "",
                 summary.summary or "",
@@ -505,7 +507,8 @@ def format_search_hit_list(
                 hit.retrieval_lane,
                 hit.match_surface,
                 hit.message_id or "",
-                hit.snippet or "",
+                search_row(hit, message_count=message_counts.get(hit.session_id, hit.summary.message_count or 0))[1]
+                or "",
             )
             for hit in bounded_hits
         ),

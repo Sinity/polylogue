@@ -201,6 +201,9 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         message_count=summary.message_count,
         tags_m2m=summary.tags,
         parent_id=SessionId(summary.parent_id) if summary.parent_id else None,
+        terminal_state=summary.terminal_state,
+        total_cost_usd=summary.total_cost_usd,
+        cost_provenance=summary.cost_provenance,
     )
 
 
