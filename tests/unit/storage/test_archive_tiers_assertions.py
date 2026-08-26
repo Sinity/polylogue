@@ -14,7 +14,12 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONValue
 from polylogue.core.types import SessionId
-from polylogue.insights.transforms import DecisionCandidate, TransformRawRef, compile_session_digest
+from polylogue.insights.transforms import (
+    DecisionCandidate,
+    SessionDigest,
+    TransformRawRef,
+    compile_session_digest,
+)
 from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -129,7 +134,7 @@ def _recovery_candidate_session() -> Session:
     )
 
 
-def _recovery_candidate_digest():
+def _recovery_candidate_digest() -> SessionDigest:
     digest = compile_session_digest(_recovery_candidate_session())
     candidate = DecisionCandidate(
         kind="decision",

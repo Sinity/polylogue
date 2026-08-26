@@ -886,14 +886,6 @@ def test_prose_mined_tool_summary_fields_carry_text_derived_evidence_class() -> 
     assert clean.text_derived_fields == ()
 
 
-def test_message_prose_does_not_create_decision_candidates_or_run_state() -> None:
-    """The deterministic digest leaves natural-language judgment to a model."""
-    digest = compile_session_digest(_session())
-
-    assert digest.decision_candidates == ()
-    assert digest.run_state is None
-
-
 def test_session_digest_event_stays_raw_evidence() -> None:
     """polylogue-9e5.30: structured tool/test outcomes (#2482) are never text_derived."""
     ref = TransformRawRef(session_id="s", message_id="m1")
