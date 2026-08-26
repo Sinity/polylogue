@@ -8,9 +8,67 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
+MAX_OPERATION_BODY_BYTES = 64 * 1024
+MAX_OPERATION_RESULT_BYTES = 8 * 1024 * 1024
+
+
+class DaemonAuthority(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    CONTROL = "control"
+    LONG_RUNNING = "long-running"
+
+
+class DaemonFallback(StrEnum):
+    DIRECT_READ = "direct-read"
+    NEVER = "never"
+
+
+class DaemonOutcome(StrEnum):
+    COMPLETE = "complete"
+    ACCEPTED = "accepted"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonOperationSpec:
+    """The machine operation authority shared by every daemon surface.
+
+    This is deliberately metadata only.  Implementations remain in the
+    canonical operation/facade layer and adapters only serialize this shape.
+    """
+
+    name: str
+    authority: DaemonAuthority
+    fallback: DaemonFallback
+    capability: str = "read"
+    deadline_s: float = 2.0
+    cancellable: bool = True
+    progress: bool = False
+    accepted_reference: bool = False
+
+    @property
+    def direct_allowed(self) -> bool:
+        return self.fallback is DaemonFallback.DIRECT_READ
+
+
+DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
+    DaemonOperationSpec("cli.query", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+    DaemonOperationSpec("query.units", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+    DaemonOperationSpec("status", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+    DaemonOperationSpec("completion", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+    DaemonOperationSpec("facets", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+)
+
+
+def daemon_operation_spec(name: str) -> DaemonOperationSpec | None:
+    return next((spec for spec in DAEMON_OPERATION_SPECS if spec.name == name), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +78,8 @@ class DaemonOperationRequest:
     archive_root: str | None = None
     index_schema_version: int | None = None
     daemon_version: str | None = None
+    request_id: str | None = None
+    deadline_ms: int | None = None
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> DaemonOperationRequest:
@@ -35,13 +95,19 @@ class DaemonOperationRequest:
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
+        request_id = raw.get("request_id")
+        deadline_ms = raw.get("deadline_ms")
         if archive_root is not None and not isinstance(archive_root, str):
             raise ValueError("archive_root must be a string")
         if schema is not None and not isinstance(schema, int):
             raise ValueError("index_schema_version must be an integer")
         if version is not None and not isinstance(version, str):
             raise ValueError("daemon_version must be a string")
-        return cls(operation.strip(), dict(payload), archive_root, schema, version)
+        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
+            raise ValueError("request_id must be a non-empty string")
+        if deadline_ms is not None and (not isinstance(deadline_ms, int) or deadline_ms <= 0):
+            raise ValueError("deadline_ms must be a positive integer")
+        return cls(operation.strip(), dict(payload), archive_root, schema, version, request_id, deadline_ms)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -51,6 +117,8 @@ class DaemonOperationRequest:
             "archive_root": self.archive_root,
             "index_schema_version": self.index_schema_version,
             "daemon_version": self.daemon_version,
+            "request_id": self.request_id,
+            "deadline_ms": self.deadline_ms,
         }
 
 
@@ -64,6 +132,7 @@ class DaemonOperationEnvelope:
     progress: dict[str, object]
     result: object = None
     error: dict[str, object] | None = None
+    request_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -76,6 +145,7 @@ class DaemonOperationEnvelope:
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
+            "request_id": self.request_id,
         }
 
 
@@ -99,6 +169,7 @@ def archive_identity(
         "root": str(archive_root),
         "daemon_version": daemon_version,
         "index_schema_version": schema_version,
+        "archive_identity": str(archive_root.resolve()),
     }
     readiness: dict[str, object] = {
         "state": "ready" if ready else "unavailable",
@@ -110,7 +181,15 @@ def archive_identity(
 
 __all__ = [
     "DAEMON_OPERATION_PROTOCOL",
+    "DAEMON_OPERATION_SPECS",
+    "MAX_OPERATION_BODY_BYTES",
+    "MAX_OPERATION_RESULT_BYTES",
+    "DaemonAuthority",
+    "DaemonFallback",
+    "DaemonOperationSpec",
     "DaemonOperationEnvelope",
+    "DaemonOutcome",
     "DaemonOperationRequest",
     "archive_identity",
+    "daemon_operation_spec",
 ]

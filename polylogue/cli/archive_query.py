@@ -1568,8 +1568,6 @@ def _submit_daemon_mutation(
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
 
     mutation_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     client = DaemonClient(
@@ -1580,15 +1578,6 @@ def _submit_daemon_mutation(
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    if (
-        client.probe(
-            archive_root=str(mutation_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
-        )
-        is None
-    ):
-        return None
     payload = client.request_mutation_json("POST", path, body)
     if payload is not None and client.last_elapsed_ms is not None:
         payload["_daemon_elapsed_ms"] = client.last_elapsed_ms

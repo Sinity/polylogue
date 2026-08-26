@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
 
 import click
 
@@ -103,9 +102,7 @@ def _fetch_daemon_facets(
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.surfaces.payloads import FacetsResponse
-    from polylogue.version import POLYLOGUE_VERSION
 
     config = load_effective_config(env)
     client = DaemonClient(
@@ -115,15 +112,6 @@ def _fetch_daemon_facets(
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    if (
-        client.probe(
-            archive_root=str(config.archive_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
-        )
-        is None
-    ):
-        return None
     params: dict[str, str] = {}
     if query_text:
         params["query"] = query_text
@@ -131,8 +119,11 @@ def _fetch_daemon_facets(
         params["origin"] = origin
     if include_deferred:
         params["include_expensive"] = "1"
-    payload = client.request_json("GET", "/api/facets?" + urlencode(params))
-    if payload is None:
+    envelope = client.operation("facets", {"params": params}, archive_root=str(config.archive_root))
+    if envelope is None or envelope.get("error") is not None:
+        return None
+    payload = envelope.get("result")
+    if not isinstance(payload, dict):
         return None
     try:
         return FacetsResponse.model_validate(payload)
