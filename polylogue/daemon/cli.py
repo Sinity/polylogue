@@ -36,16 +36,10 @@ from polylogue.daemon.api_auth import (
 )
 from polylogue.daemon.browser_capture import browser_capture_command
 
-# FTS startup readiness extracted to ``polylogue.daemon.fts_startup`` (#1614).
-# ``_ensure_fts_startup_readiness`` is re-exported here because the daemon's
-# coroutine wiring and the ``test_daemon_cli_remote_bind`` monkeypatch site
-# both reach for it via the historical ``polylogue.daemon.cli`` path. The
-# other helpers (active/missing/table_exists/record_freshness) are called
-# only inside ``fts_startup.ensure_fts_startup_readiness_sync`` and their
-# tests patch the new module path directly.
-from polylogue.daemon.fts_startup import (
-    ensure_fts_startup_readiness as _ensure_fts_startup_readiness,
-)
+# Compatibility import for external callers. The daemon's real startup path
+# below uses ``_run_startup_fts_readiness`` and the ordinary domain owner;
+# this historical symbol is not used by daemon startup wiring.
+from polylogue.daemon.fts_startup import ensure_fts_startup_readiness as _ensure_fts_startup_readiness
 from polylogue.daemon.health import (
     HealthSeverity,
     HealthTier,

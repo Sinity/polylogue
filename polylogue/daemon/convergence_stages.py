@@ -5,8 +5,8 @@ Each stage has a ``check`` that inspects current archive state and an
 ingestion through daemon-side raw-record ingest; daemon convergence stages only
 repair and refresh post-ingest archive state.
 
-- fts: retry explicit session/global FTS debt; source-path foreground checks
-  stay cheap because archive writes already repair newly changed rows
+- fts: inspect and converge message-FTS session partitions through the domain
+  adapter; source-path checks remain scoped to the affected sessions
 - embed: optional vectorization for changed sessions
 - insights: refresh session profiles
 """
@@ -111,176 +111,103 @@ class _FtsRepairNeeds:
 
 
 def make_fts_stage(db_path: Path) -> ConvergenceStage:
-    """Verify FTS coverage and repair gaps."""
+    """Converge the FTS domain through its session-partition adapter.
+
+    The stage is only an adapter for the generic source/debt scheduler. FTS
+    correctness belongs to ``FtsDerivationAdapter`` and its inspection is
+    independent of startup, freshness, and debt rows.
+    """
+
+    from polylogue.storage.fts.derivation import FtsDerivationAdapter
+
+    adapter = FtsDerivationAdapter()
+
+    def archive_db() -> Path:
+        return _active_archive_index_path(db_path) or db_path
+
+    def inspect_keys(keys: Sequence[str], database: Path) -> set[str]:
+        if not database.exists():
+            return set(keys)
+        try:
+            conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5.0)
+            try:
+                return {inspection.key for inspection in adapter.inspect_all(conn, keys=keys) if not inspection.valid}
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("fts: domain inspection failed", exc_info=True)
+            return set(keys)
+
+    def keys_for_paths(paths: Sequence[Path], database: Path) -> tuple[str, ...]:
+        if not database.exists() or not paths:
+            return ()
+        try:
+            conn = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5.0)
+            try:
+                return tuple(
+                    dict.fromkeys(
+                        session_id for path in paths for session_id in _session_ids_for_source_path(conn, path)
+                    )
+                )
+            finally:
+                conn.close()
+        except Exception:
+            logger.warning("fts: source-path partition lookup failed", exc_info=True)
+            return ()
 
     def check(path: Path) -> bool:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_check(archive_db, path)
-        if not db_path.exists():
-            return False
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        try:
-            conn = open_connection(db_path, timeout=5.0)
-            try:
-                session_ids = _session_ids_for_source_path(conn, path)
-                if session_ids:
-                    return _fts_needs_repair_for_sessions(conn, session_ids)
-                from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
-
-                total = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
-                fts_count = _fts_doc_count(conn, "messages_fts_docsize")
-                if fts_count != total:
-                    return True
-                if total == 0:
-                    return False
-                return False
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("convergence freshness probe %s errored; treating as needs-work", "check", exc_info=True)
-            return True
+        database = archive_db()
+        keys = keys_for_paths((path,), database)
+        if keys:
+            return bool(inspect_keys(keys, database))
+        return bool(inspect_keys((), database)) or bool(inspect_keys(("__global__",), database))
 
     def execute(path: Path) -> StageExecuteReturn:
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_execute(archive_db, path)
-        from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        try:
-            conn = open_connection(db_path, timeout=30.0)
-            try:
-                session_ids = _session_ids_for_source_path(conn, path)
-                if session_ids:
-                    needs = _fts_repair_needs_for_sessions(conn, session_ids)
-                    _repair_changed_session_fts(conn, session_ids, needs=needs)
-                    _mark_message_fts_ready_after_targeted_repair(conn)
-                    conn.commit()
-                    logger.info("fts: repaired sessions=%d", len(session_ids))
-                    return not _fts_needs_repair_for_sessions(conn, session_ids)
-                from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
-
-                total = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
-                rebuild_fts_index_sync(conn)
-                conn.commit()
-                new_count = _fts_doc_count(conn, "messages_fts_docsize")
-                logger.info("fts: rebuilt — %d/%d indexed", new_count, total)
-                return new_count == total
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("fts: rebuild failed", exc_info=True)
-            return False
+        database = archive_db()
+        keys = keys_for_paths((path,), database)
+        return execute_keys(keys, database)
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
-        if not paths:
+        database = archive_db()
+        keys = keys_for_paths(paths, database)
+        stale = inspect_keys(keys, database) if keys else inspect_keys(("__global__",), database)
+        if not stale:
             return set()
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_check_many(archive_db, paths)
-        if not db_path.exists():
-            return set()
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        try:
-            conn = open_connection(db_path, timeout=5.0)
-            try:
-                by_path = _session_ids_for_source_paths(conn, paths)
-                return {
-                    path
-                    for path, session_ids in by_path.items()
-                    if session_ids and _fts_repair_needs_for_sessions(conn, session_ids).any
-                }
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning(
-                "convergence freshness probe %s errored; treating as needs-work", "check_many", exc_info=True
-            )
+        if not keys:
             return set(paths)
+        return {path for path in paths if stale.intersection(keys_for_paths((path,), database))}
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
-        if not paths:
-            return False
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_execute_many(archive_db, paths)
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        try:
-            conn = open_connection(db_path, timeout=30.0)
-            try:
-                by_path = _session_ids_for_source_paths(conn, paths)
-                session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-                if not session_ids:
-                    return execute(Path(paths[0]))
-                needs = _fts_repair_needs_for_sessions(conn, session_ids)
-                _repair_changed_session_fts(conn, session_ids, needs=needs)
-                _mark_message_fts_ready_after_targeted_repair(conn)
-                conn.commit()
-                logger.info("fts: batch repaired paths=%d sessions=%d", len(paths), len(session_ids))
-                return not _fts_needs_repair_for_sessions(conn, session_ids)
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("fts: batch repair failed", exc_info=True)
-            return False
+        database = archive_db()
+        return execute_keys(keys_for_paths(paths, database), database)
 
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
-        if not session_ids:
-            return set()
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_check_sessions(archive_db, session_ids)
-        if not db_path.exists():
-            return set()
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
-        try:
-            conn = open_connection(db_path, timeout=5.0)
-            try:
-                return {
-                    session_id
-                    for session_id in dict.fromkeys(session_ids)
-                    if _fts_repair_needs_for_sessions(conn, [session_id]).any
-                }
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning(
-                "convergence freshness probe %s errored; treating as needs-work", "check_sessions", exc_info=True
-            )
-            return set(session_ids)
+        return inspect_keys(tuple(dict.fromkeys(session_ids)), archive_db())
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
-        if not session_ids:
-            return True
-        archive_db = _active_archive_index_path(db_path)
-        if archive_db is not None:
-            return _archive_fts_execute_sessions(archive_db, session_ids)
-        from polylogue.storage.sqlite.connection_profile import open_connection
+        return execute_keys(tuple(dict.fromkeys(session_ids)), archive_db())
 
+    def execute_keys(keys: Sequence[str], database: Path) -> StageExecuteReturn:
+        if not database.exists():
+            return True
         try:
-            conn = open_connection(db_path, timeout=30.0)
-            try:
-                ids = tuple(dict.fromkeys(session_ids))
-                needs = _fts_repair_needs_for_sessions(conn, ids)
-                _repair_changed_session_fts(conn, ids, needs=needs)
-                _mark_message_fts_ready_after_targeted_repair(conn)
-                conn.commit()
-                logger.info("fts: repaired session debt sessions=%d", len(ids))
-                return not _fts_needs_repair_for_sessions(conn, ids)
-            finally:
-                conn.close()
-        except Exception:
-            logger.warning("fts: session repair failed", exc_info=True)
+            from polylogue.daemon.fts_convergence import FtsConvergenceOwner, FtsRunReason
+
+            result = FtsConvergenceOwner(database).run_once_sync(
+                reason=FtsRunReason.PERIODIC,
+                partition_keys=tuple(keys) if keys else None,
+            )
+            return result.ready
+        except Exception as exc:
+            if _is_transient_sqlite_lock(exc):
+                logger.info("fts: domain convergence deferred because sqlite is busy: %s", exc)
+                return False
+            logger.warning("fts: domain convergence failed", exc_info=True)
             return False
 
     return ConvergenceStage(
         name="fts",
-        description="Verify FTS coverage and repair gaps",
+        description="Inspect and converge message-FTS session partitions",
         check=check,
         execute=execute,
         check_many=check_many,
@@ -1721,22 +1648,6 @@ def _archive_repair_sessions_fts(conn: sqlite3.Connection, session_ids: Sequence
     _mark_message_fts_ready_after_targeted_repair(conn)
 
 
-def _run_fts_readiness_repair(db_path: Path) -> None:
-    """Run the bounded FTS readiness repair through the convergence stage.
-
-    This is deliberately invoked from the stage check, not from a second
-    maintenance surface.  The existing implementation is retained as a
-    compatibility shim for startup callers while the daemon's steady-state
-    route owns the invariant on every convergence cycle.
-    """
-    try:
-        from polylogue.daemon.fts_startup import ensure_fts_startup_readiness_sync
-
-        ensure_fts_startup_readiness_sync()
-    except Exception:
-        logger.warning("fts: readiness repair failed during convergence check", exc_info=True)
-
-
 def _archive_fts_check(db_path: Path, path: Path) -> bool:
     return bool(_archive_fts_check_many(db_path, (path,)))
 
@@ -1763,11 +1674,6 @@ def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) 
 
 
 def _archive_fts_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
-    # Startup-only FTS repair is part of this stage's check route.  The daemon
-    # owns the write coordinator, so trigger restoration, bounded drift repair,
-    # and freshness-ledger reconciliation remain serialized with convergence
-    # rather than living on a separate startup-only writer path.
-    _run_fts_readiness_repair(db_path)
     # FTS coverage is an unconditional convergence invariant: there is no state in
     # which the index is legitimately behind the blocks table. These archive-backed
     # entry points used to answer "nothing to do" (check) and "done" (execute)
@@ -2391,23 +2297,22 @@ def _archive_insights_execute_ids(
         if user_db.exists():
             marker_conn = _open_archive_insight_write_connection(user_db)
     try:
-        counts = rebuild_session_insights_sync(
-            conn,
-            session_ids=list(session_ids),
-            marker_conn=marker_conn,
-            page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix="insights",
-        )
+        rebuild_kwargs = {
+            "session_ids": list(session_ids),
+            "page_size": _DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+            "stage_timings_s": stage_timings_s,
+            "stage_timing_prefix": "insights",
+        }
+        if marker_conn is not None:
+            rebuild_kwargs["marker_conn"] = marker_conn
+        counts = rebuild_session_insights_sync(conn, **rebuild_kwargs)
     finally:
         if marker_conn is not None:
             marker_conn.close()
     # The rebuild commits its own rows. Publish and commit the final exact FTS
     # state in the same production stage before reporting success.
-    message_fts_ready = _record_fts_freshness_after_insights(conn)
+    _record_fts_freshness_after_insights(conn)
     conn.commit()
-    if message_fts_ready and archive_root is not None:
-        _clear_messages_fts_surface_debt(archive_root)
     remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
     logger.info(
         "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
@@ -2419,16 +2324,6 @@ def _archive_insights_execute_ids(
         len(remaining),
     )
     return StageExecutionResult(success=not hot_ids and not remaining, stage_timings_s=stage_timings_s)
-
-
-def _clear_messages_fts_surface_debt(archive_root: Path) -> None:
-    """Clear startup FTS debt only after an exact settled snapshot is ready."""
-    try:
-        from polylogue.daemon.fts_startup import clear_messages_fts_surface_debt
-
-        clear_messages_fts_surface_debt(archive_root / "index.db")
-    except Exception:
-        logger.warning("fts: failed to clear ready messages_fts surface debt", exc_info=True)
 
 
 __all__ = [
