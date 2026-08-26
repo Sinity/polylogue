@@ -272,6 +272,7 @@ def _browser_capture_parsed_attachment(
     return ParsedAttachment(
         provider_attachment_id=attachment.provider_attachment_id,
         message_provider_id=message_provider_id,
+        attachment_kind=attachment.attachment_kind,
         name=attachment.name,
         mime_type=attachment.mime_type,
         size_bytes=size_bytes,

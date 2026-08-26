@@ -192,9 +192,22 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
                 author: { role: "assistant" },
                 content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-IMG9" }] },
                 metadata: {},
+                },
               },
             },
-          },
+            n4: {
+              id: "n4",
+              parent: "n3",
+              message: {
+                id: "msg-d",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "multimodal_text",
+                  parts: [{ content_type: "audio_asset_pointer", asset_pointer: "file-service://file-AUDIO7" }],
+                },
+                metadata: {},
+              },
+            },
         });
       }
       // Every asset metadata/download round trip 404s -- this test cares
@@ -213,8 +226,9 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
       "sandbox:msg-a:/mnt/data/kit.zip.sha256",
       "file-UP1",
       "file-service://file-IMG9",
+      "file-service://file-AUDIO7",
     ]);
-    expect(acquisition.attempted).toBe(4);
+    expect(acquisition.attempted).toBe(5);
     // n2's sandbox link is on a user-authored turn, not assistant -- assets
     // never manifest as user prose, so it must not be identified at all.
     expect(attemptedIds).not.toContain("sandbox:msg-b:/mnt/data/ignored.zip");

@@ -700,13 +700,21 @@
           const pointerPath = pointer.includes("://") ? pointer.split("://").at(-1) : pointer;
           const fileIdMatch = pointerPath.match(/file[-_][A-Za-z0-9]+/);
           if (fileIdMatch) {
+            const contentType = String(part.content_type || "");
+            const attachmentKind = contentType === "image_asset_pointer"
+              ? "file_service_image"
+              : contentType === "audio_asset_pointer"
+                || contentType === "real_time_user_audio_video_asset_pointer"
+                ? "file_service_audio"
+                : "file_service_file";
             add({
               kind: "file",
               fileId: fileIdMatch[0],
               provider_attachment_id: pointer,
               message_provider_id: messageId,
-              name: null,
-              mime_type: null
+              name: part.name ? String(part.name) : null,
+              mime_type: part.mime_type ? String(part.mime_type) : null,
+              attachment_kind: attachmentKind
             });
           }
         }
@@ -718,7 +726,8 @@
               provider_attachment_id: `sandbox:${messageId}:${path}`,
               message_provider_id: messageId,
               name: path.replace(/\/+$/, "").split("/").at(-1) || null,
-              mime_type: null
+              mime_type: null,
+              attachment_kind: "sandbox_file"
             });
           }
         }
@@ -789,13 +798,14 @@
         attachments.push({
           provider_attachment_id: descriptor.provider_attachment_id,
           message_provider_id: descriptor.message_provider_id,
+          attachment_kind: descriptor.attachment_kind,
           name: result.asset.name || descriptor.name,
           mime_type: result.asset.mime_type || descriptor.mime_type,
           size_bytes: result.asset.size_bytes || null,
           inline_base64: result.asset.base64,
           provider_meta: {
             capture_source: "chatgpt_page_asset_fetch",
-            asset_kind: descriptor.kind,
+            asset_kind: descriptor.attachment_kind || descriptor.kind,
             sandbox_path: descriptor.sandboxPath || null,
             content_sha256: contentSha256
           }
