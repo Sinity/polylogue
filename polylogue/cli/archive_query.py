@@ -3022,6 +3022,9 @@ def _summary_payload(
         model_json_document,
         reader_anchor,
     )
+    from polylogue.surfaces.query_rows import session_row
+
+    row = session_row(summary)
 
     return cast(
         "dict[str, object]",
@@ -3029,7 +3032,7 @@ def _summary_payload(
             SessionListRowPayload(
                 id=summary.session_id,
                 origin=summary.origin,
-                title=bound_display_text(summary.display_label or summary.title or summary.session_id, max_chars=96),
+                title=row.title,
                 target_ref=TargetRefPayload.session(summary.session_id),
                 anchor=reader_anchor("session", summary.session_id),
                 created_at=summary.created_at,
@@ -3039,6 +3042,9 @@ def _summary_payload(
                 words=summary.word_count,
                 repo=summary.git_repository_url,
                 cwd_display=summary.working_directories[0] if summary.working_directories else None,
+                terminal_state=row.outcome,
+                total_cost_usd=row.cost_usd,
+                relative_time=row.relative_time,
                 parent_refs=parent_refs,
                 child_refs=child_refs,
                 continuation=continuation,
@@ -3054,6 +3060,7 @@ def _hit_payload(
     summary: ArchiveSessionSummary,
     retrieval_lane: str,
 ) -> dict[str, object]:
+    from polylogue.archive.query.search_hits import bound_search_snippet
     from polylogue.surfaces.payloads import (
         SessionSearchHitPayload,
         SessionSearchMatchPayload,
@@ -3063,6 +3070,10 @@ def _hit_payload(
         reader_anchor,
         reader_message_actions,
     )
+    from polylogue.surfaces.query_rows import session_row
+
+    row = session_row(summary)
+    snippet = bound_search_snippet(hit.snippet)
 
     return cast(
         "dict[str, object]",
@@ -3071,10 +3082,11 @@ def _hit_payload(
                 session=SessionSummaryPayload(
                     id=summary.session_id,
                     origin=summary.origin,
-                    title=bound_display_text(
-                        summary.display_label or summary.title or summary.session_id, max_chars=96
-                    ),
+                    title=row.title,
                     message_count=summary.message_count,
+                    terminal_state=row.outcome,
+                    total_cost_usd=row.cost_usd,
+                    relative_time=row.relative_time,
                     target_ref=TargetRefPayload.session(summary.session_id),
                     anchor=reader_anchor("session", summary.session_id),
                 ),
@@ -3086,7 +3098,7 @@ def _hit_payload(
                     anchor=reader_anchor("message", hit.message_id),
                     actions=reader_message_actions(),
                     message_id=hit.message_id,
-                    snippet=bound_display_text(hit.snippet, max_chars=320),
+                    snippet=snippet,
                     score=None,
                     score_kind=None,
                 ),
@@ -3196,12 +3208,10 @@ def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
 
 
 def _summary_line(item: dict[str, object]) -> str:
-    session_id = str(item["id"])
-    title = bound_display_text(item.get("title") or session_id, max_chars=50)
-    date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
-    origin = str(item["origin"])
-    message_count = item.get("message_count") or 0
-    line = f"{session_id[:24]:24s}  {date:10s}  {origin:24s}  {title} ({message_count} msgs)"
+    from polylogue.surfaces.query_rows import session_row
+
+    row = session_row(item)
+    line = f"{row.id[:24]:24s}  {(row.date or 'unknown'):10s}  {row.origin:24s}  {row.title} ({row.message_count} msgs)"
     return line + _attached_units_suffix(item)
 
 
@@ -3220,9 +3230,12 @@ def _hit_line(item: dict[str, object]) -> str:
     match = item.get("match")
     if not isinstance(session, dict) or not isinstance(match, dict):
         return str(item)
-    title = bound_display_text(session.get("title") or session.get("id"), max_chars=96)
-    snippet = bound_display_text(match.get("snippet"), max_chars=320)
-    line = f"{match['rank']}. {session['origin']}  {title}  {snippet}"
+    from polylogue.archive.query.search_hits import bound_search_snippet
+    from polylogue.surfaces.query_rows import session_row
+
+    row = session_row(session)
+    snippet = bound_search_snippet(match.get("snippet"))
+    line = f"{match['rank']}. {row.origin}  {row.title}  {snippet or ''}"
     return line + _attached_units_suffix(item)
 
 

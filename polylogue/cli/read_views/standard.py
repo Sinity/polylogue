@@ -297,6 +297,9 @@ def _archive_summary_to_domain(summary: Any) -> SessionSummary:
         provider_project_ref=summary.provider_project_ref,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
+        terminal_state=summary.terminal_state,
+        total_cost_usd=summary.total_cost_usd,
+        cost_provenance=summary.cost_provenance,
     )
 
 

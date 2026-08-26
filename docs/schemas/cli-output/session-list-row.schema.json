@@ -210,6 +210,18 @@
       "default": null,
       "title": "Continuation"
     },
+    "cost_provenance": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Provenance"
+    },
     "created_at": {
       "anyOf": [
         {
@@ -273,6 +285,18 @@
       "default": null,
       "title": "Parent Refs"
     },
+    "relative_time": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relative Time"
+    },
     "repo": {
       "anyOf": [
         {
@@ -316,6 +340,18 @@
       ],
       "default": null
     },
+    "terminal_state": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Terminal State"
+    },
     "title": {
       "default": null,
       "title": "Title",
@@ -356,6 +392,18 @@
       ],
       "default": null,
       "title": "Title Source"
+    },
+    "total_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Cost Usd"
     },
     "updated_at": {
       "anyOf": [

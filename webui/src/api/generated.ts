@@ -614,6 +614,7 @@ export type SessionListEnvelope = {
   readonly anchor?: string | null;
   readonly child_refs?: ReadonlyArray<string> | null;
   readonly continuation?: string | null;
+  readonly cost_provenance?: string | null;
   readonly created_at?: string | null;
   readonly cwd_display?: string | null;
   readonly flags?: SessionFlagsPayload | null;
@@ -621,14 +622,17 @@ export type SessionListEnvelope = {
   readonly message_count?: number;
   readonly origin: string;
   readonly parent_refs?: ReadonlyArray<string> | null;
+  readonly relative_time?: string | null;
   readonly repo?: string | null;
   readonly summary?: string | null;
   readonly tags?: ReadonlyArray<string>;
   readonly target_ref?: TargetRefPayload | null;
+  readonly terminal_state?: string | null;
   readonly title?: string;
   readonly title_confidence?: number | null;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;
+  readonly total_cost_usd?: number | null;
   readonly updated_at?: string | null;
   readonly words?: number | null;
 };
@@ -692,15 +696,19 @@ export type SessionSummaryEnvelope = {
   readonly [key: string]: ReaderActionAvailabilityPayload;
 };
   readonly anchor?: string | null;
+  readonly cost_provenance?: string | null;
   readonly created_at?: string | null;
   readonly id: string;
   readonly message_count?: number | null;
   readonly origin: string;
+  readonly relative_time?: string | null;
   readonly target_ref?: TargetRefPayload | null;
+  readonly terminal_state?: string | null;
   readonly title?: string;
   readonly title_confidence?: number | null;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;
+  readonly total_cost_usd?: number | null;
   readonly updated_at?: string | null;
 };
 

@@ -411,6 +411,9 @@ class ArchiveSessionSummary:
     display_name: str | None = None
     # Read-time projection over current structural evidence. Never persisted.
     display_label: str | None = None
+    terminal_state: str | None = None
+    total_cost_usd: float | None = None
+    cost_provenance: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3360,6 +3363,7 @@ class ArchiveStore:
                    s.assistant_word_count,
                    s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
+                   sp.terminal_state, sp.total_cost_usd, sp.cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -3374,6 +3378,7 @@ class ArchiveStore:
                        '[]'
                    ) AS tags_json
             FROM sessions s
+            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN {self._tags_relation} st
               ON st.session_id = s.session_id
              AND st.tag_source = 'user'
@@ -5544,6 +5549,7 @@ class ArchiveStore:
                    s.assistant_word_count,
                    s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
+                   sp.terminal_state, sp.total_cost_usd, sp.cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -5558,6 +5564,7 @@ class ArchiveStore:
                        '[]'
                    ) AS tags_json
             FROM sessions s
+            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN {self._tags_relation} st
               ON st.session_id = s.session_id
              AND st.tag_source = 'user'
@@ -6765,6 +6772,9 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
         provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
         display_name=display_name,
+        terminal_state=(str(row["terminal_state"]) if row["terminal_state"] is not None else None),
+        total_cost_usd=(float(row["total_cost_usd"]) if row["total_cost_usd"] is not None else None),
+        cost_provenance=(str(row["cost_provenance"]) if row["cost_provenance"] is not None else None),
     )
 
 

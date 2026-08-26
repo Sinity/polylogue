@@ -898,6 +898,10 @@ _SessionSummaryEnvelopeBase = _create_projection_model(
             dict[str, ReaderActionAvailabilityPayload],
             Field(default_factory=reader_session_actions),
         ),
+        "terminal_state": (str | None, Field(default=None)),
+        "total_cost_usd": (float | None, Field(default=None)),
+        "cost_provenance": (str | None, Field(default=None)),
+        "relative_time": (str | None, Field(default=None)),
     },
     annotation_overrides={
         "origin": str,
@@ -917,6 +921,10 @@ _SessionSummaryEnvelopeBase = _create_projection_model(
         "actions",
         "created_at",
         "updated_at",
+        "terminal_state",
+        "total_cost_usd",
+        "cost_provenance",
+        "relative_time",
     ),
 )
 
@@ -977,6 +985,10 @@ _SessionListEnvelopeBase = _create_projection_model(
             Field(default_factory=reader_session_actions),
         ),
         "message_count": (int, Field(default=0)),
+        "terminal_state": (str | None, Field(default=None)),
+        "total_cost_usd": (float | None, Field(default=None)),
+        "cost_provenance": (str | None, Field(default=None)),
+        "relative_time": (str | None, Field(default=None)),
         "tags": (tuple[str, ...], Field(default=())),
         "summary": (str | None, Field(default=None)),
         "words": (int | None, Field(default=None)),
@@ -1007,6 +1019,10 @@ _SessionListEnvelopeBase = _create_projection_model(
         "created_at",
         "updated_at",
         "message_count",
+        "terminal_state",
+        "total_cost_usd",
+        "cost_provenance",
+        "relative_time",
         "tags",
         "summary",
         "words",
@@ -1039,6 +1055,13 @@ def _domain_values(
         dumped = model_dump(mode="python")
         return {surface_name: dumped[domain_name] for domain_name, surface_name in mask}
     return {surface_name: getattr(model, domain_name, None) for domain_name, surface_name in mask}
+
+
+def _session_terminal_state(session: Session) -> str:
+    """Read terminal state from the canonical derived session profile."""
+    from polylogue.archive.session.session_profile import build_session_profile
+
+    return build_session_profile(session).terminal_state
 
 
 def message_render_envelope_from_domain(
@@ -1168,6 +1191,9 @@ def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnve
         origin=role_label(session.origin),
         title_source=session.title_source.value if session.title_source else None,
         message_count=len(session.messages),
+        terminal_state=_session_terminal_state(session),
+        total_cost_usd=session.total_cost_usd,
+        cost_provenance=getattr(session, "cost_provenance", None),
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
@@ -1180,8 +1206,11 @@ def session_summary_envelope_from_summary(
     *,
     message_count: int | None = None,
 ) -> SessionSummaryEnvelope:
+    from polylogue.surfaces.query_rows import session_row
+
     values = _domain_values(summary, _SESSION_SUMMARY_MASK)
     session_id = str(summary.id)
+    row = session_row(summary, message_count=message_count)
     values.update(
         title=bound_display_title(summary.display_title, session_id),
         origin=role_label(summary.origin),
@@ -1190,6 +1219,10 @@ def session_summary_envelope_from_summary(
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
+        terminal_state=summary.terminal_state,
+        total_cost_usd=summary.total_cost_usd,
+        cost_provenance=summary.cost_provenance,
+        relative_time=row.relative_time,
     )
     return SessionSummaryEnvelope(**values)
 
@@ -1201,9 +1234,19 @@ def session_detail_envelope_from_domain(
 ) -> SessionDetailEnvelope:
     if content_projection is not None and content_projection.filters_content():
         session = session.with_content_projection(content_projection)
-    summary = session_summary_envelope_from_domain(session)
+    session_id = str(session.id)
+    values = _domain_values(session, _SESSION_LIST_MASK)
+    values.update(
+        title=session.display_title,
+        origin=role_label(session.origin),
+        title_source=session.title_source.value if session.title_source else None,
+        message_count=len(session.messages),
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+    )
     return SessionDetailEnvelope(
-        **summary.model_dump(),
+        **values,
         messages=tuple(message_render_envelope_from_domain(msg, session_id=session.id) for msg in session.messages),
     )
 
@@ -1229,6 +1272,9 @@ def session_list_envelope_from_domain(
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
         message_count=len(session.messages),
+        terminal_state=_session_terminal_state(session),
+        total_cost_usd=session.total_cost_usd,
+        cost_provenance=getattr(session, "cost_provenance", None),
         tags=tuple(session.tags),
         summary=session.summary,
         words=sum(message.word_count for message in session.messages),
@@ -1248,8 +1294,11 @@ def session_list_envelope_from_summary(
     repo: str | None = None,
     cwd_display: str | None = None,
 ) -> SessionListEnvelope:
+    from polylogue.surfaces.query_rows import session_row
+
     session_id = str(summary.id)
     values = _domain_values(summary, _SESSION_LIST_MASK)
+    row = session_row(summary, message_count=message_count)
     values.update(
         title=bound_display_title(summary.display_title, session_id),
         origin=role_label(summary.origin),
@@ -1260,6 +1309,10 @@ def session_list_envelope_from_summary(
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
         message_count=message_count,
+        terminal_state=summary.terminal_state,
+        total_cost_usd=summary.total_cost_usd,
+        cost_provenance=summary.cost_provenance,
+        relative_time=row.relative_time,
         tags=tuple(summary.tags),
         summary=summary.summary,
         words=word_count,
