@@ -101,6 +101,11 @@ title = "Finding: Structured Failure Follow-Up"
 source = "docs/findings/claim-vs-evidence.md"
 
 [[pages]]
+path = "/findings/corpus-reliability/"
+title = "Finding: Corpus Reliability and Closure Reliability"
+source = "docs/findings/corpus-reliability.md"
+
+[[pages]]
 path = "/architecture/sinex/"
 title = "Polylogue on Sinex"
 source = "docs/sinex-interop.md"
