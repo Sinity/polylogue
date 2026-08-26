@@ -5050,6 +5050,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """
         from polylogue.config import load_polylogue_config
         from polylogue.operations.daemon_protocol import (
+            MAX_OPERATION_BODY_BYTES,
             DaemonOperationEnvelope,
             DaemonOperationRequest,
             archive_identity,
@@ -5057,12 +5058,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.version import POLYLOGUE_VERSION
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length <= 0 or content_length > 65_536:
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = 0
+        if content_type != "application/json":
+            self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
+            return
+        if content_length <= 0 or content_length > MAX_OPERATION_BODY_BYTES:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing or too large")
             return
         try:
-            raw = json.loads(self.rfile.read(content_length))
+            raw_bytes = self.rfile.read(content_length)
+            if len(raw_bytes) != content_length:
+                raise ValueError("partial operation body")
+            raw = json.loads(raw_bytes)
             request = DaemonOperationRequest.from_dict(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
@@ -5108,8 +5119,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        supported = {"cli.query", "query.units", "status", "completion"}
-        if request.operation not in supported:
+        from polylogue.operations.daemon_protocol import daemon_operation_spec
+
+        spec = daemon_operation_spec(request.operation)
+        if spec is None:
             self._send_operation_error(
                 HTTPStatus.NOT_FOUND,
                 request,
@@ -5157,6 +5170,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 }
                 self.path = "/api/query-units"
                 self._handle_query_units(params)
+            elif request.operation == "facets":
+                raw_params = request.payload.get("params", request.payload)
+                if not isinstance(raw_params, dict):
+                    self._send_operation_error(
+                        HTTPStatus.BAD_REQUEST,
+                        request,
+                        archive,
+                        generation,
+                        readiness,
+                        "invalid_request",
+                        "facets params must be an object",
+                    )
+                    return
+                self._handle_facets(
+                    {
+                        str(key): [str(item) for item in value] if isinstance(value, list | tuple) else [str(value)]
+                        for key, value in raw_params.items()
+                    }
+                )
             elif request.operation == "status":
                 self._handle_status({})
             else:
@@ -5190,9 +5222,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 archive=archive,
                 generation=generation,
                 readiness=readiness,
-                authority={"mode": "daemon", "writes": "daemon-owned"},
+                authority={
+                    "mode": "daemon",
+                    "class": spec.authority.value,
+                    "fallback": spec.fallback.value,
+                    "writes": "daemon-owned",
+                },
                 progress={"state": "failed"},
                 error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
+                request_id=request.request_id,
             )
             self._send_json(status, envelope.to_dict())
             return
@@ -5201,9 +5239,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             archive=archive,
             generation=generation,
             readiness=readiness,
-            authority={"mode": "daemon", "writes": "daemon-owned"},
+            authority={
+                "mode": "daemon",
+                "class": spec.authority.value,
+                "fallback": spec.fallback.value,
+                "writes": "daemon-owned",
+            },
             progress={"state": "complete"},
             result=result,
+            request_id=request.request_id,
         )
         self._send_json(HTTPStatus.OK, envelope.to_dict())
 

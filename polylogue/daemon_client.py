@@ -5,9 +5,17 @@ from __future__ import annotations
 import http.client
 import json
 import socket
+import uuid
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+
+from polylogue.operations.daemon_protocol import (
+    DAEMON_OPERATION_PROTOCOL,
+    MAX_OPERATION_RESULT_BYTES,
+    DaemonOperationRequest,
+    daemon_operation_spec,
+)
 
 
 class DaemonResponseError(RuntimeError):
@@ -122,7 +130,12 @@ class DaemonClient:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
             connection.request(method, path, body=raw, headers=headers)
             response = connection.getresponse()
-            response_body = response.read()
+            declared_length = response.getheader("Content-Length")
+            if declared_length is not None and int(declared_length) > MAX_OPERATION_RESULT_BYTES:
+                raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
+            response_body = response.read(MAX_OPERATION_RESULT_BYTES + 1)
+            if len(response_body) > MAX_OPERATION_RESULT_BYTES:
+                raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
             try:
                 decoded = json.loads(response_body.decode())
             except (UnicodeDecodeError, ValueError):
@@ -154,22 +167,35 @@ class DaemonClient:
     ) -> dict[str, Any] | None:
         """Issue one archive-scoped operation request; no health probe is needed."""
 
+        spec = daemon_operation_spec(operation)
+        if spec is None:
+            raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
+        request = DaemonOperationRequest(
+            operation=operation,
+            payload=payload or {},
+            archive_root=archive_root,
+            index_schema_version=index_schema_version,
+            daemon_version=daemon_version,
+            request_id=uuid.uuid4().hex,
+            deadline_ms=max(1, round(spec.deadline_s * 1000)),
+        )
         response = self.request_json(
             "POST",
             "/api/operation",
-            {
-                "operation": operation,
-                "payload": payload or {},
-                "archive_root": archive_root,
-                "index_schema_version": index_schema_version,
-                "daemon_version": daemon_version,
-            },
-            accepted_statuses=frozenset({200, 408, 409, 404, 429, 503}),
+            request.to_dict(),
+            accepted_statuses=frozenset({200, 400, 408, 409, 404, 429, 503}),
         )
         if response is None:
             return None
-        if response.get("protocol") != "polylogue.daemon-operation/v1":
+        if response.get("protocol") != DAEMON_OPERATION_PROTOCOL:
             raise DaemonOperationProtocolError("daemon returned an invalid operation protocol envelope")
+        if response.get("operation") != operation:
+            raise DaemonOperationProtocolError("daemon returned a different operation")
+        if response.get("request_id") != request.request_id:
+            raise DaemonOperationProtocolError("daemon returned a different request id")
+        archive = response.get("archive")
+        if archive_root is not None and (not isinstance(archive, dict) or archive.get("root") != archive_root):
+            raise DaemonOperationProtocolError("daemon returned a different archive identity")
         return response
 
     def probe(
