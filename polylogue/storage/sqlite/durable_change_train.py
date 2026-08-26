@@ -3688,6 +3688,7 @@ __all__ = [
     "durable_migration_collision_report",
     "find_durable_migration_collisions",
     "add_durable_change_train_rider",
+    "durable_change_train_from_payload",
     "durable_change_train_to_payload",
     "validate_durable_change_train_manifest",
     "declare_durable_change_train",
