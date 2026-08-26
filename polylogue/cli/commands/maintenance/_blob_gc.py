@@ -211,7 +211,7 @@ def gc_recover_command(generation_id: str | None, yes: bool, output_format: str)
             "maintenance",
         )
         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
         receipt = executor.execute_bound(binding, preview, authorization, args)
         adjudication = dict(receipt.domain_receipt)
         receipt_ref = receipt.receipt_ref

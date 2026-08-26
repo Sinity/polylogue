@@ -182,7 +182,7 @@ def excise_command(
             lifecycle_binding, lifecycle_args, lifecycle_principal, archive_root=root
         )
         lifecycle_authorization = executor.authorize_bound(
-            lifecycle_binding, lifecycle_preview, lifecycle_principal, confirmation_strength="confirm_flag"
+            lifecycle_binding, lifecycle_preview, lifecycle_principal, confirmation_strength="bound_token"
         )
         receipt = executor.execute_bound(lifecycle_binding, lifecycle_preview, lifecycle_authorization, lifecycle_args)
         assertion_id = cast(str, receipt.domain_receipt["assertion_id"])
@@ -321,7 +321,7 @@ def excise_command(
     binding = runtime_operation_binding(actuator)
     principal = MutationPrincipal(actor, frozenset({"archive.excise_session"}), "cli", "write")
     preview = executor.prepare_bound_for_archive(binding, excision_args, principal, archive_root=root)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
     executor_receipt = executor.execute_bound(binding, preview, authorization, excision_args)
     if executor_receipt.status == "blocked":
         _emit(
