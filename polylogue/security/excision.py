@@ -123,13 +123,14 @@ class ExcisionTarget:
     """
 
     session_id: str
+    session_exists: bool = False
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     message_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
 
     @property
     def found(self) -> bool:
-        return bool(self.raw_targets or self.message_ids or self.block_ids)
+        return self.session_exists or bool(self.raw_targets or self.message_ids or self.block_ids)
 
 
 def resolve_session_excision_target(archive_root: Path, session_id: str) -> ExcisionTarget:
@@ -139,6 +140,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
     source_db = archive_root / "source.db"
 
     raw_ids: list[str] = []
+    session_exists = False
     message_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
 
@@ -150,7 +152,10 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
                 (session_id,),
             ).fetchone()
             if row is not None and row[0]:
+                session_exists = True
                 raw_ids.append(str(row[0]))
+            elif row is not None:
+                session_exists = True
             message_ids = tuple(
                 str(r[0])
                 for r in conn.execute(
@@ -185,6 +190,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
 
     return ExcisionTarget(
         session_id=session_id,
+        session_exists=session_exists,
         raw_targets=raw_targets,
         message_ids=message_ids,
         block_ids=block_ids,
