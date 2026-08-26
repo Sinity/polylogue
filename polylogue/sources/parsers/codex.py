@@ -2825,7 +2825,11 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
-            content_blocks = content_blocks_from_segments(content, admission=admission)
+            content_blocks = content_blocks_from_segments(
+                content,
+                admission=admission,
+                lower_transport_text=True,
+            )
             content_blocks.extend(inline_image_blocks)
             if inline_image_blocks:
                 admission.expect(AdmissionUnit.BLOCK, len(inline_image_blocks))

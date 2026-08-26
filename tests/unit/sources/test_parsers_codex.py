@@ -1471,6 +1471,8 @@ class TestGitContextAndInstructions:
         assert image_blocks[0].media_type == "image/png"
         assert "mime=image/png" in (image_blocks[0].text or "")
         assert "sha256_base64=" in (image_blocks[0].text or "")
+        text_blocks = [block for block in message.blocks if block.type is BlockType.TEXT]
+        assert [block.text for block in text_blocks] == ["inspect this image"]
 
     def test_message_preserves_image_only_bounded_evidence(self) -> None:
         payload = [

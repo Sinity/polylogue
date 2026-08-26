@@ -525,7 +525,7 @@ def acquire_codex_revision_chain(
                 archive.bind_raw_revision(
                     raw_ids[0],
                     RawRevisionEnvelope(
-                        logical_source_key=f"codex:{fixture.session_native_id}",
+                        logical_source_key=f"codex-session:{fixture.session_native_id}",
                         kind=RawRevisionKind.FULL,
                         source_revision=raw_ids[0],
                         acquisition_generation=0,
