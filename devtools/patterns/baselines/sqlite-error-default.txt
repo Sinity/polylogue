@@ -13,8 +13,8 @@ polylogue/archive/query/production_evaluator.py:91
 polylogue/browser_capture/receiver.py:336
 polylogue/browser_capture/receiver.py:439
 polylogue/cli/commands/paths.py:240
-polylogue/cli/commands/status.py:602
-polylogue/cli/commands/status.py:622
+polylogue/cli/commands/status.py:630
+polylogue/cli/commands/status.py:650
 polylogue/daemon/convergence_stages.py:2143
 polylogue/daemon/fts_convergence.py:123
 polylogue/daemon/fts_orphan_audit.py:116
