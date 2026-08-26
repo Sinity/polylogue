@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 from collections.abc import Callable, Iterable
@@ -178,6 +179,7 @@ class _FullIngestResult:
     source_payload_read_bytes: int
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
+    raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
     raw_source_names: dict[Path, str] = field(default_factory=dict)
     raw_source_revisions: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
@@ -212,6 +214,7 @@ def _full_ingest_result_from_summary(
     source_payload_read_bytes: int,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
+    raw_frontier_sizes: dict[Path, int] | None = None,
     raw_source_names: dict[Path, str] | None = None,
     raw_source_revisions: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
@@ -226,6 +229,7 @@ def _full_ingest_result_from_summary(
         source_payload_read_bytes=source_payload_read_bytes,
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
+        raw_frontier_sizes=raw_frontier_sizes or {},
         raw_source_names=raw_source_names or {},
         raw_source_revisions=raw_source_revisions or {},
         captured_content_hashes=captured_content_hashes or {},
@@ -252,6 +256,66 @@ def _full_ingest_result_from_summary(
 
 
 _FINGERPRINT_STREAM_CHUNK = 1 << 20  # 1 MiB
+
+
+@dataclass(frozen=True, slots=True)
+class JsonlBoundary:
+    """The proven record prefix of one acquired JSONL byte sequence."""
+
+    prefix_size: int
+    record_count: int
+    incomplete_tail: bool
+
+
+def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
+    """Find the maximal newline-terminated, syntactically valid JSON prefix.
+
+    The lexical scan keeps only the current record in memory and treats
+    escaped quotes, backslashes, braces, and newlines inside strings as data.
+    The caller retains the original full bytes separately.
+    """
+    record_start = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    complete_end = 0
+    records = 0
+    for offset, byte in enumerate(payload):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # backslash
+                escaped = True
+            elif byte == 0x22:  # quote
+                in_string = False
+            continue
+        if byte == 0x22:
+            in_string = True
+        elif byte in (0x7B, 0x5B):  # { [
+            depth += 1
+        elif byte in (0x7D, 0x5D):  # } ]
+            depth = max(0, depth - 1)
+        elif byte == 0x0A and depth == 0:
+            line = payload[record_start : offset + 1].strip()
+            record_start = offset + 1
+            if not line:
+                complete_end = offset + 1
+                continue
+            try:
+                json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return JsonlBoundary(complete_end, records, True)
+            complete_end = offset + 1
+            records += 1
+    trailing = payload[record_start:].strip()
+    if trailing and depth == 0 and not in_string:
+        try:
+            json.loads(trailing)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        else:
+            return JsonlBoundary(len(payload), records + 1, False)
+    return JsonlBoundary(complete_end, records, complete_end != len(payload))
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:
