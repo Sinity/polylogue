@@ -268,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--include-lab",
         action="store_true",
-        help="Run cheap-local plus lab tier (used by `devtools verify --lab`).",
+        help="Run cheap-local plus the explicit lab benchmark tier.",
     )
     parser.add_argument(
         "--all-tiers",

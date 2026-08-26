@@ -25,7 +25,7 @@
 # Tiering separates execution cost:
 #   * cheap-local — runnable in `devtools verify` defaults. Small fixtures, low
 #     repetition counts, total run under a few seconds. Always enforced.
-#   * lab — heavier benchmarks runnable via `devtools verify --lab` or
+#   * lab — heavier benchmarks runnable via `devtools bench slo --include-lab` or
 #     `devtools bench slo --include-lab`. Skipped in the default loop so
 #     commit-frequency verification stays fast.
 

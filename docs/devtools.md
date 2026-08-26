@@ -21,9 +21,9 @@ Routine command placement:
 - keep repo state, rendering, packaging, and PR-readiness orchestration in
   `devtools`;
 - keep archive/insight workflows in `polylogue` CLI/API surfaces;
-- keep evidence/scenario behavior in lab modules with executable command entrypoints;
-- prefer validation lanes and `devtools verify --lab` to compose executable
-  lab checks rather than duplicating domain checks inside `devtools verify`.
+- keep evidence/scenario behavior in verification modules with executable command entrypoints;
+- prefer validation lanes and the ordinary verifier to compose executable
+  checks rather than duplicating domain checks inside `devtools verify`.
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
@@ -49,7 +49,7 @@ These are the commands worth remembering during normal repo work:
 - `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render all`, `devtools render all --check`.
 - `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
-  Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
+  Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
