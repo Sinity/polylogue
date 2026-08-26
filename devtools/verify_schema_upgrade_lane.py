@@ -62,7 +62,6 @@ from polylogue.storage.sqlite.archive_tiers.index_convergence import (
     BenignDDLEntry,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainError,
     DurableMigrationClaim,
@@ -74,6 +73,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     durable_migration_collision_report as _durable_migration_collision_report,
 )
 from polylogue.storage.sqlite.lifecycle import IndexDeltaDeclarationReport, index_delta_declaration_report
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 
 ROOT = _get_root()
 MIGRATIONS_DIR = ROOT / "polylogue" / "storage" / "sqlite" / "migrations"
