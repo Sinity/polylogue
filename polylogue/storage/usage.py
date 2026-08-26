@@ -199,6 +199,13 @@ def _normalize_model_name(value: object) -> str:
     return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
 
 
+def _priceable_model_name(model_name: str | None) -> str | None:
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    return normalized if normalized in PRICING else None
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderUsageCoverage:
     """Declared provider-usage telemetry coverage for one archive origin."""
@@ -2357,11 +2364,31 @@ def _catalog_cost_evidence(
     cache_write_tokens: int,
     normalized_model: str | None,
     observed_at: str,
+    model_usage_rows: Sequence[ModelUsageTotals] = (),
 ) -> EvidenceValue[float]:
     fact_ref = _session_usage_fact_ref(session_id, "catalog-api-equivalent-cost")
     source_ref = _session_usage_source_ref(session_id, "reconciled_tokens_repriced")
     catalog_ref = ObjectRef(kind="insight", object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}")
-    priceable = tokens_evidence.value_state == "known" and normalized_model is not None and normalized_model in PRICING
+    # A session may contain several models.  Reprice each model's token lanes
+    # under its own catalog entry; pricing the session-wide sum with the
+    # dominant model silently transfers the most expensive model's rates to
+    # every other model (polylogue-5uutw).
+    if model_usage_rows:
+        priced_rows: tuple[tuple[ModelUsageTotals, str], ...] = tuple(
+            (row, normalized)
+            for row in model_usage_rows
+            if (normalized := _priceable_model_name(row.model_name)) is not None
+        )
+        priceable = (
+            tokens_evidence.value_state == "known"
+            and len(priced_rows) == len(model_usage_rows)
+            and bool(model_usage_rows)
+        )
+    else:
+        priced_rows = ()
+        priceable = (
+            tokens_evidence.value_state == "known" and normalized_model is not None and normalized_model in PRICING
+        )
     value: float | None = None
     exclusions: tuple[CoverageExclusion, ...] = ()
     if priceable:
@@ -2371,16 +2398,31 @@ def _catalog_cost_evidence(
         # typically several times an input token's rate), so collapsing the
         # reconciled *total* into a single input_tokens argument would
         # systematically misprice any session with real output/cache volume.
-        value = round(
-            estimate_cost(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-                model=normalized_model or "",
-            ),
-            6,
-        )
+        if priced_rows:
+            value = round(
+                sum(
+                    estimate_cost(
+                        input_tokens=row.input_tokens,
+                        output_tokens=row.output_tokens,
+                        cache_read_tokens=row.cache_read_tokens,
+                        cache_write_tokens=row.cache_write_tokens,
+                        model=normalized,
+                    )
+                    for row, normalized in priced_rows
+                ),
+                6,
+            )
+        else:
+            value = round(
+                estimate_cost(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    model=normalized_model or "",
+                ),
+                6,
+            )
     elif tokens_evidence.value_state != "known":
         exclusions = (CoverageExclusion(subject_ref=source_ref, reason="reconciled-tokens-unknown"),)
     else:
@@ -2745,6 +2787,7 @@ def build_session_usage_reconciliation(
         cache_read_tokens=winning_cache_read_tokens,
         cache_write_tokens=winning_cache_write_tokens,
         normalized_model=reconciled_model,
+        model_usage_rows=model_usage_rows if model_usage_evidence.value_state == "known" else (),
         observed_at=observed_at,
     )
     legacy_cost = _legacy_cost_evidence(
