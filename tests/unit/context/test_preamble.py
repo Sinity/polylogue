@@ -23,6 +23,7 @@ import pytest
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
 from polylogue.context.scheduler import read_context_ledger
 from polylogue.core.refs import ExecutionContextRef
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 
 
 def _init_git_repo(path: Path, *, branch: str = "main") -> None:
@@ -164,6 +165,8 @@ class TestBuildContextPreambleGitEnrichment:
         poly = MagicMock()
         poly.config.archive_root = tmp_path / "archive"
         poly.config.archive_root.mkdir()
+        with sqlite3.connect(poly.config.archive_root / "ops.db") as conn:
+            conn.executescript(OPS_DDL)
         poly.get_session = AsyncMock(return_value=session)
         poly.get_session_topology = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
