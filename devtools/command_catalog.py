@@ -613,6 +613,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify scenario list",
             "devtools verify scenario run archive-smoke --tier 0",
             "devtools verify scenario run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
+            "devtools verify scenario run safety-case --report-dir .cache/safety-case --json",
         ),
     ),
     CommandSpec(
