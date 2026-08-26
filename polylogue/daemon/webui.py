@@ -1,8 +1,8 @@
-"""Daemon-served SSR and bundled assets for the progressive WebUI.
+"""Daemon-served SSR and bundled assets for the typed WebUI.
 
-The legacy reader remains in :mod:`polylogue.daemon.web_shell`.  This module
-owns only the strangler mount at ``/app``: a semantic first page produced from
-the shared query transaction and a manifest-governed set of local Vite assets.
+Pages are produced from the shared query transaction and assets are admitted
+only through the packaged Vite manifest. The daemon owns authentication and
+transport; browser code owns presentation and enhancement.
 """
 
 from __future__ import annotations
