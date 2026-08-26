@@ -13,7 +13,7 @@
     "gemini",
     "hermes"
   ],
-  "content_version": "2026-07-17.6tool-r01",
+  "content_version": "2026-08-26.10tool-r01",
   "default_read_tools": [
     "query",
     "read",
@@ -22,7 +22,7 @@
     "context",
     "status"
   ],
-  "description": "Static six-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` also reports current declaration reconciliation.",
+  "description": "Static ten-tool target manifest. `polylogue agent manifest --enable-write/--enable-judge/--enable-maintenance` reports the capability-scoped declaration surface.",
   "manual_resources": [
     "polylogue://agent/manual",
     "polylogue://agent/reference",
@@ -37,7 +37,7 @@
     "write",
     "judge",
     "run",
-    "operate"
+    "maintenance"
   ],
   "prompts": [
     "resume_context",
@@ -70,7 +70,7 @@
     "polylogue://recall-pack/{id}",
     "polylogue://capabilities/query"
   ],
-  "schema_status": "cutover-parameterized",
+  "schema_status": "live-verified",
   "schema_version": 2,
   "target_tools": [
     "query",
@@ -82,6 +82,6 @@
     "write",
     "judge",
     "run",
-    "operate"
+    "maintenance"
   ]
 }

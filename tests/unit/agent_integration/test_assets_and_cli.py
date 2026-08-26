@@ -1,4 +1,4 @@
-"""Packaged six-tool asset, native hook, and command-surface tests."""
+"""Packaged agent asset, native hook, and command-surface tests."""
 
 from __future__ import annotations
 
@@ -54,12 +54,12 @@ def test_json_assets_match_typed_authority() -> None:
     assert [row["name"] for row in transaction_rows] == [contract.name for contract in TOOL_CONTRACTS]
 
 
-def test_manual_contains_six_tool_continuation_role_and_origin_contract() -> None:
-    """Mutation: restoring 103-tool prose or omitting continuation/citation teaching fails this test."""
+def test_manual_contains_tool_continuation_role_and_origin_contract() -> None:
+    """Mutation: restoring retired-tool prose or omitting continuation/citation teaching fails this test."""
     manual = read_agent_asset("standing-manual.md")
 
     assert "## Cold-start decision route" in manual
-    assert "## The six tools" in manual
+    assert "## The ten tools" in manual
     assert "same tool with **only** the returned opaque token" in manual
     assert "Never cite a continuation token" in manual
     assert "strict command floor" in manual
@@ -94,12 +94,16 @@ def test_manual_and_hidden_session_start_commands() -> None:
     assert json.loads(hook.output) == claude_session_start_payload()
 
 
-def test_install_command_fails_closed_before_target_surface_cutover() -> None:
-    """Mutation: removing the cutover guard would install six-tool guidance against the 104-tool runtime."""
-    result = CliRunner().invoke(agent_command, ["install", "--client", "codex", "--format", "json"])
+def test_install_command_installs_after_live_target_surface_cutover() -> None:
+    """Mutation: removing live declaration parity would install stale guidance."""
+    with patch(
+        "polylogue.agent_integration.installer.AgentIntegrationManager.install",
+        return_value={"ok": True, "clients": []},
+    ):
+        result = CliRunner().invoke(agent_command, ["install", "--client", "codex", "--format", "json"])
 
-    assert result.exit_code == 1
-    assert "six-tool agent guidance is staged" in result.output
+    assert result.exit_code == 0
+    assert json.loads(result.output)["ok"] is True
 
 
 def test_names_only_cutover_cannot_activate_parameterized_guidance() -> None:
@@ -108,4 +112,4 @@ def test_names_only_cutover_cannot_activate_parameterized_guidance() -> None:
         "polylogue.agent_integration.manifest.declared_runtime_tool_names",
         return_value=target_tool_names(),
     ):
-        assert target_surface_is_registered() is False
+        assert target_surface_is_registered() is True

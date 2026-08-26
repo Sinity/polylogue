@@ -362,10 +362,10 @@ def _target_declaration_lane() -> LaneResult:
         if target_tool_names() != expected_default:
             return _fail(name, "default target transaction order changed", target=list(target_tool_names()))
         mappings = {contract.name: list(contract.source_declarations) for contract in TOOL_CONTRACTS}
-        if mappings["read"] not in (["read"], ["read", "graph"]):
+        if mappings["read"] != ["read"]:
             return _fail(name, "read compatibility mapping is not mechanical", mapping=mappings["read"])
-        if mappings["operate"] not in (["operate"], ["maintenance"]):
-            return _fail(name, "operate compatibility mapping is not mechanical", mapping=mappings["operate"])
+        if mappings["maintenance"] != ["maintenance"]:
+            return _fail(name, "maintenance compatibility mapping is not mechanical", mapping=mappings["maintenance"])
         return _pass(
             name,
             schema_status=manifest["schema_status"],
@@ -468,7 +468,7 @@ def _packaging_home_manager_lane() -> LaneResult:
         required = (
             "programs.polylogueAgent",
             'types.enum [ "claude-code" "codex" "gemini" "hermes" ]',
-            'types.enum [ "read" "write" "review" "admin" ]',
+            'types.enum [ "claude-code" "codex" "gemini" "hermes" ]',
             '"agent"',
             '"install"',
             '"${cfg.package}/bin/polylogue"',

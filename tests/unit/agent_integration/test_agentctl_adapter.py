@@ -39,7 +39,10 @@ def disposable_archive(tmp_path: Path) -> Generator[Path]:
 @pytest.fixture
 def adapter_command() -> tuple[str, ...]:
     installed = Path(sys.executable).with_name("polylogue-agentctl-adapter")
-    if installed.is_file() and os.access(installed, os.X_OK):
+    interpreter = (
+        installed.read_text(encoding="utf-8").splitlines()[0].removeprefix("#!") if installed.is_file() else ""
+    )
+    if installed.is_file() and os.access(installed, os.X_OK) and Path(interpreter).exists():
         return (str(installed),)
     return (sys.executable, "-m", "polylogue.agent_integration.agentctl_adapter")
 
