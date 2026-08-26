@@ -3824,7 +3824,11 @@ class TestQueryNoResultsDiagnosticPath:
         assert material_origins["human_authored"] == 1
         assert material_origins["runtime_protocol"] == 1
         assert material_origins["assistant_authored"] == 1
-        assert message_types["message"] == 3
+        # Runtime-protocol material carries the ``protocol`` message type
+        # (#4173 vocabulary): the type axis and the authoredness axis stay
+        # independently visible instead of collapsing into "message".
+        assert message_types["message"] == 2
+        assert message_types["protocol"] == 1
         _assert_facets_match_facade(
             workspace_env,
             payload,

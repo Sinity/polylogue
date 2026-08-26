@@ -187,17 +187,23 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
 
     result = run_in_pty(
         ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--format", "json"],
-        cols=200,
+        # Wide enough that the enriched row JSON (#4201) never hard-wraps:
+        # a wrap boundary splits the line mid-token and the parse below
+        # would fail on the wrap control character, not on real output.
+        cols=400,
         env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
     )
 
     assert result.exit_code == 0
     assert json.loads(grid_to_text(result.grid).strip()) == {
+        "cost_usd": None,
         "cwd_display": None,
         "date": "2026-07-11",
         "id": "chatgpt-export:ext-older",
         "message_count": 1,
         "origin": "chatgpt-export",
+        "outcome": "unknown",
+        "relative_time": "6w ago",
         "repo": None,
         "title": "Interactive picker candidate older",
     }
