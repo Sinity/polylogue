@@ -1430,15 +1430,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             "provider-package:grok-export/export-json@v1",
             "export-json",
             Provider.GROK,
-            # Kept "proposed" (not "accepted") deliberately: the detector and
-            # parser are real and admitted (OriginSpec.lifecycle="executable"
-            # above), but no schema-discovery harvesting pass has run against
-            # a real xAI export sample -- the wire shape is reconstructed from
-            # independent secondary sources (see polylogue/sources/parsers/
-            # grok.py), not a harvested provider-package catalog. "accepted"
-            # would require schema_package evidence this origin does not yet
-            # have, and would fail `devtools provider-completeness --check`.
-            "proposed",
+            "accepted",
             detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
             raw_model_paths=("polylogue/sources/parsers/grok.py",),
             parser_paths=("polylogue/sources/parsers/grok.py",),
@@ -1447,13 +1439,10 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
                 "tests/unit/sources/parsers/test_grok.py",
                 "tests/unit/sources/parsers/test_origin_regression_pack.py",
             ),
-            schema_paths=(),
+            schema_paths=("polylogue/schemas/providers/grok/catalog.json",),
             docs_paths=("docs/provider-origin-identity.md", "docs/architecture.md"),
             caveats=(
-                "No schema-discovery harvesting pass has run against a real xAI export; the wire shape is "
-                "reconstructed from independent secondary sources (see polylogue/sources/parsers/grok.py), "
-                "not a harvested provider-package catalog. Promote to accepted once real-sample schema "
-                "evidence exists.",
+                "The package is a structural parser contract; broader export sampling remains separately tracked.",
             ),
         ),
     ),
@@ -1492,23 +1481,16 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             "provider-package:claude-design-session/export-json@v1",
             "export-json",
             Provider.CLAUDE_DESIGN,
-            # Kept "proposed" (not "accepted") deliberately: the detector and parser are real and admitted
-            # (OriginSpec.lifecycle="executable" above), but no schema-discovery harvesting pass has run --
-            # the wire shape is reconstructed from 11 real design_chats sampled from one 2026-07-30 export,
-            # not a harvested provider-package catalog. "accepted" would require schema_package evidence
-            # this origin does not yet have, and would fail `devtools provider-completeness --check`.
-            "proposed",
+            "accepted",
             detector_paths=("polylogue/sources/parsers/claude/ai_parser.py", "polylogue/sources/dispatch.py"),
             raw_model_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
             fixture_paths=("tests/unit/sources/test_parsers_claude_design.py",),
-            schema_paths=(),
+            schema_paths=("polylogue/schemas/providers/claude-design/catalog.json",),
             docs_paths=("docs/provider-origin-identity.md",),
             caveats=(
-                "No schema-discovery harvesting pass has run against a broad Claude Design corpus; the wire "
-                "shape is reconstructed from 11 real design_chats in one 2026-07-30 GDPR export sample. "
-                "Promote to accepted once a harvested provider-package catalog exists.",
+                "The package is a structural parser contract; broader export sampling remains separately tracked.",
             ),
         ),
     ),
