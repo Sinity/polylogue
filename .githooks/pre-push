@@ -7,14 +7,21 @@
 
 set -euo pipefail
 
+WORKTREE_ROOT=$(git rev-parse --show-toplevel)
+VENV_PYTHON="$WORKTREE_ROOT/.venv/bin/python"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "pre-push: incomplete worktree venv: missing executable $VENV_PYTHON" >&2
+    exit 2
+fi
+
 UPDATES_FILE=$(mktemp)
 trap 'rm -f "$UPDATES_FILE"' EXIT
 cat >"$UPDATES_FILE"
 
 # Pre-flight: ensure checkout-local devtools is importable before attempting verification.
-if ! python -m devtools --help >/dev/null 2>&1; then
-    echo "pre-push: checkout-local devtools is not importable; enter the project devshell (nix develop) first." >&2
+if ! "$VENV_PYTHON" -m devtools --help >/dev/null 2>&1; then
+    echo "pre-push: incomplete worktree venv: checkout-local devtools is not importable from $VENV_PYTHON" >&2
     exit 2
 fi
 
-python -m devtools.pre_push_gate "$UPDATES_FILE"
+"$VENV_PYTHON" -m devtools.pre_push_gate "$UPDATES_FILE"

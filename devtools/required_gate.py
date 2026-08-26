@@ -53,7 +53,21 @@ class GateResult:
 
 def _resolved(executable: str, env: Mapping[str, str] | None) -> bool:
     if os.path.dirname(executable):
-        return Path(executable).is_file() and os.access(executable, os.X_OK)
+        path = Path(executable)
+        if not path.is_file() or not os.access(executable, os.X_OK):
+            return False
+        # A relocated venv can leave console scripts behind whose shebang
+        # still names the old worktree interpreter.  Such a file exists but
+        # cannot be launched, so classify it as an incomplete gate tool.
+        try:
+            first_line = path.open("rb").readline().decode("utf-8", errors="replace").strip()
+        except OSError:
+            return False
+        if first_line.startswith("#!"):
+            interpreter = first_line[2:].split(maxsplit=1)[0]
+            if interpreter.startswith("/") and not Path(interpreter).is_file():
+                return False
+        return True
     return shutil.which(executable, path=(env or os.environ).get("PATH")) is not None
 
 

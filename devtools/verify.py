@@ -34,6 +34,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     prepare_native_testmon_environment,
 )
+from devtools.toolchain import venv_bin, venv_python
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_graph import (
@@ -128,17 +129,18 @@ def _anchor_verification_paths() -> None:
 
 
 def _mypy_cmd() -> list[str]:
+    dmypy = venv_bin("dmypy", root=ROOT)
     try:
-        result = subprocess.run(["dmypy", "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
+        result = subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
         if result.returncode == 0:
-            return ["dmypy", "run", "--", "--no-error-summary"]
+            return [dmypy, "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return ["mypy"]
+    return [venv_bin("mypy", root=ROOT)]
 
 
 def _devtools_cmd(*args: str) -> list[str]:
-    return [sys.executable, "-m", "devtools", *(part for arg in args for part in arg.split())]
+    return [venv_python(root=ROOT), "-m", "devtools", *(part for arg in args for part in arg.split())]
 
 
 def _native_pytest_environment() -> dict[str, str | None]:
@@ -177,7 +179,7 @@ def _native_pytest_steps(
         else ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
     )
     base = [
-        sys.executable,
+        venv_python(root=ROOT),
         "-m",
         "pytest",
         "-q",
@@ -242,8 +244,8 @@ def build_verify_steps(
     *, quick: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
 ) -> list[tuple[str, list[str]]]:
     steps = [
-        ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
-        ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
+        ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
+        ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
         ("mypy", _mypy_cmd()),
     ]
     if not commit:
@@ -263,7 +265,7 @@ def build_verify_steps(
             (
                 "schema promotion audit",
                 [
-                    sys.executable,
+                    venv_python(root=ROOT),
                     "-m",
                     "polylogue.schemas.promotion_audit",
                     "polylogue/schemas",
@@ -271,7 +273,7 @@ def build_verify_steps(
                     str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                 ],
             ),
-            ("schema privacy registry", [sys.executable, "-m", "devtools.verify_schema_privacy"]),
+            ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
         ]
     if not quick and not commit:
         if testmon_mode not in {"affected", "all"} or not testmon_environment:
@@ -348,24 +350,24 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
     completed: subprocess.CompletedProcess[Any]
+    executable_result = executable_gate_result(command, gate=label, env=env)
+    if not executable_result.ok:
+        early_metadata = {
+            "diagnosis": executable_result.diagnosis,
+            "required_gate": executable_result.to_payload(),
+        }
+        run.finish_step(
+            step_id=artifacts.step_id,
+            result=_early_gate_failure_result(started, early_metadata),
+        )
+        sys.stderr.write("FAILED (missing executable)\n")
+        return 127, time.monotonic() - started, early_metadata
     if pytest_step:
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
     else:
-        executable_result = executable_gate_result(command, gate=label, env=env)
-        if not executable_result.ok:
-            early_metadata: dict[str, Any] = {
-                "diagnosis": executable_result.diagnosis,
-                "required_gate": executable_result.to_payload(),
-            }
-            run.finish_step(
-                step_id=artifacts.step_id,
-                result=_early_gate_failure_result(started, early_metadata),
-            )
-            sys.stderr.write("FAILED (missing executable)\n")
-            return 127, time.monotonic() - started, early_metadata
         try:
             completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
         except OSError as exc:

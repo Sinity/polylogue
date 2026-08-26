@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root
+from devtools.toolchain import venv_python
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,7 @@ def _updates_match_head(updates: list[PushUpdate], head: str | None) -> bool:
 def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
     del updates
     print("pre-push: running quick verification baseline", file=sys.stderr)
-    _run([sys.executable, "-m", "devtools", "verify", "--quick"], cwd=cwd)
+    _run([venv_python(root=cwd), "-m", "devtools", "verify", "--quick"], cwd=cwd)
     return "quick"
 
 
