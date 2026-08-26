@@ -8,6 +8,7 @@ column. It is computed from structural inputs already present in the index:
   and the write-path fix in ``storage/sqlite/archive_tiers/write.py``),
 - the number of distinct touched repo-relative file paths,
 - the session's message count,
+- the elapsed session duration,
 - the session date.
 
 The label is never written to
@@ -50,6 +51,7 @@ class SessionLabelInputs:
     """Retained for compatibility with the earlier path-based projection."""
     message_count: int
     distinct_file_count: int | None = None
+    duration_ms: int | None = None
     session_date: str | None = None
 
 
@@ -57,7 +59,7 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
     """Compose the structural label for one session.
 
     Provider title wins when present. Otherwise:
-    ``<repo> · <files> files · <messages> msgs · <date>``, degrading
+    ``<repo> · <files> files · <messages> msgs · <duration> · <date>``, degrading
     gracefully as pieces of evidence are missing.
     """
     if inputs.provider_title and inputs.provider_title.strip():
@@ -80,6 +82,15 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
         parts.append(f"{distinct_file_count} {noun}")
 
     parts.append(f"{inputs.message_count} msgs")
+    if inputs.duration_ms is not None and inputs.duration_ms >= 0:
+        duration_ms = inputs.duration_ms
+        if duration_ms < 60_000:
+            duration = f"{duration_ms // 1000}s"
+        elif duration_ms < 3_600_000:
+            duration = f"{duration_ms // 60_000}m"
+        else:
+            duration = f"{duration_ms // 3_600_000}h"
+        parts.append(duration)
     if inputs.session_date:
         parts.append(inputs.session_date[:10])
     return " · ".join(parts)
@@ -197,6 +208,7 @@ def session_structural_label_for_session(
     *,
     message_count: int,
     provider_title: str | None,
+    duration_ms: int | None = None,
     session_date: str | None = None,
 ) -> str:
     """Compute the structural label for ``session_id`` against a live index.db.
@@ -215,6 +227,7 @@ def session_structural_label_for_session(
         additional_file_count=0,
         message_count=message_count,
         distinct_file_count=distinct_file_count,
+        duration_ms=duration_ms,
         session_date=session_date,
     )
     return compute_session_structural_label(inputs)

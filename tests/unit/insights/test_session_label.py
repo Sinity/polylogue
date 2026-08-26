@@ -91,6 +91,20 @@ def test_structural_label_matches_bead_evidence_shape() -> None:
     assert compute_session_structural_label(inputs) == "polylogue · 27 files · 499 msgs"
 
 
+def test_structural_label_includes_elapsed_duration() -> None:
+    inputs = SessionLabelInputs(
+        provider_title=None,
+        repo_name="polylogue",
+        is_directory=False,
+        dominant_path=None,
+        additional_file_count=0,
+        message_count=12,
+        distinct_file_count=2,
+        duration_ms=7_200_000,
+    )
+    assert compute_session_structural_label(inputs) == "polylogue · 2 files · 12 msgs · 2h"
+
+
 def test_structural_label_uses_singular_file_for_one_touched_file() -> None:
     inputs = SessionLabelInputs(
         provider_title=None,

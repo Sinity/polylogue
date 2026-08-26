@@ -6733,11 +6733,17 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     else:
         display_name = str(raw_display_name).strip() or None if raw_display_name is not None else None
     session_date = _iso_from_ms(row["created_at_ms"]) or _iso_from_ms(row["updated_at_ms"])
+    created_at_ms = row["created_at_ms"]
+    updated_at_ms = row["updated_at_ms"]
+    duration_ms = None
+    if created_at_ms is not None and updated_at_ms is not None:
+        duration_ms = max(0, int(updated_at_ms) - int(created_at_ms))
     structural_label = session_structural_label_for_session(
         conn,
         session_id,
         message_count=message_count,
         provider_title=None,
+        duration_ms=duration_ms,
         session_date=session_date,
     )
     display_label = provider_title or display_name or structural_label
