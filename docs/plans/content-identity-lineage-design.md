@@ -457,9 +457,15 @@ The live 4,344 append offsets prove that immediate column deletion is unsafe. Re
 
 ### 10.1 `polylogue-qj5x`: remove normalized Beads issue sessions
 
-Decision: remove `Origin.BEADS_ISSUE`, its provider/session parser admission, watcher/config path, and public origin surface. Preserve Beads information as work evidence through `insights/work_effects.py` and the mandate/claim graph. Rich `issues.jsonl` work-graph import belongs to `polylogue-5jnq` and must not be rebuilt as synthetic chat sessions.
+Decision route: `acceptance/polylogue-qj5x` (`DecisionRoute`, dispatch `decision`). Remove `Origin.BEADS_ISSUE`, its provider/session parser admission, watcher/config path, and public origin surface. Preserve Beads information as work evidence through `insights/work_effects.py` and the work-evidence graph. Rich `issues.jsonl` work-graph import belongs to `polylogue-5jnq` and must not be rebuilt as synthetic chat sessions.
 
 The current `interactions.jsonl` parser turns field-change protocol into English user messages with `RUNTIME_PROTOCOL`; it is neither authored conversation nor a faithful issue model. Keeping it was rejected. Improving the synthetic prose was rejected because it leaves the wrong domain boundary.
+
+The evidence is the 2026-07-31 investigation record at `.agent/scratch/live/beads-handling-design-2026-07-31.html`, the measured zero-Beads-session live census recorded on this bead, and the existing `BeadsIssueEffectAdapter` at `polylogue/insights/work_effects.py`. The adapter keeps interaction rows as repository effects. Real session messages containing bead ids remain searchable. Removing the parser therefore removes a redundant synthetic-session representation, not the repository ledger or its effect evidence.
+
+Compatibility consequence: pre-adoption has no stored Beads sessions in the measured live index, so no session migration or compatibility shim is selected. Durable source-tier constraints still require an archive-wide census, verified backup, explicit authorization, copy-forward migration, and derived-index rebuild. A later apply must be dry-run-first, exact-plan-bound, idempotent or resumable, and receipt-producing. This decision lane performs no production mutation.
+
+Successor ownership is explicit: `polylogue-5jb8j` owns parser, detector, watcher/config, provider/origin, public-surface, and test retirement; `polylogue-53ngk` owns the read-only archive/raw-root census and any authorized apply plan; `polylogue-92yjl` owns durable CHECK narrowing and lifecycle declaration after that census; `polylogue-5jnq` owns `issues.jsonl` work-evidence nodes and dependency edges; and `polylogue-i4a5f` re-anchors the Beads/assertions boundary after the graph adapter lands. Each successor is linked in the task graph. The rejected alternative of retaining or polishing synthetic prose is falsifiable: it would continue admitting protocol-only user messages and their FTS pollution.
 
 This is targeted follow-up rather than a gate because the live source and index archives contain zero Beads rows. Before implementation, census every configured archive and raw artifact root. `Origin` values are embedded in durable source-tier CHECK constraints, so “zero index rows” is not enough to call removal index-only.
 
