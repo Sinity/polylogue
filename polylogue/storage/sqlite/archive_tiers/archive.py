@@ -53,6 +53,7 @@ from polylogue.archive.session_revision_membership import MembershipClassificati
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
@@ -4938,9 +4939,40 @@ class ArchiveStore:
             if self._read_only or self._inactive_candidate_durable_read_only
             else str(self.user_db_path)
         )
-        self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+        try:
+            self._conn.execute("ATTACH DATABASE ? AS user_tier", (user_db_uri,))
+        except Exception as exc:
+            raise self._user_tier_unavailable(reason=f"cannot open SQLite database ({exc})") from exc
         self._user_tier_attached = True
         self._tags_relation = _all_session_tags_sql()
+
+    def _user_tier_unavailable(self, *, reason: str) -> ArchiveTierUnavailableError:
+        return ArchiveTierUnavailableError(
+            tier="user.db",
+            path=str(self.user_db_path.resolve(strict=False)),
+            reason=reason,
+            guidance="restore or initialize the durable user tier at this path, then retry the query; "
+            "the reader will not create a replacement or search another archive root",
+        )
+
+    def require_user_tier(self) -> None:
+        """Validate the durable user tier before an assertion read executes SQL."""
+        if not self.user_db_path.exists():
+            raise self._user_tier_unavailable(reason="the file does not exist")
+        if not self.user_db_path.is_file():
+            raise self._user_tier_unavailable(reason="the path is not a regular file")
+        try:
+            self._attach_user_tier_if_present()
+            version = int(self._conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+            expected = archive_tier_spec(ArchiveTier.USER).version
+            if version != expected:
+                raise self._user_tier_unavailable(reason=f"schema version {version} does not match expected {expected}")
+            if not _table_exists(self._conn, "assertions", schema="user_tier"):
+                raise self._user_tier_unavailable(reason="the assertions table is missing")
+        except ArchiveTierUnavailableError:
+            raise
+        except Exception as exc:
+            raise self._user_tier_unavailable(reason=f"cannot validate SQLite schema ({exc})") from exc
 
     def count_sessions(
         self,
