@@ -44,7 +44,13 @@ from typing import Any, Literal
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.outcomes import BoundOutcomeOwner, OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.outcomes import (
+    BoundOutcomeOwner,
+    OutcomeCheck,
+    OutcomeReport,
+    OutcomeStatus,
+    compose_outcome_checks,
+)
 from polylogue.logging import get_logger
 from polylogue.maintenance.corpus_fidelity import (
     audit_absences,
@@ -809,6 +815,120 @@ def archive_verification_owner_adapters(
     )
 
 
+def archive_verification_migrated_owner_adapters(
+    archive_root: Path,
+    *,
+    sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+    index_path_override: Path | None = None,
+) -> tuple[BoundOutcomeOwner, ...]:
+    """Bind the migrated source/storage producers to the result seam.
+
+    The tuple is deliberately grouped by owner domain rather than by a new
+    universal obligation taxonomy: source materialization, hook topology,
+    blob/attachment lifecycle, cursor convergence, and source fidelity each
+    retain their own predicate and denominator.  Candidate bindings are only
+    supplied where the old registry supplied them.
+    """
+    return (
+        BoundOutcomeOwner(
+            name="tier-schema",
+            check=lambda: _check_tier_schema(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="pointer-coherence",
+            check=lambda: _check_pointer_coherence(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="enum-superset-check",
+            check=lambda: _check_enum_superset(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="embeddings-refs-liveness",
+            check=lambda: (
+                _check_embeddings_refs_liveness_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_embeddings_refs_liveness(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="user-tier-refs",
+            check=lambda: (
+                _check_user_tier_refs_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_user_tier_refs(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="source-index-coverage",
+            check=lambda: (
+                _check_source_index_coverage_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_source_index_coverage(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="hook-authority-topology-conflict",
+            check=lambda: _check_hook_authority_topology_conflict(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="blob-refs-liveness",
+            check=lambda: (
+                _check_blob_refs_liveness_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_blob_refs_liveness(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="blob-integrity",
+            check=lambda: (
+                _check_blob_integrity_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_blob_integrity(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="attachment-acquisition-debt",
+            check=lambda: (
+                _check_attachment_acquisition_debt_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_attachment_acquisition_debt(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="raw-failure-lifecycle",
+            check=lambda: (
+                _check_raw_failure_lifecycle_at_candidate(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_raw_failure_lifecycle(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="blob-reference-closure",
+            check=lambda: (
+                _check_blob_reference_closure_at_index_path(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_blob_reference_closure(archive_root, sample_limit)
+            ),
+        ),
+        BoundOutcomeOwner(
+            name="excluded-cursor-vocabulary-honesty",
+            check=lambda: _check_excluded_cursor_vocabulary_honesty(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="stalled-append-cursor-freshness",
+            check=lambda: _check_stalled_append_cursor_freshness(archive_root, sample_limit),
+        ),
+        BoundOutcomeOwner(
+            name="chatgpt-content-conservation",
+            check=lambda: (
+                _check_chatgpt_content_conservation_at_index_path(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_chatgpt_content_conservation(archive_root, sample_limit)
+            ),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Check 4: FTS parity (archive-wide)
 # ---------------------------------------------------------------------------
@@ -1186,6 +1306,11 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
     """
     from polylogue.core.enums import Origin
 
+    # The generated archive-tier DDL is the canonical schema vocabulary.  Do
+    # not maintain a second sqlite_master-derived list of expected values:
+    # compare the live table declarations with the exact DDL that current
+    # schema specs would create.
+    canonical_ddls = {tier.value: ARCHIVE_TIER_SPECS[tier].ddl for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX)}
     origins = {o.value for o in Origin}
     bad: dict[str, Any] = {}
     examined_any = False
@@ -1207,11 +1332,20 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
         finally:
             conn.close()
 
+        canonical_ddl = canonical_ddls[ArchiveTier.SOURCE.value if db_name == "source.db" else ArchiveTier.INDEX.value]
         for table_name, ddl in rows:
             for match in _ORIGIN_CHECK_COLUMN_PATTERN.finditer(ddl or ""):
                 column, allowed_list = match.group(1), match.group(2)
                 allowed = set(re.findall(r"'([^']*)'", allowed_list))
-                missing = sorted(origins - allowed)
+                canonical_matches = [
+                    m
+                    for m in _ORIGIN_CHECK_COLUMN_PATTERN.finditer(canonical_ddl)
+                    if m.group(1).lower() == column.lower()
+                ]
+                canonical_allowed = (
+                    set(re.findall(r"'([^']*)'", canonical_matches[0].group(2))) if canonical_matches else origins
+                )
+                missing = sorted(canonical_allowed - allowed)
                 if missing:
                     bad[f"{db_name}:{table_name}.{column}"] = missing
 
@@ -2229,96 +2363,6 @@ def _check_excluded_cursor_vocabulary_honesty(archive_root: Path, sample_limit: 
 
 
 # ---------------------------------------------------------------------------
-# Check: raw quarantine group dedup (polylogue-zm4w8)
-# ---------------------------------------------------------------------------
-
-
-def _check_raw_quarantine_group_dedup(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
-    """No raw_sessions row is an unindexed byte-identical duplicate of another sharing its source_path.
-
-    polylogue-zm4w8: a raw_sessions row is flagged when it belongs to a
-    ``(source_path, blob_hash)`` group of more than one quarantined row AND
-    no member of that group (nor any other raw sharing that blob_hash
-    anywhere) already has a materialized ``index.db`` session or a
-    non-quarantined ``revision_authority``. This is the residual,
-    genuinely-unresolved population: content acquired more than once that
-    was never chosen as its group's representative and materialized --
-    distinct from ``source-index-coverage``'s ``byte_dup_of_indexed_count``
-    (which requires an *already-indexed* twin) and from what
-    ``raw-byte-duplicate-supersession-apply`` (the actuator for that
-    already-indexed case) can catch by construction. The one-shot
-    ``raw-quarantine-group-dedup-apply`` actuator resolves a flagged group by
-    materializing exactly one representative raw and marking the rest
-    ``byte_proven`` -- once run, this check should report clean, and stays
-    part of the registry as the standing regression guard against the
-    pattern recurring.
-    """
-    from polylogue.storage.raw_quarantine_group_dedup import plan_raw_quarantine_group_dedup
-
-    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
-    index_path = _resolve_index_path(archive_root)
-    if not source_path.exists() or not index_path.exists():
-        return _skip_check("raw-quarantine-group-dedup", "source.db or index.db not present")
-
-    try:
-        source_conn = _open_ro(source_path)
-    except sqlite3.Error as exc:
-        return _error_check("raw-quarantine-group-dedup", f"could not open source.db: {exc}", exc=exc)
-
-    try:
-        index_conn = _open_ro(index_path)
-    except sqlite3.Error as exc:
-        source_conn.close()
-        return _error_check("raw-quarantine-group-dedup", f"could not open index.db: {exc}", exc=exc)
-
-    try:
-        plan = plan_raw_quarantine_group_dedup(source_conn, index_conn)
-    except sqlite3.Error as exc:
-        return _error_check("raw-quarantine-group-dedup", f"could not read source/index tiers: {exc}", exc=exc)
-    finally:
-        index_conn.close()
-        source_conn.close()
-
-    group_count = len(plan.groups)
-    duplicate_count = plan.duplicate_count
-    sample = [
-        {
-            "source_path": group.source_path,
-            "representative_raw_id": group.representative_raw_id,
-            "duplicate_raw_ids": list(group.duplicate_raw_ids),
-        }
-        for group in plan.groups[:sample_limit]
-    ]
-
-    status = OutcomeStatus.ERROR if group_count else OutcomeStatus.OK
-    summary = (
-        f"{group_count:,} fully-quarantined duplicate group(s), {duplicate_count:,} unindexed duplicate row(s) "
-        f"({_gib_str(plan.duplicate_bytes)}); run raw-quarantine-group-dedup-apply"
-        if group_count
-        else f"no fully-quarantined byte-identical duplicate groups ({plan.scanned_count:,} quarantined row(s) scanned)"
-    )
-    return ArchiveVerificationCheck(
-        name="raw-quarantine-group-dedup",
-        status=status,
-        summary=summary,
-        count=duplicate_count,
-        details=[f"group:{group.source_path}" for group in plan.groups[:sample_limit]],
-        evidence={
-            "scanned_count": plan.scanned_count,
-            "group_count": group_count,
-            "duplicate_count": duplicate_count,
-            "duplicate_bytes": plan.duplicate_bytes,
-            "already_resolved_group_count": plan.already_resolved_group_count,
-            "group_sample": sample,
-        },
-    )
-
-
-def _gib_str(byte_count: int) -> str:
-    return f"{byte_count / (1024**3):.2f} GiB"
-
-
-# ---------------------------------------------------------------------------
 # Checks: corpus acceptance measures (polylogue-f1vg)
 # ---------------------------------------------------------------------------
 
@@ -3037,11 +3081,24 @@ def _check_chatgpt_content_conservation_at_index_path(
 
     dropped = int(evidence["content_units_dropped"])
     conserved = int(evidence["content_units_conserved"])
-    if not evidence["documents_measured"]:
+    # An empty measured universe is not evidence of conservation.  In
+    # particular, a parser can silently stop recognizing every ChatGPT
+    # document and make this census vacuously green.  Keep the absence count
+    # visible, but make the owner red until at least one acquired document is
+    # actually measured (corpus-absences remains the owner of wholly absent
+    # indexed documents).
+    if (
+        evidence["raws_scanned"] > 0
+        and not evidence["documents_measured"]
+        and not evidence["documents_absent_from_index"]
+    ):
         return ArchiveVerificationCheck(
             name="chatgpt-content-conservation",
-            status=OutcomeStatus.OK,
-            summary="no indexed chatgpt-export document has acquired raw bytes to measure",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                "no indexed chatgpt-export document has acquired raw bytes to measure; content conservation is vacuous"
+            ),
+            count=1,
             evidence=evidence,
         )
     summary = (
@@ -3346,14 +3403,6 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         candidate_mode=_CROSS_TIER,
         candidate_run=_check_embeddings_refs_liveness_at_candidate,
         daemon_schedule=_MEDIUM,
-        waiver=ArchiveVerificationWaiver(
-            bead_id="polylogue-feu0",
-            reason=(
-                "4,186 message_embedding_refs point at messages no longer in index.db "
-                "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
-                "is a separate async lane from index materialization)"
-            ),
-        ),
         live_receipt_required=True,
     ),
     _registry_spec(
@@ -3496,23 +3545,6 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
             archive_root, sample_limit
         ),
         daemon_schedule=_MEDIUM,
-        live_receipt_required=True,
-    ),
-    _registry_spec(
-        "raw-quarantine-group-dedup",
-        "No raw_sessions row is an unindexed byte-identical duplicate of another sharing its "
-        "source_path within a fully-quarantined group (polylogue-zm4w8).",
-        _check_raw_quarantine_group_dedup,
-        ArchiveVerificationCheckClass.STATE_INVARIANT,
-        incident_bead="polylogue-zm4w8",
-        universe_tables=("source.db.raw_sessions", "index.db.sessions"),
-        red_twin=_red_twin(
-            "coherent-archive",
-            "unindexed duplicate quarantined group",
-            "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
-        ),
-        execution_phases=_phases(),
-        candidate_mode=_NO_CANDIDATE,
         live_receipt_required=True,
     ),
     _registry_spec(
@@ -3764,10 +3796,41 @@ def verify_archive(
     # ArchiveVerificationReport.checks (inherited, invariant list[OutcomeCheck])
     # without a redundant narrower field redeclaration on the report dataclass.
     results: list[OutcomeCheck] = []
+    owner_results: dict[str, OutcomeCheck] = {}
+    owner_names = {
+        "tier-schema",
+        "pointer-coherence",
+        "enum-superset-check",
+        "embeddings-refs-liveness",
+        "user-tier-refs",
+        "source-index-coverage",
+        "hook-authority-topology-conflict",
+        "blob-refs-liveness",
+        "blob-integrity",
+        "attachment-acquisition-debt",
+        "raw-failure-lifecycle",
+        "blob-reference-closure",
+        "excluded-cursor-vocabulary-honesty",
+        "stalled-append-cursor-freshness",
+        "chatgpt-content-conservation",
+    }
+    if any(spec.name in owner_names for spec in specs):
+        owner_results = {
+            check.name: check
+            for check in compose_outcome_checks(
+                archive_verification_migrated_owner_adapters(
+                    archive_root,
+                    sample_limit=sample_limit,
+                    index_path_override=index_path_override,
+                )
+            ).checks
+        }
     for spec in specs:
         try:
             result = (
-                spec.candidate_run(archive_root, index_path_override, sample_limit)
+                owner_results[spec.name]
+                if spec.name in owner_results
+                else spec.candidate_run(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None and spec.candidate_run is not None
                 else _check_blob_integrity(archive_root, sample_limit, active_index_context=active_index_context)
                 if spec.name == "blob-integrity"
@@ -3819,6 +3882,7 @@ __all__ = [
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
     "archive_verification_owner_adapters",
+    "archive_verification_migrated_owner_adapters",
     "read_raw_failure_lifecycle",
     "passes_strict_acceptance",
     "strict_acceptance_failures",

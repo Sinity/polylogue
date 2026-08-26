@@ -74,6 +74,28 @@ def test_browser_capture_detects_list_wrapped_inner_provider() -> None:
     assert detect_provider([_capture_payload()]) is Provider.CHATGPT
 
 
+def test_capture_spool_does_not_replace_richer_snapshot_with_stale_snapshot(tmp_path: Path) -> None:
+    richer = _capture_payload()
+    richer["provenance"]["captured_at"] = "2026-04-24T00:02:00+00:00"  # type: ignore[index]
+    richer["session"]["updated_at"] = "2026-04-24T00:02:00+00:00"  # type: ignore[index]
+    stale = json.loads(json.dumps(richer))
+    stale["provenance"]["captured_at"] = "2026-04-24T00:01:00+00:00"
+    stale["session"]["updated_at"] = "2026-04-24T00:01:00+00:00"
+    stale["session"]["turns"] = stale["session"]["turns"][:1]
+
+    root = tmp_path / "browser-capture"
+    write_capture_envelope(BrowserCaptureEnvelope.model_validate(richer), spool_path=root)
+    result = write_capture_envelope(BrowserCaptureEnvelope.model_validate(stale), spool_path=root)
+
+    assert result.deduplicated is True
+    stored = json.loads(result.path.read_bytes())
+    stored_session = stored.get("session")
+    assert isinstance(stored_session, dict)
+    stored_turns = stored_session.get("turns")
+    assert isinstance(stored_turns, list)
+    assert len(stored_turns) == 3
+
+
 def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> None:
     parsed = parse_payload(Provider.CHATGPT, _capture_payload(), "fallback")
 

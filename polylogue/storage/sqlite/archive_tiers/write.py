@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
@@ -509,11 +510,20 @@ def write_parsed_session_to_archive(
     # stored exactly once. Only applies to full-replace writes; merge-append is
     # an incremental extend of the same session.
     branch_point_message_id: str | None = None
+    branch_point_content_address: bytes | None = None
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
     if not merge_append:
-        parent_session_id = _existing_parent_session_id(conn, session, origin.value)
+        hook_parent_provider_id = _authoritative_parent_claim(
+            source_conn,
+            origin=origin.value,
+            child_native_id=native_id,
+        )
+        lineage_session = session
+        if hook_parent_provider_id is not None:
+            lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
+        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value)
         acompact = _is_claude_code_acompact_session(session)
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
@@ -561,6 +571,8 @@ def write_parsed_session_to_archive(
                     cache=signature_cache,
                     parent_composed=parent_composed,
                 )
+            if branch_point_message_id is not None:
+                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
     duplicate_message_native_ids = _duplicate_message_native_ids(messages)
     active_leaf_message_id = _active_leaf_message_id(
         session_id,
@@ -836,6 +848,7 @@ def write_parsed_session_to_archive(
                     defer_fts_rebuild=defer_fts_rebuild,
                     prepared=prepared_rows_to_use,
                 )
+                _refresh_stable_branch_point_witnesses(conn, session_id)
                 add_timing("index.full_replace", t0)
             if merge_append:
                 t0 = time.perf_counter()
@@ -944,6 +957,7 @@ def write_parsed_session_to_archive(
                 session_id,
                 session,
                 branch_point_message_id=branch_point_message_id,
+                branch_point_content_address=branch_point_content_address,
                 inheritance=lineage_inheritance,
                 source_conn=source_conn,
             )
@@ -1517,11 +1531,14 @@ def read_archive_session_envelope(
             parent_envelope = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1)
             parent_messages = parent_envelope.messages
             prefix: list[ArchiveMessageRow] = []
+            witness_matches = _branch_point_content_address_matches(
+                conn, str(session["session_id"]), parent_session_id, lineage_branch_point_message_id
+            )
             found = False
             for parent_message in parent_messages:
                 prefix.append(parent_message)
                 if parent_message.message_id == lineage_branch_point_message_id:
-                    found = True
+                    found = witness_matches
                     break
             # Dangling branch point (parent message hard-deleted): keep this
             # session's own tail rather than splice the entire parent (#2467 audit).
@@ -1943,6 +1960,7 @@ def _build_message_rows(
             "cache_read_tokens": message.cache_read_tokens,
             "cache_write_tokens": message.cache_write_tokens,
             "duration_ms": message.duration_ms,
+            "content_address": _message_content_address(message),
             "content_hash": _message_content_hash(session_id, message, position=position, variant_index=variant_index),
             "occurred_at_ms": message.occurred_at_ms
             if message.occurred_at_ms is not None
@@ -2048,6 +2066,42 @@ def _message_content_hash(
         _enum_value(message.stop_reason) or "",
         *block_parts,
     )
+
+
+def _message_content_address(message: ParsedMessage) -> bytes:
+    """Return an identity-free witness for one message's semantic content."""
+    parts: list[str] = [
+        _enum_value(message.role) or "",
+        _enum_value(message.message_type) or "",
+        _enum_value(message.material_origin) or "",
+        _content_address_text(message.text),
+        _content_address_text(message.user_context_text),
+        _enum_value(message.stop_reason) or "",
+    ]
+    for block in _message_blocks(message):
+        parts.extend(
+            (
+                _block_type(block).value,
+                _content_address_text(block.text),
+                _content_address_text(block.tool_name),
+                _content_address_text(block.tool_id),
+                _content_address_json(block.tool_input) if block.tool_input is not None else "",
+                _content_address_text(_semantic_type(block)),
+                _content_address_text(block.media_type),
+                _content_address_text(_block_language(block)),
+                "" if block.is_error is None else str(int(block.is_error)),
+                "" if block.exit_code is None else str(block.exit_code),
+            )
+        )
+    return _hash_bytes("message-content-address", *parts)
+
+
+def _content_address_text(value: str | None) -> str:
+    return unicodedata.normalize("NFC", _sqlite_text(value) or "")
+
+
+def _content_address_json(value: object) -> str:
+    return unicodedata.normalize("NFC", _json_dumps(value))
 
 
 def _block_content_hash(
@@ -3809,22 +3863,24 @@ def _authoritative_parent_claim(
     """
     if source_conn is None or origin != Origin.CODEX_SESSION.value or not child_native_id:
         return None
-    try:
-        row = source_conn.execute(
-            """
-            SELECT json_extract(payload_json, '$.parent_thread_id')
-            FROM raw_hook_events
-            WHERE event_type = 'codex_thread_spawn_edge'
-              AND json_extract(payload_json, '$.child_thread_id') = ?
-            ORDER BY observed_at_ms DESC
-            LIMIT 1
-            """,
-            (child_native_id,),
-        ).fetchone()
-    except sqlite3.Error:
+    has_hook_spool = source_conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'"
+    ).fetchone()
+    if has_hook_spool is None:
         # An index-only harness (or a source tier predating the hook spool)
         # has no such table. Absent evidence is silence, never a conflict.
         return None
+    row = source_conn.execute(
+        """
+        SELECT json_extract(payload_json, '$.parent_thread_id')
+        FROM raw_hook_events
+        WHERE event_type = 'codex_thread_spawn_edge'
+          AND json_extract(payload_json, '$.child_thread_id') = ?
+        ORDER BY observed_at_ms DESC
+        LIMIT 1
+        """,
+        (child_native_id,),
+    ).fetchone()
     if row is None or row[0] is None:
         return None
     parent = str(row[0]).strip()
@@ -3896,6 +3952,7 @@ def _upsert_session_link(
     link_type: str,
     branch_point_message_id: str | None,
     inheritance: str | None,
+    branch_point_content_address: bytes | None = None,
     status: str | None,
     parent_tool_use_block_id: str | None,
     method: str,
@@ -3930,9 +3987,9 @@ def _upsert_session_link(
         """
         INSERT OR REPLACE INTO session_links (
             src_session_id, dst_origin, dst_native_id, link_type,
-            branch_point_message_id, inheritance,
+            branch_point_message_id, branch_point_content_address, inheritance,
             status, parent_tool_use_block_id, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             src_session_id,
@@ -3940,6 +3997,7 @@ def _upsert_session_link(
             dst_native_id,
             link_type,
             branch_point_message_id,
+            branch_point_content_address,
             inheritance,
             status,
             parent_tool_use_block_id,
@@ -3957,6 +4015,7 @@ def _write_session_link(
     session: ParsedSession,
     *,
     branch_point_message_id: str | None = None,
+    branch_point_content_address: bytes | None = None,
     inheritance: str | None = None,
     source_conn: sqlite3.Connection | None = None,
 ) -> None:
@@ -4003,6 +4062,7 @@ def _write_session_link(
                 dst_native_id=hook_parent,
                 link_type=LinkType.SUBAGENT.value,
                 branch_point_message_id=branch_point_message_id,
+                branch_point_content_address=branch_point_content_address,
                 inheritance=inheritance,
                 status=None,
                 parent_tool_use_block_id=None,
@@ -4050,6 +4110,7 @@ def _write_session_link(
         dst_native_id=dst_native_id,
         link_type=link_type,
         branch_point_message_id=branch_point_message_id,
+        branch_point_content_address=branch_point_content_address,
         inheritance=inheritance,
         status=status,
         parent_tool_use_block_id=parent_tool_use_block_id,
@@ -4083,6 +4144,7 @@ def _write_session_link(
             dst_native_id=hook_parent,
             link_type=link_type,
             branch_point_message_id=branch_point_message_id,
+            branch_point_content_address=branch_point_content_address,
             inheritance=inheritance,
             status=None,
             parent_tool_use_block_id=parent_tool_use_block_id,
@@ -4800,6 +4862,12 @@ def _write_session_events(
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
         source_message_provider_id = event.source_message_provider_id
+        if (
+            inherited_source_message_ids is not None
+            and source_message_provider_id is not None
+            and source_message_provider_id in inherited_source_message_ids
+        ):
+            continue
         source_message_id = by_native_id.get(source_message_provider_id or "")
         if source_message_id is None and inherited_source_message_ids is not None:
             source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
@@ -4897,14 +4965,16 @@ def _provider_usage_event_row(
     total_cache_read = _payload_int(total_usage, "cached_input_tokens")
     total_cache_write = _payload_int(total_usage, "cache_write_tokens")
     total_reasoning = _payload_int(total_usage, "reasoning_output_tokens")
-    total_tokens = _payload_int(total_usage, "total_tokens")
+    last_total_tokens = _payload_optional_int(last_usage, "total_tokens")
+    total_tokens = _payload_optional_int(total_usage, "total_tokens")
     if provider_usage_baseline is not None and event.event_type == "token_count":
         total_input = max(total_input - provider_usage_baseline.get("total_input_tokens", 0), 0)
         total_output = max(total_output - provider_usage_baseline.get("total_output_tokens", 0), 0)
         total_cache_read = max(total_cache_read - provider_usage_baseline.get("total_cached_input_tokens", 0), 0)
         total_cache_write = max(total_cache_write - provider_usage_baseline.get("total_cache_write_tokens", 0), 0)
         total_reasoning = max(total_reasoning - provider_usage_baseline.get("total_reasoning_output_tokens", 0), 0)
-        total_tokens = max(total_tokens - provider_usage_baseline.get("total_tokens", 0), 0)
+        if total_tokens is not None:
+            total_tokens = max(total_tokens - provider_usage_baseline.get("total_tokens", 0), 0)
     return (
         session_id,
         source_message_id,
@@ -4916,7 +4986,7 @@ def _provider_usage_event_row(
         _payload_int(last_usage, "cached_input_tokens"),
         _payload_int(last_usage, "cache_write_tokens"),
         _payload_int(last_usage, "reasoning_output_tokens"),
-        _payload_int(last_usage, "total_tokens"),
+        last_total_tokens,
         total_input,
         total_output,
         total_cache_read,
@@ -6140,7 +6210,7 @@ def _composed_db_signatures(
         own = own_signatures(cursor_session_id)
         edge = conn.execute(
             f"""
-            SELECT resolved_dst_session_id, branch_point_message_id
+            SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address
             FROM session_links
             WHERE src_session_id = ?
               AND inheritance = 'prefix-sharing'
@@ -6157,6 +6227,14 @@ def _composed_db_signatures(
                 composed_cache[cursor_session_id] = composed
             break
         parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
+        witness = None if edge[2] is None else bytes(edge[2])
+        if witness is not None:
+            current = _message_content_address_for_id(conn, branch_point_message_id)
+            if current is None or current != witness:
+                composed = own
+                if composed_cache is not None:
+                    composed_cache[cursor_session_id] = composed
+                break
         if parent_id in visited:
             composed = own
             if composed_cache is not None:
@@ -6337,6 +6415,7 @@ def _reextract_prefix_tail_db(
         branch_point_message_id: str | None,
         inheritance: str,
         *,
+        branch_point_content_address: bytes | None = None,
         next_link_type: str | None = None,
     ) -> None:
         current_link_type = str(link_type)
@@ -6356,12 +6435,14 @@ def _reextract_prefix_tail_db(
             """
             UPDATE session_links
             SET link_type = ?, branch_point_message_id = ?, inheritance = ?
+                , branch_point_content_address = ?
             WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
             """,
             (
                 target_link_type,
                 branch_point_message_id,
                 inheritance,
+                branch_point_content_address,
                 child_session_id,
                 dst_origin,
                 dst_native_id,
@@ -6456,6 +6537,7 @@ def _reextract_prefix_tail_db(
     _set_edge(
         parent_composed[k - 1][0],
         "prefix-sharing",
+        branch_point_content_address=_message_content_address_for_id(conn, parent_composed[k - 1][0]),
         next_link_type=resolved_link_type,
     )
     record_substage("edge_update", t0)
@@ -6572,6 +6654,34 @@ def _repair_stale_prefix_branch_points_db(
         tuple(params),
     ).fetchall()
     repaired = 0
+    stable_rows = conn.execute(
+        f"""
+        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id,
+               m.content_address
+        FROM session_links AS l
+        JOIN messages AS m ON m.message_id = l.branch_point_message_id
+        WHERE l.inheritance = 'prefix-sharing'
+          AND l.resolved_dst_session_id IS NOT NULL
+          AND l.branch_point_message_id IS NOT NULL
+          AND m.native_id IS NOT NULL
+          AND l.branch_point_content_address IS NOT NULL
+          AND l.branch_point_content_address IS NOT m.content_address
+          AND {topology_status_composes_sql("l.status")}
+          {scope_clause}
+        """,
+        tuple(params[: len(params) - (1 if limit is not None else 0)]),
+    ).fetchall()
+    for src_session_id, parent_session_id, branch_point_message_id, content_address in stable_rows:
+        conn.execute(
+            """
+            UPDATE session_links
+            SET branch_point_content_address = ?
+            WHERE src_session_id = ? AND resolved_dst_session_id = ?
+              AND branch_point_message_id = ? AND inheritance = 'prefix-sharing'
+            """,
+            (content_address, str(src_session_id), str(parent_session_id), str(branch_point_message_id)),
+        )
+        repaired += 1
     local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
     for src_session_id, parent_session_id, branch_point_message_id in rows:
         parent_id = str(parent_session_id)
@@ -6907,6 +7017,30 @@ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tupl
     return (str(row[0]), str(row[1]))
 
 
+def _branch_point_content_address_matches(
+    conn: sqlite3.Connection,
+    child_session_id: str,
+    parent_session_id: str,
+    branch_point_message_id: str,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT l.branch_point_content_address, m.content_address
+        FROM session_links AS l
+        LEFT JOIN messages AS m ON m.message_id = l.branch_point_message_id
+        WHERE l.src_session_id = ?
+          AND l.resolved_dst_session_id = ?
+          AND l.branch_point_message_id = ?
+          AND l.inheritance = 'prefix-sharing'
+        LIMIT 1
+        """,
+        (child_session_id, parent_session_id, branch_point_message_id),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return True
+    return row[1] is not None and bytes(row[0]) == bytes(row[1])
+
+
 def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
@@ -6917,6 +7051,38 @@ def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession
         (parent_session_id,),
     ).fetchone()
     return parent_session_id if row is not None else None
+
+
+def _message_content_address_for_id(conn: sqlite3.Connection, message_id: str) -> bytes | None:
+    row = conn.execute(
+        "SELECT content_address FROM messages WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()
+    return None if row is None or row[0] is None else bytes(row[0])
+
+
+def _refresh_stable_branch_point_witnesses(conn: sqlite3.Connection, parent_session_id: str) -> int:
+    cursor = conn.execute(
+        """
+        UPDATE session_links
+        SET branch_point_content_address = (
+            SELECT m.content_address FROM messages AS m
+            WHERE m.message_id = session_links.branch_point_message_id
+        )
+        WHERE resolved_dst_session_id = ?
+          AND inheritance = 'prefix-sharing'
+          AND branch_point_message_id IS NOT NULL
+          AND branch_point_content_address IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM messages AS m
+              WHERE m.message_id = session_links.branch_point_message_id
+                AND m.session_id = ?
+                AND m.native_id IS NOT NULL
+          )
+        """,
+        (parent_session_id, parent_session_id),
+    )
+    return max(cursor.rowcount, 0)
 
 
 def _active_leaf_message_id(

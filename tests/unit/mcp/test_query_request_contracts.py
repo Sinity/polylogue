@@ -25,8 +25,9 @@ import pytest
 
 from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
-from polylogue.mcp.query_contracts import MCPSessionQueryRequest
+from polylogue.mcp.query_contracts import MCPSessionQueryRequest, build_query_spec, build_session_query_request
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
 
@@ -46,6 +47,24 @@ def test_archive_query_filters_forward_max_words() -> None:
     spec = MCPSessionQueryRequest(max_words=12).build_spec(_clamp_limit)
 
     assert archive_query_filters(spec)["max_words"] == 12
+
+
+def test_mcp_query_boundary_rejects_unknown_and_allows_only_declared_paste_alias() -> None:
+    with pytest.raises(QuerySpecError, match="bogus.*accepted alternatives"):
+        build_session_query_request(bogus=True)
+    with pytest.raises(QuerySpecError, match="has_paste.*has_paste_evidence"):
+        build_query_spec(has_paste=True)
+
+    mcp_spec = build_query_spec(has_paste_evidence=True)
+    structured_spec = SessionQuerySpec.from_params({"filter_has_paste": True}, strict=True)
+    assert mcp_spec.filter_has_paste is True
+    assert mcp_spec == structured_spec
+
+
+def test_structured_query_boundary_rejects_mcp_and_storage_paste_spellings() -> None:
+    for name in ("has_paste_evidence", "has_paste"):
+        with pytest.raises(QuerySpecError, match=name):
+            SessionQuerySpec.from_params({name: True}, strict=True)
 
 
 def test_list_sessions_routes_near_session_to_query_executor(monkeypatch: pytest.MonkeyPatch) -> None:

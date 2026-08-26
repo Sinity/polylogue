@@ -2063,6 +2063,28 @@ def test_user_editable_context_becomes_runtime_context_message() -> None:
     assert message.blocks[0].metadata == {"content_type": "user_editable_context"}
 
 
+def test_nonempty_system_node_becomes_runtime_context_message() -> None:
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "system", ["Follow the runtime policy."]),
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert len(messages) == 1
+    assert messages[0].message_type is MessageType.CONTEXT
+    assert messages[0].material_origin is MaterialOrigin.RUNTIME_CONTEXT
+
+
+def test_empty_system_node_remains_omitted() -> None:
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "system", []),
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert messages == []
+
+
 def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() -> None:
     def node(msg_id: str, model_set_context: str) -> dict[str, object]:
         return {

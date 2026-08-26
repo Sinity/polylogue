@@ -32,6 +32,8 @@ class RawSessionRecord(BaseModel):
     revision: RawRevisionEnvelope | None = None
     captured_source_revision: str | None = Field(default=None, exclude=True)
     requires_complete_record_boundary: bool = Field(default=False, exclude=True)
+    complete_prefix_size: int | None = Field(default=None, exclude=True)
+    captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
     # Frozen provider-assembly sidecar snapshot (polylogue-ih67 AC#3/4),
     # resolved once by the main process before dispatch and carried across
     # the ProcessPoolExecutor boundary so ``ingest_record`` never re-reads
