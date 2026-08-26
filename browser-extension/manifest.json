@@ -18,6 +18,7 @@
     "https://grok.com/*",
     "https://x.com/*",
     "https://twitter.com/*",
+    "https://gemini.google.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -92,6 +93,19 @@
       "js": [
         "src/common.js",
         "src/content/grok.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/gemini.js"
       ],
       "run_at": "document_idle"
     }
