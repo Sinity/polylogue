@@ -199,6 +199,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Daemon", "daemon.md", "Daemon ownership, convergence, HTTP serving, and service operation.", "internals"),
     _entry(
+        "Daemon Concurrency Profile",
+        "daemon-concurrency-profile.md",
+        "Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger.",
+        "internals",
+    ),
+    _entry(
         "Daemon Threat Model",
         "daemon-threat-model.md",
         "Local API assets, threats, mitigations, and roles.",

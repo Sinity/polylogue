@@ -88,7 +88,7 @@ class SqliteVecQueryMixin:
 
         from datetime import UTC, datetime
 
-        from polylogue.storage.embeddings.identity import embedding_input_hash
+        from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingRequestSpec
         from polylogue.storage.sqlite.archive_tiers.embedding_write import (
             ArchiveEmbeddingWrite,
             upsert_message_embeddings,
@@ -123,7 +123,12 @@ class SqliteVecQueryMixin:
                     embedding=embedding,
                     model=self.model,
                     embedded_at_ms=now_ms,
-                    embedding_input_hash=embedding_input_hash(model=self.model, input_text=str(msg.text)),
+                    vector_derivation_hash=EmbeddingRequestSpec(
+                        recipe=EmbeddingRecipe.current(
+                            model=self.model, dimensions=self.dimension, input_type="document"
+                        ),
+                        input_text=str(msg.text),
+                    ).vector_derivation_hash,
                 )
                 for msg, embedding in zip(embeddable, embeddings, strict=True)
             ]
@@ -155,7 +160,7 @@ class SqliteVecQueryMixin:
     def _query_unlocked(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Find semantically similar messages.
 
-        ``message_embeddings`` is keyed by ``embedding_input_hash`` (content-
+        ``message_embeddings`` is keyed by ``vector_derivation_hash`` (content-
         addressed, deduped), not ``message_id``: a MATCH hit is resolved back
         to every message currently referencing that hash via
         ``message_embedding_refs``, so identical content shared across
@@ -177,13 +182,13 @@ class SqliteVecQueryMixin:
                 """
                 SELECT r.message_id AS message_id, hits.distance AS distance
                 FROM (
-                    SELECT embedding_input_hash, distance
+                    SELECT vector_derivation_hash, distance
                     FROM message_embeddings
                     WHERE embedding MATCH ?
                       AND k = ?
                 ) AS hits
                 JOIN message_embedding_refs AS r
-                  ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                  ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                 ORDER BY hits.distance
                 """,
                 (query_embedding, limit),
@@ -218,10 +223,10 @@ class SqliteVecQueryMixin:
             try:
                 seed_rows = conn.execute(
                     """
-                    SELECT DISTINCT me.embedding_input_hash AS embedding_input_hash, me.embedding AS embedding
+                    SELECT DISTINCT me.vector_derivation_hash AS vector_derivation_hash, me.embedding AS embedding
                     FROM message_embedding_refs AS r
                     JOIN message_embeddings AS me
-                      ON lower(hex(r.embedding_input_hash)) = me.embedding_input_hash
+                      ON lower(hex(r.vector_derivation_hash)) = me.vector_derivation_hash
                     WHERE r.session_id = ?
                     """,
                     (session_id,),
@@ -241,13 +246,13 @@ class SqliteVecQueryMixin:
                     """
                     SELECT r.message_id AS message_id, r.session_id AS session_id, hits.distance AS distance
                     FROM (
-                        SELECT embedding_input_hash, distance
+                        SELECT vector_derivation_hash, distance
                         FROM message_embeddings
                         WHERE embedding MATCH ?
                           AND k = ?
                     ) AS hits
                     JOIN message_embedding_refs AS r
-                      ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                      ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                     ORDER BY hits.distance
                     """,
                     (embedding_blob, k),
@@ -278,7 +283,7 @@ class SqliteVecQueryMixin:
             try:
                 row = conn.execute(
                     """
-                    SELECT COUNT(DISTINCT embedding_input_hash) AS count
+                    SELECT COUNT(DISTINCT vector_derivation_hash) AS count
                     FROM message_embedding_refs
                     WHERE session_id = ?
                     """,
@@ -329,13 +334,13 @@ class SqliteVecQueryMixin:
                 """
                 SELECT r.message_id AS message_id, hits.distance AS distance
                 FROM (
-                    SELECT embedding_input_hash, distance
+                    SELECT vector_derivation_hash, distance
                     FROM message_embeddings
                     WHERE embedding MATCH ?
                       AND k = ?
                 ) AS hits
                 JOIN message_embedding_refs AS r
-                  ON lower(hex(r.embedding_input_hash)) = hits.embedding_input_hash
+                  ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                 WHERE r.origin = ?
                 ORDER BY hits.distance
                 LIMIT ?

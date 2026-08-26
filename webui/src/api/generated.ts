@@ -575,8 +575,13 @@ export type RunQueryRowPayload = {
 
 export type SearchEnvelope = {
   readonly action_affordances?: ReadonlyArray<ActionAffordancePayload>;
+  readonly advisories?: ReadonlyArray<string>;
   readonly diagnostics?: QueryMissDiagnosticsPayload | null;
   readonly exactness?: "exact" | "capped" | "sampled" | "estimate" | null;
+  readonly executed_lanes?: ReadonlyArray<string>;
+  readonly failed_lanes?: ReadonlyArray<{
+  readonly [key: string]: string;
+}>;
   readonly hits: ReadonlyArray<SessionSearchHitPayload>;
   readonly limit: number;
   readonly next_cursor?: string | null;
@@ -587,11 +592,13 @@ export type SearchEnvelope = {
   readonly query_run_ref?: string | null;
   readonly ranking_policy?: string;
   readonly ranking_policy_version?: string;
+  readonly requested_lanes?: ReadonlyArray<string>;
   readonly result_fingerprint?: string | null;
   readonly retrieval_lane: string;
   readonly route_state?: RouteReadinessPayload | null;
   readonly sort?: string | null;
   readonly total: number | null;
+  readonly unavailable_lanes?: ReadonlyArray<string>;
 };
 
 export type SessionFlagsPayload = {

@@ -1,11 +1,8 @@
-"""Daemon UDS fast-path benchmark (polylogue-20d.1 / polylogue-20d.14).
+"""Daemon operation fast-path benchmark (polylogue-bp12n.4).
 
-Covers: CLI-to-daemon round trip over the AF_UNIX transport that
-``polylogue.cli.archive_query`` proxies ordinary session-page queries through
-when a config-matched daemon is reachable. This is the "interactive" SLO
-tier's ``daemon_cli_query`` surface: the whole point of the hot-daemon fast
-path is that this round trip stays far below the cold, import-paying direct
-CLI path.
+Covers the actual archive-scoped operation exchange used by the installed CLI.
+The fixture readiness check is itself a status operation; it never calls a
+health/probe endpoint.
 
 Run with:
     pytest tests/benchmarks/test_daemon_uds.py --benchmark-enable -p no:xdist -v
@@ -13,7 +10,6 @@ Run with:
 
 from __future__ import annotations
 
-import os
 import shutil
 import tempfile
 import threading
@@ -78,13 +74,13 @@ def bench_daemon_uds_client(
     server.auth_token = ""
     thread = threading.Thread(target=server.serve_forever, name="bench-daemon-uds", daemon=True)
     thread.start()
-    # Wait for the socket to accept connections rather than a fixed sleep —
+    # Wait for the operation endpoint to accept connections rather than a fixed sleep —
     # ThreadingMixIn.serve_forever binds synchronously in __init__, but give
-    # the accept loop a moment to actually start before the first probe.
+    # the accept loop a moment to actually start before the first operation.
     deadline = time.monotonic() + 2.0
     client = DaemonClient(socket_path, timeout_s=1.0)
     while time.monotonic() < deadline:
-        if client.request_json("GET", "/api/health") is not None:
+        if client.operation("completion", {"kind": "field", "incomplete": ""}) is not None:
             break
         time.sleep(0.02)
     else:
@@ -105,10 +101,10 @@ def test_bench_daemon_uds_cli_query(
     benchmark: BenchmarkFixture,
     bench_daemon_uds_client: object,
 ) -> None:
-    """Benchmark the CLI's ``/api/cli/query`` UDS round trip (find-mode page).
+    """Benchmark the CLI's typed ``cli.query`` UDS operation (find-mode page).
 
-    Matches: ``polylogue.cli.archive_query._try_emit_daemon_session_page`` ->
-    ``DaemonClient.cli_query`` -> ``DaemonAPIHandler._handle_cli_query``.
+    Matches: ``_try_emit_daemon_session_page`` -> ``DaemonClient.operation`` ->
+    ``DaemonAPIHandler._handle_daemon_operation``.
     """
     from polylogue.cli.daemon_client import DaemonClient
 
@@ -116,7 +112,11 @@ def test_bench_daemon_uds_cli_query(
     assert isinstance(client, DaemonClient)
 
     def _query() -> dict[str, object] | None:
-        return client.cli_query({"limit": 20})
+        envelope = client.operation("cli.query", {"params": {"limit": 20}})
+        if envelope is None or envelope.get("error") is not None:
+            return None
+        result = envelope.get("result")
+        return result if isinstance(result, dict) else None
 
     result = benchmark(_query)
     assert result is not None
@@ -126,25 +126,19 @@ def test_bench_daemon_uds_cli_query(
 
 
 @pytest.mark.benchmark
-def test_bench_daemon_uds_health_probe(
+def test_bench_daemon_uds_status_operation(
     benchmark: BenchmarkFixture,
     bench_daemon_uds_client: object,
 ) -> None:
-    """Benchmark the config-matched health probe every fast-path call pays first."""
+    """Benchmark the typed status operation, including readiness metadata."""
     from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
 
     client = bench_daemon_uds_client
     assert isinstance(client, DaemonClient)
-    archive_root = os.environ["POLYLOGUE_ARCHIVE_ROOT"]
 
     def _probe() -> dict[str, object] | None:
-        return client.probe(
-            archive_root=archive_root,
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
-        )
+        envelope = client.operation("status", {})
+        return envelope if envelope is not None else None
 
     result = benchmark(_probe)
     assert result is not None

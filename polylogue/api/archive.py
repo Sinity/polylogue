@@ -9,7 +9,7 @@ import logging
 import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
-from contextlib import closing, suppress
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
@@ -2239,6 +2239,8 @@ def _archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachmen
         path=None,
         source_url=attachment.source_url,
         caption=attachment.caption,
+        upload_origin=attachment.upload_origin,
+        availability=attachment.availability,
     )
 
 
@@ -5055,10 +5057,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             from polylogue.storage.search_providers import create_vector_provider
 
             archive_root = _active_archive_root(self.config)
-            with suppress(ValueError, ImportError):
-                vector_provider = create_vector_provider(
-                    self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
-                )
+            vector_provider = create_vector_provider(
+                self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+            )
         sessions = await spec.list(self.config, vector_provider=vector_provider)
         if content_projection is None or not content_projection.filters_content():
             return sessions
@@ -5078,10 +5079,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             from polylogue.storage.search_providers import create_vector_provider
 
             archive_root = _active_archive_root(self.config)
-            with suppress(ValueError, ImportError):
-                vector_provider = create_vector_provider(
-                    self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
-                )
+            vector_provider = create_vector_provider(
+                self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+            )
         return await search_hits_for_plan(spec.to_plan(vector_provider=vector_provider), self.config)
 
     async def diagnose_query_miss(self, spec: SessionQuerySpec, *, full: bool = False) -> QueryMissDiagnostics:
@@ -5161,6 +5161,31 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         without losing or duplicating hits even when the archive grew
         between requests (#1268).
         """
+        from polylogue.api.search_envelope_builder import build_search_envelope_for_spec
+        from polylogue.archive.query.expression import compile_expression_into
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        base_spec = SessionQuerySpec.from_params(
+            {
+                "query": "",
+                "origin": origin,
+                "since": since,
+                "until": until,
+                "retrieval_lane": retrieval_lane,
+                "sort": sort,
+                "limit": limit,
+                "offset": offset,
+                "cursor": cursor,
+            },
+            strict=True,
+        )
+        spec = compile_expression_into(query, base_spec) if query.strip() else base_spec
+        return await build_search_envelope_for_spec(
+            cast("Polylogue", self), spec, limit=limit, offset=offset, query=query
+        )
+
+        # Legacy inline implementation retained below only as a temporary
+        # source anchor; the canonical builder above owns this route.
         from polylogue.archive.query.expression import compile_expression_into
         from polylogue.archive.query.search_hits import session_search_hit_from_summary
         from polylogue.archive.query.spec import SessionQuerySpec
@@ -5485,11 +5510,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.storage.search_providers import create_vector_provider
 
         archive_root = _active_archive_root(self.config)
-        vector_provider = None
-        with suppress(ValueError, ImportError):
-            vector_provider = create_vector_provider(
-                self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
-            )
+        vector_provider = create_vector_provider(
+            self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
+        )
 
         return SessionFilter(
             archive_root=archive_root,

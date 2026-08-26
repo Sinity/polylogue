@@ -10,9 +10,20 @@ from devtools.continuity_replay import ArgumentMutator, DiscoveryMutator, Respon
 from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.core.json import JSONDocument, require_json_document
 
-_INCIDENT_EXPRESSION = 'messages where text:parallel-child AND text:"workflow_run:wf_synthetic_841"'
 _PRIOR_ART_MARKER = "prior-art-zebra-417"
-_CURRICULUM_MARKER = "incident-curriculum:wf_synthetic_841"
+
+
+def _is_incident_expression(expression: str | None) -> bool:
+    return (
+        isinstance(expression, str)
+        and "text:parallel-child" in expression
+        and "workflow_run:" in expression
+        and " | count" not in expression
+    )
+
+
+def _is_curriculum_expression(expression: str | None) -> bool:
+    return isinstance(expression, str) and "incident-curriculum:" in expression
 
 
 def _query_expression(arguments: dict[str, object]) -> str | None:
@@ -76,7 +87,7 @@ def _lost_request_state_continuation() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int) -> dict[str, object]:
         del invocation
         expression = _query_expression(arguments)
-        if tool == "query" and expression == _INCIDENT_EXPRESSION and "continuation" in arguments:
+        if tool == "query" and _is_incident_expression(expression) and "continuation" in arguments:
             return {"expression": expression, "limit": 17}
         return arguments
 
@@ -95,7 +106,7 @@ def _capped_pseudo_total() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         nonlocal mutated
         del invocation
-        if mutated or tool != "query" or _query_expression(arguments) != _INCIDENT_EXPRESSION:
+        if mutated or tool != "query" or not _is_incident_expression(_query_expression(arguments)):
             return response_text
         payload = require_json_document(json.loads(response_text), context="capped pseudo-total response")
         payload["continuation"] = None
@@ -119,7 +130,7 @@ def _identical_call_topology_replay() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         nonlocal first_response, target_calls
         del invocation
-        if tool != "query" or _query_expression(arguments) != _INCIDENT_EXPRESSION:
+        if tool != "query" or not _is_incident_expression(_query_expression(arguments)):
             return response_text
         target_calls += 1
         if target_calls == 1:
@@ -199,7 +210,7 @@ def _unreasonable_query_classification() -> ContinuityMutation:
     def mutate(tool: str, arguments: dict[str, object], invocation: int, response_text: str) -> str:
         del invocation
         expression = _query_expression(arguments)
-        if tool != "query" or not isinstance(expression, str) or _CURRICULUM_MARKER not in expression:
+        if tool != "query" or not _is_curriculum_expression(expression):
             return response_text
         return response_text.replace(
             "case:sessions-only-query query_shape:sessions-only-query physical_size:bounded "

@@ -32,7 +32,7 @@ from pathlib import Path
 
 from polylogue.storage.raw_retention import RawFrontierIntegritySnapshot, raw_frontier_integrity_snapshot
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from tests.infra.workload_artifacts import SeededArchiveClone
+from tests.infra.workload_artifacts import SeededArchiveClone, SeededArchiveQueryLease
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
 
@@ -50,10 +50,10 @@ def _snapshot(root: Path) -> RawFrontierIntegritySnapshot:
 
 
 def test_seeded_corpus_satisfies_raw_frontier_integrity(
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
 ) -> None:
     """polylogue-ku00r: the corpus every snapshot test reads is production-valid."""
-    root = named_seeded_archive_ro("cli-chatgpt").parent
+    root = named_seeded_archive_ro("cli-chatgpt").root
 
     snapshot = _snapshot(root)
 

@@ -54,7 +54,7 @@ def embeddings_db(tmp_path: Path) -> Path:
     ]
     for session_id, message_id, vector in seeds:
         # Content-addressed (polylogue-q88p): each distinct stored vector
-        # needs its own embedding_input_hash, or these deliberately-distinct
+        # needs its own vector_derivation_hash, or these deliberately-distinct
         # geometric fixtures would dedup onto a single vector and the
         # distance assertions below would test nothing.
         upsert_message_embedding(
@@ -65,7 +65,7 @@ def embeddings_db(tmp_path: Path) -> Path:
             embedding=vector,
             model="voyage-4",
             embedded_at_ms=1_767_225_700_000,
-            embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
+            vector_derivation_hash=hashlib.sha256(message_id.encode()).digest(),
         )
     conn.close()
     return db_path

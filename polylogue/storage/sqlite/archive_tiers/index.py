@@ -441,7 +441,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-tas4: v72 makes READY a source-verified FTS verdict. A READY row
 # records an exact snapshot bound to the current index schema generation;
 # bounded repairs remain STALE and preserve the last exact counters.
-INDEX_SCHEMA_VERSION = 72
+INDEX_SCHEMA_VERSION = 73
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

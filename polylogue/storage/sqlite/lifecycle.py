@@ -1016,6 +1016,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=73,
+        # polylogue-ulm94: lineage branch points gain an identity-free
+        # message-content witness and provider usage totals preserve omitted
+        # values as NULL. Both values depend on parser/write semantics and
+        # existing rows must be regenerated from raw evidence.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

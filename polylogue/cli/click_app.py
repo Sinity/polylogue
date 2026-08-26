@@ -279,8 +279,6 @@ def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
     from polylogue.cli.select import SelectSessionRow
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-    from polylogue.version import POLYLOGUE_VERSION
 
     client = DaemonClient(
         daemon_socket_path(config.archive_root),
@@ -289,16 +287,17 @@ def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    if (
-        client.probe(
-            archive_root=str(config.archive_root),
-            index_schema_version=INDEX_SCHEMA_VERSION,
-            daemon_version=POLYLOGUE_VERSION,
-        )
-        is None
-    ):
-        return None
-    payload = client.cli_query({"query": (), "limit": 5})
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    envelope = client.operation(
+        "cli.query",
+        {"params": {"query": (), "limit": 5}},
+        archive_root=str(config.archive_root),
+        index_schema_version=INDEX_SCHEMA_VERSION,
+        daemon_version=POLYLOGUE_VERSION,
+    )
+    payload = envelope.get("result") if envelope and envelope.get("error") is None else None
     items = payload.get("items") if payload is not None else None
     if not isinstance(items, list):
         return None

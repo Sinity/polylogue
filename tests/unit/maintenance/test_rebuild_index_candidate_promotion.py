@@ -134,7 +134,7 @@ def test_waived_embedding_orphan_blocks_full_rebuild_candidate_promotion(
     with sqlite3.connect(root / "embeddings.db") as conn:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:active-session:no-such-message', 'codex-session:active-session', 'codex-session', ?)
             """,
             (b"o" * 32,),

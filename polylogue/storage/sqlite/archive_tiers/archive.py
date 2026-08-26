@@ -424,6 +424,7 @@ class ArchiveSessionSearchHit:
     origin: str
     title: str | None
     snippet: str
+    lane_ranks: dict[str, int | None] | None = None
 
 
 # polylogue-qsb4: both traversals recurse natively over the `delegations`
@@ -1296,6 +1297,9 @@ class ArchiveStore:
         acquired_at_ms: int,
         hook_event: ArchiveHookEvent,
         source_index: int = 0,
+        carrier_source_id: str | None = None,
+        carrier_relative_path: str | None = None,
+        carrier_role: str = "primary-writable",
     ) -> str:
         """Persist a hook event as session-linked evidence, not a session.
 
@@ -1327,6 +1331,9 @@ class ArchiveStore:
             raw_id=raw_id,
             hook_event=hook_event,
             blob_publication_receipt_id=receipt_id,
+            carrier_source_id=carrier_source_id or "representative-hook-source",
+            carrier_relative_path=carrier_relative_path or source_path,
+            carrier_role=carrier_role,
             manage_transaction=True,
         )
 
@@ -2698,14 +2705,26 @@ class ArchiveStore:
             entry.total_usd += stored_cost_usd
             entry.note_source_updated_at(row["source_updated_at"])
             entry.note_sort_key(row["source_sort_key"])
-            entry.per_model[(model_name, normalized_model)] = CostModelBreakdown(
-                model_name=model_name,
-                normalized_model=normalized_model,
-                usage=usage,
-                basis=basis,
-                total_usd=stored_cost_usd,
-                session_count=session_count,
-            )
+            per_model_key = (model_name, normalized_model)
+            prior_breakdown = entry.per_model.get(per_model_key)
+            if prior_breakdown is None:
+                entry.per_model[per_model_key] = CostModelBreakdown(
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                    usage=usage,
+                    basis=basis,
+                    total_usd=stored_cost_usd,
+                    session_count=session_count,
+                )
+            else:
+                entry.per_model[per_model_key] = CostModelBreakdown(
+                    model_name=model_name,
+                    normalized_model=normalized_model,
+                    usage=prior_breakdown.usage.plus(usage),
+                    basis=prior_breakdown.basis.plus(basis),
+                    total_usd=prior_breakdown.total_usd + stored_cost_usd,
+                    session_count=prior_breakdown.session_count + session_count,
+                )
 
         rollups: list[CostRollupInsight] = []
         for entry in grouped.values():
