@@ -636,7 +636,7 @@ shared bytes and erasing both removes them. A candidate that bypasses
 
 **Own:** provider attachment acquisition and census code, attachment/blob integrity readers and tests. **Avoid:** CDC source DDL until Packet F lands, lineage, event slimming, and display/hash policy except asserting existing v2 attachment behavior.
 
-**Implement and verify:** follow section 10.3 using `tests/unit/storage/test_attachment_acquisition.py`, `test_attachment_reacquisition.py`, `test_blob_integrity.py`, `tests/unit/sources/test_drive_attachment_fetch.py`, and `tests/unit/security/test_attachment_security.py`. Commit census/forward-capture independently; rebase compression/GC work after Packet F.
+**Implement and verify:** follow section 10.3 using the ordinary production attachment-acquisition, source-generation census/seal, blob-integrity, live Drive-fetch, and attachment-security tests. Commit census/forward-capture independently; rebase compression/GC work after Packet F.
 
 ## 13. Acceptance matrix
 

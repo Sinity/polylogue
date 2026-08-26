@@ -238,11 +238,11 @@ evidence citation | unlocks / owning reference.
 | `source.audit_continuity_control.pending_payload_json` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
 | `source.audit_continuity_control.pending_payload_sha256` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
 | `source.audit_continuity_control.prepared_at_ms` | KEEP | Readers: storage/sqlite/audit_continuity.py, operations/durable_change_train.py, storage/sqlite/migration_runner.py, maintenance/raw_authority_recovery.py — the cross-tier write-ahead command log for audit.db, actively read on every audit-tier startup recovery check. | n/a |
-| `source.blob_publication_reservations.publication_id` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
-| `source.blob_publication_reservations.blob_hash` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
-| `source.blob_publication_reservations.size_bytes` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
-| `source.blob_publication_reservations.publisher_id` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
-| `source.blob_publication_reservations.reserved_at_ms` | KEEP | Readers: storage/blob_publication.py, storage/attachment_reacquisition.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.publication_id` | KEEP | Readers: storage/blob_publication.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.blob_hash` | KEEP | Readers: storage/blob_publication.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.size_bytes` | KEEP | Readers: storage/blob_publication.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.publisher_id` | KEEP | Readers: storage/blob_publication.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
+| `source.blob_publication_reservations.reserved_at_ms` | KEEP | Readers: storage/blob_publication.py, storage/blob_gc.py, storage/blob_integrity.py, daemon/status.py, daemon/backup.py. | n/a |
 | `source.blob_refs.blob_hash` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
 | `source.blob_refs.ref_id` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
 | `source.blob_refs.ref_type` | KEEP | Re-verified as fully KEEP (all 6 columns) — source_path/size_bytes read by storage/repair.py (5+ call sites) and storage/sqlite/durable_change_train.py:2158, not just written; ref_type/ref_id/blob_hash/acquired_at_ms read across blob_gc.py, blob_integrity.py. Confirms the seed and closes the gap the team-lead's r9xsj caveat flagged. | n/a |
@@ -630,19 +630,19 @@ evidence citation | unlocks / owning reference.
 | `index.attachment_native_ids.ref_id` | KEEP | polylogue/security/excision.py (+29 more outside-tier files) | n/a |
 | `index.attachment_native_ids.id_kind` | KEEP | polylogue/storage/attachment_relink.py (+3 more outside-tier files) | n/a |
 | `index.attachment_native_ids.native_id` | KEEP | devtools/storage_correctness_scenario.py (+97 more outside-tier files) | n/a |
-| `index.attachment_refs.attachment_id` | KEEP | devtools/attachment_reacquisition_report.py (+41 more outside-tier files) | n/a |
+| `index.attachment_refs.attachment_id` | KEEP | storage/sqlite/archive_tiers/write.py, storage/sqlite/queries/attachments.py, and attachment read surfaces. | n/a |
 | `index.attachment_refs.session_id` | KEEP | devtools/resume_ranking_eval.py (+398 more outside-tier files) | n/a |
 | `index.attachment_refs.message_id` | KEEP | devtools/lineage_validation.py (+139 more outside-tier files) | n/a |
 | `index.attachment_refs.position` | KEEP | devtools/verify_runs.py (+122 more outside-tier files) | n/a |
 | `index.attachment_refs.upload_origin` | KEEP | polylogue/sinex/material_adapter.py (+15 more outside-tier files) | n/a |
 | `index.attachment_refs.source_url` | KEEP | devtools/dev_loop.py (+25 more outside-tier files) | n/a |
 | `index.attachment_refs.caption` | KEEP | polylogue/product/continuity_scenarios.py (+17 more outside-tier files) | n/a |
-| `index.attachments.attachment_id` | KEEP | devtools/attachment_reacquisition_report.py (+41 more outside-tier files) | n/a |
+| `index.attachments.attachment_id` | KEEP | storage/sqlite/archive_tiers/write.py, storage/sqlite/queries/attachments.py, and attachment read surfaces. | n/a |
 | `index.attachments.display_name` | KEEP | devtools/affordance_usage.py (+31 more outside-tier files) | n/a |
 | `index.attachments.media_type` | KEEP | polylogue/sinex/material_adapter.py (+23 more outside-tier files) | n/a |
 | `index.attachments.byte_count` | KEEP | devtools/raw_byte_duplicate_supersession_apply.py (+24 more outside-tier files) | n/a |
 | `index.attachments.blob_hash` | KEEP | devtools/storage_correctness_scenario.py (+106 more outside-tier files) | n/a |
-| `index.attachments.acquisition_status` | KEEP | devtools/attachment_reacquisition_report.py (+15 more outside-tier files) | n/a |
+| `index.attachments.acquisition_status` | KEEP | storage/sqlite/archive_tiers/write.py, storage/blob_integrity.py, and attachment read surfaces. | n/a |
 | `index.attachments.ref_count` | KEEP | polylogue/storage/session_replacement.py (+5 more outside-tier files) | n/a |
 | `index.blocks.message_id` | KEEP | devtools/claim_vs_evidence.py (+139 more outside-tier files) | n/a |
 | `index.blocks.session_id` | KEEP | devtools/resume_ranking_eval.py (+398 more outside-tier files) | n/a |
@@ -1174,7 +1174,7 @@ evidence citation | unlocks / owning reference.
 | `index.web_content_constructs.group_title` | KEEP | polylogue/sources/parsers/base_support.py (+6 more outside-tier files) | n/a |
 | `index.web_content_constructs.query` | KEEP | polylogue/daemon_client.py (+380 more outside-tier files) | n/a |
 | `index.web_content_constructs.asset_pointer` | KEEP | polylogue/storage/runtime/archive/records.py (+8 more outside-tier files) | n/a |
-| `index.web_content_constructs.mime_type` | KEEP | devtools/attachment_reacquisition_report.py (+40 more outside-tier files) | n/a |
+| `index.web_content_constructs.mime_type` | KEEP | storage/sqlite/archive_tiers/write.py and web-content read surfaces. | n/a |
 | `index.web_content_constructs.status` | KEEP | polylogue/daemon_client.py (+400 more outside-tier files) | n/a |
 | `index.web_content_constructs.task_id` | KEEP | polylogue/insights/run_projection.py (+15 more outside-tier files) | n/a |
 | `index.web_content_constructs.task_type` | KEEP | polylogue/storage/runtime/archive/records.py (+5 more outside-tier files) | n/a |

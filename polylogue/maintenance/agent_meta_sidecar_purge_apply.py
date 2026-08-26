@@ -218,8 +218,8 @@ def apply_agent_meta_sidecar_purge(
         try:
             # Authoritative re-validation now that the writer lease is held
             # (ArchiveStore.__init__ acquires it synchronously above) --
-            # matches attachment_reacquisition.py's / migrate_archive_tier's
-            # pattern: a concurrent write between the first, lock-free
+            # matches the migrate_archive_tier pattern: a concurrent write
+            # between the first, lock-free
             # precheck and this lease acquisition would make the backup
             # stale, and the lease guarantees nothing else can write between
             # this check and delete_sessions below.
