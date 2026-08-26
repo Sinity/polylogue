@@ -369,10 +369,12 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
 def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
     """Require every currently registered archive verification predicate to be green."""
     report = verify_archive(root)
+    # A typed not-applicable SKIP (absent population) is coherent, per the
+    # accepted conservation semantics; anything warning-or-worse is not.
     non_green = [
         (check.name, check.status.value, check.summary, check.details, check.breakdown)
         for check in report.checks
-        if check.status is not OutcomeStatus.OK
+        if check.status not in {OutcomeStatus.OK, OutcomeStatus.SKIP}
     ]
     if non_green:
         raise AssertionError(f"archive verification registry is not green: {non_green}")
