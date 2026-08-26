@@ -48,6 +48,11 @@ def _model_usage_rows() -> tuple[ModelUsageTotals, ...]:
     )
 
 
+def _normalized_model_name(row: ModelUsageTotals) -> str:
+    assert row.model_name is not None
+    return _normalize_model(row.model_name)
+
+
 def test_exact_rollup_wins_over_stale_profile_estimate() -> None:
     """The exact session_model_usage rollup wins, not the stale estimate."""
 
@@ -185,7 +190,7 @@ def test_multi_model_reprice_keeps_each_model_rate() -> None:
                 output_tokens=row.output_tokens,
                 cache_read_tokens=row.cache_read_tokens,
                 cache_write_tokens=row.cache_write_tokens,
-                model=_normalize_model(row.model_name),
+                model=_normalized_model_name(row),
             )
             for row in rows
         ),

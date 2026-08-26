@@ -199,6 +199,13 @@ def _normalize_model_name(value: object) -> str:
     return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
 
 
+def _priceable_model_name(model_name: str | None) -> str | None:
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    return normalized if normalized in PRICING else None
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderUsageCoverage:
     """Declared provider-usage telemetry coverage for one archive origin."""
@@ -2367,7 +2374,11 @@ def _catalog_cost_evidence(
     # dominant model silently transfers the most expensive model's rates to
     # every other model (polylogue-5uutw).
     if model_usage_rows:
-        priced_rows = tuple(row for row in model_usage_rows if _normalize_model(row.model_name) in PRICING)
+        priced_rows: tuple[tuple[ModelUsageTotals, str], ...] = tuple(
+            (row, normalized)
+            for row in model_usage_rows
+            if (normalized := _priceable_model_name(row.model_name)) is not None
+        )
         priceable = (
             tokens_evidence.value_state == "known"
             and len(priced_rows) == len(model_usage_rows)
@@ -2395,9 +2406,9 @@ def _catalog_cost_evidence(
                         output_tokens=row.output_tokens,
                         cache_read_tokens=row.cache_read_tokens,
                         cache_write_tokens=row.cache_write_tokens,
-                        model=_normalize_model(row.model_name),
+                        model=normalized,
                     )
-                    for row in priced_rows
+                    for row, normalized in priced_rows
                 ),
                 6,
             )
