@@ -68,7 +68,7 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
     classify_archive_write_exception,
-    legacy_unknown_disposition,
+    downstream_failure_disposition,
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
@@ -1207,8 +1207,9 @@ class LiveBatchProcessor:
             # would be dishonest given ``retry_paths`` is non-empty, so this
             # falls back to the explicit "not yet classified" bucket rather
             # than guessing.
-            final_disposition = legacy_unknown_disposition(
-                diagnostic=f"{len(retry_paths)} path(s) failed without a batch-level exception"
+            final_disposition = downstream_failure_disposition(
+                evidence_ref="batch:per_item_failure_aggregate",
+                diagnostic=f"{len(retry_paths)} source item(s) failed without a batch-level exception",
             )
         self._cursor.finish_ingest_attempt(
             attempt_id,

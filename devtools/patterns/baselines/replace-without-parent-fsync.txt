@@ -16,7 +16,6 @@ polylogue/operations/archive_root_relocation.py:1074
 polylogue/operations/archive_root_relocation.py:1407
 polylogue/operations/durable_change_train.py:1531
 polylogue/operations/historical_source_continuity_recovery.py:1085
-polylogue/sources/hooks.py:469
 polylogue/sources/sqlite_snapshot.py:179
 polylogue/sources/sqlite_snapshot.py:180
 polylogue/sources/token_store.py:88
@@ -30,4 +29,4 @@ polylogue/storage/index_generation.py:592
 polylogue/storage/sqlite/durable_change_train.py:551
 polylogue/storage/sqlite/durable_change_train.py:789
 polylogue/storage/sqlite/durable_change_train.py:826
-polylogue/storage/sqlite/migration_runner.py:3979
+polylogue/storage/sqlite/migration_runner.py:3985
