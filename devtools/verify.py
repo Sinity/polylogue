@@ -614,12 +614,26 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
+    selected_counts: list[int] = []
+    terminal_counts: list[int] = []
     for result in pytest_results:
-        for outcome, count in (result.get("statistics", {}).get("outcomes") or {}).items():
+        raw_statistics: object = result.get("statistics")
+        statistics: Mapping[str, Any] = raw_statistics if isinstance(raw_statistics, Mapping) else {}
+        selected = statistics.get("selected_count")
+        terminal = statistics.get("terminal_count")
+        if isinstance(selected, int) and not isinstance(selected, bool):
+            selected_counts.append(selected)
+        if isinstance(terminal, int) and not isinstance(terminal, bool):
+            terminal_counts.append(terminal)
+        for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
+        # Full-corpus verification partitions the collection across managed
+        # pytest steps, so these are disjoint populations and must be summed.
+        "selected_union_count": sum(selected_counts),
+        "terminal_union_count": sum(terminal_counts),
         "outcomes": outcomes,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
@@ -687,6 +701,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 sys.stderr.write(f"verify: {exc}\n")
                 return 125
+            run.record_selection(
+                selection_mode=mode,
+                state_status=preparation.local_state.status,
+                state_reason=preparation.local_state.reason,
+                missing_executable_paths=preparation.local_state.missing_executable_paths,
+                runtime_data_paths=impact.runtime_data_paths,
+                environment_digest=preparation.environment_name,
+            )
             if preparation.selection_mode == "bootstrap" and not args.all_tests:
                 payload = _finish_and_record_verification(
                     run=run,
@@ -698,14 +720,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 )
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 return 2
-            run.record_selection(
-                selection_mode=mode,
-                state_status=preparation.local_state.status,
-                state_reason=preparation.local_state.reason,
-                missing_executable_paths=preparation.local_state.missing_executable_paths,
-                runtime_data_paths=impact.runtime_data_paths,
-                environment_digest=preparation.environment_name,
-            )
         steps = build_verify_steps(
             quick=args.quick,
             commit=args.commit,
