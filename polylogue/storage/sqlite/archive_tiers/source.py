@@ -899,6 +899,18 @@ CREATE INDEX IF NOT EXISTS idx_otlp_spans_session
 ON otlp_spans(origin, session_native_id, started_at_ms DESC)
 WHERE session_native_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS history_sidecars (
+    sidecar_id      TEXT PRIMARY KEY,
+    origin          TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    source_path     TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    observed_at_ms  INTEGER NOT NULL,
+    content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32)
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_history_sidecars_path_hash
+ON history_sidecars(origin, source_path, content_hash);
+
 CREATE TABLE IF NOT EXISTS sinex_publication_obligations (
     object_id           TEXT NOT NULL,
     protocol_version     TEXT NOT NULL CHECK(protocol_version != ''),
