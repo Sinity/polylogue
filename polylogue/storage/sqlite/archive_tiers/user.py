@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 10
+USER_SCHEMA_VERSION = 11
 
 USER_DDL = """
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS queries (
     rank_policy         TEXT NOT NULL CHECK(length(trim(rank_policy)) > 0),
     created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
     definition_protocol_version TEXT NOT NULL DEFAULT 'polylogue.query-definition.v0'
-        CHECK(length(trim(definition_protocol_version)) > 0)
+        CHECK(length(trim(definition_protocol_version)) > 0),
+    privacy_class       TEXT,
+    retention_policy_json TEXT,
+    excision_link       TEXT,
+    promoted_at_ms      INTEGER
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS query_names (
@@ -99,8 +103,27 @@ CREATE TABLE IF NOT EXISTS result_sets (
     ordered_rank_hash      TEXT NOT NULL CHECK(length(ordered_rank_hash) = 64 AND ordered_rank_hash NOT GLOB '*[^0-9a-f]*'),
     exactness              TEXT NOT NULL CHECK(exactness IN ('exact', 'capped', 'sampled', 'estimate')),
     persistence_class      TEXT NOT NULL CHECK(persistence_class IN ('routine', 'watch', 'pinned', 'finding', 'cohort')),
-    created_at_ms          INTEGER NOT NULL CHECK(created_at_ms >= 0)
+    created_at_ms          INTEGER NOT NULL CHECK(created_at_ms >= 0),
+    privacy_class          TEXT,
+    retention_policy_json  TEXT,
+    excision_link          TEXT,
+    promoted_at_ms         INTEGER
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS query_excision_ledger (
+    ledger_id           TEXT PRIMARY KEY NOT NULL,
+    query_hash          TEXT,
+    result_set_id       TEXT,
+    excision_link       TEXT NOT NULL CHECK(length(trim(excision_link)) > 0),
+    reason_digest       TEXT NOT NULL CHECK(length(reason_digest) = 64 AND reason_digest NOT GLOB '*[^0-9a-f]*'),
+    actor_ref           TEXT NOT NULL CHECK(length(trim(actor_ref)) > 0),
+    prior_revision      INTEGER NOT NULL CHECK(prior_revision >= 0),
+    excised_at_ms       INTEGER NOT NULL CHECK(excised_at_ms >= 0),
+    CHECK ((query_hash IS NOT NULL AND result_set_id IS NULL) OR (query_hash IS NULL AND result_set_id IS NOT NULL)),
+    UNIQUE(query_hash),
+    UNIQUE(result_set_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_query_excision_ledger_link ON query_excision_ledger(excision_link);
 
 CREATE INDEX IF NOT EXISTS idx_result_sets_query_epoch
 ON result_sets(query_hash, corpus_epoch, created_at_ms DESC);
