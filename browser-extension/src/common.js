@@ -21,6 +21,12 @@
       if (parsed.searchParams.get("temporary-chat") === "true") return "__polylogue_temporary_chat__";
       return null;
     }
+    if (provider === "gemini") {
+      const marker = parts.indexOf("app");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
+      const conversation = parsed.searchParams.get("conversation") || parsed.searchParams.get("id");
+      return conversation || null;
+    }
     if (provider === "claude-ai" && parts[0] === "chat" && parts[1]) {
       return parts[1];
     }

@@ -15,6 +15,7 @@
       const hostname = new URL(value).hostname;
       if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) return "chatgpt";
       if (hostname === "claude.ai" || hostname.endsWith(".claude.ai")) return "claude-ai";
+      if (hostname === "gemini.google.com" || hostname.endsWith(".gemini.google.com")) return "gemini";
     } catch {
       return null;
     }

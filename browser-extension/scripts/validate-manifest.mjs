@@ -26,6 +26,7 @@ const ALLOWED_PERMISSIONS = new Set([
   "scripting",
   "storage",
   "tabs",
+  "nativeMessaging",
 ]);
 const ALLOWED_HOST_GLOBS = [
   /^https:\/\/chatgpt\.com\/\*$/,
@@ -38,6 +39,7 @@ const ALLOWED_HOST_GLOBS = [
   /^https:\/\/grok\.com\/\*$/,
   /^https:\/\/x\.com\/\*$/,
   /^https:\/\/twitter\.com\/\*$/,
+  /^https:\/\/gemini\.google\.com\/\*$/,
   /^http:\/\/127\.0\.0\.1\/\*$/,
 ];
 

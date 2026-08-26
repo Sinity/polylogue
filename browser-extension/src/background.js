@@ -449,6 +449,9 @@ function injectionPlanForUrl(url) {
         { files: ["src/common.js", "src/content/grok.js"] },
       ];
     }
+    if (parsed.hostname === "gemini.google.com" || parsed.hostname.endsWith(".gemini.google.com")) {
+      return [{ files: ["src/common.js", "src/operator_status.js", "src/content/message_layer.js", "src/content/ambient_surface.js", "src/content/gemini.js"] }];
+    }
   } catch {
     return [];
   }
@@ -1435,6 +1438,25 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
   }
 }
 
+async function reportCaptureHealth(event, payload = {}) {
+  try {
+    await postJson("/v1/capture-health", {
+      event,
+      provider: payload.provider || null,
+      provider_session_id: payload.provider_session_id || null,
+      extension_instance_id: await extensionInstanceId(),
+      visible_count: Number.isInteger(payload.visible_count) ? payload.visible_count : null,
+      captured_count: Number.isInteger(payload.captured_count) ? payload.captured_count : null,
+      reason: payload.reason || null,
+      detail: payload.detail && typeof payload.detail === "object" ? payload.detail : {},
+    });
+  } catch {
+    // Health reporting is best effort. A receiver outage must remain visible
+    // through the local retry queue and popup state, not recursively create a
+    // second failure path.
+  }
+}
+
 async function getJson(path, timeoutMs = null) {
   await ensureTrustedReceiver();
   const settings = await receiverSettings();
@@ -1534,6 +1556,7 @@ function providerForUrl(url) {
     const hostname = new URL(url || "").hostname;
     if (hostname === "chatgpt.com") return "chatgpt";
     if (hostname === "claude.ai") return "claude-ai";
+    if (hostname === "gemini.google.com") return "gemini";
   } catch {
     return null;
   }
@@ -2590,6 +2613,7 @@ function archiveProviderForUrl(url) {
     const parsed = new URL(url || "");
     if (parsed.hostname === "chatgpt.com" || parsed.hostname.endsWith(".chatgpt.com")) return "chatgpt";
     if (parsed.hostname === "claude.ai" || parsed.hostname.endsWith(".claude.ai")) return "claude-ai";
+    if (parsed.hostname === "gemini.google.com" || parsed.hostname.endsWith(".gemini.google.com")) return "gemini";
     if (
       parsed.hostname === "grok.com" ||
       parsed.hostname.endsWith(".grok.com") ||
@@ -3396,7 +3420,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         active_page_state: providerSessionId ? "conversation" : "supported_no_session",
         error: message.error || "capture_page_failed",
       }, url || null);
+      void reportCaptureHealth("capture_error", {
+        provider,
+        provider_session_id: providerSessionId,
+        reason: message.error || "capture_page_failed",
+        detail: { tab_id: tab?.id || null },
+      });
       sendResponse({ ok: false });
+      return;
+    }
+    if (message.type === "polylogue.captureHealth") {
+      await reportCaptureHealth(message.event, message);
+      sendResponse({ ok: true });
       return;
     }
     if (message.type === "polylogue.captureSupportedTabs") {
