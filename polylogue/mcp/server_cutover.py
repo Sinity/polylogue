@@ -593,7 +593,13 @@ async def _query_insight_projection(
             return hooks.json_payload(report, exclude_none=True)
 
         if projection == "abandoned_sessions":
-            abandoned = await poly.find_abandoned_sessions(since=since, repo_path=repo, limit=hooks.clamp_limit(limit))
+            abandoned = await poly.find_abandoned_sessions(
+                origin=origin,
+                since=since,
+                until=until,
+                repo_path=repo,
+                limit=hooks.clamp_limit(limit),
+            )
             return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
 
         assert projection == "stuck_sessions", f"unhandled insight projection: {projection}"
@@ -831,7 +837,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 code="invalid_continuation",
                 tool="read",
             )
-        del limit
+        # ``limit`` is applied to list-shaped read payloads below.
 
         normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
@@ -843,7 +849,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 if topology is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
-            return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
+            if view not in (None, "summary"):
+                return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
+            payload = await hooks.get_polylogue().resolve_ref(normalized)
+            if limit is not None and hasattr(payload, "items"):
+                payload = payload.model_copy(update={"items": tuple(payload.items[: hooks.clamp_limit(limit)])})
+            return hooks.json_payload(payload)
 
         return await hooks.async_safe_call("read", run, session_id=session_id)
 
@@ -1947,10 +1958,19 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
         return hooks.error_json(f"saved view not found: {view_id}", code="not_found", tool="run")
     try:
         query = _json.loads(row["query_json"])
-    except (_json.JSONDecodeError, TypeError):
-        query = {}
+    except (_json.JSONDecodeError, TypeError) as exc:
+        return hooks.error_json(
+            f"saved view {view_id} contains invalid query_json",
+            code="invalid_saved_view",
+            detail=str(exc),
+            tool="run",
+        )
     if not isinstance(query, dict):
-        query = {}
+        return hooks.error_json(
+            f"saved view {view_id} query_json must encode an object",
+            code="invalid_saved_view",
+            tool="run",
+        )
     return await _query_sessions(
         hooks,
         expression=query.get("query"),
@@ -1969,11 +1989,9 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
 
 async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
     """Preview/execute/inspect maintenance operations, delegating to the existing planner/registry."""
-    from polylogue.config import Config
     from polylogue.maintenance.envelope import envelope_from_operation
-    from polylogue.paths import archive_root, render_root
 
-    config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+    config = hooks.get_config()
 
     if operation in ("preview", "execute"):
         from polylogue.core.enums import OperationStatus
@@ -2093,7 +2111,11 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
             )
         success = await hooks.get_polylogue().update_index(list(session_ids))
         return hooks.json_payload(
-            MCPMutationStatusPayload(status="ok" if success else "failed", session_count=len(session_ids)),
+            MCPMutationStatusPayload(
+                status="ok" if success else "failed",
+                scope="archive-wide",
+                scope_note="update_index rebuilds the complete messages_fts index; session_ids are selection metadata only",
+            ),
             exclude_none=True,
         )
 
@@ -2352,6 +2374,10 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                 else:
                     return hooks.error_json(
                         "judge() requires items, or candidate_ref and decision", code="invalid_argument"
+                    )
+                if not judgments:
+                    return hooks.error_json(
+                        "judge() requires at least one judgment item", code="invalid_argument", tool="judge"
                     )
                 payload = await hooks.get_polylogue().judge_assertion_candidates(items=judgments)
                 return hooks.json_payload(payload, exclude_none=True)
