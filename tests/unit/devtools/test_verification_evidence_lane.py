@@ -6,6 +6,8 @@ import json
 import threading
 from pathlib import Path
 
+import pytest
+
 from devtools.verify_runs import (
     VerifyRun,
     append_verification_evidence,
@@ -21,7 +23,9 @@ def _payload(tmp_path: Path) -> dict[str, object]:
     return run.finish(exit_code=0, duration_s=0.3, final_git_head="sha:def")
 
 
-def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(monkeypatch, tmp_path: Path) -> None:
+def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv("SINNIXD_JOB_ID", raising=False)
     monkeypatch.delenv("SINNIXD_CORRELATION_ID", raising=False)
     payload = _payload(tmp_path)
@@ -41,7 +45,7 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(monkeyp
     assert receipt["artifact_ref"].startswith("polylogue://verification/")
 
 
-def test_declared_identity_and_interruption_are_explicit(monkeypatch, tmp_path: Path) -> None:
+def test_declared_identity_and_interruption_are_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SINNIXD_JOB_ID", "job-17")
     monkeypatch.setenv("SINNIXD_CORRELATION_ID", "corr-17")
     run = VerifyRun(tier="quick", argv=[], git_head="sha:abc", root=tmp_path, agentctl_operation="verify_quick")
