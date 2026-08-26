@@ -43,6 +43,7 @@ def _session(
     title: str | None = None,
     title_source: TitleSource | None = None,
     created_at: str = "2026-08-06T10:00:00+00:00",
+    updated_at: str | None = None,
 ) -> ParsedSession:
     messages = [
         ParsedMessage(
@@ -61,7 +62,7 @@ def _session(
         title_source=title_source,
         working_directories=[str(root)],
         created_at=created_at,
-        updated_at=created_at,
+        updated_at=updated_at or created_at,
         messages=messages,
     )
 
@@ -84,7 +85,10 @@ def test_display_label_is_fresh_and_keeps_stored_title_absent(tmp_path: Path) ->
     with ArchiveStore(tmp_path, initialize=True, read_only=False):
         pass
 
-    _write_sessions(db_path, [_session("fresh", root, ("archive.py",))])
+    _write_sessions(
+        db_path,
+        [_session("fresh", root, ("archive.py",), updated_at="2026-08-06T12:00:00+00:00")],
+    )
     with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
         session_id = archive.resolve_session_id("fresh")
         first = archive.read_summary(session_id)
@@ -92,19 +96,19 @@ def test_display_label_is_fresh_and_keeps_stored_title_absent(tmp_path: Path) ->
 
     assert first.title is None
     assert first.title_source is None
-    assert first.display_label == "polylogue · 1 file · 2 msgs · 2026-08-06"
+    assert first.display_label == "polylogue · 1 file · 2 msgs · 2h · 2026-08-06"
     assert [item.display_label for item in listed if item.session_id == session_id] == [first.display_label]
 
     _write_sessions(
         db_path,
-        [_session("fresh", root, ("archive.py", "query.py"))],
+        [_session("fresh", root, ("archive.py", "query.py"), updated_at="2026-08-06T12:00:00+00:00")],
     )
     with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
         refreshed = archive.read_summary(session_id)
 
     assert refreshed.title is None
     assert refreshed.title_source is None
-    assert refreshed.display_label == "polylogue · 2 files · 3 msgs · 2026-08-06"
+    assert refreshed.display_label == "polylogue · 2 files · 3 msgs · 2h · 2026-08-06"
 
     raw = (
         sqlite3.connect(db_path)
@@ -161,7 +165,7 @@ def test_structural_label_collisions_are_small_and_explicit_on_list_route(tmp_pa
         summaries = archive.list_summaries(repo_names=("polylogue",), limit=10, offset=0)
 
     labels = {summary.native_id: summary.display_label for summary in summaries}
-    assert labels["collision-a"] == labels["collision-b"] == "polylogue · 1 file · 2 msgs · 2026-08-06"
-    assert labels["distinct"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
+    assert labels["collision-a"] == labels["collision-b"] == "polylogue · 1 file · 2 msgs · 0s · 2026-08-06"
+    assert labels["distinct"] == "polylogue · 2 files · 3 msgs · 0s · 2026-08-06"
     assert len(set(labels.values())) == 2
     assert sum(1 for label in labels.values() if label and "polylogue" in label) == 3
