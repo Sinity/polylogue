@@ -465,6 +465,21 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 """
 
 INDEX_DDL = f"""
+-- Candidate construction authority is generation-local.  The source seal is
+-- copied here when an inactive generation is created; resume derives pending
+-- work from this table, never from an ops cursor or a later source scan.
+CREATE TABLE IF NOT EXISTS candidate_source_membership (
+    raw_id TEXT PRIMARY KEY,
+    blob_hash BLOB NOT NULL,
+    blob_size INTEGER NOT NULL CHECK(blob_size >= 0),
+    source_snapshot TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'committed')),
+    committed_at_ms INTEGER
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_candidate_source_membership_pending
+ON candidate_source_membership(status, blob_hash, raw_id);
+
 -- Continuation frames are deliberately tier-local: query-unit continuations
 -- combine this counter with the user-tier counter, so a write in either
 -- relation family invalidates an offset resume without inventing an archive-
