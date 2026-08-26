@@ -244,7 +244,11 @@ def test_warm_async_cancellation_does_not_join_default_executor(
 
     def blocked_worker(raw_id: str, *args: object) -> object:
         started.set()
-        release.wait(timeout=5)
+        # These waits bound a genuinely hung test, not scheduling latency: a
+        # saturated full-corpus run (3 pytest processes x 8 xdist workers)
+        # can delay executor thread start-up past small single-digit
+        # timeouts, which twice failed this test at corpus scope only.
+        release.wait(timeout=30)
         return raw_id, [], None
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
@@ -375,7 +379,11 @@ def test_submit_failure_cleans_every_admitted_future_and_reservation(
 
     def blocked_worker(raw_id: str, *args: object) -> object:
         started.set()
-        release.wait(timeout=5)
+        # These waits bound a genuinely hung test, not scheduling latency: a
+        # saturated full-corpus run (3 pytest processes x 8 xdist workers)
+        # can delay executor thread start-up past small single-digit
+        # timeouts, which twice failed this test at corpus scope only.
+        release.wait(timeout=30)
         return raw_id, [], None
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
@@ -394,9 +402,9 @@ def test_submit_failure_cleans_every_admitted_future_and_reservation(
     try:
         with pytest.raises(RuntimeError, match="synthetic submit failure"):
             stage.warm_raw_ids(_config(tmp_path), raw_ids=list(descriptors), max_payload_bytes=300)
-        assert started.wait(timeout=2)
+        assert started.wait(timeout=30)
         release.set()
-        assert stage.wait_until_idle(timeout=5)
+        assert stage.wait_until_idle(timeout=30)
         assert stage.writer_admission_ready()
         assert stage._pending_payload_bytes == 0
         assert stage._pending_payload_by_raw_id == {}
