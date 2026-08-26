@@ -10,6 +10,7 @@ before a pointer or generation is reclaimed.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -49,6 +51,16 @@ class EmbeddingGeneration:
     created_at_ns: int
     promoted_at_ns: int = 0
     predecessor_generation_id: str | None = None
+    # These fields are part of the generation identity, rather than advisory
+    # receipt data.  A generation whose computation contract or archive
+    # inputs cannot be proved is not safe to activate or reclaim.
+    recipe_hash: str = ""
+    source_generation: str = ""
+    index_generation: str = ""
+    schema_version: int = EMBEDDINGS_SCHEMA_VERSION
+    physical_root: str = ""
+    sealed: bool = False
+    membership_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +229,59 @@ class EmbeddingGenerationStore:
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise EmbeddingGenerationError(f"malformed embedding database: {path}") from exc
 
+    def _database_contract(self, path: Path) -> dict[str, Any]:
+        """Derive the immutable contract carried by a published database.
+
+        The database is rebuildable, but its publication must still be
+        attributable.  In particular, an otherwise valid SQLite file copied
+        from another archive must not become an active generation merely
+        because its filename looks plausible.
+        """
+        self._validate_database(path)
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                rows = conn.execute(
+                    "SELECT vector_derivation_hash FROM message_embeddings_meta ORDER BY vector_derivation_hash"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise EmbeddingGenerationError("cannot read embedding membership digest") from exc
+        digest = hashlib.sha256()
+        for row in rows:
+            value = bytes(row[0])
+            if len(value) != 32:
+                raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
+            digest.update(value)
+
+        def stable(path_value: Path) -> str:
+            try:
+                stat = path_value.stat()
+            except OSError:
+                return f"missing:{path_value.absolute()}"
+            return f"dev:{stat.st_dev}:ino:{stat.st_ino}"
+
+        index = self.archive_root / "index.db"
+        source = self.archive_root / "source.db"
+        recipe = ""
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+                recipe_row = conn.execute(
+                    "SELECT recipe_hash FROM message_embeddings_meta "
+                    "WHERE recipe_hash IS NOT NULL ORDER BY recipe_hash LIMIT 1"
+                ).fetchone()
+                if recipe_row is not None:
+                    recipe = bytes(recipe_row[0]).hex()
+        except sqlite3.Error as exc:
+            raise EmbeddingGenerationError("cannot read embedding recipe identity") from exc
+        return {
+            "recipe_hash": recipe or "empty",
+            "source_generation": stable(source),
+            "index_generation": stable(index),
+            "schema_version": EMBEDDINGS_SCHEMA_VERSION,
+            "physical_root": str(self.archive_root),
+            "sealed": True,
+            "membership_digest": digest.hexdigest(),
+        }
+
     def prepare_legacy_active_database(self) -> None:
         """Checkpoint a pre-lifecycle active database before copying it.
 
@@ -266,6 +331,16 @@ class EmbeddingGenerationStore:
                 raise ValueError("invalid generation state")
             if generation.created_at_ns <= 0 or generation.promoted_at_ns < 0:
                 raise ValueError("invalid generation chronology")
+            if (
+                not generation.recipe_hash
+                or not generation.source_generation
+                or not generation.index_generation
+                or generation.schema_version != EMBEDDINGS_SCHEMA_VERSION
+                or generation.physical_root != str(self.archive_root)
+                or generation.sealed is not True
+                or not re.fullmatch(r"[0-9a-f]{64}", generation.membership_digest)
+            ):
+                raise ValueError("generation metadata is incomplete or unsealed")
             if generation.predecessor_generation_id is not None and not _ID.fullmatch(
                 generation.predecessor_generation_id
             ):
@@ -539,7 +614,13 @@ class EmbeddingGenerationStore:
             os.fsync(target.fileno())
         _fsync_dir(destination.parent)
         generation = EmbeddingGeneration(
-            generation_id, str(self.archive_root), str(destination), uuid.uuid4().hex, "promoting", now
+            generation_id,
+            str(self.archive_root),
+            str(destination),
+            uuid.uuid4().hex,
+            "promoting",
+            now,
+            **self._database_contract(destination),
         )
         self._write_generation(generation)
         _fsync_dir(self.root)
@@ -584,6 +665,7 @@ class EmbeddingGenerationStore:
                 "promoting",
                 now,
                 predecessor_generation_id=current.generation_id if current else None,
+                **self._database_contract(destination),
             )
             self._write_generation(generation)
             _fsync_dir(self.root)
@@ -631,6 +713,26 @@ class EmbeddingGenerationStore:
         for generation in eligible:
             self._write_generation(EmbeddingGeneration(**{**asdict(generation), "state": "eligible"}))
             records.append(EmbeddingRetentionRecord(generation.generation_id, generation.owner_id, "eligible"))
+        # The inventory is the only reclamation authority.  Capture the
+        # complete candidate set before publishing the plan; the set is
+        # checked again immediately before any directory mutation.  This is
+        # deliberately an identity check, not a timestamp/newest-file
+        # heuristic: a newly arrived candidate, lease, or promotion makes the
+        # old plan stale and therefore harmlessly aborts this pass.
+        planned_inventory = tuple(
+            sorted(
+                (
+                    g.generation_id,
+                    g.owner_id,
+                    "active"
+                    if g.generation_id == active.generation_id
+                    else "retained"
+                    if g.generation_id in {item.generation_id for item in retained}
+                    else "eligible",
+                )
+                for g in generations
+            )
+        )
         receipt = EmbeddingPromotionReceipt(
             str(self.archive_root),
             self._identity(self.archive_root, label="embedding archive root"),
@@ -642,6 +744,9 @@ class EmbeddingGenerationStore:
             tuple(g.generation_id for g in eligible),
         )
         self._write_receipt(receipt)
+        current_inventory = tuple(sorted((g.generation_id, g.owner_id, g.state) for g in self._generations()))
+        if current_inventory != planned_inventory:
+            raise EmbeddingGenerationError("embedding reclamation inventory changed; retry")
         receipt_files = self._validate_receipts(self._generations())
         receipt_files.sort(key=lambda item: (item[0], item[1].name), reverse=True)
         for _, path in receipt_files[2:]:
@@ -650,6 +755,13 @@ class EmbeddingGenerationStore:
             _fsync_dir(self.receipts)
         reclaimed = []
         for generation in eligible:
+            # Revalidate the whole union before each mutation.  A concurrent
+            # writer normally cannot pass the lifecycle lock, but this check
+            # also protects against an independently restored/leased
+            # generation and is the fail-closed boundary for crash recovery.
+            current_inventory = tuple(sorted((g.generation_id, g.owner_id, g.state) for g in self._generations()))
+            if current_inventory != planned_inventory:
+                raise EmbeddingGenerationError("embedding reclamation inventory changed; retry")
             directory = self._metadata_path(generation.generation_id).parent
             if directory.is_symlink() or not directory.is_dir() or not _under(self.root, directory):
                 raise EmbeddingGenerationError("embedding reclaim directory is unsafe")
