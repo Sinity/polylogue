@@ -499,6 +499,25 @@ def iter_zip_entry_raw_data(
             if detected.provider is not Provider.UNKNOWN:
                 detected_provider = detected.provider
             if detected.provider in GROUP_PROVIDERS:
+                # A grouped-provider record can occur after ordinary session
+                # records in a mixed export.  Breaking here used to discard
+                # the grouped record and every later record, while the caller
+                # still considered the ZIP successfully scanned.  Preserve
+                # this observed record as a durable raw item; the already-
+                # emitted split siblings remain valid and must not be rolled
+                # back.
+                if split_buffer.did_split:
+                    yield make_split_entry_raw_data(
+                        blob_store=context.blob_store,
+                        split_payload=SerializedSplitPayload(
+                            provider=detected.provider,
+                            payload_bytes=json_dumps_bytes(detected.payload),
+                            source_index=split_buffer.pending_index,
+                        ),
+                        source_path=context.source_path,
+                        file_mtime=context.file_mtime,
+                    )
+                    continue
                 break
             classify_start = time.perf_counter()
             artifact = classify_artifact(
