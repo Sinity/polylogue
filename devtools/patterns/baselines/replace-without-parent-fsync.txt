@@ -16,7 +16,6 @@ polylogue/operations/archive_root_relocation.py:1074
 polylogue/operations/archive_root_relocation.py:1407
 polylogue/operations/durable_change_train.py:1531
 polylogue/operations/historical_source_continuity_recovery.py:1085
-polylogue/sources/hooks.py:469
 polylogue/sources/sqlite_snapshot.py:179
 polylogue/sources/sqlite_snapshot.py:180
 polylogue/sources/token_store.py:88
