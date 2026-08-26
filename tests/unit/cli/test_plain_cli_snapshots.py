@@ -30,7 +30,7 @@ from typing import cast
 import pytest
 from click.testing import CliRunner
 
-from tests.infra.workload_artifacts import SeededArchiveClone
+from tests.infra.workload_artifacts import SeededArchiveClone, SeededArchiveQueryLease
 
 syrupy = pytest.importorskip("syrupy")
 
@@ -71,7 +71,7 @@ def runner() -> CliRunner:
 
 @pytest.fixture
 def seeded_db_env(
-    named_seeded_archive_ro: Callable[[str], Path],
+    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
     """Point the CLI query verbs at a deterministic corpus DB.
@@ -82,7 +82,7 @@ def seeded_db_env(
     private clone of it. ``postmortem_seeded_env`` below is the mutating
     counterpart and keeps the clone.
     """
-    db_path = named_seeded_archive_ro("cli-chatgpt")
+    db_path = named_seeded_archive_ro("cli-chatgpt").path
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     return db_path
 

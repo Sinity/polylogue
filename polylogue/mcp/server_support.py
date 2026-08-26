@@ -21,6 +21,7 @@ from polylogue.archive.query.spec import (
 )
 from polylogue.core.enums import MessageType, Origin, enum_values
 from polylogue.core.errors import (
+    ArchiveTierUnavailableError,
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
     SchemaVersionMismatchError,
@@ -452,6 +453,14 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             tool=fn_name,
             current_version=exc.current_version,
             expected_version=exc.expected_version,
+        )
+    elif isinstance(exc, ArchiveTierUnavailableError):
+        payload = MCPErrorPayload(
+            message=str(exc),
+            code=exc.code,
+            error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
         )
     elif isinstance(exc, EmbeddingRetrievalNotReadyError):
         # The message is by construction free of secrets — closed

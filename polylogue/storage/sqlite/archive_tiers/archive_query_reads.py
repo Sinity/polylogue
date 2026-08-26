@@ -66,6 +66,8 @@ class _ArchiveQueryReadsHost(Protocol):
 
     def _attach_user_tier_if_present(self) -> None: ...
 
+    def require_user_tier(self) -> None: ...
+
 
 _UNIT_SESSION_ID_EXPRESSION: dict[str, str] = {
     "message": "{alias}.session_id",
@@ -2823,10 +2825,8 @@ def query_unit_counts(
 
     normalized_limit = max(int(limit), 0)
     normalized_offset = max(int(offset), 0)
-    if unit == "assertion" and not self.user_db_path.exists():
-        return []
     if unit == "assertion":
-        self._attach_user_tier_if_present()
+        self.require_user_tier()
 
     row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
     if row_alias is None:
@@ -2941,10 +2941,8 @@ def query_unit_multi_counts(
         missing_counts=tuple(0 for _ in fields),
         unknown_counts=tuple(0 for _ in fields),
     )
-    if unit == "assertion" and not self.user_db_path.exists():
-        return empty_page
     if unit == "assertion":
-        self._attach_user_tier_if_present()
+        self.require_user_tier()
 
     row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
     if row_alias is None:
@@ -3887,9 +3885,7 @@ def query_assertions(
 ) -> list[ArchiveAssertionQueryRow]:
     """Return user-tier assertion rows matching a unit-scoped predicate."""
 
-    if not self.user_db_path.exists():
-        return []
-    self._attach_user_tier_if_present()
+    self.require_user_tier()
     normalized_limit = max(int(limit), 0)
     normalized_offset = max(int(offset), 0)
     order_direction = _query_unit_order_direction(sort_direction)

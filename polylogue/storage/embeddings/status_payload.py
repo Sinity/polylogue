@@ -942,7 +942,7 @@ def _archive_embedding_status_payload(
                 pending_messages_exact = False
             # v4 (polylogue-q88p): a message is pending unless its ref exists
             # AND that ref's recorded hash matches the message's *current*
-            # embedding_input_hash (computed by the relation above). Presence-
+            # vector_derivation_hash (computed by the relation above). Presence-
             # based -- there is no per-vector "needs_reindex" anymore.
             if has_refs and embedded_messages == 0 and blocked_sessions == 0:
                 pending_messages = total_messages
@@ -957,7 +957,7 @@ def _archive_embedding_status_payload(
                     {status_join}
                     WHERE (
                         r.message_id IS NULL
-                        OR r.embedding_input_hash != m.embedding_input_hash
+                        OR r.vector_derivation_hash != m.vector_derivation_hash
                         {status_reindex_clause}
                       )
                       {blocked_session_clause}
@@ -982,8 +982,8 @@ def _archive_embedding_status_payload(
                         SELECT COUNT(*)
                         FROM {refs_table} r
                         LEFT JOIN {meta_table} em
-                          ON em.embedding_input_hash = r.embedding_input_hash
-                        WHERE em.embedding_input_hash IS NULL
+                          ON em.vector_derivation_hash = r.vector_derivation_hash
+                        WHERE em.vector_derivation_hash IS NULL
                         """,
                         timeout_ms=DETAIL_QUERY_TIMEOUT_MS,
                     )
@@ -1000,7 +1000,7 @@ def _archive_embedding_status_payload(
                         FROM {messages_ref}
                         JOIN {refs_table} r ON r.message_id = m.message_id
                         {status_join}
-                        WHERE r.embedding_input_hash != m.embedding_input_hash
+                        WHERE r.vector_derivation_hash != m.vector_derivation_hash
                           {blocked_session_clause}
                         """,
                         timeout_ms=DETAIL_QUERY_TIMEOUT_MS,

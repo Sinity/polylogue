@@ -2275,9 +2275,6 @@ def _effective_content(record: dict[str, object]) -> list[object]:
 
 
 def _message_type_from_codex_message(record: dict[str, object], text: str | None) -> MessageType:
-    role = _effective_role(record).strip().lower()
-    if role in {"system", "developer"}:
-        return MessageType.CONTEXT
     artifact_type = classify_text_message_type(text)
     return artifact_type or MessageType.MESSAGE
 

@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ArchiveSourceBlobRef,
+    HookEventConflictError,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     write_source_raw_session,
@@ -94,11 +95,12 @@ def test_hook_payload_ref_written_as_hook_payload_not_raw_payload(tmp_path: Path
         assert blob_hash is not None
 
 
-def test_hook_payload_replacement_removes_previous_ref(tmp_path: Path) -> None:
+def test_hook_payload_replacement_is_a_durable_conflict(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     _write_hook_event(archive_root, hook_event_id="hook-replaced", source_path="/hooks/a.jsonl", payload=b"old")
-    _write_hook_event(archive_root, hook_event_id="hook-replaced", source_path="/hooks/a.jsonl", payload=b"new")
+    with pytest.raises(HookEventConflictError):
+        _write_hook_event(archive_root, hook_event_id="hook-replaced", source_path="/hooks/a.jsonl", payload=b"new")
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         refs = conn.execute("SELECT ref_type, ref_id, blob_hash FROM blob_refs ORDER BY ref_type, ref_id").fetchall()
@@ -107,7 +109,7 @@ def test_hook_payload_replacement_removes_previous_ref(tmp_path: Path) -> None:
         ).fetchone()[0]
 
     assert refs == [("hook_payload", "hook-replaced", event_hash)]
-    assert event_hash == deterministic_blob_hash(b"new")
+    assert event_hash == deterministic_blob_hash(b"old")
 
 
 def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclaimed_once_deleted(

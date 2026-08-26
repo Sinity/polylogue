@@ -70,7 +70,7 @@ def _seed_embedding_tables(
 ) -> None:
     """Create message_embeddings_meta + embedding_status with seeded rows.
 
-    v4: message_embeddings_meta is keyed by ``embedding_input_hash`` and
+    v4: message_embeddings_meta is keyed by ``vector_derivation_hash`` and
     carries ``recipe_hash`` -- ``_reconcile_embedding_config_change``'s
     model-change detection (``meta_recipe_changed``) reads that column
     directly (a bare model-name mismatch alone deliberately does not trigger
@@ -93,7 +93,7 @@ def _seed_embedding_tables(
     conn.execute(
         """
         CREATE TABLE message_embeddings_meta (
-            embedding_input_hash BLOB PRIMARY KEY,
+            vector_derivation_hash BLOB PRIMARY KEY,
             model TEXT NOT NULL,
             dimension INTEGER NOT NULL,
             embedded_at_ms INTEGER,
@@ -130,7 +130,7 @@ def _seed_embedding_tables(
         """
     )
     conn.execute(
-        "INSERT INTO message_embeddings_meta(embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash) "
+        "INSERT INTO message_embeddings_meta(vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash) "
         "VALUES (?, ?, ?, 1767225600000, ?, ?)",
         (b"\x01" * 32, model, dimension, stored_recipe.recipe_hash, stored_recipe.output_contract_hash),
     )
@@ -175,7 +175,7 @@ def _create_vec0_table(conn: sqlite3.Connection, dimension: int) -> None:
 
 
 # v4 (polylogue-q88p): distinct, >=20-char prose per message so each
-# message's embedding_input_hash -- computed from exactly this text -- is
+# message's vector_derivation_hash -- computed from exactly this text -- is
 # real and unique, matching what production actually sends to the embedder.
 _READINESS_COMPLETE_TEXT = "authored prose for the complete readiness session message, long enough"
 _READINESS_PENDING_TEXT_1 = "authored prose for the first pending readiness message, long enough"
@@ -199,7 +199,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
     from polylogue.storage.embeddings.identity import (
         EmbeddingRecipe,
         EmbeddingSourceDigest,
-        embedding_input_hash,
+        vector_derivation_hash,
     )
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.embedding_write import (
@@ -258,7 +258,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
     try:
         initialize_archive_tier(econn, ArchiveTier.EMBEDDINGS)
 
-        complete_hash = embedding_input_hash(model="voyage-4", input_text=_READINESS_COMPLETE_TEXT)
+        complete_hash = vector_derivation_hash(model="voyage-4", input_text=_READINESS_COMPLETE_TEXT)
         complete_source = EmbeddingSourceDigest()
         complete_source.update(complete_hash)
         complete_attempt = begin_embedding_attempt(
@@ -280,7 +280,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
                     embedding=[0.01] * EMBEDDING_DIMENSION,
                     model="voyage-4",
                     embedded_at_ms=1_767_225_700_000,
-                    embedding_input_hash=complete_hash,
+                    vector_derivation_hash=complete_hash,
                     recipe_hash=complete_attempt.recipe_hash,
                     generation=complete_attempt.generation,
                 )
@@ -288,7 +288,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             completed_at_ms=1_767_225_700_000,
         )
 
-        error_hash = embedding_input_hash(model="voyage-4", input_text=_READINESS_ERROR_TEXT)
+        error_hash = vector_derivation_hash(model="voyage-4", input_text=_READINESS_ERROR_TEXT)
         error_source = EmbeddingSourceDigest()
         error_source.update(error_hash)
         error_attempt = begin_embedding_attempt(

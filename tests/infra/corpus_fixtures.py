@@ -15,11 +15,14 @@ from tests.infra.pathology_zoo import (
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
+    SeededArchiveQueryLease,
+    acquire_query_only_seeded_archive,
     build_seeded_archive,
     clone_seeded_archive,
     default_cache_root,
     named_corpus_specs,
     schema_coverage_corpus_specs,
+    seeded_archive_key,
 )
 
 
@@ -83,22 +86,35 @@ def named_seeded_archive(
 @pytest.fixture
 def named_seeded_archive_ro(
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
     workspace_env: dict[str, Path],
-) -> Callable[[str], Path]:
-    """Give path-based read consumers the authenticated immutable artifact.
+) -> Callable[[str], SeededArchiveQueryLease]:
+    """Give read consumers an authenticated, query-only artifact lease.
 
     CLI and completion tests open ``POLYLOGUE_ARCHIVE_ROOT`` by ordinary
     filesystem paths.  The artifact is already sealed and content-addressed,
-    so a read-only consumer can share it directly; only a mutating consumer
-    receives a private clone through :func:`named_seeded_archive`.
+    so a read-only consumer can share it directly; the lease remains held for
+    the fixture lifetime and is closed by the fixture finalizer. Only a
+    mutating consumer receives a private clone through
+    :func:`named_seeded_archive`.
     """
 
-    def seed(name: str) -> Path:
+    leases: list[SeededArchiveQueryLease] = []
+
+    def close_leases() -> None:
+        for lease in reversed(leases):
+            lease.close()
+
+    request.addfinalizer(close_leases)
+
+    def seed(name: str) -> SeededArchiveQueryLease:
         specs = named_corpus_specs(name)
         artifact = build_seeded_archive(specs)
+        lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(specs))
+        leases.append(lease)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
         monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
-        return artifact.root / "index.db"
+        return lease
 
     return seed
 

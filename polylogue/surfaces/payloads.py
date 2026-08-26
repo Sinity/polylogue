@@ -1595,6 +1595,11 @@ class SearchEnvelope(SurfacePayloadModel):
     query_hash: str | None = None
     result_fingerprint: str | None = None
     exactness: Literal["exact", "capped", "sampled", "estimate"] | None = None
+    requested_lanes: tuple[str, ...] = ()
+    executed_lanes: tuple[str, ...] = ()
+    unavailable_lanes: tuple[str, ...] = ()
+    failed_lanes: tuple[dict[str, str], ...] = ()
+    advisories: tuple[str, ...] = ()
 
 
 QueryUnitKind: TypeAlias = Literal[
@@ -3665,6 +3670,7 @@ def build_search_envelope(
     ranking_policy_version: str = RANKING_POLICY_VERSION,
     cursor: SearchCursor | None = None,
     request_identity: str | None = None,
+    execution: Any | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
@@ -3712,6 +3718,14 @@ def build_search_envelope(
         ranking_policy_version=ranking_policy_version,
         action_affordances=tuple(action_affordances),
         diagnostics=diagnostics,
+        requested_lanes=tuple(execution.requested_lanes) if execution is not None else (),
+        executed_lanes=tuple(execution.executed_lanes) if execution is not None else (),
+        unavailable_lanes=tuple(execution.unavailable_lanes) if execution is not None else (),
+        failed_lanes=tuple(
+            {"lane": failure.lane, "kind": failure.kind, "reason": failure.reason}
+            for failure in (execution.failed_lanes if execution is not None else ())
+        ),
+        advisories=tuple(execution.advisories) if execution is not None else (),
     )
 
 

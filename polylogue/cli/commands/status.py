@@ -201,6 +201,34 @@ def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
         return False
 
 
+def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
+    """Fetch a typed daemon operation without a health/probe round trip."""
+
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.version import POLYLOGUE_VERSION
+
+    client = DaemonClient(
+        daemon_socket_path(config.archive_root),
+        timeout_s=_FULL_TIMEOUT_S,
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    envelope = client.operation(
+        operation,
+        {},
+        archive_root=str(config.archive_root),
+        daemon_version=POLYLOGUE_VERSION,
+    )
+    if envelope is None or envelope.get("error") is not None:
+        return None
+    result = envelope.get("result")
+    return result if isinstance(result, dict) else None
+
+
 def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
     """Return daemon URLs worth probing, with explicit config first.
 
@@ -904,6 +932,23 @@ def status_command(
         route="cli.status",
         verb="full" if full_payload else "compact",
     ) as obs:
+        if daemon_url == _BUILTIN_DAEMON_URL:
+            try:
+                from polylogue.cli.shared.helpers import load_effective_config
+
+                result = _fetch_uds_operation(load_effective_config(env), "status")
+            except Exception:
+                result = None
+            if result is not None:
+                obs.attributes["daemon_reachable"] = True
+                obs.daemon_path = "daemon"
+                if output_format == "json":
+                    status_ok = _show_status_json(env, result, full=full_payload)
+                else:
+                    status_ok = _show_daemon_status(env, result)
+                if not status_ok:
+                    raise click.exceptions.Exit(1)
+                return
         candidate_urls = _candidate_daemon_urls(daemon_url)
         for candidate_url in candidate_urls:
             try:
@@ -957,6 +1002,16 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     and bounded SQLite queries to stay under 2 seconds.
     """
     resolved_url = daemon_url if daemon_url is not None else _default_daemon_url()
+    if resolved_url == _BUILTIN_DAEMON_URL:
+        try:
+            from polylogue.cli.shared.helpers import load_effective_config
+
+            result = _fetch_uds_operation(load_effective_config(env), "status")
+        except Exception:
+            result = None
+        if result is not None:
+            _show_daemon_status(env, result, compact=True)
+            return
     candidate_urls = _candidate_daemon_urls(resolved_url)
     for candidate_url in candidate_urls:
         try:

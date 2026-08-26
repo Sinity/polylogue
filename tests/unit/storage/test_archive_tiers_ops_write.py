@@ -111,7 +111,7 @@ def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path
         embedding_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'embedding_catchup_runs'"
         ).fetchone()[0]
-        assert "status IN ('running', 'completed', 'failed', 'interrupted')" in embedding_sql
+        assert "status IN ('running', 'completed', 'failed', 'interrupted', 'completed_with_failures')" in embedding_sql
         assert "cancelled" not in embedding_sql
         assert conn.execute("SELECT status, embedded_messages FROM embedding_catchup_runs").fetchone() == (
             "interrupted",

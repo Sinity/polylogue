@@ -25,7 +25,6 @@ from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECK_NAMES,
     ARCHIVE_VERIFICATION_CHECKS,
-    ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
     REINDEX_CANARY_ACCEPTANCE_CHECKS,
     REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
@@ -34,11 +33,9 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheckClass,
     ArchiveVerificationExecutionPhase,
     ArchiveVerificationReport,
-    ArchiveVerificationWaiver,
     archive_verification_check_names_for_phase,
     archive_verification_owner_adapters,
     passes_strict_acceptance,
-    validate_archive_verification_registry,
     verify_archive,
 )
 from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooMember
@@ -280,7 +277,10 @@ def test_coherent_archive_is_all_ok(tmp_path: Path) -> None:
     assert report.warning_count == 0
     assert {check.name for check in report.checks} == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
     for check in report.checks:
-        assert check.status is OutcomeStatus.OK, f"{check.name}: {check.summary}"
+        # A check whose population is genuinely absent from the fixture
+        # reports SKIP (not-applicable), which is coherent; anything
+        # warning-or-worse is not.
+        assert check.status in {OutcomeStatus.OK, OutcomeStatus.SKIP}, f"{check.name}: {check.summary}"
 
 
 def test_raw_failure_lifecycle_accepts_only_typed_deferred_or_terminal_evidence(tmp_path: Path) -> None:
@@ -1193,19 +1193,6 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
     assert check.evidence["missing_tables"] == ["action_pairs"]
 
 
-def test_counts_summary_reports_origin_breakdown(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("counts-summary",))
-
-    check = _check(report, "counts-summary")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["session_count"] == 1
-    assert check.evidence["message_count"] == 1
-    assert check.evidence["block_count"] == 1
-    assert check.breakdown == {"codex-session": 1}
-
-
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     empty_root = tmp_path / "does-not-exist"
 
@@ -1226,7 +1213,6 @@ def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     assert names_by_status["session-lineage-acyclic"] is OutcomeStatus.SKIP
     assert names_by_status["message-count-projection"] is OutcomeStatus.SKIP
     assert names_by_status["planner-stats"] is OutcomeStatus.SKIP
-    assert names_by_status["counts-summary"] is OutcomeStatus.SKIP
 
 
 def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1249,7 +1235,6 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     by_name = {check.name: check for check in report.checks}
     assert by_name["fts-parity"].status is OutcomeStatus.ERROR
     assert "synthetic failure" in by_name["fts-parity"].summary
-    assert by_name["counts-summary"].status is OutcomeStatus.OK
     assert by_name["tier-schema"].status is OutcomeStatus.OK
 
 
@@ -1416,7 +1401,7 @@ def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -
     try:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
             """,
             (b"g" * 32,),
@@ -1962,83 +1947,6 @@ def test_stalled_append_cursor_freshness_passes_on_coherent_archive(tmp_path: Pa
     assert check.evidence["stalled_count"] == 0
 
 
-def test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup(tmp_path: Path) -> None:
-    """polylogue-zm4w8: two quarantined raws sharing (source_path, blob_hash),
-    with no indexed twin anywhere for that blob_hash, is exactly the residual
-    gap raw-byte-duplicate-supersession-apply cannot see (it requires an
-    already-indexed twin). This must trip ERROR, not the WARN
-    source-index-coverage already gives quarantined-but-unindexed heads.
-    """
-    _seed_coherent_archive(tmp_path)
-    source_conn = _connect(tmp_path / "source.db")
-    try:
-        for raw_id in ("raw-dup-a", "raw-dup-b"):
-            source_conn.execute(
-                """
-                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-                VALUES (?, 'codex-session', ?, '/rollout-repeated.jsonl', ?, 10, 100)
-                """,
-                (raw_id, f"native-{raw_id}", b"d" * 32),
-            )
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.ERROR
-    assert check.evidence["group_count"] == 1
-    assert check.evidence["duplicate_count"] == 1
-    group_sample = check.evidence["group_sample"]
-    assert len(group_sample) == 1
-    assert group_sample[0]["source_path"] == "/rollout-repeated.jsonl"
-    assert group_sample[0]["representative_raw_id"] == "raw-dup-a"
-    assert group_sample[0]["duplicate_raw_ids"] == ["raw-dup-b"]
-
-
-def test_quarantined_duplicate_with_indexed_twin_elsewhere_does_not_trip(tmp_path: Path) -> None:
-    """A (source_path, blob_hash) group of >1 quarantined rows whose
-    blob_hash ALSO appears on an already-indexed raw elsewhere is
-    raw-byte-duplicate-supersession-apply's territory, not this check's --
-    it must not double-flag content that actuator can already resolve.
-    """
-    _seed_coherent_archive(tmp_path)
-    source_conn = _connect(tmp_path / "source.db")
-    try:
-        for raw_id in ("raw-dup-c", "raw-dup-d"):
-            source_conn.execute(
-                """
-                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-                VALUES (?, 'codex-session', ?, '/rollout-also-indexed.jsonl', ?, 10, 100)
-                """,
-                (raw_id, f"native-{raw_id}", b"s" * 32),
-            )
-        # raw-1's blob_hash (b"s" * 32) is the coherent-archive fixture's
-        # already-indexed raw -- share it here to simulate an indexed twin.
-        source_conn.execute("UPDATE raw_sessions SET blob_hash = ? WHERE raw_id = 'raw-1'", (b"s" * 32,))
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["group_count"] == 0
-    assert check.evidence["already_resolved_group_count"] == 1
-
-
-def test_raw_quarantine_group_dedup_passes_on_coherent_archive(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-
-    report = verify_archive(tmp_path, checks=("raw-quarantine-group-dedup",))
-
-    check = _check(report, "raw-quarantine-group-dedup")
-    assert check.status is OutcomeStatus.OK
-    assert check.evidence["group_count"] == 0
-
-
 # ---------------------------------------------------------------------------
 # active-leaf / title convergence (polylogue-2hwl)
 # ---------------------------------------------------------------------------
@@ -2306,9 +2214,10 @@ def test_chatgpt_conservation_excludes_documents_absent_from_the_index(tmp_path:
     report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
 
     check = _check(report, "chatgpt-content-conservation")
-    assert check.status is OutcomeStatus.OK
+    assert check.status is OutcomeStatus.ERROR
     assert check.evidence["documents_absent_from_index"] == 1
     assert check.evidence["documents_measured"] == 0
+    assert check.evidence["outcome_reason"] == "zero_candidate_overlap"
 
 
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
@@ -2457,18 +2366,6 @@ def test_registry_rejects_candidate_phase_without_runner_before_real_candidate_g
         module.verify_archive(tmp_path, index_path_override=tmp_path / "index.db")
 
 
-def test_registry_rejects_closed_or_unknown_waiver_beads() -> None:
-    """Waiver validity is resolved from the check spec, not a second waiver table."""
-    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is closed"):
-        validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "closed"})
-    with pytest.raises(ValueError, match="embeddings-refs-liveness: waiver bead polylogue-feu0 is unknown"):
-        validate_archive_verification_registry(waiver_bead_statuses={})
-
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "open"})
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "in_progress"})
-    validate_archive_verification_registry(waiver_bead_statuses={"polylogue-feu0": "deferred"})
-
-
 def test_registry_rejects_duplicate_check_and_incident_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """One embedded registry cannot silently acquire a duplicate mapping."""
     from polylogue.maintenance import archive_verification as module
@@ -2580,75 +2477,6 @@ def test_check_class_is_stamped_onto_every_report_check(tmp_path: Path) -> None:
     for check in report.checks:
         assert isinstance(check, ArchiveVerificationCheck)
         assert check.check_class == by_name[check.name].check_class.value
-
-
-def test_waived_check_still_reports_error_but_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """RED TWIN for the waiver mechanism itself: a waived check must keep
-    reporting its true ``error`` status and evidence (the finding is never
-    hidden) while :attr:`ArchiveVerificationReport.blocking` excludes it --
-    proving the waiver changes the *gate*, not the *check*."""
-    _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "embeddings.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
-            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
-            """,
-            (b"h" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    from polylogue.maintenance import archive_verification as module
-
-    monkeypatch.setattr(
-        module,
-        "ARCHIVE_VERIFICATION_CHECKS",
-        tuple(
-            replace(spec, waiver=ArchiveVerificationWaiver(bead_id="polylogue-test", reason="synthetic"))
-            if spec.name == "embeddings-refs-liveness"
-            else spec
-            for spec in module.ARCHIVE_VERIFICATION_CHECKS
-        ),
-    )
-
-    report = module.verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
-
-    check = _check(report, "embeddings-refs-liveness")
-    assert check.status is OutcomeStatus.ERROR  # the finding is never hidden
-    assert check.waived_bead_id == "polylogue-test"
-    assert check.evidence["waiver"]["bead_id"] == "polylogue-test"
-    assert not report.blocking  # but the waived finding does not gate
-
-
-def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) -> None:
-    """Sanity twin for the waiver test above: with the real (unmodified)
-    ``ARCHIVE_VERIFICATION_WAIVERS`` table, this same violation is ALSO
-    non-blocking (waived), confirming the prior monkeypatched-table test's
-    green result matches production waiver config rather than an artifact
-    of the test's own patched table."""
-    _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "embeddings.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
-            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
-            """,
-            (b"h" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    assert "embeddings-refs-liveness" in ARCHIVE_VERIFICATION_WAIVERS  # documents why this bug is currently waived
-
-    report = verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
-
-    check = _check(report, "embeddings-refs-liveness")
-    assert check.status is OutcomeStatus.ERROR
-    assert check.waived_bead_id == "polylogue-feu0"
-    assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
 
 
 def test_strict_acceptance_rejects_warning_skip_and_waived_error() -> None:

@@ -314,13 +314,6 @@ class SeededArchiveQueryLease:
     def path(self) -> Path:
         return self.root / "index.db"
 
-    def __fspath__(self) -> str:
-        return os.fspath(self.path)
-
-    def __getattr__(self, name: str) -> object:
-        """Keep existing path-only fixture consumers source-compatible."""
-        return getattr(self.path, name)
-
     def _assert_current(self) -> None:
         if self._root_fd < 0:
             raise RuntimeError("query-only capability is finalized")

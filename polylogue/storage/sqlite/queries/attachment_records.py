@@ -36,6 +36,9 @@ def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> Attachme
         file_native_id=(value if isinstance((value := _row_value(row, "file_native_id")), str) else None),
         drive_native_id=(value if isinstance((value := _row_value(row, "drive_native_id")), str) else None),
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
+        blob_hash=(bytes(value) if isinstance((value := _row_value(row, "blob_hash")), (bytes, bytearray)) else None),
+        acquisition_status=(value if isinstance((value := _row_value(row, "acquisition_status")), str) else None),
+        generation_id=(value if isinstance((value := _row_value(row, "generation_id")), str) else None),
     )
 
 
@@ -50,7 +53,9 @@ async def get_attachments(
             a.attachment_id,
             a.media_type AS mime_type,
             a.byte_count AS size_bytes,
-            COALESCE(r.source_url, a.display_name) AS path,
+            NULL AS path,
+            a.blob_hash,
+            a.acquisition_status,
             a.display_name,
             r.source_url,
             r.caption,
@@ -96,7 +101,9 @@ async def get_attachments_batch(
             a.attachment_id,
             a.media_type AS mime_type,
             a.byte_count AS size_bytes,
-            COALESCE(r.source_url, a.display_name) AS path,
+            NULL AS path,
+            a.blob_hash,
+            a.acquisition_status,
             a.display_name,
             r.source_url,
             r.caption,

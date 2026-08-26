@@ -44,6 +44,19 @@ class DatabaseError(PolylogueError):
     http_status_code: int = HTTPStatus.SERVICE_UNAVAILABLE
 
 
+class ArchiveTierUnavailableError(DatabaseError):
+    """A required archive tier cannot be read at its resolved path."""
+
+    code = "archive_tier_unavailable"
+
+    def __init__(self, *, tier: str, path: str, reason: str, guidance: str) -> None:
+        self.tier = tier
+        self.path = path
+        self.reason = reason
+        self.guidance = guidance
+        super().__init__(f"{tier} tier unavailable at {path}: {reason}. {guidance}")
+
+
 class SchemaVersionMismatchError(DatabaseError):
     """Raised when the on-disk schema version cannot be served by this runtime.
 
@@ -96,6 +109,7 @@ class EmbeddingRetrievalNotReadyError(DatabaseError):
 
 
 __all__ = [
+    "ArchiveTierUnavailableError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",

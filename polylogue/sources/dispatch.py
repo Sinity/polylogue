@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from io import BytesIO
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
+from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
@@ -92,6 +93,20 @@ class LoweredPayloadSpec:
     # always-single-group ``mode="grouped_records"`` fallback (a dict-shaped
     # Claude Code payload, or any other grouped provider).
     trust_fallback_id: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGPTLoweredDocument:
+    """One ChatGPT document after the production source-lowering route.
+
+    This is intentionally a source-side projection: verification may inspect
+    the acquired mapping independently, but it must not invent another
+    envelope vocabulary or document splitter.
+    """
+
+    document_id: str
+    mapping: PayloadRecord
+    artifact_class: str
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
@@ -1137,6 +1152,8 @@ def _lower_bundle_payload(
     record = _payload_record(shaped_payload)
     if record is None:
         return []
+    if provider is Provider.CHATGPT and isinstance(record.get("conversations"), list):
+        return _chatgpt_bundle_record_specs(cast(PayloadSequence, record["conversations"]), fallback_id)
     # codex.json (bd polylogue-2m2e): reached here when the file-level walk
     # already unpacked the top-level array into one dict per item (the
     # ordinary per-.json-file path -- see source_parsing.py/emitter.py), so
@@ -1723,6 +1740,79 @@ def parse_payload(
     return sessions
 
 
+def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLoweredDocument]:
+    """Lower direct, bundled, and browser-capture ChatGPT payloads.
+
+    The returned mapping is the source document used by the independent
+    conservation census. Browser-capture fallback turns are projected into
+    the same provider-message shape used by their parser, while native
+    capture payloads retain the provider mapping verbatim.
+    """
+    documents: list[ChatGPTLoweredDocument] = []
+    for spec in _lower_payload_specs(Provider.CHATGPT, payload, fallback_id):
+        if spec.provider is not Provider.CHATGPT and spec.mode != "browser_capture":
+            continue
+        artifact_class = (
+            "browser_capture_envelope"
+            if spec.mode == "browser_capture"
+            else ("bundle" if spec.mode == "bundle_record" else "direct_export")
+        )
+        record = _payload_record(spec.payload)
+        if record is None:
+            continue
+        if spec.mode == "browser_capture":
+            try:
+                envelope = BrowserCaptureEnvelope.model_validate(record)
+            except Exception:
+                continue
+            native = envelope.raw_provider_payload
+            if isinstance(native, dict) and isinstance(native.get("mapping"), dict):
+                conversation_id = (
+                    native.get("id")
+                    or native.get("uuid")
+                    or native.get("conversation_id")
+                    or envelope.session.provider_session_id
+                )
+                documents.append(
+                    ChatGPTLoweredDocument(str(conversation_id), cast(PayloadRecord, native["mapping"]), artifact_class)
+                )
+                continue
+            mapping: dict[str, object] = {}
+            for turn in envelope.session.turns:
+                mapping[turn.provider_turn_id] = {
+                    "id": turn.provider_turn_id,
+                    "message": {
+                        "id": turn.provider_turn_id,
+                        "author": {"role": turn.role.value},
+                        "content": {"content_type": "text", "parts": [turn.text]}
+                        if turn.text
+                        else {
+                            "content_type": "blocks",
+                            "blocks": [block.model_dump(mode="json") for block in turn.blocks],
+                        },
+                    },
+                }
+            documents.append(
+                ChatGPTLoweredDocument(
+                    envelope.session.provider_session_id, cast(PayloadRecord, mapping), artifact_class
+                )
+            )
+            continue
+        conversation_id = next(
+            (
+                str(record[key])
+                for key in ("id", "uuid", "conversation_id")
+                if isinstance(record.get(key), str) and record[key]
+            ),
+            None,
+        )
+        if conversation_id is not None and isinstance(record.get("mapping"), dict):
+            documents.append(
+                ChatGPTLoweredDocument(conversation_id, cast(PayloadRecord, record["mapping"]), artifact_class)
+            )
+    return documents
+
+
 def parse_stream_payload(
     provider: str | Provider,
     payloads: Iterable[object],
@@ -1755,6 +1845,7 @@ __all__ = [
     "GROUP_PROVIDERS",
     "STREAM_RECORD_PROVIDERS",
     "LoweredPayloadSpec",
+    "ChatGPTLoweredDocument",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
     "detect_provider_evidence",
@@ -1762,5 +1853,6 @@ __all__ = [
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_payload",
+    "lower_chatgpt_documents",
     "parse_stream_payload",
 ]

@@ -28,7 +28,7 @@ from polylogue.storage.derivation_identity import (
     DerivationKeyLike,
     DerivationSubject,
 )
-from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, embedding_input_hash
+from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
 from polylogue.storage.embeddings.materialization import (
     EmbedSessionOutcome,
     embed_archive_session_sync,
@@ -562,15 +562,15 @@ def test_unscoped_or_legacy_failure_receipt_cannot_project_over_keyed_generation
 
 
 def _current_ref_and_vector(conn: sqlite3.Connection, session_id: str) -> tuple[str, bytes, bytes]:
-    """Resolve one session's (message_id, embedding_input_hash, vector) via the
+    """Resolve one session's (message_id, vector_derivation_hash, vector) via the
     v4 ref -> content-addressed row join (message_embeddings/
-    message_embeddings_meta are keyed by embedding_input_hash, not message_id,
+    message_embeddings_meta are keyed by vector_derivation_hash, not message_id,
     so message_embedding_refs is the required message_id -> hash bridge)."""
     row = conn.execute(
         """
-        SELECT r.message_id, r.embedding_input_hash, m.embedding
+        SELECT r.message_id, r.vector_derivation_hash, m.embedding
         FROM message_embedding_refs AS r
-        JOIN message_embeddings AS m ON m.embedding_input_hash = lower(hex(r.embedding_input_hash))
+        JOIN message_embeddings AS m ON m.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
         WHERE r.session_id = ?
         """,
         (session_id,),
@@ -614,14 +614,14 @@ def test_same_id_full_replace_reselects_and_atomically_replaces_vector_and_meta(
         embed_conn.close()
 
     # message_id is stable across the full-replace (same native_id/position);
-    # embedding_input_hash -- identity-free, H(model, embedder input text) --
+    # vector_derivation_hash -- identity-free, H(model, embedder input text) --
     # is what actually changes when the text changes, re-deriving to exactly
     # what the production identity function computes for the new text. The
     # vector itself is atomically replaced too (never left pointing at the
     # stale text's embedding).
     assert new_message_id == old_message_id == current_message_id
-    assert new_input_hash == embedding_input_hash(model="voyage-4", input_text=_CHANGED_TEXT)
-    assert old_input_hash == embedding_input_hash(model="voyage-4", input_text=_INITIAL_TEXT)
+    assert new_input_hash == vector_derivation_hash(model="voyage-4", input_text=_CHANGED_TEXT)
+    assert old_input_hash == vector_derivation_hash(model="voyage-4", input_text=_INITIAL_TEXT)
     assert new_input_hash != old_input_hash
     assert new_vector != old_vector
 

@@ -1473,7 +1473,13 @@ def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
                     raise MigrationError("durable migration SQL escaped the existing transaction")
             statement = ""
     if statement.strip():
-        raise MigrationError("migration SQL ended with an incomplete statement")
+        trailing_sql = re.sub(
+            r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*",
+            "",
+            statement,
+        )
+        if trailing_sql.strip():
+            raise MigrationError("migration SQL ended with an incomplete statement")
 
 
 def _pending_migration_steps(
