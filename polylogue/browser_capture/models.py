@@ -20,6 +20,43 @@ BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD: Literal["chrome-extension://*"] = "ch
 BrowserCaptureArchiveLifecycle = Literal["missing", "spooled_only", "ingest_pending", "archived", "stale", "failed"]
 BrowserCaptureSessionKind = Literal["standard", "temporary"]
 BrowserCaptureTitleSource = Literal["provider", "page", "session-id"]
+BrowserCaptureIdentityFidelity = Literal["native", "dom_degraded", "unknown"]
+BrowserCaptureIdentityReason = Literal[
+    "missing_conversation_id",
+    "missing_message_id",
+    "adapter_drift",
+    "ambiguous",
+    "receiver_disagreement",
+    "unsupported_provider",
+]
+
+
+class BrowserCaptureIdentityObservation(BaseModel):
+    """Provider-native identity evidence; DOM hints are explicitly non-authoritative."""
+
+    origin: str
+    provider_conversation_id: str | None = None
+    provider_message_id: str | None = None
+    parent_provider_message_id: str | None = None
+    branch_context: str | None = None
+    variant_index: int | None = Field(default=None, ge=0)
+    content_fingerprint: str | None = None
+    dom_ordinal: int | None = Field(default=None, ge=0)
+    adapter_name: str
+    adapter_version: str | None = None
+    observed_at: str | None = None
+    fidelity: BrowserCaptureIdentityFidelity = "unknown"
+    degraded_reason: BrowserCaptureIdentityReason | None = None
+
+
+class BrowserCaptureAcceptedIdentity(BaseModel):
+    """The exact canonical identity accepted by the receiver."""
+
+    session_ref: str
+    message_ref: str | None = None
+    evidence_ref: str | None = None
+    fidelity: BrowserCaptureIdentityFidelity
+    adapter_version: str | None = None
 
 
 class BrowserCaptureAttachment(BaseModel):
@@ -107,6 +144,7 @@ class BrowserCaptureTurn(BaseModel):
     # tool-shaped turn can populate (polylogue-ah21).
     blocks: list[BrowserCaptureBlock] = Field(default_factory=list)
     provider_meta: dict[str, object] = Field(default_factory=dict)
+    identity_observation: BrowserCaptureIdentityObservation | None = None
 
     @field_validator("provider_meta", mode="before")
     @classmethod
@@ -300,6 +338,7 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     replaced: bool
     deduplicated: bool
     capture_instance_id: str | None = None
+    accepted_identities: list[BrowserCaptureAcceptedIdentity] = Field(default_factory=list)
 
 
 class BrowserCaptureCapabilitiesPayload(BaseModel):

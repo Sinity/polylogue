@@ -23,6 +23,7 @@ from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserBackfillCheckpointRecord,
     BrowserBackfillCheckpointRequest,
+    BrowserCaptureAcceptedIdentity,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
@@ -233,6 +234,7 @@ class BrowserCaptureWriteResult:
     deduplicated: bool
     dedup_content_hash: str
     capture_instance_id: str | None
+    accepted_identities: tuple[BrowserCaptureAcceptedIdentity, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,6 +630,18 @@ def write_capture_envelope(
     """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     target = capture_artifact_path(envelope, root)
+    session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
+    accepted_identities = tuple(
+        BrowserCaptureAcceptedIdentity(
+            session_ref=session_ref,
+            message_ref=f"{session_ref}:n:{turn.provider_turn_id}",
+            evidence_ref=f"{capture_artifact_ref(envelope, root)}#message:{turn.provider_turn_id}",
+            fidelity="native" if turn.identity_observation.fidelity == "native" else "unknown",
+            adapter_version=envelope.provenance.adapter_version,
+        )
+        for turn in envelope.session.turns
+        if turn.provider_turn_id and turn.identity_observation is not None
+    )
     dedup_content_hash = capture_dedup_content_hash(envelope)
     with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
@@ -647,6 +661,7 @@ def write_capture_envelope(
                     deduplicated=True,
                     dedup_content_hash=dedup_content_hash,
                     capture_instance_id=envelope.provenance.extension_instance_id,
+                    accepted_identities=accepted_identities,
                 )
             if existing is not None and not _capture_is_newer_or_richer(envelope, existing):
                 return BrowserCaptureWriteResult(
@@ -659,6 +674,7 @@ def write_capture_envelope(
                     deduplicated=True,
                     dedup_content_hash=capture_dedup_content_hash(existing),
                     capture_instance_id=envelope.provenance.extension_instance_id,
+                    accepted_identities=accepted_identities,
                 )
         else:
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
@@ -689,6 +705,14 @@ def write_capture_envelope(
         deduplicated=False,
         dedup_content_hash=dedup_content_hash,
         capture_instance_id=envelope.provenance.extension_instance_id,
+        accepted_identities=accepted_identities,
+    )
+
+
+def _capture_origin(provider: str) -> str:
+    """Reduce provider-wire names to the public archive origin namespace."""
+    return {"chatgpt": "chatgpt-export", "claude": "claude-ai-export", "claude-ai": "claude-ai-export"}.get(
+        provider, "unknown-export"
     )
 
 

@@ -14,12 +14,8 @@
   // there is no per-message receiver endpoint. "Save" therefore triggers the
   // same whole-session capture the popup/auto-capture path already uses, and
   // this module reflects that outcome onto every currently-mounted badge.
-  // Per-message identity is DOM ordinal position for the current page
-  // lifetime (matching the same ordinal the DOM-fallback capture path
-  // already uses for its provider_turn_id). When the captured turn count and
-  // the mounted node count disagree (branching, streaming, host redesign)
-  // every badge falls back to "unknown" rather than asserting a per-message
-  // status it cannot actually verify — fail closed, never fail wrong.
+  // Per-message identity comes from the provider adapter. DOM order and text
+  // are hints only and can never authorize a captured state.
 
   const HOST_ATTR = "data-polylogue-message-index";
   const STATE_ATTR = "data-polylogue-state";
@@ -140,7 +136,7 @@
   // script to call around its whole-session capture, plus `stop()` for
   // tests/teardown. Every DOM operation is wrapped so a selector/DOM surprise
   // never throws into the host page — worst case, no badges mount.
-  function mount({ containerSelector, onSave, doc = document, root = null }) {
+  function mount({ containerSelector, onSave, identityForNode = null, doc = document, root = null }) {
     const mountedRoot = root || doc.documentElement;
     const mounted = new Map(); // container node -> badge api
     let nodeOrder = [];
@@ -200,9 +196,25 @@
       reconcile();
     }
 
-    function reportOutcome({ ok, turnCount }) {
+    function reportOutcome({ ok, acceptedIdentities = [] }) {
       pending = false;
-      stateMap = deriveStateMap({ nodeCount: nodeOrder.length, priorMap: stateMap, capture: { ok, turnCount } });
+      // Compatibility for non-provider test/host integrations. Production
+      // adapters always supply identityForNode; only that route may mark a
+      // message captured from an acknowledgement.
+      if (!identityForNode) {
+        stateMap = deriveStateMap({ nodeCount: nodeOrder.length, priorMap: stateMap, capture: { ok, turnCount: ok ? nodeOrder.length : null } });
+        reconcile();
+        return;
+      }
+      const accepted = new Set((Array.isArray(acceptedIdentities) ? acceptedIdentities : [])
+        .filter((item) => ok && item?.fidelity === "native" && item.message_ref)
+        .map((item) => item.message_ref.split(":n:").at(-1)));
+      const next = {};
+      nodeOrder.forEach((node, index) => {
+        const messageId = identityForNode?.(node)?.provider_message_id;
+        next[index] = messageId && accepted.has(String(messageId)) ? "captured" : (ok ? "unknown" : "failed");
+      });
+      stateMap = next;
       reconcile();
     }
 
