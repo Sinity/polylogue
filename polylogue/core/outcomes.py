@@ -32,13 +32,31 @@ OutcomeCheckFn = Callable[[], "OutcomeCheck"]
 
 
 class OutcomeOwner(Protocol):
-    """The small callable/result seam used by independently owned checks."""
+    """The small declaration/result seam used by independently owned checks."""
 
     @property
     def name(self) -> str: ...
 
     @property
     def check(self) -> OutcomeCheckFn | None: ...
+
+    @property
+    def candidate_check(self) -> OutcomeCheckFn | None: ...
+
+    @property
+    def semantic_owner(self) -> str: ...
+
+    @property
+    def production_route(self) -> str: ...
+
+    @property
+    def owned_reference(self) -> str: ...
+
+    @property
+    def population(self) -> tuple[str, ...]: ...
+
+    @property
+    def applicable_routes(self) -> frozenset[str]: ...
 
 
 class OutcomeCompositionFailureKind(str, Enum):
@@ -107,10 +125,22 @@ class OutcomeCompositionFailure(OutcomeCheck):
 
 @dataclass(frozen=True)
 class BoundOutcomeOwner:
-    """Named domain adapter bound to the inputs for one verification run."""
+    """Domain declaration bound to the inputs for one verification run.
+
+    The common seam deliberately carries only facts that belong to the
+    declaration itself.  It is not a verification catalogue: route consumers
+    compose these declarations and the result runner never stores their
+    status.
+    """
 
     name: str
     check: OutcomeCheckFn | None
+    candidate_check: OutcomeCheckFn | None = None
+    semantic_owner: str = ""
+    production_route: str = ""
+    owned_reference: str = ""
+    population: tuple[str, ...] = ()
+    applicable_routes: frozenset[str] = frozenset({"live-archive"})
 
 
 def compose_outcome_checks(owners: Iterable[OutcomeOwner]) -> OutcomeReport:

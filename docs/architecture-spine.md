@@ -42,7 +42,7 @@ Load-bearing policy files are parsed and enforced by the gate that owns their se
 
 ### Command ownership and verification planes (polylogue-60gzo)
 
-`ARCHIVE_VERIFICATION_CHECKS` is the sole authority for permanent archive invariants. Its typed metadata binds each invariant to fixture and red-twin coverage for code correctness and to daemon or promotion execution for production health. A command is not a second predicate authority: `verify` exposes deterministic repository checks, `bench` owns bounded experiments, and `workspace` owns operator workflows. The removed `lab` namespace had mixed those meanings and made archive-poking commands look like correctness gates. Temporary snapshot and drift workflows remain explicitly named workspace routes until their production or fixture replacements are wired.
+Archive verification is composed from domain-owned declarations. Each owner supplies its predicate, population, production route, and candidate applicability; route coverage is compiled from those declarations and reports evidence only. A command is not a second predicate authority: `verify` exposes deterministic repository checks, `bench` owns bounded experiments, and `workspace` owns operator workflows. The removed `lab` namespace had mixed those meanings and made archive-poking commands look like correctness gates. Temporary snapshot and drift workflows remain explicitly named workspace routes until their production or fixture replacements are wired.
 
 ### Schema versioning: two regimes keyed by tier durability
 - **Chosen**: per-tier version constants are the authority; mismatch is rejected.

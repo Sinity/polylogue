@@ -57,7 +57,8 @@ def resolve_embedding_failure_with_lifecycle(
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
     store = EmbeddingGenerationStore(embeddings_db.parent, active_path=embeddings_db)
-    with store.writer_lock() as admitted, sqlite3.connect(admitted, timeout=30.0) as conn:
+    with store.writer_lock() as binding, sqlite3.connect(binding, timeout=30.0) as conn:
+        store.assert_binding(binding)
         return resolve_embedding_failure(
             conn,
             failure_id=failure_id,
@@ -70,6 +71,7 @@ def resolve_embedding_failure_with_lifecycle(
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
     from polylogue.core.protocols import VectorProvider
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding, EmbeddingGenerationStore
     from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
     from polylogue.storage.runtime import MessageRecord
     from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingFailure
@@ -1288,12 +1290,15 @@ def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_d
 
         initialize_archive_database(resolved_embeddings, ArchiveTier.EMBEDDINGS)
     store = EmbeddingGenerationStore(resolved_embeddings.parent, active_path=resolved_embeddings)
-    with store.writer_lock() as admitted:
-        _mark_all_archive_sessions_needs_reindex(index_db_path, admitted)
+    with store.writer_lock() as binding:
+        _mark_all_archive_sessions_needs_reindex(index_db_path, binding)
+        store.assert_binding(binding)
 
 
-def _mark_all_archive_sessions_needs_reindex(index_db_path: Path, embeddings_db_path: Path) -> None:
-    conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
+def _mark_all_archive_sessions_needs_reindex(
+    index_db_path: Path, embeddings_binding: EmbeddingGenerationBinding
+) -> None:
+    conn = sqlite3.connect(embeddings_binding.database_path, timeout=30.0)
     try:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
         with conn:
@@ -1489,12 +1494,14 @@ def embed_archive_session_sync(
 
         initialize_archive_database(resolved_embeddings, ArchiveTier.EMBEDDINGS)
     store = EmbeddingGenerationStore(resolved_embeddings.parent, active_path=resolved_embeddings)
-    with store.writer_lock() as admitted:
+    with store.writer_lock() as binding:
         return _embed_archive_session_sync(
             index_db_path,
             vec_provider,
             session_id,
-            embeddings_db_path=admitted,
+            embeddings_db_path=binding,
+            lifecycle_store=store,
+            lifecycle_binding=binding,
         )
 
 
@@ -1503,7 +1510,9 @@ def _embed_archive_session_sync(
     vec_provider: VectorProvider,
     session_id: str,
     *,
-    embeddings_db_path: Path | None = None,
+    embeddings_db_path: Path | EmbeddingGenerationBinding | None = None,
+    lifecycle_store: EmbeddingGenerationStore | None = None,
+    lifecycle_binding: EmbeddingGenerationBinding | None = None,
 ) -> EmbedSessionOutcome:
     """Embed one archive session with exact-key, generation-guarded publication.
 
@@ -1523,12 +1532,16 @@ def _embed_archive_session_sync(
             error="vector provider does not expose text embedding generation",
         )
 
-    embeddings_db_path = (
-        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
+    embeddings_path = (
+        Path(embeddings_db_path.database_path)
+        if isinstance(embeddings_db_path, EmbeddingGenerationBinding)
+        else embeddings_db_path
+        if embeddings_db_path is not None
+        else index_db_path.with_name("embeddings.db")
     )
     index_conn = sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True, timeout=30.0)
     index_conn.row_factory = sqlite3.Row
-    embeddings_conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
+    embeddings_conn = sqlite3.connect(embeddings_path, timeout=30.0)
     attempted_message_refs: tuple[str, ...] = ()
     attempt = None
     session: sqlite3.Row | None = None
@@ -1603,6 +1616,8 @@ def _embed_archive_session_sync(
             for row in embeddable
         }
         source_hash = _archive_embedding_source_hash_from_pairs(input_hash_by_message_id.items())
+        if lifecycle_store is not None and lifecycle_binding is not None:
+            lifecycle_store.assert_binding(lifecycle_binding)
         attempt = begin_embedding_attempt(
             embeddings_conn,
             session_id=session_id,
@@ -1671,6 +1686,8 @@ def _embed_archive_session_sync(
                 error="embedding source or recipe changed during materialization; retry queued",
             )
 
+        if lifecycle_store is not None and lifecycle_binding is not None:
+            lifecycle_store.assert_binding(lifecycle_binding)
         committed = complete_embedding_attempt_success(
             embeddings_conn,
             attempt=attempt,
@@ -1686,6 +1703,15 @@ def _embed_archive_session_sync(
             )
     except Exception as exc:
         from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
+
+        # A hostile pointer/root replacement invalidates the whole operation.
+        # Do not turn that failed publication into a failure receipt in the
+        # replacement generation; the caller must retry against a fresh bind.
+        if lifecycle_store is not None and lifecycle_binding is not None:
+            try:
+                lifecycle_store.assert_binding(lifecycle_binding)
+            except Exception as binding_exc:
+                return EmbedSessionOutcome(status="error", session_id=session_id, error=str(binding_exc))
 
         # The failure ledger must never lose a row merely because the origin
         # lookup itself failed (polylogue-es7b) -- ``session`` already carries

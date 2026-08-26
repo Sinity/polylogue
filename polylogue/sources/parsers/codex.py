@@ -27,6 +27,9 @@ from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
 
 from .base import (
+    AdmissionLedger,
+    AdmissionUnit,
+    ParseAccounting,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
@@ -2323,7 +2326,6 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
         "compacted",
         "turn_context",
         "world_state",
-        "reasoning",
     }
 
     for index, item in enumerate(payload, start=1):
@@ -2368,6 +2370,38 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
     # the acquisition fallback id. A bare header remains ineligible because
     # ``has_message`` is false above.
     return has_session_header or has_direct_record or has_envelope_record
+
+
+def _codex_admission_accounting(
+    records: Iterable[object],
+    ledger: AdmissionLedger | None = None,
+) -> ParseAccounting:
+    """Account for every outer record after the complete stream is decoded."""
+    supported_types = {
+        "session_meta",
+        "response_item",
+        "event_msg",
+        "compacted",
+        "turn_context",
+        "world_state",
+    }
+    buffered = list(records)
+    ledger = ledger or AdmissionLedger()
+    ledger.expect(AdmissionUnit.OUTER_RECORD, len(buffered))
+    for index, item in enumerate(buffered):
+        record = _dict_record(item)
+        record_type = _record_type(record) if record is not None else None
+        supported = record is not None and (
+            _is_state(record)
+            or record_type in supported_types
+            or _is_direct_message(record)
+            or _session_meta_record(record) is not None
+        )
+        if supported:
+            ledger.materialized(AdmissionUnit.OUTER_RECORD, index, record_type or "direct")
+        else:
+            ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")
+    return ledger.close()
 
 
 def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: bool = False) -> ParsedSession:
@@ -2433,6 +2467,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     session_agent_nickname: str | None = None
     session_model_provider: str | None = None
     session_developer_instructions: str | None = None
+    admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
         record = _dict_record(item)
@@ -2790,10 +2825,19 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             timestamp_pair = parse_timestamp_pair(_message_timestamp(record, message_record))
             timestamp = timestamp_pair[1] if timestamp_pair is not None else None
 
-            content_blocks = content_blocks_from_segments(content)
+            content_blocks = content_blocks_from_segments(content, admission=admission)
             content_blocks.extend(inline_image_blocks)
+            if inline_image_blocks:
+                admission.expect(AdmissionUnit.BLOCK, len(inline_image_blocks))
+                for inline_block in inline_image_blocks:
+                    admission.materialized(
+                        AdmissionUnit.BLOCK,
+                        admission.next_ordinal(AdmissionUnit.BLOCK),
+                        inline_block.type.value,
+                    )
             has_structured = any(
-                cb.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING, BlockType.IMAGE)
+                cb.type
+                in (BlockType.TOOL_USE, BlockType.TOOL_RESULT, BlockType.THINKING, BlockType.IMAGE, BlockType.DOCUMENT)
                 for cb in content_blocks
             )
             if not raw_role or raw_role == "unknown":
@@ -2834,6 +2878,25 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             )
             message_position += 1
             latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
+            continue
+
+        # ``state`` is a supported non-conversational marker. Every other
+        # outer envelope that reaches this point is still an input unit: keep
+        # a typed record instead of silently accepting a session with an
+        # unaccounted suffix (polylogue-vslhb).
+        if _is_state(record):
+            continue
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="codex_unknown_outer_record",
+                timestamp=_iso_or_none(_record_timestamp(record)),
+                payload={
+                    "source_index": idx,
+                    "wire_type": _record_type(record) or "unknown",
+                    "record": _record_payload(record),
+                },
+            )
+        )
 
     # Emit the deduped subagent/session identity facts (agent_role,
     # agent_nickname, model_provider from session_meta; developer_instructions
@@ -2923,6 +2986,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # readers of `parent_message_id` don't need origin-specific fallback to
     # position order.
     messages = fill_linear_parent_chain(messages)
+    unit_accounting = _codex_admission_accounting(records, admission)
 
     return ParsedSession(
         source_name=Provider.CODEX,
@@ -2940,6 +3004,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         git_branch=git_branch_typed,
         git_repository_url=git_repo_url_typed,
         git_commit_hash=git_commit_hash_typed,
+        unit_accounting=unit_accounting,
     )
 
 

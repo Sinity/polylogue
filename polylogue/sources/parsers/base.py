@@ -5,6 +5,12 @@ from __future__ import annotations
 from polylogue.archive.message.roles import normalize_role
 
 from .base_models import (
+    AdmissionDisposition,
+    AdmissionOutcome,
+    AdmissionRefusalReason,
+    AdmissionUnit,
+    AdmissionUnknownReason,
+    ParseAccounting,
     ParsedAttachment,
     ParsedContentBlock,
     ParsedFileEdit,
@@ -17,6 +23,7 @@ from .base_models import (
     RawSessionData,
 )
 from .base_support import (
+    AdmissionLedger,
     attachment_from_meta,
     content_blocks_from_segments,
     extract_messages_from_list,
@@ -25,9 +32,18 @@ from .base_support import (
     mark_last_occurrence_as_active_leaf,
     synthetic_message_id,
     text_blocks_prose,
+    typed_unknown,
+    typed_unknown_block,
 )
 
 __all__ = [
+    "AdmissionDisposition",
+    "AdmissionOutcome",
+    "AdmissionRefusalReason",
+    "AdmissionUnit",
+    "AdmissionUnknownReason",
+    "AdmissionLedger",
+    "ParseAccounting",
     "ParsedContentBlock",
     "ParsedFileEdit",
     "ParsedMessage",
@@ -47,4 +63,6 @@ __all__ = [
     "mark_last_occurrence_as_active_leaf",
     "synthetic_message_id",
     "text_blocks_prose",
+    "typed_unknown",
+    "typed_unknown_block",
 ]

@@ -21,6 +21,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
+from polylogue.maintenance.archive_verification import archive_verification_names_for_route
 from polylogue.maintenance.rebuild_index import (
     RebuildIndexReceipt,
     RebuildIndexRequest,
@@ -285,10 +286,9 @@ def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ..
 
 
 def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -> dict[str, object]:
-    from polylogue.maintenance.archive_verification import (
-        REINDEX_CANARY_ACCEPTANCE_CHECKS,
-        REINDEX_CANARY_ACCEPTANCE_PROFILE,
-    )
+    from polylogue.maintenance.archive_verification import archive_verification_names_for_route
+
+    canary_checks = archive_verification_names_for_route("reindex-canary-candidate")
 
     generation = {
         "generation_id": "gen-canary",
@@ -316,10 +316,9 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
         ),
         "source_evidence_after": "0" * 64,
         "canary_acceptance": {
-            "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+            "profile": "reindex-canary-v2-domain-coverage",
             "results": [
-                {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0}
-                for name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+                {"name": name, "status": "ok", "summary": "fixture acceptance", "count": 0} for name in canary_checks
             ],
         },
     }
@@ -1429,12 +1428,12 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert receipt["source_evidence_after"] == rebuild_source_evidence_snapshot(root)
     canary_acceptance = receipt["canary_acceptance"]
     assert isinstance(canary_acceptance, dict)
-    assert canary_acceptance["profile"] == "reindex-canary-v1"
+    assert canary_acceptance["profile"] == "reindex-canary-v2-domain-coverage"
     results = canary_acceptance["results"]
     assert isinstance(results, list)
     assert all(isinstance(result, dict) for result in results)
     assert [(result["name"], result["status"]) for result in cast(list[dict[str, object]], results)] == [
-        ("pathology-zoo-invariants", "ok")
+        (name, "ok") for name in archive_verification_names_for_route("reindex-canary-candidate")
     ]
     assert hashlib.sha256(external_index.read_bytes()).hexdigest() == active_digest
     assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
@@ -2287,7 +2286,7 @@ def test_loading_canary_report_rejects_ambiguous_prior_evidence_schema(
         ),
         (
             "status",
-            "acceptance check pathology-zoo-invariants is not ok",
+            "acceptance check active-leaf-title-convergence is not ok",
         ),
     ),
 )

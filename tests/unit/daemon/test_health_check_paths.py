@@ -752,36 +752,35 @@ def test_repeated_stage_failures_prefers_populated_archive_ops(
 
 
 # ---------------------------------------------------------------------------
-# MEDIUM: archive_verification_registry (polylogue-t0m73 binding (c))
+# MEDIUM: archive_verification_domain (polylogue-t0m73 binding (c))
 # ---------------------------------------------------------------------------
 
 
-def test_archive_verification_registry_ok_on_coherent_archive(
+def test_archive_verification_domain_ok_on_coherent_archive(
     workspace_env: dict[str, Path],
 ) -> None:
-    from polylogue.daemon.health import _check_archive_verification_registry_medium
+    from polylogue.daemon.health import _check_archive_verification_domain_medium
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(archive_root())
 
-    alerts = _check_archive_verification_registry_medium()
+    alerts = _check_archive_verification_domain_medium()
 
     assert alerts  # at least the LIVENESS/FRESHNESS checks ran
     assert all(alert.severity != HealthSeverity.ERROR for alert in alerts)
     assert all(alert.check_name.startswith("archive_verification_") for alert in alerts)
 
 
-def test_archive_verification_registry_error_on_orphaned_blob_ref(
+def test_archive_verification_domain_error_on_orphaned_blob_ref(
     workspace_env: dict[str, Path],
 ) -> None:
-    """A LIVENESS-class registry check (blob-refs-liveness) going red must
+    """A LIVENESS-class domain check (blob-refs-liveness) going red must
     surface as an ERROR health alert -- proves binding (c) actually
     schedules the LIVENESS/FRESHNESS classes, not merely that the function
-    runs without raising. Uses blob-refs-liveness rather than
-    embeddings-refs-liveness because the latter carries a real, currently
-    open waiver (polylogue-feu0) that would downgrade its severity to
-    WARNING and defeat this test's point."""
-    from polylogue.daemon.health import _check_archive_verification_registry_medium
+    runs without raising. Uses blob-refs-liveness rather than a check whose
+    normal finding severity is WARNING, so the test proves the ERROR mapping.
+    """
+    from polylogue.daemon.health import _check_archive_verification_domain_medium
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(archive_root())
@@ -795,36 +794,30 @@ def test_archive_verification_registry_error_on_orphaned_blob_ref(
         )
         conn.commit()
 
-    alerts = _check_archive_verification_registry_medium()
+    alerts = _check_archive_verification_domain_medium()
 
     by_name = {alert.check_name: alert for alert in alerts}
     assert "archive_verification_blob_refs_liveness" in by_name
     assert by_name["archive_verification_blob_refs_liveness"].severity == HealthSeverity.ERROR
 
 
-def test_archive_verification_registry_only_schedules_liveness_and_freshness_classes(
+def test_archive_verification_domain_only_schedules_liveness_and_freshness_classes(
     workspace_env: dict[str, Path],
 ) -> None:
     """State-invariant/fidelity/conservation/config/complexity checks are
     already reachable via the operator CLI and promotion gate -- this
     scheduling loop must not duplicate them (module docstring's stated
     scope)."""
-    from polylogue.daemon.health import _check_archive_verification_registry_medium
-    from polylogue.maintenance.archive_verification import (
-        ArchiveVerificationDaemonSchedule,
-        archive_verification_health_check_names,
-    )
+    from polylogue.daemon.health import _check_archive_verification_domain_medium
+    from polylogue.maintenance.archive_verification import archive_verification_names_for_route
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(archive_root())
 
-    alerts = _check_archive_verification_registry_medium()
+    alerts = _check_archive_verification_domain_medium()
 
     scheduled = {alert.check_name.removeprefix("archive_verification_") for alert in alerts}
-    assert scheduled == {
-        name.replace("-", "_")
-        for name in archive_verification_health_check_names(ArchiveVerificationDaemonSchedule.MEDIUM)
-    }
+    assert scheduled == {name.replace("-", "_") for name in archive_verification_names_for_route("health-medium")}
 
 
 # ---------------------------------------------------------------------------

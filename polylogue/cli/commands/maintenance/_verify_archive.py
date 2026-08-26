@@ -5,7 +5,8 @@ repeatable command: tier presence + schema versions, active-pointer
 coherence (polylogue-k8kj class), source-vs-index materialization coverage,
 FTS parity, lineage sanity, planner-stats presence (polylogue-l3tk class),
 and an archive-wide counts summary. See
-:mod:`polylogue.maintenance.archive_verification` for the check registry.
+:mod:`polylogue.maintenance.archive_verification` for the domain-owned
+declarations composed by this command.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ _STATUS_ICONS = {"ok": "✓", "warning": "⚠", "error": "✗", "skip": "◌"}
     "--check",
     "selected_checks",
     multiple=True,
-    help="Run only the named check(s) (repeatable). Omit to run every registered check.",
+    help="Run only the named owner check(s) (repeatable). Omit to run every declared check.",
 )
 @click.option(
     "--sample-limit",
@@ -65,15 +66,17 @@ def verify_archive_command(
     temporarily busy under a concurrent rebuild -- never aborts the others;
     each independently reports ok/warning/error/skip plus evidence numbers.
 
-    Exit code is non-zero when any check reports an unwaived error. With
-    ``--strict``, every selected check must be ``ok``: warnings, skips, and
-    waived errors fail the command.
+    Exit code is non-zero when any check reports an error. With
+    ``--strict``, every selected check must be ``ok``: warnings and skips fail
+    the command.
     """
     from polylogue.maintenance.archive_verification import (
-        ARCHIVE_VERIFICATION_CHECK_NAMES,
+        archive_verification_names_for_route,
         passes_strict_acceptance,
         verify_archive,
     )
+
+    declared_names = archive_verification_names_for_route("live-archive")
 
     try:
         report = verify_archive(
@@ -96,7 +99,7 @@ def verify_archive_command(
         strict
         and not passes_strict_acceptance(
             report,
-            required_checks=selected_checks or ARCHIVE_VERIFICATION_CHECK_NAMES,
+            required_checks=selected_checks or declared_names,
         )
     ):
         raise SystemExit(1)

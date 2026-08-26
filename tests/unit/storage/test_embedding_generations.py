@@ -225,3 +225,49 @@ def test_first_promotion_pointer_interruption_recovers_candidate(tmp_path: Path)
     ensure_embedding_lifecycle(tmp_path)
     assert active.is_symlink()
     assert json.loads(metadata.read_text(encoding="utf-8"))["state"] == EmbeddingGenerationState.ACTIVE.value
+
+
+def test_admitted_binding_rejects_active_pointer_swap_without_publication(tmp_path: Path) -> None:
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "one")
+    store.replace(candidate)
+    with store.writer_lock() as binding:
+        active = tmp_path / "embeddings.db"
+        replacement = tmp_path / "replacement.db"
+        _sqlite(replacement, "hostile")
+        temporary = tmp_path / ".embeddings.db.hostile"
+        temporary.symlink_to(replacement)
+        temporary.replace(active)
+        with pytest.raises(EmbeddingGenerationError, match="active pointer was replaced"):
+            store.assert_binding(binding)
+
+
+def test_admitted_binding_rejects_archive_root_replacement(tmp_path: Path) -> None:
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "one")
+    store.replace(candidate)
+    with store.writer_lock() as binding:
+        moved = tmp_path.with_name(tmp_path.name + ".moved")
+        tmp_path.rename(moved)
+        tmp_path.mkdir()
+        try:
+            with pytest.raises(EmbeddingGenerationError, match="archive root was replaced"):
+                store.assert_binding(binding)
+        finally:
+            tmp_path.rmdir()
+            moved.rename(tmp_path)
+
+
+def test_receipt_root_identity_is_authenticated(tmp_path: Path) -> None:
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "one")
+    store.replace(candidate)
+    receipt_path = next((tmp_path / ".embeddings-generations" / "retention-receipts").glob("*.json"))
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    payload["archive_root_identity"] = [0, 0]
+    receipt_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(EmbeddingGenerationError, match="malformed embedding retention receipt"):
+        store.load_receipt(receipt_path.stem)

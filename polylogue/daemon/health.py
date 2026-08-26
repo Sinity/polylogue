@@ -1388,40 +1388,21 @@ def _check_cursor_lag_anomaly_layer(
         ]
 
 
-def _check_archive_verification_registry_medium() -> list[HealthAlert]:
-    """Schedule the archive-verification registry's LIVENESS/FRESHNESS checks
-    (polylogue-t0m73, binding (c)): those two classes are explicitly the
-    ones that need a recency signal ("something must have happened
-    recently" -- see :class:`~polylogue.maintenance.archive_verification
-    .ArchiveVerificationCheckClass`'s docstring), which is exactly what the
-    periodic daemon health loop provides and a one-shot operator CLI run
-    cannot. The other classes (state-invariant, fidelity, conservation,
-    config, complexity) are point-in-time coherence checks that make sense
-    on any snapshot and are already reachable via the operator CLI /
-    promotion-gate bindings -- this loop deliberately does not duplicate
-    them here.
-
-    A waived check (:data:`~polylogue.maintenance.archive_verification
-    .ARCHIVE_VERIFICATION_WAIVERS`) still surfaces as a health alert (the
-    daemon health loop has no concept of "non-blocking" the way the
-    reindex-acceptance gate does), but at WARNING rather than ERROR
-    severity so an already-tracked, separately-owned debt item doesn't
-    read as a fresh production incident on every health cycle.
-    """
+def _check_archive_verification_domain_medium() -> list[HealthAlert]:
+    """Run the domain declarations that own medium-cadence health routes."""
     now = datetime.now(UTC).isoformat()
     try:
         from polylogue.maintenance.archive_verification import (
-            ArchiveVerificationDaemonSchedule,
-            archive_verification_health_check_names,
+            archive_verification_names_for_route,
             verify_archive,
         )
 
-        scheduled_names = archive_verification_health_check_names(ArchiveVerificationDaemonSchedule.MEDIUM)
+        scheduled_names = archive_verification_names_for_route("health-medium")
         if not scheduled_names:
             return []
         report = verify_archive(archive_root(), checks=scheduled_names)
         alerts = []
-        any_unwaived_error = False
+        any_error = False
         for check in report.checks:
             if check.status.value == "ok":
                 severity = HealthSeverity.OK
@@ -1430,12 +1411,8 @@ def _check_archive_verification_registry_medium() -> list[HealthAlert]:
             elif check.status.value == "skip":
                 severity = HealthSeverity.OK
             else:
-                waived_bead_id = getattr(check, "waived_bead_id", None)
-                if waived_bead_id is not None:
-                    severity = HealthSeverity.WARNING
-                else:
-                    severity = HealthSeverity.ERROR
-                    any_unwaived_error = True
+                severity = HealthSeverity.ERROR
+                any_error = True
             alerts.append(
                 HealthAlert(
                     check_name=f"archive_verification_{check.name.replace('-', '_')}",
@@ -1448,18 +1425,18 @@ def _check_archive_verification_registry_medium() -> list[HealthAlert]:
                     ),
                 )
             )
-        _record_failure("archive_verification_registry", not any_unwaived_error)
+        _record_failure("archive_verification_domain_coverage", not any_error)
         return alerts
     except Exception:
-        logger.exception("archive_verification_registry health check raised")
+        logger.exception("archive_verification_domain health check raised")
         return [
             HealthAlert(
-                check_name="archive_verification_registry",
+                check_name="archive_verification_domain",
                 tier=HealthTier.MEDIUM,
                 severity=HealthSeverity.ERROR,
-                message="archive verification registry check failed (see logs)",
+                message="archive verification domain check failed (see logs)",
                 checked_at=now,
-                consecutive_failures=_record_failure("archive_verification_registry", False),
+                consecutive_failures=_record_failure("archive_verification_domain", False),
             )
         ]
 
@@ -1472,7 +1449,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
-        *_check_archive_verification_registry_medium(),
+        *_check_archive_verification_domain_medium(),
         _check_schema_drift_medium(),
         *_check_convergence_debt_medium(),
         *_check_cursor_lag_medium(),

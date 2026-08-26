@@ -350,12 +350,12 @@ def test_facade_upgrade_is_symbol_precise_not_module_wide(tmp_path: Path) -> Non
     assert [f.path for f in report.findings if f.code == "certifies_dead_code"] == ["tests/unit/test_facade_dead.py"]
 
 
-def test_literal_container_registry_seeds_check_functions() -> None:
-    """``ARCHIVE_VERIFICATION_CHECKS``' tuple-of-calls shape must be walked.
+def test_literal_container_dispatch_seeds_check_functions() -> None:
+    """Literal-container dispatch tables must be walked recursively.
 
-    Cold review measured the literal-container seeding at ZERO net
-    contribution: the non-recursive pass saw only the ``ast.Call`` elements and
-    never reached the ``_check_*`` reference inside each call's arguments.
+    Cold review measured literal-container seeding at ZERO net contribution:
+    the non-recursive pass saw only ``ast.Call`` elements and never reached the
+    check reference inside their arguments.
     """
     from devtools.oracle_integrity import _literal_container_roots
     from devtools.production_reachability import _parse_modules
