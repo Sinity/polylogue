@@ -12,8 +12,12 @@ def venv_bin(name: str, *, root: Path) -> str:
     The path is intentionally returned even when the file is missing.  The
     required-gate preflight then reports the missing checkout-local tool as a
     typed gate failure instead of silently falling through to ``PATH``.
+
+    The symlink is deliberately NOT resolved: ``.venv/bin/python`` links to
+    the base interpreter, and following it would launch that interpreter
+    without the venv's ``pyvenv.cfg`` context (no site-packages).
     """
-    return os.fspath((root / ".venv" / "bin" / name).resolve())
+    return os.fspath(root.resolve() / ".venv" / "bin" / name)
 
 
 def venv_python(*, root: Path) -> str:
