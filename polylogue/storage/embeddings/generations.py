@@ -52,6 +52,31 @@ class EmbeddingGeneration:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingGenerationBinding:
+    """Authenticated admission token for one archive embedding generation.
+
+    A pathname is only a locator.  The device/inode observations make the
+    locator an admission token: replacing the archive root, active pointer,
+    or generation file cannot silently redirect a write that is already in
+    flight.
+    """
+
+    archive_root: str
+    archive_root_identity: tuple[int, int]
+    generation_id: str
+    owner_id: str
+    database_path: str
+    database_identity: tuple[int, int]
+    active_path_identity: tuple[int, int]
+
+    def __fspath__(self) -> str:
+        return self.database_path
+
+    def __str__(self) -> str:
+        return self.database_path
+
+
+@dataclass(frozen=True, slots=True)
 class EmbeddingRetentionRecord:
     generation_id: str
     owner_id: str
@@ -60,6 +85,8 @@ class EmbeddingRetentionRecord:
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingPromotionReceipt:
+    archive_root: str
+    archive_root_identity: tuple[int, int]
     promoted_generation_id: str
     promoted_at_ns: int
     retention_boundary: int
@@ -125,6 +152,8 @@ class EmbeddingGenerationStore:
         root = Path(archive_root).expanduser().absolute()
         if not root.is_absolute():
             raise EmbeddingGenerationError("archive root must be absolute")
+        if root.is_symlink() or not root.is_dir():
+            raise EmbeddingGenerationError("embedding archive root must be an owned directory")
         self.archive_root = root
         self.root = root / _GENERATIONS
         self.active_path = (Path(active_path) if active_path is not None else root / "embeddings.db").absolute()
@@ -283,6 +312,55 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("embedding active pointer has no generation metadata")
         return matches[0] if matches else None
 
+    @staticmethod
+    def _identity(path: Path, *, label: str) -> tuple[int, int]:
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise EmbeddingGenerationError(f"{label} disappeared during lifecycle admission") from exc
+        return int(info.st_dev), int(info.st_ino)
+
+    @staticmethod
+    def _link_identity(path: Path, *, label: str) -> tuple[int, int]:
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise EmbeddingGenerationError(f"{label} disappeared during lifecycle admission") from exc
+        return int(info.st_dev), int(info.st_ino)
+
+    def _binding(
+        self, generations: list[EmbeddingGeneration], active: EmbeddingGeneration
+    ) -> EmbeddingGenerationBinding:
+        if active.state not in {"active", "promoting"}:
+            raise EmbeddingGenerationError("embedding active pointer names non-active metadata")
+        return EmbeddingGenerationBinding(
+            archive_root=str(self.archive_root),
+            archive_root_identity=self._identity(self.archive_root, label="embedding archive root"),
+            generation_id=active.generation_id,
+            owner_id=active.owner_id,
+            database_path=active.database_path,
+            database_identity=self._identity(Path(active.database_path), label="embedding database"),
+            active_path_identity=self._link_identity(self.active_path, label="embedding active pointer"),
+        )
+
+    def assert_binding(self, binding: EmbeddingGenerationBinding) -> None:
+        """Reject a binding whose root, pointer, or generation changed."""
+        if str(self.archive_root) != binding.archive_root:
+            raise EmbeddingGenerationError("embedding archive root binding mismatch")
+        if self._identity(self.archive_root, label="embedding archive root") != binding.archive_root_identity:
+            raise EmbeddingGenerationError("embedding archive root was replaced during materialization")
+        if self._link_identity(self.active_path, label="embedding active pointer") != binding.active_path_identity:
+            raise EmbeddingGenerationError("embedding active pointer was replaced during materialization")
+        generations = self._generations()
+        self._validate_receipts(generations)
+        active = self._active_generation(generations)
+        if active is None or active.generation_id != binding.generation_id or active.owner_id != binding.owner_id:
+            raise EmbeddingGenerationError("embedding active generation changed during materialization")
+        if active.database_path != binding.database_path:
+            raise EmbeddingGenerationError("embedding generation database path changed during materialization")
+        if self._identity(Path(binding.database_path), label="embedding database") != binding.database_identity:
+            raise EmbeddingGenerationError("embedding generation database was replaced during materialization")
+
     def _validate_receipt(
         self, path: Path, generations: list[EmbeddingGeneration] | None = None
     ) -> EmbeddingPromotionReceipt:
@@ -291,6 +369,8 @@ class EmbeddingGenerationStore:
             if path.is_symlink() or path.suffix != ".json" or not _regular_file(path):
                 raise ValueError("receipt must be a regular JSON file")
             expected_keys = {
+                "archive_root",
+                "archive_root_identity",
                 "promoted_generation_id",
                 "promoted_at_ns",
                 "retention_boundary",
@@ -307,8 +387,14 @@ class EmbeddingGenerationStore:
                 payload["reclaimed_generation_ids"], list
             ):
                 raise ValueError("receipt generation lists have invalid types")
+            archive_root_identity_values = tuple(int(x) for x in payload["archive_root_identity"])
+            if len(archive_root_identity_values) != 2:
+                raise ValueError("receipt archive root identity is stale or unbound")
+            archive_root_identity = (archive_root_identity_values[0], archive_root_identity_values[1])
             records = tuple(EmbeddingRetentionRecord(**record) for record in payload["records"])
             receipt = EmbeddingPromotionReceipt(
+                str(payload["archive_root"]),
+                archive_root_identity,
                 str(payload["promoted_generation_id"]),
                 int(payload["promoted_at_ns"]),
                 int(payload["retention_boundary"]),
@@ -317,6 +403,10 @@ class EmbeddingGenerationStore:
                 tuple(str(x) for x in payload["eligible_generation_ids"]),
                 tuple(str(x) for x in payload["reclaimed_generation_ids"]),
             )
+            if receipt.archive_root != str(self.archive_root) or len(receipt.archive_root_identity) != 2:
+                raise ValueError("receipt archive root identity is stale or unbound")
+            if receipt.archive_root_identity != self._identity(self.archive_root, label="embedding archive root"):
+                raise ValueError("receipt archive root was replaced")
             if path.stem != receipt.promoted_generation_id or not _ID.fullmatch(receipt.promoted_generation_id):
                 raise ValueError("receipt identity does not match filename")
             if receipt.promoted_at_ns <= 0 or receipt.retention_boundary != _MAX_RETAINED:
@@ -404,7 +494,7 @@ class EmbeddingGenerationStore:
             _fsync_dir(self.root)
 
     @contextmanager
-    def writer_lock(self) -> Iterator[Path]:
+    def writer_lock(self) -> Iterator[EmbeddingGenerationBinding]:
         """Admit one embedding SQLite writer for its complete write lifetime."""
         with self._lock():
             generations = self._generations()
@@ -416,7 +506,12 @@ class EmbeddingGenerationStore:
                 raise EmbeddingGenerationError("embedding active pointer has no active generation")
             elif active is None:
                 raise EmbeddingGenerationError("embedding lifecycle has no active database")
-            yield self.active_path
+            generations = self._generations()
+            active = self._active_generation(generations)
+            if active is None:
+                raise EmbeddingGenerationError("embedding lifecycle has no active database")
+            binding = self._binding(generations, active)
+            yield binding
 
     def ensure_active(self) -> Path:
         with self._lock():
@@ -537,6 +632,8 @@ class EmbeddingGenerationStore:
             self._write_generation(EmbeddingGeneration(**{**asdict(generation), "state": "eligible"}))
             records.append(EmbeddingRetentionRecord(generation.generation_id, generation.owner_id, "eligible"))
         receipt = EmbeddingPromotionReceipt(
+            str(self.archive_root),
+            self._identity(self.archive_root, label="embedding archive root"),
             active.generation_id,
             active.promoted_at_ns,
             _MAX_RETAINED,
@@ -561,6 +658,8 @@ class EmbeddingGenerationStore:
         if reclaimed:
             _fsync_dir(self.root)
         completed = EmbeddingPromotionReceipt(
+            receipt.archive_root,
+            receipt.archive_root_identity,
             receipt.promoted_generation_id,
             receipt.promoted_at_ns,
             receipt.retention_boundary,
@@ -598,6 +697,7 @@ def ensure_embedding_lifecycle(archive_root: str | Path, *, active_path: str | P
 
 __all__ = [
     "EmbeddingGeneration",
+    "EmbeddingGenerationBinding",
     "EmbeddingGenerationError",
     "EmbeddingGenerationState",
     "EmbeddingGenerationStore",

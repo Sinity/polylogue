@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
@@ -221,10 +222,11 @@ def reconcile_embedding_orphans(
             mutation_authority=mutation_authority,
         )
     store = EmbeddingGenerationStore(embeddings_path.parent, active_path=embeddings_path)
-    with store.writer_lock() as admitted:
+    with store.writer_lock() as binding:
+        store.assert_binding(binding)
         return _reconcile_embedding_orphans(
             index_path,
-            admitted,
+            binding,
             dry_run=False,
             max_count=max_count,
             sample_size=sample_size,
@@ -236,7 +238,7 @@ def reconcile_embedding_orphans(
 
 def _reconcile_embedding_orphans(
     index_db_path: str | Path,
-    embeddings_db_path: str | Path | None = None,
+    embeddings_db_path: str | Path | EmbeddingGenerationBinding | None = None,
     *,
     dry_run: bool = True,
     max_count: int | None = DEFAULT_MAX_COUNT,
@@ -261,7 +263,11 @@ def _reconcile_embedding_orphans(
 
     index_path = Path(index_db_path)
     embeddings_path = (
-        Path(embeddings_db_path) if embeddings_db_path is not None else index_path.with_name("embeddings.db")
+        Path(embeddings_db_path.database_path)
+        if isinstance(embeddings_db_path, EmbeddingGenerationBinding)
+        else Path(embeddings_db_path)
+        if embeddings_db_path is not None
+        else index_path.with_name("embeddings.db")
     )
     resolved_now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     if not dry_run and mutation_authority is None:
