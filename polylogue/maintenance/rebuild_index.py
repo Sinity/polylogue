@@ -67,6 +67,17 @@ _ACTIVE_EXTERNAL_INVENTORY_TOKEN: contextvars.ContextVar[dict[str, object] | Non
 )
 
 
+def candidate_build_schema_identity() -> tuple[int, tuple[str, ...]]:
+    """Return the daemon-owned source/index schema identity for candidates."""
+
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    index_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
+    return source_version, (f"source:{source_version}", f"index:{index_version}")
+
+
 class RebuildProvenanceError(RuntimeError):
     """Raised when rebuild evidence is no longer valid for a mutation."""
 

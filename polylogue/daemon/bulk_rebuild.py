@@ -50,6 +50,7 @@ from polylogue.maintenance.archive_verification import read_raw_failure_lifecycl
 from polylogue.maintenance.rebuild_index import (
     _REBUILD_TERMINAL_NOT_RESUMABLE,
     _reconcile_active_generation_transaction,
+    candidate_build_schema_identity,
     validate_rebuild_source_admission,
 )
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
@@ -497,25 +498,21 @@ async def run_daemon_bulk_rebuild_pass(
             SourceSeal,
             plan_candidate_build,
         )
-        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
         root_stat = root.stat()
         source_tier = location.configured_tier("source")
+        source_schema_version, schema_declarations = candidate_build_schema_identity()
         source_seal = SourceSeal(
             archive_identity=f"dev:{root_stat.st_dev}:ino:{root_stat.st_ino}",
             source_identity=source_tier.stable_id,
             source_snapshot=transaction.source_snapshot,
-            source_schema_version=ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE],
+            source_schema_version=source_schema_version,
         )
         candidate_request = CandidateBuildRequest(
             source_seal=source_seal,
             package="polylogue-index",
             code="polylogue-rebuild-runtime",
-            schemas=(
-                f"source:{ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]}",
-                f"index:{ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}",
-            ),
+            schemas=schema_declarations,
             parser_declarations=("origin-parser-fingerprints",),
             lowering_declarations=("archive-lowering-fingerprints",),
             origin_declarations=("canonical-origin-specs",),
