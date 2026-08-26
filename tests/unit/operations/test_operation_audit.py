@@ -68,17 +68,20 @@ class _Actuator:
     recovery_raises: bool = False
     inspections: int = 0
     target_refs: tuple[str, ...] = ("session:fixture",)
+    effect: str | None = None
     destructive_class: DestructiveClass = "reversible"
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, _args: object) -> MutationPlan:
         targets = ("session:changed",) if self.changed else self.target_refs
+        context = {} if self.effect is None else {"effect": self.effect}
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
             target_refs=targets,
             affected_tiers=("user",),
             reversible=True,
+            context=context,
         )
 
     def apply(self, plan: MutationPlan, _args: object) -> MutationReceipt:
@@ -699,6 +702,37 @@ def test_dead_attempt_is_inspected_before_overlapping_apply_and_exact_retry_is_s
             "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
             (operation_id,),
         ).fetchone() == ("recovery_classified",)
+
+
+def test_recovery_rejects_a_different_effect_over_the_same_target(tmp_path: Path) -> None:
+    """A target match cannot authorize a retry with a changed immutable plan."""
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    actuator.effect = "different-effect"
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "drifted-retry-token")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    with pytest.raises(RecoveryBlockedError, match="plan identity drift"):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.calls == 0
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed", "recovery_unknown")
+        assert conn.execute(
+            "SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("unknown",)
 
 
 @pytest.mark.parametrize(
