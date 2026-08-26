@@ -2011,7 +2011,7 @@ def _message_content_hash(
     variant_index, provider_message_id) -- it drives row-level re-ingest/
     dedup change detection for the ``messages`` table itself. It is no
     longer what embedding freshness is gated on: since polylogue-q88p,
-    embeddings are keyed by ``embedding_input_hash`` (identity-FREE --
+    embeddings are keyed by ``vector_derivation_hash`` (identity-FREE --
     ``storage/embeddings/identity.py``), computed straight from the
     embedder's input text, so a rebuild or lineage-normalization shift that
     changes this hash without changing the actual text no longer forces a
@@ -2560,7 +2560,7 @@ def _message_content_hash_from_rows(
     computes. That makes the result NOT bit-identical to what a normal
     parse-time write would hash for the same final text, but the docstring
     on ``_message_content_hash`` already notes embedding freshness is keyed
-    off ``embedding_input_hash`` instead: this remains a row-level
+    off ``vector_derivation_hash`` instead: this remains a row-level
     change-detection signal, not a content-integrity guarantee, and this is
     a bounded, understood narrowing of it -- not silent staleness.
     """

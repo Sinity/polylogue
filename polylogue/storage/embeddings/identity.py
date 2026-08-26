@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import unicodedata
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 EMBEDDING_SUBJECT_GRAIN = "archive-message-vectors"
 EMBEDDING_MESSAGE_GRAIN = "archive-message-vector"
-# v2 (polylogue-q88p): the ordered aggregate now carries embedding_input_hash
+# v2 (polylogue-q88p): the ordered aggregate now carries vector_derivation_hash
 # (identity-free: H(model, embedder input text)) instead of messages.content_hash
 # (identity-contaminated: includes session_id/position/variant_index). Bumping
 # this string changes recipe_hash, which deliberately busts every stale
@@ -38,10 +39,10 @@ EMBEDDING_TOOL_IMPLEMENTATION = "polylogue.sqlite-vec-v1"
 EMBEDDING_OUTPUT_SCHEMA_VERSION = 1
 EMBEDDING_SOURCE_HASH_SQL_FUNCTION = "polylogue_embedding_source_hash"
 EMBEDDING_DERIVATION_KEY_SQL_FUNCTION = "polylogue_embedding_derivation_key"
-EMBEDDING_INPUT_HASH_SQL_FUNCTION = "polylogue_embedding_input_hash"
+VECTOR_DERIVATION_HASH_SQL_FUNCTION = "polylogue_vector_derivation_hash"
 
 _SOURCE_HASH_DOMAIN = b"polylogue.embedding-source.v2\x00"
-_INPUT_HASH_DOMAIN = b"polylogue.embedding-input.v1\x00"
+_VECTOR_ADDRESS_DOMAIN = "polylogue.embedding-vector-address.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,22 +61,42 @@ class EmbeddingRecipe:
     normalization: str
     tool_implementation: str
     input_schema_version: str
+    request_options: tuple[tuple[str, str | int | float | bool], ...] = ()
+    element_type: str = "float32"
 
     @classmethod
-    def current(cls, *, model: str, dimensions: int) -> EmbeddingRecipe:
+    def current(
+        cls,
+        *,
+        model: str,
+        dimensions: int,
+        provider: str = EMBEDDING_PROVIDER,
+        model_revision: str = EMBEDDING_MODEL_REVISION,
+        input_type: str = EMBEDDING_INPUT_TYPE,
+        task: str = EMBEDDING_TASK,
+        normalization: str = EMBEDDING_NORMALIZATION,
+        canonicalization: str = EMBEDDING_TEXT_CANONICALIZATION,
+        chunking_version: str = EMBEDDING_CHUNKING_VERSION,
+        tool_implementation: str = EMBEDDING_TOOL_IMPLEMENTATION,
+        input_schema_version: str | None = None,
+        request_options: tuple[tuple[str, str | int | float | bool], ...] = (),
+        element_type: str = "float32",
+    ) -> EmbeddingRecipe:
         return cls(
-            canonicalization=EMBEDDING_TEXT_CANONICALIZATION,
+            canonicalization=canonicalization,
             record_selector=EMBEDDING_RECORD_SELECTOR,
-            chunking_version=EMBEDDING_CHUNKING_VERSION,
-            provider=EMBEDDING_PROVIDER,
+            chunking_version=chunking_version,
+            provider=provider,
             model=model,
-            model_revision=EMBEDDING_MODEL_REVISION,
+            model_revision=model_revision,
             dimensions=dimensions,
-            task=EMBEDDING_TASK,
-            input_type=EMBEDDING_INPUT_TYPE,
-            normalization=EMBEDDING_NORMALIZATION,
-            tool_implementation=EMBEDDING_TOOL_IMPLEMENTATION,
-            input_schema_version=f"archive-index-v{INDEX_SCHEMA_VERSION}",
+            task=task,
+            input_type=input_type,
+            normalization=normalization,
+            tool_implementation=tool_implementation,
+            input_schema_version=input_schema_version or f"archive-index-v{INDEX_SCHEMA_VERSION}",
+            request_options=request_options,
+            element_type=element_type,
         )
 
     def identity(self) -> DerivationIdentity:
@@ -94,6 +115,8 @@ class EmbeddingRecipe:
                 "record_selector": self.record_selector,
                 "task": self.task,
                 "tool_implementation": self.tool_implementation,
+                "request_options": self.request_options,
+                "element_type": self.element_type,
             },
         )
 
@@ -102,7 +125,7 @@ class EmbeddingRecipe:
             "polylogue.embedding.output.v1",
             {
                 "dimensions": self.dimensions,
-                "element_type": "float32",
+                "element_type": self.element_type,
                 "kind": "dense-vector",
                 "schema_version": EMBEDDING_OUTPUT_SCHEMA_VERSION,
             },
@@ -117,8 +140,47 @@ class EmbeddingRecipe:
         return self.output_contract().digest()
 
 
-def embedding_input_hash(*, model: str, input_text: str) -> bytes:
-    """Identity-free vector key: SHA-256 over exactly (model, embedder input text).
+@dataclass(frozen=True, slots=True)
+class EmbeddingRequestSpec:
+    """Single source of truth for provider payload and vector address."""
+
+    recipe: EmbeddingRecipe
+    input_text: str
+
+    @property
+    def normalized_input(self) -> str:
+        return unicodedata.normalize("NFC", self.input_text)
+
+    @property
+    def provider_request(self) -> dict[str, object]:
+        request: dict[str, object] = {
+            "input": [self.normalized_input],
+            "model": self.recipe.model,
+            "input_type": self.recipe.input_type,
+        }
+        request.update(dict(self.recipe.request_options))
+        if self.recipe.dimensions != 1024:
+            request["output_dimension"] = self.recipe.dimensions
+        return request
+
+    @property
+    def vector_derivation_hash(self) -> bytes:
+        document = {
+            "domain": _VECTOR_ADDRESS_DOMAIN,
+            "recipe": json.loads(self.recipe.identity().canonical_bytes()),
+            "output": json.loads(self.recipe.output_contract().canonical_bytes()),
+            "input": self.normalized_input,
+        }
+        encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8", errors="surrogatepass"
+        )
+        return hashlib.sha256(encoded).digest()
+
+
+def vector_derivation_hash(
+    *, recipe: EmbeddingRecipe | None = None, input_text: str, model: str | None = None
+) -> bytes:
+    """Address the complete request/output contract and exact normalized input.
 
     This is a pure function of what is actually sent to the embedding
     provider -- nothing else. Session id, message id, position, variant
@@ -139,22 +201,17 @@ def embedding_input_hash(*, model: str, input_text: str) -> bytes:
     Unicode-equivalent strings from different providers/encodings hash
     identically.
     """
-    normalized = unicodedata.normalize("NFC", input_text)
-    hasher = hashlib.sha256()
-    hasher.update(_INPUT_HASH_DOMAIN)
-    model_bytes = model.encode("utf-8", errors="surrogatepass")
-    hasher.update(len(model_bytes).to_bytes(8, "big"))
-    hasher.update(model_bytes)
-    text_bytes = normalized.encode("utf-8", errors="surrogatepass")
-    hasher.update(len(text_bytes).to_bytes(8, "big"))
-    hasher.update(text_bytes)
-    return hasher.digest()
+    if recipe is None:
+        if model is None:
+            raise TypeError("recipe or model is required")
+        recipe = EmbeddingRecipe.current(model=model, dimensions=1024)
+    return EmbeddingRequestSpec(recipe=recipe, input_text=input_text).vector_derivation_hash
 
 
-def _embedding_input_hash_sql(model: object, input_text: object) -> bytes | None:
+def _vector_derivation_hash_sql(model: object, input_text: object) -> bytes | None:
     if model is None or input_text is None:
         return None
-    return embedding_input_hash(model=str(model), input_text=str(input_text))
+    return vector_derivation_hash(model=str(model), input_text=str(input_text))
 
 
 def sql_string_literal(value: str) -> str:
@@ -166,7 +223,7 @@ def sql_string_literal(value: str) -> str:
 class EmbeddingSourceDigest:
     """Incremental canonical digest of an ordered embeddable-message set.
 
-    v2 (polylogue-q88p): digests only ``embedding_input_hash`` VALUES, not
+    v2 (polylogue-q88p): digests only ``vector_derivation_hash`` VALUES, not
     ``(message_id, hash)`` pairs. Session-level "does this session's source
     set need a new embedding attempt" bookkeeping must stay identity-free
     too, or a message-set that is byte-identical in content but renumbered
@@ -227,9 +284,9 @@ def register_embedding_identity_sql(conn: sqlite3.Connection) -> None:
         deterministic=True,
     )
     conn.create_function(
-        EMBEDDING_INPUT_HASH_SQL_FUNCTION,
+        VECTOR_DERIVATION_HASH_SQL_FUNCTION,
         2,
-        _embedding_input_hash_sql,
+        _vector_derivation_hash_sql,
         deterministic=True,
     )
 
@@ -298,7 +355,7 @@ def embedding_derivation_digest_from_hashes(
 def message_embedding_derivation_digest_from_hashes(
     *,
     message_id: str,
-    embedding_input_hash: bytes,
+    vector_derivation_hash: bytes,
     recipe_hash: bytes,
     output_contract_hash: bytes,
 ) -> bytes:
@@ -308,7 +365,7 @@ def message_embedding_derivation_digest_from_hashes(
             "polylogue.embedding.message-source.v2",
             {
                 "canonicalization": EMBEDDING_SOURCE_CANONICALIZATION,
-                "embedding_input_sha256": embedding_input_hash,
+                "embedding_input_sha256": vector_derivation_hash,
             },
         ).digest(),
         recipe_identity_digest=recipe_hash,
@@ -317,7 +374,7 @@ def message_embedding_derivation_digest_from_hashes(
 
 
 def message_embedding_derivation_key(
-    *, message_id: str, embedding_input_hash: bytes, recipe: EmbeddingRecipe
+    *, message_id: str, vector_derivation_hash: bytes, recipe: EmbeddingRecipe
 ) -> DerivationKey:
     return DerivationKey(
         subject=DerivationSubject(reference=message_id, grain=EMBEDDING_MESSAGE_GRAIN),
@@ -325,7 +382,7 @@ def message_embedding_derivation_key(
             "polylogue.embedding.message-source.v2",
             {
                 "canonicalization": EMBEDDING_SOURCE_CANONICALIZATION,
-                "embedding_input_sha256": embedding_input_hash,
+                "embedding_input_sha256": vector_derivation_hash,
             },
         ),
         recipe_identity=recipe.identity(),
@@ -336,7 +393,7 @@ def message_embedding_derivation_key(
 __all__ = [
     "EMBEDDING_CHUNKING_VERSION",
     "EMBEDDING_DERIVATION_KEY_SQL_FUNCTION",
-    "EMBEDDING_INPUT_HASH_SQL_FUNCTION",
+    "VECTOR_DERIVATION_HASH_SQL_FUNCTION",
     "EMBEDDING_INPUT_TYPE",
     "EMBEDDING_MODEL_REVISION",
     "EMBEDDING_NORMALIZATION",
@@ -348,10 +405,11 @@ __all__ = [
     "EMBEDDING_TEXT_CANONICALIZATION",
     "EMBEDDING_TOOL_IMPLEMENTATION",
     "EmbeddingRecipe",
+    "EmbeddingRequestSpec",
     "EmbeddingSourceDigest",
     "embedding_derivation_digest_from_hashes",
     "embedding_derivation_key",
-    "embedding_input_hash",
+    "vector_derivation_hash",
     "embedding_source_identity",
     "message_embedding_derivation_digest_from_hashes",
     "message_embedding_derivation_key",

@@ -299,7 +299,7 @@ def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
     with sqlite3.connect(root / "embeddings.db") as conn:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:source-backed-session:no-such-message', 'codex-session:source-backed-session', 'codex-session', ?)
             """,
             (b"o" * 32,),
@@ -459,7 +459,7 @@ def test_recovery_completes_only_after_current_strict_acceptance(
     with sqlite3.connect(root / "embeddings.db") as conn:
         conn.execute(
             """
-            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, vector_derivation_hash)
             VALUES ('codex-session:source-backed-session:no-such-message', 'codex-session:source-backed-session', 'codex-session', ?)
             """,
             (b"r" * 32,),

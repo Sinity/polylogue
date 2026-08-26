@@ -111,7 +111,7 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
             embedding=vector,
             model="voyage-4",
             embedded_at_ms=1_767_225_700_000,
-            embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
+            vector_derivation_hash=hashlib.sha256(message_id.encode()).digest(),
         )
     conn.close()
 
