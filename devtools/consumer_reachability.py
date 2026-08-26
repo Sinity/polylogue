@@ -107,6 +107,29 @@ def _added_lines(root: Path, base: str, head: str) -> dict[str, list[str]]:
     return result
 
 
+def _added_files(root: Path, base: str, head: str) -> frozenset[str]:
+    """Files genuinely NEW in base..head — the only candidates for module findings.
+
+    A modified file gains added lines too; flagging it as an unreachable
+    "added module" made the gate refuse edits to long-standing surfaces
+    (first false positive: browser_capture, minutes after the gate merged).
+    """
+    listing = _git(root, "diff", "--name-only", "--no-ext-diff", "--diff-filter=A", base, head, "--", "polylogue")
+    return frozenset(line.strip() for line in listing.splitlines() if line.strip())
+
+
+def _console_script_modules(root: Path) -> tuple[str, ...]:
+    """Module targets of every [project.scripts] entry in pyproject.toml."""
+    import tomllib
+
+    try:
+        payload = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConsumerReachabilityError(f"cannot read console-script authority: {exc}") from exc
+    scripts = payload.get("project", {}).get("scripts", {})
+    return tuple(sorted({str(target).split(":", 1)[0] for target in scripts.values()}))
+
+
 def _waivers(path: Path | None) -> dict[str, str]:
     if path is None:
         return {}
@@ -131,11 +154,23 @@ def _waivers(path: Path | None) -> dict[str, str]:
 def check(root: Path, *, base: str | None = None, head: str | None = None, waiver_body: Path | None = None) -> Report:
     base_sha, head_sha = _authority(root, base, head)
     additions = _added_lines(root, base_sha, head_sha)
+    added_files = _added_files(root, base_sha, head_sha)
     waivers = _waivers(waiver_body)
     production_root = root / "polylogue"
     graph = _CallGraph(_production_modules(root.resolve(), _source_signature(production_root)))
     reachable: set[str] = set()
-    for entrypoint in ("polylogue.api", "polylogue.mcp", "polylogue.daemon", "polylogue.hooks"):
+    # Production entrypoints: the served surfaces plus the CLI package and
+    # every console script pyproject declares (polylogue-browser-capture-
+    # native-host, polylogue-agentctl-adapter, polylogued, ...). Omitting the
+    # script targets made their whole packages "unreachable".
+    for entrypoint in (
+        "polylogue.api",
+        "polylogue.mcp",
+        "polylogue.daemon",
+        "polylogue.hooks",
+        "polylogue.cli",
+        *_console_script_modules(root),
+    ):
         reachable.update(graph.reachable_from(entrypoint))
     findings: list[Finding] = []
     for relative, lines in additions.items():
@@ -143,7 +178,7 @@ def check(root: Path, *, base: str | None = None, head: str | None = None, waive
         if path.suffix != ".py" or not path.exists():
             continue
         module = _module_name(path, root)
-        if module not in reachable and relative not in waivers:
+        if relative in added_files and module not in reachable and relative not in waivers:
             findings.append(Finding(relative, "module", "no production entrypoint reaches the added module"))
         for index, line in enumerate(lines):
             if _TOOL_DECORATOR.search(line):
