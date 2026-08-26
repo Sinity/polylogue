@@ -2497,6 +2497,171 @@ class SessionUsageReconciliation:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SessionUsageCost:
+    """The canonical, read-through cost projection for one session.
+
+    ``session_model_usage`` is the only token authority.  The projection keeps
+    provider-reported money separate from catalog pricing and never turns an
+    absent row into a measured zero.  It is deliberately not persisted: price
+    recipe changes therefore become visible on the next read without a
+    profile rebuild.
+    """
+
+    session_id: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    provider_reported_usd: float | None = None
+    catalog_api_equivalent_usd: float | None = None
+    subscription_equivalent_usd: float | None = None
+    availability: Literal["known_zero", "no_tokens", "unpriced", "priced", "provider_money"] = "no_tokens"
+    provenance: str = "unknown"
+    exactness: Literal["exact", "estimated", "unknown"] = "unknown"
+    pricing_recipe: str | None = None
+    model_names: tuple[str, ...] = ()
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+    @property
+    def total_usd(self) -> float | None:
+        if self.provider_reported_usd is not None:
+            return self.provider_reported_usd
+        return self.catalog_api_equivalent_usd
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "total_tokens": self.total_tokens,
+            "provider_reported_usd": self.provider_reported_usd,
+            "catalog_api_equivalent_usd": self.catalog_api_equivalent_usd,
+            "subscription_equivalent_usd": self.subscription_equivalent_usd,
+            "availability": self.availability,
+            "provenance": self.provenance,
+            "exactness": self.exactness,
+            "pricing_recipe": self.pricing_recipe,
+            "model_names": list(self.model_names),
+        }
+
+
+def session_usage_costs_for_connection(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, SessionUsageCost]:
+    """Build canonical session cost projections with one grouped query.
+
+    The query intentionally joins ``sessions`` for session-scoped provider
+    money and groups model rows in SQL.  No profile columns participate, so a
+    missing or stale profile cannot erase exact usage or turn unknown pricing
+    into zero.
+    """
+
+    ids = tuple(dict.fromkeys(str(value) for value in session_ids if str(value)))
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT s.session_id, s.reported_cost_usd,
+               COUNT(u.model_name) AS model_count,
+               COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+               COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+               COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+               SUM(u.cost_usd) AS catalog_cost_usd,
+               COUNT(u.cost_usd) AS priced_model_count,
+               SUM(u.cost_credits) AS stored_credits,
+               GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
+               MAX(u.cost_provenance) AS cost_provenance
+        FROM sessions AS s
+        LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+        WHERE s.session_id IN ({placeholders})
+        GROUP BY s.session_id, s.reported_cost_usd
+        """,
+        ids,
+    ).fetchall()
+    result: dict[str, SessionUsageCost] = {}
+    credit_rows = conn.execute(
+        f"SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
+        f"FROM session_model_usage WHERE session_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    credits_by_session: dict[str, float] = {}
+    for model_row in credit_rows:
+        session_id = str(model_row["session_id"])
+        credits_by_session[session_id] = credits_by_session.get(session_id, 0.0) + compute_credit_cost(
+            str(model_row["model_name"]),
+            int(model_row["input_tokens"] or 0),
+            int(model_row["output_tokens"] or 0),
+            int(model_row["cache_read_tokens"] or 0),
+            int(model_row["cache_write_tokens"] or 0),
+        )
+    for row in rows:
+        session_id = str(row["session_id"])
+        model_count = int(row["model_count"] or 0)
+        input_tokens = int(row["input_tokens"] or 0)
+        output_tokens = int(row["output_tokens"] or 0)
+        cache_read_tokens = int(row["cache_read_tokens"] or 0)
+        cache_write_tokens = int(row["cache_write_tokens"] or 0)
+        total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+        provider_money = None if row["reported_cost_usd"] is None else float(row["reported_cost_usd"])
+        catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
+        catalog_cost = (
+            None
+            if not catalog_complete or row["catalog_cost_usd"] is None
+            else round(float(row["catalog_cost_usd"]), 6)
+        )
+        model_names = tuple(sorted(str(row["model_names"]).split(","))) if row["model_names"] else ()
+        availability: Literal["known_zero", "no_tokens", "unpriced", "priced", "provider_money"]
+        exactness: Literal["exact", "estimated", "unknown"]
+        if provider_money is not None:
+            availability = "provider_money"
+            provenance = "origin_reported"
+            exactness = "exact"
+        elif model_count == 0:
+            availability = "no_tokens"
+            provenance = "unknown"
+            exactness = "unknown"
+        elif catalog_cost is None:
+            availability = "unpriced"
+            provenance = str(row["cost_provenance"] or "unknown")
+            exactness = "estimated"
+        elif total_tokens == 0 and catalog_cost == 0:
+            availability = "known_zero"
+            provenance = str(row["cost_provenance"] or "priced")
+            exactness = "exact"
+        else:
+            availability = "priced"
+            provenance = str(row["cost_provenance"] or "priced")
+            exactness = "estimated"
+        credits: float | None = None if row["stored_credits"] is None else float(row["stored_credits"])
+        if credits is None and model_count:
+            credits = credits_by_session.get(session_id)
+        result[session_id] = SessionUsageCost(
+            session_id=session_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            provider_reported_usd=provider_money,
+            catalog_api_equivalent_usd=catalog_cost,
+            subscription_equivalent_usd=None if credits is None else float(credits),
+            availability=availability,
+            provenance=provenance,
+            exactness=exactness,
+            pricing_recipe=CATALOG_PROVENANCE if catalog_cost is not None else None,
+            model_names=model_names,
+        )
+    return result
+
+
 def build_session_usage_reconciliation(
     session_id: str,
     *,
@@ -2661,8 +2826,10 @@ __all__ = [
     "OriginUsageReport",
     "ProviderUsageCoverage",
     "ProviderUsageReport",
+    "SessionUsageCost",
     "SESSION_USAGE_RECONCILED_COST_FAMILY",
     "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",
+    "session_usage_costs_for_connection",
     "SessionUsageReconciliation",
     "UsageCounters",
     "build_session_usage_reconciliation",

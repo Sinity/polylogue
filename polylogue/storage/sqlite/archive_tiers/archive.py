@@ -317,6 +317,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 
 
 @dataclass(slots=True)
@@ -2550,7 +2551,11 @@ class ArchiveStore:
             """,
             tuple(params),
         ).fetchall()
-        insights = [_session_cost_insight_from_archive_row(self._conn, row) for row in rows]
+        canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
+        insights = [
+            _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
+            for row in rows
+        ]
         if status is not None:
             insights = [insight for insight in insights if insight.estimate.status == status]
         return insights
@@ -7503,11 +7508,17 @@ def _session_profile_record_from_archive_row(
     )
 
 
-def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite3.Row) -> SessionCostInsight:
+def _session_cost_insight_from_archive_row(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    canonical: SessionUsageCost | None = None,
+) -> SessionCostInsight:
     session_id = str(row["session_id"])
     source_name = str(row["origin"])
-    total_usd = float(row["cost_usd"] or 0.0)
-    cost_provenance = str(row["cost_provenance"] or "")
+    total_usd = float(
+        (canonical.total_usd if canonical and canonical.total_usd is not None else row["cost_usd"]) or 0.0
+    )
+    cost_provenance = canonical.provenance if canonical is not None else str(row["cost_provenance"] or "")
     try:
         raw_model_name = row["model_name"]
     except (IndexError, KeyError):
@@ -7517,24 +7528,41 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
     status: CostEstimateStatus
     unavailable_reason: CostUnavailableReason | None
     provenance: tuple[str, ...]
-    if total_usd > 0:
-        status = "exact" if cost_provenance == "exact" else "priced"
+    missing_reasons: tuple[str, ...]
+    if canonical is not None and canonical.availability == "no_tokens":
+        status = "unavailable"
+        confidence = 0.0
+        basis = CostBasisPayload()
+        missing_reasons = ("no_tokens",)
+        unavailable_reason = "no_tokens"
+        provenance = ("session_usage_cost", canonical.availability)
+    elif canonical is not None and canonical.availability == "unpriced":
+        status = "unavailable"
+        confidence = 0.0
+        basis = CostBasisPayload()
+        missing_reasons = ("no_price",)
+        unavailable_reason = "no_price"
+        provenance = ("session_usage_cost", canonical.availability)
+    elif total_usd > 0 or (
+        canonical is not None and canonical.availability in {"priced", "provider_money", "known_zero"}
+    ):
+        status = "exact" if cost_provenance in {"exact", "origin_reported"} else "priced"
         confidence = 1.0 if status == "exact" else (0.7 if row["cost_is_estimated"] else 0.9)
         basis = (
             CostBasisPayload(provider_reported_usd=total_usd)
             if status == "exact"
             else CostBasisPayload(catalog_priced_usd=total_usd)
         )
-        missing_reasons: tuple[str, ...] = ()
+        missing_reasons = ()
         unavailable_reason = None
-        provenance = ("archive_session_profiles", cost_provenance or status)
+        provenance = ("session_usage_cost", cost_provenance or status)
     else:
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
         missing_reasons = ("archive_profile_no_cost",)
         unavailable_reason = "no_tokens"
-        provenance = ("archive_session_profiles",)
+        provenance = ("session_usage_cost",)
     materialization = _read_archive_materialization(conn, "session_profile", session_id)
     return SessionCostInsight(
         session_id=session_id,
