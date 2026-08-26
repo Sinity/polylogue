@@ -214,7 +214,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check.",
         "devtools.verify",
         use_when="Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.",
-        examples=("devtools verify", "devtools verify --quick", "devtools verify --lab"),
+        examples=("devtools verify", "devtools verify --quick"),
         featured=True,
     ),
     CommandSpec(
@@ -468,7 +468,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
         "devtools.verify_slos",
         use_when=(
-            "Run as part of devtools verify --lab, or directly to confirm read-surface "
+            "Run directly to confirm read-surface "
             "(query / reader / facets / context / cost) latencies stay within their declared SLOs. "
             "Exits non-zero when any measured surface exceeds its budget."
         ),
@@ -490,6 +490,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "rows/bytes, and cancellation evidence where the route exposes it."
         ),
         examples=("devtools bench daemon-operation",),
+    ),
+    CommandSpec(
+        "bench cli-interaction",
+        "benchmarking",
+        "Run the complete installed CLI and direct typed-UDS interaction profile.",
+        "devtools.cli_interaction_profile",
+        use_when=(
+            "Measure cold installed status and warm CLI/daemon interaction together, including completion, "
+            "pagination, cancellation, fuzzy-launch declarations, and concurrent-read evidence."
+        ),
+        examples=("devtools bench cli-interaction",),
     ),
     CommandSpec(
         "verify schema-versioning",
@@ -588,7 +599,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verify scenario",
         "verification",
         "Run a named archive verification scenario.",
-        "devtools.lab_scenario",
+        "devtools.verification_scenario",
         use_when="Run a named archive verification scenario through the direct CLI path.",
         examples=(
             "devtools verify scenario list",

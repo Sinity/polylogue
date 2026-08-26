@@ -26,9 +26,7 @@ from typing import cast
 from devtools.clone_support import reflink_clone
 from polylogue.config import Config
 from polylogue.maintenance.archive_verification import (
-    REINDEX_ACCEPTANCE_CHECKS,
-    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
-    REINDEX_SOURCE_PREFLIGHT_CHECKS,
+    archive_verification_names_for_route,
     strict_acceptance_failures,
     verify_archive,
 )
@@ -487,18 +485,20 @@ def _require_complete_proof(proof: dict[str, object]) -> None:
 
 
 def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Path) -> None:
+    index_checks = archive_verification_names_for_route("reindex-index-candidate")
+    cross_tier_checks = archive_verification_names_for_route("reindex-cross-tier-candidate")
     index_only_report = verify_archive(
         candidate_index.parent,
-        checks=REINDEX_ACCEPTANCE_CHECKS,
+        checks=index_checks,
     )
     cross_tier_report = verify_archive(
         archive_root,
-        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        checks=cross_tier_checks,
         index_path_override=candidate_index,
     )
     failures = (
-        *strict_acceptance_failures(index_only_report, required_checks=REINDEX_ACCEPTANCE_CHECKS),
-        *strict_acceptance_failures(cross_tier_report, required_checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS),
+        *strict_acceptance_failures(index_only_report, required_checks=index_checks),
+        *strict_acceptance_failures(cross_tier_report, required_checks=cross_tier_checks),
     )
     if failures:
         failing = "; ".join(failures)
@@ -507,8 +507,9 @@ def _require_candidate_strict_acceptance(archive_root: Path, candidate_index: Pa
 
 def _require_source_preflight(archive_root: Path) -> dict[str, object]:
     """Require a complete source/blob/attachment preflight before cloning."""
-    report = verify_archive(archive_root, checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
-    failures = strict_acceptance_failures(report, required_checks=REINDEX_SOURCE_PREFLIGHT_CHECKS)
+    checks = archive_verification_names_for_route("reindex-source-preflight")
+    report = verify_archive(archive_root, checks=checks)
+    failures = strict_acceptance_failures(report, required_checks=checks)
     if failures:
         raise IndexFastForwardError(f"source strict preflight gate failed: {'; '.join(failures)}")
     return cast(dict[str, object], report.to_json())

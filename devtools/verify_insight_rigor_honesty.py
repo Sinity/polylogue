@@ -22,7 +22,7 @@ either:
    non-number-bearing products only).
 
 A registered insight in neither set fails this check. This is a pure static
-check — no archive access — so it runs fast in ``devtools verify --lab``
+check — no archive access — so it runs fast in the ordinary verifier
 alongside the schema-versioning policy check.
 """
 

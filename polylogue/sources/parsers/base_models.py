@@ -9,10 +9,96 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource, WebConstructType
+from polylogue.core.enums import (
+    BlockType,
+    MaterialOrigin,
+    PolylogueStrEnum,
+    Provider,
+    SessionKind,
+    TitleSource,
+    WebConstructType,
+)
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
+
+
+class AdmissionUnit(PolylogueStrEnum):
+    """Input-unit levels covered by the parser admission contract."""
+
+    OUTER_RECORD = "outer_record"
+    MESSAGE = "message"
+    PART = "part"
+    BLOCK = "block"
+
+
+class AdmissionDisposition(PolylogueStrEnum):
+    """The only terminal dispositions an input unit may receive."""
+
+    MATERIALIZED = "materialized"
+    TYPED_UNKNOWN = "typed_unknown"
+    TYPED_REFUSAL = "typed_refusal"
+
+
+class AdmissionUnknownReason(PolylogueStrEnum):
+    UNRECOGNIZED_TYPE = "unrecognized_type"
+    UNSUPPORTED_SHAPE = "unsupported_shape"
+    MISSING_PAYLOAD = "missing_payload"
+    DRIFTED_SIBLING = "drifted_sibling"
+    EMPTY_CONTENT = "empty_content"
+
+
+class AdmissionRefusalReason(PolylogueStrEnum):
+    MALFORMED = "malformed"
+    INVALID_ROLE = "invalid_role"
+    UNSUPPORTED_PROVIDER = "unsupported_provider"
+    CONSERVATION_MISMATCH = "conservation_mismatch"
+    EMPTY_SESSION = "empty_session"
+
+
+class AdmissionOutcome(BaseModel):
+    """One terminal, typed outcome for one parser input unit."""
+
+    unit: AdmissionUnit
+    ordinal: int
+    key: str
+    disposition: AdmissionDisposition
+    reason: AdmissionUnknownReason | AdmissionRefusalReason | None = None
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> AdmissionOutcome:
+        if self.disposition is AdmissionDisposition.MATERIALIZED and self.reason is not None:
+            raise ValueError("materialized admission outcomes cannot carry a reason")
+        if self.disposition is not AdmissionDisposition.MATERIALIZED and self.reason is None:
+            raise ValueError("unknown/refusal admission outcomes require a typed reason")
+        return self
+
+
+class ParseAccounting(BaseModel):
+    """Closed admission ledger attached to a parsed session.
+
+    ``expected`` is the denominator observed by the parser before lowering;
+    ``outcomes`` is the one-and-only-one terminal result for each denominator
+    member. The writer validates this algebra before it mutates index state.
+    """
+
+    expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
+    outcomes: list[AdmissionOutcome] = Field(default_factory=list)
+
+    def assert_conserved(self) -> None:
+        expected = {unit: int(count) for unit, count in self.expected.items()}
+        if any(count < 0 for count in expected.values()):
+            raise ValueError("admission denominators cannot be negative")
+        actual: dict[AdmissionUnit, int] = {}
+        seen: set[tuple[AdmissionUnit, int]] = set()
+        for outcome in self.outcomes:
+            identity = (outcome.unit, outcome.ordinal)
+            if identity in seen:
+                raise ValueError(f"duplicate admission outcome for {outcome.unit.value}[{outcome.ordinal}]")
+            seen.add(identity)
+            actual[outcome.unit] = actual.get(outcome.unit, 0) + 1
+        if actual != {unit: count for unit, count in expected.items() if count}:
+            raise ValueError(f"admission denominator mismatch: expected={expected}, actual={actual}")
 
 
 class ParsedWebConstruct(BaseModel):
@@ -349,6 +435,9 @@ class ParsedSession(BaseModel):
     created_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
     updated_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
     messages: list[ParsedMessage]
+    # Parser-only admission proof. It is excluded from serialized payloads and
+    # content hashes, but the storage writer validates it before lowering.
+    unit_accounting: ParseAccounting | None = Field(default=None, exclude=True, repr=False)
     active_leaf_message_provider_id: str | None = None
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)

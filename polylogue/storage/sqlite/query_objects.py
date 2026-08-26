@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -20,6 +21,7 @@ from polylogue.core.query_identity import (
 QueryEdgeKind = Literal["operand-of", "refines", "supersedes", "derived-from", "same-as"]
 ResultSetExactness = Literal["exact", "capped", "sampled", "estimate"]
 ResultSetPersistence = Literal["routine", "watch", "pinned", "finding", "cohort"]
+PrivacyClass = Literal["public", "private", "sensitive", "secret"]
 
 _DURABLE_MEMBER_PERSISTENCE = frozenset({"watch", "pinned", "finding", "cohort"})
 _ACYCLIC_EDGE_KINDS = frozenset({"operand-of", "supersedes", "derived-from"})
@@ -33,6 +35,9 @@ class QueryObject:
     lane: str
     rank_policy: str
     definition_protocol_version: str
+    privacy_class: PrivacyClass | None = None
+    retention_policy: dict[str, JsonValue] | None = None
+    excision_link: str | None = None
 
     @property
     def ref(self) -> str:
@@ -50,6 +55,20 @@ class ResultSetManifest:
     ordered_rank_hash: str
     exactness: ResultSetExactness
     persistence_class: ResultSetPersistence
+    privacy_class: PrivacyClass | None = None
+    retention_policy: dict[str, JsonValue] | None = None
+    excision_link: str | None = None
+
+
+class QueryExcisionError(RuntimeError):
+    """A durable query or relation tombstone prevents resurrection."""
+
+
+def _has_excision_ledger(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'query_excision_ledger'").fetchone()
+        is not None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +119,12 @@ def put_query(
         field_aliases=field_aliases,
         definition_protocol_version=definition_protocol_version,
     )
+    if (
+        _has_excision_ledger(conn)
+        and conn.execute("SELECT 1 FROM query_excision_ledger WHERE query_hash = ?", (query_hash,)).fetchone()
+        is not None
+    ):
+        raise QueryExcisionError("query definition has been excised")
     conn.execute(
         """
         INSERT INTO queries (
@@ -111,6 +136,46 @@ def put_query(
         (query_hash, _json(canonical_plan), grain, lane, rank_policy, definition_protocol_version, created_at_ms),
     )
     return QueryObject(query_hash, canonical_plan, grain, lane, rank_policy, definition_protocol_version)
+
+
+def _promotion_values(
+    *, privacy_class: PrivacyClass, retention_policy: Mapping[str, JsonValue], excision_link: str
+) -> tuple[str, str, str]:
+    if privacy_class not in {"public", "private", "sensitive", "secret"}:
+        raise ValueError("unsupported privacy class")
+    if not retention_policy or not excision_link.strip():
+        raise ValueError("promotion requires retention policy and excision linkage")
+    return privacy_class, _json(dict(retention_policy)), excision_link
+
+
+def promote_query(
+    conn: sqlite3.Connection,
+    *,
+    query_hash: str,
+    privacy_class: PrivacyClass,
+    retention_policy: Mapping[str, JsonValue],
+    excision_link: str,
+    promoted_at_ms: int,
+) -> QueryObject:
+    """Promote an existing definition only with an explicit forgetting contract."""
+    values = _promotion_values(
+        privacy_class=privacy_class, retention_policy=retention_policy, excision_link=excision_link
+    )
+    if (
+        _has_excision_ledger(conn)
+        and conn.execute("SELECT 1 FROM query_excision_ledger WHERE query_hash = ?", (query_hash,)).fetchone()
+        is not None
+    ):
+        raise QueryExcisionError("query definition has been excised")
+    if conn.execute("SELECT 1 FROM queries WHERE query_hash = ?", (query_hash,)).fetchone() is None:
+        raise KeyError(f"query:{query_hash}")
+    conn.execute(
+        "UPDATE queries SET privacy_class = ?, retention_policy_json = ?, excision_link = ?, promoted_at_ms = ? WHERE query_hash = ?",
+        (*values, promoted_at_ms, query_hash),
+    )
+    result = get_query(conn, query_hash)
+    assert result is not None
+    return result
 
 
 def put_query_name(
@@ -154,6 +219,12 @@ def put_result_set(
         raise ValueError("routine result sets cannot persist exact member refs")
     if len(member_refs) != len(set(member_refs)):
         raise ValueError("result set member refs must be unique at one grain")
+    if (
+        _has_excision_ledger(conn)
+        and conn.execute("SELECT 1 FROM query_excision_ledger WHERE result_set_id = ?", (result_set_id,)).fetchone()
+        is not None
+    ):
+        raise QueryExcisionError("result set has been excised")
     manifest = ResultSetManifest(
         result_set_id=result_set_id,
         query_hash=query_hash,
@@ -193,11 +264,42 @@ def put_result_set(
     return manifest
 
 
+def promote_result_set(
+    conn: sqlite3.Connection,
+    *,
+    result_set_id: str,
+    privacy_class: PrivacyClass,
+    retention_policy: Mapping[str, JsonValue],
+    excision_link: str,
+    promoted_at_ms: int,
+) -> ResultSetManifest:
+    """Attach a complete privacy/retention/excision contract to a relation."""
+    values = _promotion_values(
+        privacy_class=privacy_class, retention_policy=retention_policy, excision_link=excision_link
+    )
+    if (
+        _has_excision_ledger(conn)
+        and conn.execute("SELECT 1 FROM query_excision_ledger WHERE result_set_id = ?", (result_set_id,)).fetchone()
+        is not None
+    ):
+        raise QueryExcisionError("result set has been excised")
+    if conn.execute("SELECT 1 FROM result_sets WHERE result_set_id = ?", (result_set_id,)).fetchone() is None:
+        raise KeyError(f"result-set:{result_set_id}")
+    conn.execute(
+        "UPDATE result_sets SET privacy_class = ?, retention_policy_json = ?, excision_link = ?, promoted_at_ms = ? WHERE result_set_id = ?",
+        (*values, promoted_at_ms, result_set_id),
+    )
+    result = get_result_set(conn, result_set_id)
+    assert result is not None
+    return result
+
+
 def get_query(conn: sqlite3.Connection, query_hash: str) -> QueryObject | None:
     """Read one immutable query definition without decoding it as executable syntax."""
     row = conn.execute(
         """
-        SELECT query_hash, canonical_plan_json, grain, lane, rank_policy, definition_protocol_version
+        SELECT query_hash, canonical_plan_json, grain, lane, rank_policy, definition_protocol_version,
+               privacy_class, retention_policy_json, excision_link
         FROM queries WHERE query_hash = ?
         """,
         (query_hash,),
@@ -214,6 +316,9 @@ def get_query(conn: sqlite3.Connection, query_hash: str) -> QueryObject | None:
         lane=str(row[3]),
         rank_policy=str(row[4]),
         definition_protocol_version=str(row[5]),
+        privacy_class=str(row[6]) if row[6] is not None else None,  # type: ignore[arg-type]
+        retention_policy=_query_payload(row[7]) if row[7] is not None else None,
+        excision_link=str(row[8]) if row[8] is not None else None,
     )
 
 
@@ -222,7 +327,8 @@ def list_watched_queries(conn: sqlite3.Connection) -> tuple[QueryObject, ...]:
     rows = conn.execute(
         """
         SELECT DISTINCT q.query_hash, q.canonical_plan_json, q.grain, q.lane,
-               q.rank_policy, q.definition_protocol_version
+               q.rank_policy, q.definition_protocol_version, q.privacy_class,
+               q.retention_policy_json, q.excision_link
         FROM query_names AS n
         JOIN queries AS q ON q.query_hash = n.query_hash
         WHERE n.watch = 1
@@ -237,6 +343,9 @@ def list_watched_queries(conn: sqlite3.Connection) -> tuple[QueryObject, ...]:
             lane=str(row[3]),
             rank_policy=str(row[4]),
             definition_protocol_version=str(row[5]),
+            privacy_class=str(row[6]) if row[6] is not None else None,  # type: ignore[arg-type]
+            retention_policy=_query_payload(row[7]) if row[7] is not None else None,
+            excision_link=str(row[8]) if row[8] is not None else None,
         )
         for row in rows
     )
@@ -246,7 +355,8 @@ def get_result_set(conn: sqlite3.Connection, result_set_id: str) -> ResultSetMan
     row = conn.execute(
         """
         SELECT result_set_id, query_hash, grain, corpus_epoch, member_count,
-               membership_merkle_root, ordered_rank_hash, exactness, persistence_class
+               membership_merkle_root, ordered_rank_hash, exactness, persistence_class,
+               privacy_class, retention_policy_json, excision_link
         FROM result_sets WHERE result_set_id = ?
         """,
         (result_set_id,),
@@ -271,7 +381,8 @@ def get_latest_result_set(
     row = conn.execute(
         """
         SELECT result_set_id, query_hash, grain, corpus_epoch, member_count,
-               membership_merkle_root, ordered_rank_hash, exactness, persistence_class
+               membership_merkle_root, ordered_rank_hash, exactness, persistence_class,
+               privacy_class, retention_policy_json, excision_link
         FROM result_sets
         WHERE query_hash = ? AND persistence_class = ?
         ORDER BY created_at_ms DESC, result_set_id DESC
@@ -287,7 +398,8 @@ def get_watched_query_baseline(conn: sqlite3.Connection, query_hash: str) -> Res
     row = conn.execute(
         """
         SELECT rs.result_set_id, rs.query_hash, rs.grain, rs.corpus_epoch, rs.member_count,
-               rs.membership_merkle_root, rs.ordered_rank_hash, rs.exactness, rs.persistence_class
+               rs.membership_merkle_root, rs.ordered_rank_hash, rs.exactness, rs.persistence_class,
+               rs.privacy_class, rs.retention_policy_json, rs.excision_link
         FROM watched_query_baselines AS baseline
         JOIN result_sets AS rs ON rs.result_set_id = baseline.result_set_id
         WHERE baseline.query_hash = ?
@@ -513,11 +625,16 @@ def _manifest_from_row(row: sqlite3.Row | tuple[object, ...]) -> ResultSetManife
         ordered_rank_hash=str(row[6]),
         exactness=str(row[7]),  # type: ignore[arg-type]
         persistence_class=str(row[8]),  # type: ignore[arg-type]
+        privacy_class=str(row[9]) if len(row) > 9 and row[9] is not None else None,  # type: ignore[arg-type]
+        retention_policy=_query_payload(row[10]) if len(row) > 10 and row[10] is not None else None,
+        excision_link=str(row[11]) if len(row) > 11 and row[11] is not None else None,
     )
 
 
 __all__ = [
     "EvaluationReceipt",
+    "PrivacyClass",
+    "QueryExcisionError",
     "QueryObject",
     "RetainedQueryRun",
     "ResultSetManifest",
@@ -532,9 +649,11 @@ __all__ = [
     "migrate_saved_query_assertions",
     "put_evaluation_receipt",
     "put_query",
+    "promote_query",
     "put_query_edge",
     "put_query_name",
     "put_retained_query_run",
     "put_result_set",
+    "promote_result_set",
     "put_watched_query_baseline",
 ]

@@ -35,6 +35,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     prepare_native_testmon_environment,
 )
+from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
@@ -232,7 +233,7 @@ def _native_pytest_steps(
 
 
 def build_verify_steps(
-    *, quick: bool, lab: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
+    *, quick: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
 ) -> list[tuple[str, list[str]]]:
     steps = [
         ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
@@ -249,6 +250,8 @@ def build_verify_steps(
             ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),
             ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
             ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
+            ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
+            ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
             (
                 "schema promotion audit",
                 [
@@ -273,13 +276,6 @@ def build_verify_steps(
             serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
         )
-    if lab:
-        steps += [
-            ("verify scenario", _devtools_cmd("verify scenario", "run", "archive-smoke", "--tier", "0")),
-            ("bench slo", _devtools_cmd("bench slo", "--include-lab")),
-            ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
-            ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
-        ]
     return steps
 
 
@@ -613,12 +609,26 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
+    selected_counts: list[int] = []
+    terminal_counts: list[int] = []
     for result in pytest_results:
-        for outcome, count in (result.get("statistics", {}).get("outcomes") or {}).items():
+        raw_statistics: object = result.get("statistics")
+        statistics: Mapping[str, Any] = raw_statistics if isinstance(raw_statistics, Mapping) else {}
+        selected = statistics.get("selected_count")
+        terminal = statistics.get("terminal_count")
+        if isinstance(selected, int) and not isinstance(selected, bool):
+            selected_counts.append(selected)
+        if isinstance(terminal, int) and not isinstance(terminal, bool):
+            terminal_counts.append(terminal)
+        for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
+        # Full-corpus verification partitions the collection across managed
+        # pytest steps, so these are disjoint populations and must be summed.
+        "selected_union_count": sum(selected_counts),
+        "terminal_union_count": sum(terminal_counts),
         "outcomes": outcomes,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
@@ -630,10 +640,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--all", "--full", dest="all_tests", action="store_true")
-    parser.add_argument("--lab", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     _anchor_verification_paths()
+    validate_authority_matrix()
     started = time.monotonic()
     scope = _scope(quick=args.quick, commit=args.commit, all_tests=args.all_tests)
     try:
@@ -658,62 +668,60 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         root=ROOT,
         mirror_current=agentctl_operation is None,
     )
-    preparation = None
-    mode = "all" if args.all_tests else "affected"
-    if not args.quick and not args.commit:
-        if head is None:
-            raise RuntimeError("cannot resolve current Git head")
-        base = _git_commit("origin/master") or head
-        try:
-            impact = classify_native_testmon_changes(ROOT, _changed_paths(base, head))
-            preparation = prepare_native_testmon_environment(
-                ROOT,
-                required_executable_paths=impact.executable_paths,
-                pytest_profile=_native_pytest_environment()["HYPOTHESIS_PROFILE"] or "default",
-                pytest_environment=_native_pytest_environment(),
-            )
-        except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
-            payload = _finish_and_record_verification(
-                run=run,
-                exit_code=125,
-                duration_s=time.monotonic() - started,
-                diagnosis="native_testmon_preparation_failed",
-                verification_scope=scope.value,
-                final_git_head=git_head(ROOT),
-            )
-            _emit(payload, use_json=args.json, operation=agentctl_operation)
-            sys.stderr.write(f"verify: {exc}\n")
-            return 125
-        if preparation.selection_mode == "bootstrap" and not args.all_tests:
-            payload = _finish_and_record_verification(
-                run=run,
-                exit_code=2,
-                duration_s=time.monotonic() - started,
-                diagnosis="native_testmon_graph_unavailable",
-                verification_scope=scope.value,
-                final_git_head=git_head(ROOT),
-            )
-            _emit(payload, use_json=args.json, operation=agentctl_operation)
-            return 2
-        mode = "all" if args.all_tests else "affected"
-        run.record_selection(
-            selection_mode=mode,
-            state_status=preparation.local_state.status,
-            state_reason=preparation.local_state.reason,
-            missing_executable_paths=preparation.local_state.missing_executable_paths,
-            runtime_data_paths=impact.runtime_data_paths,
-            environment_digest=preparation.environment_name,
-        )
-    steps = build_verify_steps(
-        quick=args.quick,
-        commit=args.commit,
-        lab=args.lab,
-        testmon_mode=mode,
-        testmon_environment=preparation.environment_name if preparation else "",
-    )
-    results: list[dict[str, Any]] = []
-    exit_code = 0
     try:
+        preparation = None
+        mode = "all" if args.all_tests else "affected"
+        if not args.quick and not args.commit:
+            if head is None:
+                raise RuntimeError("cannot resolve current Git head")
+            base = _git_commit("origin/master") or head
+            try:
+                impact = classify_native_testmon_changes(ROOT, _changed_paths(base, head))
+                preparation = prepare_native_testmon_environment(
+                    ROOT,
+                    required_executable_paths=impact.executable_paths,
+                    pytest_profile=_native_pytest_environment()["HYPOTHESIS_PROFILE"] or "default",
+                    pytest_environment=_native_pytest_environment(),
+                )
+            except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
+                payload = _finish_and_record_verification(
+                    run=run,
+                    exit_code=125,
+                    duration_s=time.monotonic() - started,
+                    diagnosis="native_testmon_preparation_failed",
+                    verification_scope=scope.value,
+                    final_git_head=git_head(ROOT),
+                )
+                _emit(payload, use_json=args.json, operation=agentctl_operation)
+                sys.stderr.write(f"verify: {exc}\n")
+                return 125
+            run.record_selection(
+                selection_mode=mode,
+                state_status=preparation.local_state.status,
+                state_reason=preparation.local_state.reason,
+                missing_executable_paths=preparation.local_state.missing_executable_paths,
+                runtime_data_paths=impact.runtime_data_paths,
+                environment_digest=preparation.environment_name,
+            )
+            if preparation.selection_mode == "bootstrap" and not args.all_tests:
+                payload = _finish_and_record_verification(
+                    run=run,
+                    exit_code=2,
+                    duration_s=time.monotonic() - started,
+                    diagnosis="native_testmon_graph_unavailable",
+                    verification_scope=scope.value,
+                    final_git_head=git_head(ROOT),
+                )
+                _emit(payload, use_json=args.json, operation=agentctl_operation)
+                return 2
+        steps = build_verify_steps(
+            quick=args.quick,
+            commit=args.commit,
+            testmon_mode=mode,
+            testmon_environment=preparation.environment_name if preparation else "",
+        )
+        results: list[dict[str, Any]] = []
+        exit_code = 0
         for label, command in steps:
             rc, elapsed, metadata = _run(label, command, run=run)
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})

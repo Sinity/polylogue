@@ -1,24 +1,28 @@
 """Run the AST-shape ratchet in ``devtools/patterns``.
 
-Enforcing rules may inherit existing file/line matches, but a new match is a
-blocking defect.  Stale baseline entries are reported as shrinkable debt.
+Enforcing rules may inherit existing content anchors, but a new match is a
+blocking defect. Stale baseline entries are reported as shrinkable debt.
 Pending rules are scanned for visibility and deliberately do not block.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import yaml
 
 from devtools import repo_root
 from devtools.required_gate import evidence_gate_result
+
+Anchor: TypeAlias = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -49,22 +53,68 @@ def _rules(root: Path) -> tuple[Rule, ...]:
     return tuple(result)
 
 
-def _baseline(path: Path) -> set[tuple[str, int]]:
+def _anchor_text(anchor: Anchor, count: int = 1) -> str:
+    file_name, digest = anchor
+    suffix = f":{count}" if count != 1 else ""
+    return f"{file_name}:{digest}{suffix}"
+
+
+def _baseline(path: Path) -> Counter[Anchor]:
     if not path.exists():
-        return set()
-    locations: set[tuple[str, int]] = set()
+        return Counter()
+    anchors: Counter[Anchor] = Counter()
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        file_name, separator, raw_number = line.rpartition(":")
-        if not separator or not file_name or not raw_number.isdigit():
+        parts = line.rsplit(":", 2)
+        if len(parts) == 2:
+            file_name, digest = parts
+            count = 1
+        elif len(parts) == 3 and parts[2].isdigit():
+            file_name, digest, raw_count = parts
+            count = int(raw_count)
+        else:
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
-        locations.add((file_name, int(raw_number)))
-    return locations
+        if (
+            not file_name
+            or len(digest) != hashlib.sha1().digest_size * 2
+            or any(character not in "0123456789abcdef" for character in digest)
+            or count < 1
+        ):
+            raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
+        anchors[(file_name, digest)] += count
+    return anchors
 
 
-def _scan(root: Path, rule: Rule) -> set[tuple[str, int]]:
+def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[str]]) -> Anchor:
+    file_name = item.get("file")
+    if not isinstance(file_name, str) or not file_name:
+        raise ValueError("ast-grep returned a malformed match")
+    range_payload = item.get("range")
+    if not isinstance(range_payload, dict):
+        raise ValueError("ast-grep returned a match without a range")
+    start = range_payload.get("start")
+    if not isinstance(start, dict) or not isinstance(start.get("line"), int):
+        raise ValueError("ast-grep returned a match without a start line")
+    line_number = start["line"] + 1
+    if line_number < 1:
+        raise ValueError("ast-grep returned an invalid start line")
+    lines = file_lines.get(file_name)
+    if lines is None:
+        try:
+            lines = (root / file_name).read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            raise ValueError(f"cannot read matched file {file_name}: {exc}") from exc
+        file_lines[file_name] = lines
+    if line_number > len(lines):
+        raise ValueError(f"ast-grep match line is outside {file_name}: {line_number}")
+    normalized_line = lines[line_number - 1].strip()
+    digest = hashlib.sha1(normalized_line.encode("utf-8")).hexdigest()
+    return file_name, digest
+
+
+def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
     command = [
         "ast-grep",
         "scan",
@@ -82,14 +132,12 @@ def _scan(root: Path, rule: Rule) -> set[tuple[str, int]]:
     payload = json.loads(completed.stdout or "[]")
     if not isinstance(payload, list):
         raise ValueError("ast-grep returned a non-list JSON result")
-    matches: set[tuple[str, int]] = set()
+    matches: Counter[Anchor] = Counter()
+    file_lines: dict[str, list[str]] = {}
     for item in payload:
-        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+        if not isinstance(item, dict):
             raise ValueError("ast-grep returned a malformed match")
-        start = item.get("range", {}).get("start", {})
-        if not isinstance(start, dict) or not isinstance(start.get("line"), int):
-            raise ValueError("ast-grep returned a match without a start line")
-        matches.add((item["file"], start["line"] + 1))
+        matches[_match_anchor(root, item, file_lines)] += 1
     return matches
 
 
@@ -101,6 +149,7 @@ def _payload(root: Path) -> dict[str, Any]:
     errors: list[str] = []
     missing = 0
     inspected = 0
+    new_match_count = 0
     executable_available = shutil.which("ast-grep") is not None
     if not executable_available:
         gate = evidence_gate_result(
@@ -126,17 +175,21 @@ def _payload(root: Path) -> dict[str, Any]:
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
             errors.append(f"{rule.rule_id}: {exc}")
             continue
-        new = sorted(matches - baseline)
-        stale = sorted(baseline - matches)
+        new = matches - baseline
+        stale = baseline - matches
         inspected += 1
         if rule.status == "pending":
             if baseline:
                 errors.append(f"{rule.rule_id}: pending rule must have an empty baseline")
-            details.append(f"{rule.rule_id}: pending ({len(matches)} candidate matches; owner {rule.owner})")
+            details.append(f"{rule.rule_id}: pending ({sum(matches.values())} candidate matches; owner {rule.owner})")
             continue
-        new_matches.extend(f"{rule.rule_id} {file_name}:{line} (owner {rule.owner})" for file_name, line in new)
-        stale_matches.extend(f"{rule.rule_id} {file_name}:{line}" for file_name, line in stale)
-        details.append(f"{rule.rule_id}: enforcing ({len(matches)} matches, {len(stale)} prunable)")
+        new_match_count += sum(new.values())
+        new_matches.extend(
+            f"{rule.rule_id} {_anchor_text(anchor, count)} (owner {rule.owner})"
+            for anchor, count in sorted(new.items())
+        )
+        stale_matches.extend(f"{rule.rule_id} {_anchor_text(anchor, count)}" for anchor, count in sorted(stale.items()))
+        details.append(f"{rule.rule_id}: enforcing ({sum(matches.values())} matches, {sum(stale.values())} prunable)")
     gate = evidence_gate_result(
         gate="patterns",
         executable="ast-grep",
@@ -145,7 +198,7 @@ def _payload(root: Path) -> dict[str, Any]:
         inspected_count=inspected,
         missing_count=missing,
         error_count=len(errors),
-        semantic_violation_count=len(new_matches),
+        semantic_violation_count=new_match_count,
         details=(*errors, *new_matches, *(f"stale baseline: {item}" for item in stale_matches), *details),
     )
     return {

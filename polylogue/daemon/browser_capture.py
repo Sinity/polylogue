@@ -24,6 +24,7 @@ from polylogue.browser_capture.models import (
     BrowserActionRequest,
     BrowserActionTarget,
 )
+from polylogue.browser_capture.native_host import install_native_host
 from polylogue.browser_capture.pairing import (
     PAIRING_CODE_DEFAULT_TTL_SECONDS,
     mint_pairing_code,
@@ -151,6 +152,24 @@ def pairing_start(ttl_seconds: int, output_format: str | None) -> None:
         return
     click.echo(f"Pairing code: {minted.code}")
     click.echo(f"Expires in {minted.ttl_seconds}s -- enter it in the extension popup's Pairing code field now.")
+
+
+@browser_capture_command.group("native-host")
+def native_host_group() -> None:
+    """Install the browser-scoped secure credential bootstrap."""
+
+
+@native_host_group.command("install")
+@click.option("--extension-id", multiple=True, required=True, help="Exact packaged extension ID; repeatable.")
+@click.option("--browser", type=click.Choice(["chrome", "firefox"]), default="chrome", show_default=True)
+@click.option("--executable", default="polylogue-browser-capture-native-host", show_default=True)
+@click.option("--manifest", "manifest_path", type=click.Path(path_type=Path), default=None)
+def native_host_install(
+    extension_id: tuple[str, ...], browser: str, executable: str, manifest_path: Path | None
+) -> None:
+    """Register native messaging for only the supplied extension IDs."""
+    target = install_native_host(extension_id, executable=executable, browser=browser, destination=manifest_path)
+    click.echo(f"Installed {target}")
 
 
 @browser_capture_command.command("capture-health")
@@ -324,6 +343,7 @@ __all__ = [
     "browser_capture_command",
     "capture_health_command",
     "pairing_start",
+    "native_host_install",
     "serve_command",
     "status_command",
 ]

@@ -34,7 +34,7 @@ GROUP_HELP: dict[str, str] = {
     "render": "Render and check generated repository surfaces.",
     "release": "Build, smoke, and validate release/distribution readiness.",
     "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
-    "workspace": "Inspect and maintain local agent workspace state.",
+    "workspace": "Run retained Polylogue schema and evidence workbench commands.",
 }
 
 

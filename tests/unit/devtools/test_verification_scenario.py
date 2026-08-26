@@ -12,11 +12,11 @@ import pytest
 
 
 def test_module_imports() -> None:
-    assert importlib.import_module("devtools.lab_scenario") is not None
+    assert importlib.import_module("devtools.verification_scenario") is not None
 
 
 def test_get_archive_smoke_checks_returns_direct_cli_cases() -> None:
-    from devtools.lab_scenario import get_archive_smoke_checks
+    from devtools.verification_scenario import get_archive_smoke_checks
 
     checks = get_archive_smoke_checks()
 
@@ -31,7 +31,7 @@ def test_get_archive_smoke_checks_returns_direct_cli_cases() -> None:
 
 
 def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import list_scenarios
+    from devtools.verification_scenario import list_scenarios
 
     assert list_scenarios(as_json=True) == 0
 
@@ -67,12 +67,12 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     def _invoke(execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output=f"{execution}\npolylogue candidates complete", exit_code=0)
 
-    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
+    with patch("devtools.verification_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0"]) == 0
 
     out = capsys.readouterr().out
@@ -82,7 +82,7 @@ def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) ->
 
 
 def test_main_rejects_removed_live_archive_flag() -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     with pytest.raises(SystemExit) as raised:
         main(["run", "archive-smoke", "--live"])
@@ -91,12 +91,12 @@ def test_main_rejects_removed_live_archive_flag() -> None:
 
 
 def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
 
-    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
+    with patch("devtools.verification_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -112,12 +112,12 @@ def test_main_json_reports_direct_scenario_payload(capsys: pytest.CaptureFixture
 
 
 def test_main_json_reports_direct_check_failures(capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output="", exit_code=3)
 
-    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
+    with patch("devtools.verification_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--json", "--fail-fast"]) == 1
 
     output = capsys.readouterr().out
@@ -134,13 +134,13 @@ def test_main_json_reports_direct_check_failures(capsys: pytest.CaptureFixture[s
 
 
 def test_main_writes_direct_archive_smoke_report(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     def _invoke(_execution: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(output="polylogue candidates complete", exit_code=0)
 
     report_dir = tmp_path / "reports"
-    with patch("devtools.lab_scenario.invoke_polylogue_cli", side_effect=_invoke):
+    with patch("devtools.verification_scenario.invoke_polylogue_cli", side_effect=_invoke):
         assert main(["run", "archive-smoke", "--tier", "0", "--report-dir", str(report_dir), "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -158,7 +158,7 @@ def test_main_writes_direct_archive_smoke_report(tmp_path: Path, capsys: pytest.
 def test_reader_visual_smoke_json_reports_artifact_inventory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     report_dir = tmp_path / "reports"
     completed = SimpleNamespace(returncode=0, stdout="1 passed\n", stderr="")
@@ -184,7 +184,7 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
         )
         return completed
 
-    with patch("devtools.lab_scenario.subprocess.run", side_effect=completed_visual_run) as run:
+    with patch("devtools.verification_scenario.subprocess.run", side_effect=completed_visual_run) as run:
         assert main(["run", "reader-visual-smoke", "--json", "--report-dir", str(report_dir)]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -200,7 +200,7 @@ def test_reader_visual_smoke_json_reports_artifact_inventory(
 def test_storage_correctness_json_runs_archive_backed_checks(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     report_dir = tmp_path / "reports"
 
@@ -268,7 +268,7 @@ def test_storage_correctness_rejects_production_repair_without_trigger_recreatio
 
 
 def test_main_reports_unsupported_archive_smoke_tier(capsys: pytest.CaptureFixture[str]) -> None:
-    from devtools.lab_scenario import main
+    from devtools.verification_scenario import main
 
     assert main(["run", "archive-smoke", "--tier", "2", "--json"]) == 1
 

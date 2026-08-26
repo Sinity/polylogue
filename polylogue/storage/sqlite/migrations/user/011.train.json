@@ -1,0 +1,52 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:user:v11",
+  "tier": "user",
+  "current_version": 10,
+  "target_version": 11,
+  "slot": 11,
+  "owner_ref": "polylogue-rxdo.2",
+  "migration": {
+    "tier": "user",
+    "target_version": 11,
+    "slot": 11,
+    "path": "011_query_privacy_excision.sql",
+    "owner_ref": "polylogue-rxdo.2",
+    "sql_sha256": "44fd2d821b2df18b00b793b06d6e83e89830fb0bae0af3b82bd18db5485eac8f",
+    "requires_backup": true
+  },
+  "riders": [
+    {
+      "rider_id": "rider:query-privacy-excision",
+      "owner_ref": "polylogue-rxdo.2",
+      "schema_objects": ["table:query_excision_ledger", "index:idx_query_excision_ledger_link"],
+      "runtime_consumers": [
+        {"consumer_id": "query-promotion", "production_ref": "polylogue.storage.sqlite.query_objects:promote_query", "behavior_proof_ref": "proof:user-v11:query-excision", "roles": ["read", "write"]},
+        {"consumer_id": "query-excision", "production_ref": "polylogue.security.query_excision:apply_query_excision", "behavior_proof_ref": "proof:user-v11:query-excision", "roles": ["read", "write"]}
+      ],
+      "behavior_proof_refs": ["proof:user-v11:query-excision"],
+      "after_rider_ids": [],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": "backup-profile:user-tier",
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "cc22c99a96729d10025a7f4c29a041ddf8cfcdb060b7e2de9fced00cc2da2b07"
+}

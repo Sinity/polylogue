@@ -134,7 +134,7 @@ def test_incremental_path_writes_every_session_from_a_multi_session_raw(tmp_path
 
 def test_lab_run_writes_rebuild_report_without_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from devtools import __main__ as devtools_main
-    from devtools import lab_scenario
+    from devtools import verification_scenario
     from devtools.rebuild_safety_scenario import RebuildComparisonResult
 
     result = RebuildComparisonResult(
@@ -143,8 +143,8 @@ def test_lab_run_writes_rebuild_report_without_json(tmp_path: Path, monkeypatch:
         covered_tables=frozenset(),
         census_tables=frozenset(),
     )
-    monkeypatch.setattr(lab_scenario, "run_rebuild_safety", lambda: result)
-    monkeypatch.setattr(lab_scenario, "run_rebuild_differential", lambda: result)
+    monkeypatch.setattr(verification_scenario, "run_rebuild_safety", lambda: result)
+    monkeypatch.setattr(verification_scenario, "run_rebuild_differential", lambda: result)
     report_dir = tmp_path / "report"
 
     assert devtools_main.main(["verify", "scenario", "run", "rebuild-safety", "--report-dir", str(report_dir)]) == 0
@@ -154,7 +154,7 @@ def test_lab_run_writes_rebuild_report_without_json(tmp_path: Path, monkeypatch:
 def test_lab_run_serializes_each_rebuild_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from devtools import lab_scenario
+    from devtools import verification_scenario
     from devtools.rebuild_safety_scenario import RebuildComparisonResult
 
     differential = RebuildComparisonResult(
@@ -163,10 +163,12 @@ def test_lab_run_serializes_each_rebuild_failure(
         covered_tables=frozenset(),
         census_tables=frozenset(),
     )
-    monkeypatch.setattr(lab_scenario, "run_rebuild_safety", lambda: (_ for _ in ()).throw(RuntimeError("safety boom")))
-    monkeypatch.setattr(lab_scenario, "run_rebuild_differential", lambda: differential)
+    monkeypatch.setattr(
+        verification_scenario, "run_rebuild_safety", lambda: (_ for _ in ()).throw(RuntimeError("safety boom"))
+    )
+    monkeypatch.setattr(verification_scenario, "run_rebuild_differential", lambda: differential)
 
-    assert lab_scenario.main(["run", "rebuild-safety", "--json", "--report-dir", str(tmp_path)]) == 1
+    assert verification_scenario.main(["run", "rebuild-safety", "--json", "--report-dir", str(tmp_path)]) == 1
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["stages"] == {"rebuild-safety": "error", "rebuild-differential": "ok"}

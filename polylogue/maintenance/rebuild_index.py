@@ -1541,18 +1541,16 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     )
     if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
         raise RuntimeError(reason)
-    from polylogue.maintenance.archive_verification import REINDEX_SOURCE_PREFLIGHT_CHECKS, verify_archive
+    from polylogue.maintenance.archive_verification import archive_verification_names_for_route, verify_archive
 
     source_liveness = verify_archive(
         root,
-        checks=REINDEX_SOURCE_PREFLIGHT_CHECKS,
+        checks=archive_verification_names_for_route("reindex-source-preflight"),
         active_index_context=("required" if location.active_index_path.exists() else "unavailable_for_candidate"),
     )
     if source_liveness.blocking:
         failing = "; ".join(
-            f"{check.name}: {check.summary}"
-            for check in source_liveness.checks
-            if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
+            f"{check.name}: {check.summary}" for check in source_liveness.checks if check.status.value == "error"
         )
         raise RuntimeError(f"reindex source preflight gate failed: {failing}")
 
@@ -1627,14 +1625,16 @@ async def _rebuild_index_from_source_owned(
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
-        REINDEX_ACCEPTANCE_CHECKS,
-        REINDEX_CANARY_ACCEPTANCE_CHECKS,
-        REINDEX_CANARY_ACCEPTANCE_PROFILE,
-        REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        archive_verification_names_for_route,
         passes_strict_acceptance,
         strict_acceptance_failures,
         verify_archive,
     )
+
+    reindex_checks = archive_verification_names_for_route("reindex-index-candidate")
+    cross_tier_checks = archive_verification_names_for_route("reindex-cross-tier-candidate")
+    canary_checks = archive_verification_names_for_route("reindex-canary-candidate")
+    canary_profile = "reindex-canary-v2-domain-coverage"
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import (
         RebuildDeadlineExceededError,
@@ -2219,19 +2219,19 @@ async def _rebuild_index_from_source_owned(
             # generation directory's index.db alone (source.db/user.db/
             # embeddings.db live once at the archive root, not per
             # generation, so cross-tier checks are excluded; see
-            # REINDEX_ACCEPTANCE_CHECKS' docstring). This subsumed the older
+            # candidate route declaration). This subsumed the older
             # fts-parity-only gate.
             candidate_acceptance_checks = (
-                REINDEX_CANARY_ACCEPTANCE_CHECKS
+                canary_checks
                 if request.canary
                 else (
                     request.candidate_acceptance_checks
                     if request.candidate_acceptance_checks is not None
-                    else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                    else cross_tier_checks
                 )
             )
             acceptance_reports = (
-                verify_archive(generation_root, checks=REINDEX_ACCEPTANCE_CHECKS),
+                verify_archive(generation_root, checks=reindex_checks),
                 # polylogue-f1vg: an inactive generation has only index.db, so
                 # corpus fidelity combines that candidate with the durable
                 # source tier at the archive root before promotion.
@@ -2256,7 +2256,7 @@ async def _rebuild_index_from_source_owned(
                 elapsed_s=round(terminal_timings_s["terminal.reindex_acceptance"], 3),
             )
             acceptance_requirements = (
-                REINDEX_ACCEPTANCE_CHECKS,
+                reindex_checks,
                 candidate_acceptance_checks,
             )
             acceptance_failures = tuple(
@@ -2280,10 +2280,10 @@ async def _rebuild_index_from_source_owned(
                         "count": check.count,
                     }
                     for check in acceptance_reports[1].checks
-                    if check.name in REINDEX_CANARY_ACCEPTANCE_CHECKS
+                    if check.name in canary_checks
                 ]
                 canary_acceptance = {
-                    "profile": REINDEX_CANARY_ACCEPTANCE_PROFILE,
+                    "profile": canary_profile,
                     "results": canary_results,
                 }
             # Derived insight materialization assumes a coherent lineage graph.

@@ -31,13 +31,16 @@ from polylogue.archive.query.completions import query_terminal_source_candidates
 from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_sources
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
+from tests.infra.cli_interaction import SUPPORTED_SHELLS as SUPPORTED_SHELL_NAMES
 from tests.infra.workload_artifacts import SeededArchiveQueryLease
 
-SUPPORTED_SHELLS: tuple[tuple[str, type[ShellComplete]], ...] = (
+SUPPORTED_SHELL_CLASSES: tuple[tuple[str, type[ShellComplete]], ...] = (
     ("bash", BashComplete),
     ("zsh", ZshComplete),
     ("fish", FishComplete),
 )
+SUPPORTED_SHELLS = SUPPORTED_SHELL_CLASSES
+assert tuple(shell for shell, _ in SUPPORTED_SHELL_CLASSES) == SUPPORTED_SHELL_NAMES
 
 CONTRACT_COMPLETION_COMMANDS: dict[CompletionContext, list[str]] = {
     "session_id": ["--id"],
@@ -129,7 +132,7 @@ def _run_completion_for_partial(
     return [(it.value, it.help) for it in items]
 
 
-@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELL_CLASSES, ids=[s for s, _ in SUPPORTED_SHELL_CLASSES])
 def test_terminal_completion_contract_is_generated_from_unit_descriptors(
     shell: str,
     comp_cls: type[ShellComplete],

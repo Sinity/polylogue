@@ -32,9 +32,8 @@ What this lint checks
 The lint validates structured schema carriers and executable SQL shapes. It
 does not infer architecture from Python function names.
 
-Wired into ``devtools verify --lab`` rather than the fast default path
-because the policy boundary is a lab/architectural concern, not a
-per-edit gate.
+Wired into the ordinary semantic verification baseline because the policy
+boundary is a production correctness concern.
 
 **Out of scope:** this lint is keyed entirely to ``INDEX_SCHEMA_VERSION``.
 Parser and lowering drift use the production fingerprints declared by

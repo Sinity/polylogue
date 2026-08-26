@@ -270,6 +270,52 @@ def _aggregate(entry: Mapping[str, Any]) -> Mapping[str, Any]:
     return aggregate if isinstance(aggregate, dict) else {}
 
 
+def _history_projection(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one durable receipt into the closure-measurement columns."""
+    selection = entry.get("testmon_selection")
+    selection = selection if isinstance(selection, Mapping) else {}
+    aggregate = _aggregate(entry)
+    missing = selection.get("missing_executable_paths")
+    return {
+        "run_id": entry.get("run_id"),
+        "started_at": entry.get("started_at"),
+        "tier": entry.get("tier"),
+        "graph_state": selection.get("state_status"),
+        "selection_reason": selection.get("state_reason"),
+        "selection_mode": selection.get("selection_mode") or aggregate.get("selection_mode"),
+        "selected_count": aggregate.get("selected_union_count"),
+        "uncovered_executable_paths": list(missing) if isinstance(missing, list) else [],
+        "wall_time_s": entry.get("duration_s"),
+        "outcome": entry.get("status"),
+        "diagnosis": entry.get("diagnosis"),
+    }
+
+
+def _history_rows(hours: float) -> list[dict[str, Any]]:
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    rows: list[dict[str, Any]] = []
+    if not VERIFY_HISTORY_PATH.exists():
+        return rows
+    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                entry = json.loads(line)
+                when = datetime.fromisoformat(str(entry.get("started_at") or ""))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(entry, dict) and when >= cutoff:
+                rows.append(entry)
+    return rows
+
+
+def _render_history_json(hours: float, stream: Any) -> int:
+    """Emit one stable JSON document suitable for rerunnable measurements."""
+    rows = _history_rows(hours)
+    json.dump([_history_projection(entry) for entry in rows], stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    return 0
+
+
 def _render_history(hours: float, stream: Any) -> int:
     """Answer "where did the time go" from the durable verification history.
 
@@ -281,24 +327,7 @@ def _render_history(hours: float, stream: Any) -> int:
     if not VERIFY_HISTORY_PATH.exists():
         print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
         return 1
-    cutoff = datetime.now(UTC) - timedelta(hours=hours)
-    rows: list[dict[str, Any]] = []
-    with VERIFY_HISTORY_PATH.open(encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            started = str(entry.get("started_at") or "")
-            try:
-                when = datetime.fromisoformat(started)
-            except ValueError:
-                continue
-            if when >= cutoff:
-                rows.append(entry)
+    rows = _history_rows(hours)
 
     if not rows:
         print(f"no verification runs in the last {hours:g}h", file=stream)
@@ -312,6 +341,18 @@ def _render_history(hours: float, stream: Any) -> int:
     # -- is absent. Measured 2026-08-18: a lane that burned 48 minutes on a
     # single terminated bootstrap contributed 0.04h to this view.
     print("(killed runs never reach this record, so long bootstraps are under-counted)\n", file=stream)
+    print("receipt columns:", file=stream)
+    for entry in rows:
+        projection = _history_projection(entry)
+        print(
+            f"  {projection['run_id']} graph={projection['graph_state'] or '-'} "
+            f"reason={projection['selection_reason'] or '-'} "
+            f"selected={projection['selected_count'] if projection['selected_count'] is not None else '-'} "
+            f"uncovered={','.join(projection['uncovered_executable_paths']) or '-'} "
+            f"wall={projection['wall_time_s'] if projection['wall_time_s'] is not None else '-'}s "
+            f"outcome={projection['outcome'] or '-'}",
+            file=stream,
+        )
 
     def _summarise(key: str, label: str) -> None:
         buckets: dict[str, tuple[int, float]] = {}
@@ -361,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.history is not None:
+        if args.json:
+            return _render_history_json(args.history, sys.stdout)
         return _render_history(args.history, sys.stdout)
 
     if args.run:

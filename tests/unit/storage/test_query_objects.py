@@ -5,15 +5,19 @@ import sqlite3
 
 import pytest
 
+from polylogue.security.query_excision import apply_query_excision, plan_query_excision
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     get_query,
+    get_result_set,
     get_retained_query_run,
     get_watched_query_baseline,
     list_watched_queries,
     migrate_saved_query_assertions,
+    promote_query,
+    promote_result_set,
     put_evaluation_receipt,
     put_query,
     put_query_edge,
@@ -122,6 +126,175 @@ def test_saved_query_migration_preserves_all_assertions_and_repoints_targets() -
     target_ref = conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'saved'").fetchone()[0]
     assert str(target_ref).startswith("query:")
     assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
+
+
+def test_promotion_requires_complete_privacy_contract() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "body", "value": "secret"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    with pytest.raises(ValueError, match="retention policy"):
+        promote_query(
+            conn,
+            query_hash=query.query_hash,
+            privacy_class="secret",
+            retention_policy={},
+            excision_link="",
+            promoted_at_ms=2,
+        )
+    promoted = promote_query(
+        conn,
+        query_hash=query.query_hash,
+        privacy_class="secret",
+        retention_policy={"days": 7},
+        excision_link="excision:secret-fixture",
+        promoted_at_ms=2,
+    )
+    assert promoted.privacy_class == "secret"
+    assert promoted.retention_policy == {"days": 7}
+    assert promoted.excision_link == "excision:secret-fixture"
+
+
+def test_query_excision_dry_run_and_apply_preserve_unrelated_history() -> None:
+    conn = _conn()
+    secret = put_query(
+        conn,
+        {"field": "body", "value": "fake-secret"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    other = put_query(
+        conn,
+        {"field": "origin", "value": "codex"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=2,
+    )
+    secret_result = put_result_set(
+        conn,
+        result_set_id="secret-result",
+        query_hash=secret.query_hash,
+        grain="session",
+        corpus_epoch="e1",
+        member_refs=("session:secret",),
+        exactness="exact",
+        persistence_class="finding",
+        created_at_ms=3,
+    )
+    other_result = put_result_set(
+        conn,
+        result_set_id="other-result",
+        query_hash=other.query_hash,
+        grain="session",
+        corpus_epoch="e1",
+        member_refs=("session:other",),
+        exactness="exact",
+        persistence_class="pinned",
+        created_at_ms=4,
+    )
+    promote_query(
+        conn,
+        query_hash=secret.query_hash,
+        privacy_class="secret",
+        retention_policy={"days": 1},
+        excision_link="excision:secret",
+        promoted_at_ms=5,
+    )
+    promote_result_set(
+        conn,
+        result_set_id=secret_result.result_set_id,
+        privacy_class="secret",
+        retention_policy={"days": 1},
+        excision_link="excision:secret",
+        promoted_at_ms=5,
+    )
+    put_retained_query_run(
+        conn,
+        run_id="qr_secret",
+        query_hash=secret.query_hash,
+        result_set_id=secret_result.result_set_id,
+        retained_at_ms=6,
+    )
+    put_evaluation_receipt(
+        conn,
+        query_hash=secret.query_hash,
+        result_set_id=secret_result.result_set_id,
+        receipt=EvaluationReceipt(
+            receipt_id="secret-receipt",
+            source_generation="s1",
+            user_generation="u1",
+            index_generation="i1",
+            runtime_build_ref="b1",
+        ),
+        created_at_ms=7,
+    )
+    conn.execute(
+        "INSERT INTO assertions (assertion_id, target_ref, kind, value_json, created_at_ms, updated_at_ms) VALUES ('finding-secret', ?, 'finding', '{\"claim\":\"secret\"}', 1, 1)",
+        (secret.ref,),
+    )
+
+    plan = plan_query_excision(conn, secret.ref)
+    assert plan.query_hashes == (secret.query_hash,)
+    assert plan.result_set_ids == (secret_result.result_set_id,)
+    assert plan.retained_run_ids == ("qr_secret",)
+    assert plan.evaluation_receipt_ids == ("secret-receipt",)
+    assert plan.finding_report_refs == ("finding-secret",)
+
+    receipt = apply_query_excision(conn, plan, reason="fake secret", actor="user:test", now_ms=8)
+    assert receipt.status == "applied"
+    assert get_query(conn, secret.query_hash) is None
+    assert get_result_set(conn, secret_result.result_set_id) is None
+    assert get_query(conn, other.query_hash) is not None
+    assert get_result_set(conn, other_result.result_set_id) is not None
+    assert tuple(
+        conn.execute(
+            "SELECT status, value_json, body_text FROM assertions WHERE assertion_id = 'finding-secret'"
+        ).fetchone()
+    ) == ("deleted", None, None)
+    with pytest.raises(RuntimeError, match="excised"):
+        put_query(
+            conn,
+            {"field": "body", "value": "fake-secret"},
+            grain="session",
+            lane="dialogue",
+            rank_policy="mixed",
+            created_at_ms=9,
+        )
+
+
+def test_relation_excision_keeps_owning_query_definition() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "codex"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    relation = put_result_set(
+        conn,
+        result_set_id="relation-only",
+        query_hash=query.query_hash,
+        grain="session",
+        corpus_epoch="e1",
+        member_refs=("session:one",),
+        exactness="exact",
+        persistence_class="pinned",
+        created_at_ms=2,
+    )
+    plan = plan_query_excision(conn, "result-set:relation-only")
+    apply_query_excision(conn, plan, reason="remove relation", actor="user:test", now_ms=3)
+    assert get_query(conn, query.query_hash) is not None
+    assert get_result_set(conn, relation.result_set_id) is None
 
 
 def test_watched_definition_retention_and_receipt_are_durable_contracts() -> None:

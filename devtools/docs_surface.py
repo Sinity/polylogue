@@ -225,6 +225,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
+        "Verification Authority",
+        "verification-authority.md",
+        "Sole ownership matrix for AgentCTL execution and Polylogue semantic verification.",
+        "operations",
+    ),
+    _entry(
         "AgentCTL Development-Loop Proof",
         "dev-loop.md",
         "Declared browser-capture proof with AgentCTL-owned host lifecycle.",
@@ -352,6 +358,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Convergence Law Deletion Ledger",
         "convergence-laws-deletion-ledger.md",
         "Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery.",
+        "design",
+    ),
+    _entry(
+        "CLI Interaction Oracle Deletion Ledger",
+        "plans/cli-interaction-deletion-ledger.md",
+        "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
         "design",
     ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),

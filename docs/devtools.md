@@ -21,9 +21,9 @@ Routine command placement:
 - keep repo state, rendering, packaging, and PR-readiness orchestration in
   `devtools`;
 - keep archive/insight workflows in `polylogue` CLI/API surfaces;
-- keep evidence/scenario behavior in lab modules with executable command entrypoints;
-- prefer validation lanes and `devtools verify --lab` to compose executable
-  lab checks rather than duplicating domain checks inside `devtools verify`.
+- keep evidence/scenario behavior in verification modules with executable command entrypoints;
+- prefer validation lanes and the ordinary verifier to compose executable
+  checks rather than duplicating domain checks inside `devtools verify`.
 
 <!-- BEGIN GENERATED: devtools-command-catalog -->
 ## Command Catalog
@@ -49,7 +49,7 @@ These are the commands worth remembering during normal repo work:
 - `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render all`, `devtools render all --check`.
 - `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
-  Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --lab`.
+  Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
@@ -124,6 +124,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
 | `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
@@ -142,6 +143,10 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 
 <!-- END GENERATED: devtools-command-catalog -->
+
+## Pattern Ratchet
+
+Pattern baselines use `path:sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
 
 ## Cursor-authority reconciliation
 

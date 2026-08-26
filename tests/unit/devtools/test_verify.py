@@ -24,11 +24,18 @@ from devtools.verify_runs import (
 
 
 def test_quick_steps_are_static_gates() -> None:
-    labels = [label for label, _command in verify.build_verify_steps(quick=True, lab=False)]
+    labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
     assert "ruff check" in labels
     assert "verify oracle-integrity" in labels
     assert not any(label.startswith("pytest") for label in labels)
+
+
+def test_removed_lab_mode_is_not_accepted() -> None:
+    with pytest.raises(SystemExit) as raised:
+        verify._main(["--lab"])
+
+    assert raised.value.code == 2
 
 
 def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -145,7 +152,6 @@ def test_finish_step_does_not_retry_unavailable_pytest_statistics(
 def test_native_selection_partitions_semantic_lanes() -> None:
     steps = verify.build_verify_steps(
         quick=False,
-        lab=False,
         testmon_mode="affected",
         testmon_environment="polylogue-test",
     )
@@ -169,7 +175,6 @@ def test_full_corpus_traces_but_never_selects_testmon() -> None:
     """
     steps = verify.build_verify_steps(
         quick=False,
-        lab=False,
         testmon_mode="all",
         testmon_environment="polylogue-test",
     )
@@ -189,7 +194,6 @@ def test_full_corpus_traces_but_never_selects_testmon() -> None:
 def test_affected_corpus_retains_testmon_selection() -> None:
     steps = verify.build_verify_steps(
         quick=False,
-        lab=False,
         testmon_mode="affected",
         testmon_environment="polylogue-test",
     )
@@ -203,11 +207,26 @@ def test_affected_corpus_retains_testmon_selection() -> None:
 def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
     aggregate = verify._aggregate_pytest_results(
         [
-            {"name": "pytest native parallel 1/3 (all)", "statistics": {"outcomes": {"passed": 7, "skipped": 1}}},
-            {"name": "pytest native parallel 2/3 (all)", "statistics": {"outcomes": {"passed": 11}}},
-            {"name": "pytest native parallel 3/3 (all)", "statistics": {"outcomes": {"passed": 5, "xfailed": 1}}},
-            {"name": "pytest native serial (all)", "statistics": {"outcomes": {"passed": 2}}},
-            {"name": "pytest native storage-scale (all)", "statistics": {"outcomes": {"passed": 1}}},
+            {
+                "name": "pytest native parallel 1/3 (all)",
+                "statistics": {"selected_count": 10, "terminal_count": 10, "outcomes": {"passed": 7, "skipped": 1}},
+            },
+            {
+                "name": "pytest native parallel 2/3 (all)",
+                "statistics": {"selected_count": 11, "terminal_count": 11, "outcomes": {"passed": 11}},
+            },
+            {
+                "name": "pytest native parallel 3/3 (all)",
+                "statistics": {"selected_count": 6, "terminal_count": 6, "outcomes": {"passed": 5, "xfailed": 1}},
+            },
+            {
+                "name": "pytest native serial (all)",
+                "statistics": {"selected_count": 2, "terminal_count": 2, "outcomes": {"passed": 2}},
+            },
+            {
+                "name": "pytest native storage-scale (all)",
+                "statistics": {"selected_count": 1, "terminal_count": 1, "outcomes": {"passed": 1}},
+            },
         ],
         expected_step_count=5,
         mode="all",
@@ -216,6 +235,8 @@ def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
 
     assert aggregate == {
         "selection_mode": "all",
+        "selected_union_count": 30,
+        "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
         "terminal_green": True,
         "complete_corpus_covered": True,

@@ -88,12 +88,11 @@ def test_policy_json_names_every_duplicate_owner(
 
 
 def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate() -> None:
-    for quick, lab in ((True, False), (True, True), (False, False), (False, True)):
+    for quick in (True, False):
         labels = [
             label
             for label, _command in verify.build_verify_steps(
                 quick=quick,
-                lab=lab,
                 testmon_environment="env-digest" if not quick else "",
             )
         ]
@@ -103,7 +102,6 @@ def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate
         label
         for label, _command in verify.build_verify_steps(
             quick=True,
-            lab=False,
             commit=True,
         )
     ]

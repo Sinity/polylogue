@@ -126,7 +126,7 @@ class ArchiveSmokeResult:
 
 
 class RebuildSafetyResult:
-    """Direct result wrapper for the derived-tier rebuild lab lane."""
+    """Direct result wrapper for the derived-tier rebuild verification lane."""
 
     def __init__(self, *, report_dir: Path | None) -> None:
         self.report_dir = report_dir
