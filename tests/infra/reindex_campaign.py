@@ -23,6 +23,10 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
+from polylogue.storage.blob_integrity import scan_blob_integrity
+from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
@@ -472,6 +476,40 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
         )
     if len(duplicate_raw_ids) != len(duplicate_paths):
         raise AssertionError("campaign duplicate ingest did not retain both raw acquisitions")
+
+    # Duplicate publication attempts can leave bytes that were never admitted
+    # to a raw-session row.  Resolve that deliberate fixture shape through the
+    # same scanner and locked GC deletion seam used by maintenance, so the
+    # campaign corpus has no unexplained physical bytes before it becomes a
+    # rebuild source snapshot.
+    blob_report = scan_blob_integrity(
+        root / "source.db",
+        store=BlobStore(root / "blob"),
+        full=True,
+        configured_root=root,
+    )
+    orphan_finding = next((finding for finding in blob_report.findings if finding.kind == "orphan_blobs"), None)
+    if orphan_finding is not None:
+        orphan_hashes = set(orphan_finding.sample)
+        receipts = inspect_blob_publication_receipts(root / "source.db", root / "blob", index_db_path=root / "index.db")
+        abandoned = abandon_blob_publication_receipts(
+            root / "source.db",
+            root / "blob",
+            [receipt.publication_id for receipt in receipts if receipt.blob_hash in orphan_hashes],
+            confirmed=True,
+            index_db_path=root / "index.db",
+        )
+        deleted, _deleted_bytes, blockers = unlink_unreferenced_blob_hashes_under_exclusion(
+            root / "source.db",
+            root / "index.db",
+            root / "blob",
+            orphan_hashes,
+        )
+        if blockers or abandoned.abandoned != orphan_finding.count or deleted != orphan_finding.count:
+            raise AssertionError(
+                "campaign fixture orphan disposition failed: "
+                f"found={orphan_finding.count} abandoned={abandoned.abandoned} deleted={deleted} blockers={blockers}"
+            )
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         parser_failure_raw_id = archive.write_raw_payload(

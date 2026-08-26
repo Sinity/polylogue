@@ -2259,11 +2259,7 @@ def test_every_live_declaration_does_not_error_on_the_real_pipeline_corpus(
     report = verify_archive(seeded_archive.root, checks=(check_name,))
 
     check = _check(report, check_name)
-    if check_name == "blob-integrity":
-        assert check.status is OutcomeStatus.ERROR
-        assert check.evidence["finding_counts"] == {"orphan_blobs": 2}
-    else:
-        assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
+    assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
 
 
 def test_new_convergence_checks_measure_a_real_population_on_the_pipeline_corpus(
