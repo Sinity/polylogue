@@ -997,6 +997,25 @@ class OperationExecutor:
                     ),
                 )
                 raise RecoveryBlockedError(f"operation {operation.operation_id!r} has an invalid recovery disposition")
+            if disposition.kind in {"confirmed-not-applied", "confirmed-partial"} and (
+                operation.plan_hash != plan.plan_hash or operation.target_digest != plan.target_digest
+            ):
+                # The inspector proves the state of the interrupted operation's
+                # targets, not an arbitrary new effect over those targets.  A
+                # continuation is therefore valid only for the same immutable
+                # plan/target binding.  Confirmed-applied evidence is safe to
+                # retain despite a new plan because it is blocked below and
+                # can never authorize a new mutation (raw-authority adoption
+                # deliberately proves that case from its receipt).
+                mismatch = "plan" if operation.plan_hash != plan.plan_hash else "target"
+                mismatch_detail = f"interrupted operation {mismatch} identity differs from retry plan"
+                self._audit.record_recovery_disposition(
+                    operation.operation_id,
+                    RecoveryDisposition("unknown", "operator-blocking", mismatch_detail),
+                )
+                raise RecoveryBlockedError(
+                    f"operation {operation.operation_id!r} has {mismatch} identity drift; recovery is operator-blocking"
+                )
             self._audit.record_recovery_disposition(operation.operation_id, disposition)
             if disposition.kind == "unknown":
                 raise RecoveryBlockedError(f"operation {operation.operation_id!r} remains operator-blocking")
