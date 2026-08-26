@@ -16,7 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Any, Final, Literal, cast
 
 from polylogue.maintenance.receipt_fs import (
     MaintenanceReceiptPathError,
@@ -2097,6 +2097,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_generation_census(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":admit_material"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_material_admission(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":get_material"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_material_read(cast(Callable[..., object], value), train.target_version)
                 elif reference.endswith(":promote_query"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
@@ -2350,6 +2362,44 @@ def _probe_source_generation_census(census: Callable[..., object], target_versio
     if report.get("sealable"):
         raise DurableChangeTrainError("source generation census probe reported a pending manifest as sealable")
     return "census reported the probe generation as pending and unsealable"
+
+
+def _probe_material_admission(admit: Callable[..., object], target_version: int) -> str:
+    """Exercise claim-only material admission against the projected source schema."""
+    with _runtime_probe_source_connection(target_version) as probe:
+        observation = admit(
+            probe,
+            blob_store=cast(Any, None),  # claim-only admission publishes no bytes
+            source_uri="https://durable-change-train.invalid/material-probe",
+            referrer_ref="session:durable-change-train-probe",
+            observed_at_ms=1_780_000_000_000,
+        )
+        material_id = getattr(observation, "material_id", None)
+        row = probe.execute(
+            "SELECT acquisition_state FROM material_observations WHERE material_id = ?",
+            (material_id,),
+        ).fetchone()
+    if material_id is None or row is None or row[0] != "claimed":
+        raise DurableChangeTrainError("material admission probe did not persist a claimed observation")
+    return f"admitted probe material {str(material_id)[:12]} as a claimed observation"
+
+
+def _probe_material_read(get: Callable[..., object], target_version: int) -> str:
+    """Exercise material read-back against the projected source schema."""
+    from polylogue.storage.materials import admit_material
+
+    with _runtime_probe_source_connection(target_version) as probe:
+        observation = admit_material(
+            probe,
+            blob_store=cast(Any, None),
+            source_uri="https://durable-change-train.invalid/material-read-probe",
+            referrer_ref="session:durable-change-train-read-probe",
+            observed_at_ms=1_780_000_000_000,
+        )
+        loaded = get(probe, observation.material_id)
+    if loaded is None or getattr(loaded, "source_uri", None) != observation.source_uri:
+        raise DurableChangeTrainError("material read probe did not return the admitted observation")
+    return f"read back probe material {observation.material_id[:12]}"
 
 
 def _runtime_probe_user_connection(target_version: int) -> sqlite3.Connection:

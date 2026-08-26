@@ -1,0 +1,57 @@
+{
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "train_id": "train:source:v38",
+  "tier": "source",
+  "current_version": 37,
+  "target_version": 38,
+  "slot": 38,
+  "owner_ref": "polylogue-hs3y",
+  "migration": {
+    "tier": "source",
+    "target_version": 38,
+    "slot": 38,
+    "path": "038_material_observations.sql",
+    "owner_ref": "polylogue-hs3y",
+    "requires_backup": false,
+    "sql_sha256": "604197fbe2c9c0340542b29e121bf37f866110aa86ed6a1b6424a41946ea8da2"
+  },
+  "riders": [{
+    "rider_id": "rider:material-observations",
+    "owner_ref": "polylogue-hs3y",
+    "schema_objects": ["table:material_observations", "table:material_evidence_links"],
+    "runtime_consumers": [{
+      "consumer_id": "material-admission",
+      "production_ref": "polylogue.storage.materials:admit_material",
+      "behavior_proof_ref": "proof:source-v38:material-admission",
+      "roles": ["read", "write"]
+    }, {
+      "consumer_id": "material-query",
+      "production_ref": "polylogue.storage.materials:get_material",
+      "behavior_proof_ref": "proof:source-v38:material-query",
+      "roles": ["read"]
+    }],
+    "behavior_proof_refs": ["proof:source-v38:material-admission", "proof:source-v38:material-query"],
+    "after_rider_ids": [],
+    "trust_floor_exception_ref": null
+  }],
+  "ordering_constraints": [],
+  "drop_constraints": [],
+  "row_change_allowances": [],
+  "backup_plan_ref": null,
+  "state": "declared",
+  "revision": 0,
+  "declared_at_ms": 0,
+  "admitted_at_ms": null,
+  "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
+  "apply_evidence": null,
+  "proof": null,
+  "failure": null,
+  "released_at_ms": null,
+  "release_evidence_ref": null,
+  "proof_refs": [],
+  "manifest_sha256": "53a683e653337b661a2cea88ef8c64eb0014f49307b6d0d7331411c8b1a0ee1f"
+}
