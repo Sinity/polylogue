@@ -143,6 +143,10 @@ These are the commands worth remembering during normal repo work:
 
 <!-- END GENERATED: devtools-command-catalog -->
 
+## Pattern Ratchet
+
+Pattern baselines use `path:sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
+
 ## Cursor-authority reconciliation
 
 `polylogue ops maintenance cursor-authority-reconcile` is a dry-run-by-default
