@@ -65,7 +65,7 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),
     "session_phases": frozenset(),
-    "session_profiles": frozenset({"materialized_at", "priced_at_ms"}),
+    "session_profiles": frozenset({"materialized_at"}),
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
     "session_repos": frozenset(),

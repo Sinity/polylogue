@@ -445,7 +445,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # execution-context refs in work-evidence nodes. Existing graph rows cannot
 # recover role from their prior shape, so the normal derived rebuild route
 # must regenerate them from projected-run evidence.
-INDEX_SCHEMA_VERSION = 74
+INDEX_SCHEMA_VERSION = 75
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1015,11 +1015,8 @@ ON paste_spans(session_id);
 -- caller was a test. Cost computation resolves per-model rates from the
 -- in-process pricing catalog (polylogue.archive.semantic.pricing.PRICING),
 -- never round-tripping through a DB-backed mirror or catalog-identity table.
--- NOTE: session_profiles.priced_with/priced_at_ms are a DIFFERENT, unrelated
--- pair of columns (no FK to price_catalogs, sourced from cost_compute.py's
--- _PRICE_SNAPSHOT_VERSION) that genuinely are read back (daemon/http.py's
--- _profile_panel_payload serves them in the session-insights reader panel)
--- -- they are kept.
+-- session_profiles no longer persists pricing snapshots; public readers use
+-- the canonical session_model_usage/session-reported-cost projection.
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
     {TABLE_SPECS["session_model_usage"].ddl_body}
@@ -1575,10 +1572,18 @@ SELECT
     pp.terminal_state                           AS parent_terminal_state,
     cp.primary_model_name                       AS child_session_dominant_model,
     cp.primary_model_family                     AS child_session_dominant_model_family,
-    cp.total_cost_usd                           AS child_cost_usd,
-    cp.cost_is_estimated                        AS child_cost_is_estimated,
-    (COALESCE(cp.total_input_tokens, 0) + COALESCE(cp.total_output_tokens, 0)
-       + COALESCE(cp.total_cache_read_tokens, 0) + COALESCE(cp.total_cache_write_tokens, 0)) AS child_tokens,
+    (SELECT COALESCE(SUM(u.cost_usd),
+                     (SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id))
+       FROM session_model_usage u
+       WHERE u.session_id = att.child_session_id) AS child_cost_usd,
+    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
+                 WHEN COUNT(u.cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
+       FROM session_model_usage u
+       WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,
+    (SELECT SUM(COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0)
+       + COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0))
+       FROM session_model_usage u
+       WHERE u.session_id = att.child_session_id) AS child_tokens,
     cp.wall_duration_ms                         AS child_wall_ms,
     cp.terminal_state                           AS child_terminal_state
 FROM attempts att

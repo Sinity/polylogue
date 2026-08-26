@@ -139,6 +139,14 @@ def _insert_dispatch_action(
 
 
 def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **overrides: object) -> None:
+    cost_fields = {
+        "total_cost_usd",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cache_read_tokens",
+        "total_cache_write_tokens",
+    }
+    cost = {key: overrides.pop(key, None) for key in cost_fields}
     columns = {"session_id": session_id, **overrides}
     keys = list(columns.keys())
     placeholders = ", ".join("?" for _ in keys)
@@ -146,6 +154,23 @@ def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **over
         f"INSERT INTO session_profiles ({', '.join(keys)}) VALUES ({placeholders})",
         tuple(columns.values()),
     )
+    if any(value is not None for value in cost.values()):
+        conn.execute(
+            "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
+            (cost["total_cost_usd"], session_id),
+        )
+        conn.execute(
+            """INSERT INTO session_model_usage
+               (session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+               VALUES (?, 'canonical-test-model', ?, ?, ?, ?)""",
+            (
+                session_id,
+                cost["total_input_tokens"] or 0,
+                cost["total_output_tokens"] or 0,
+                cost["total_cache_read_tokens"] or 0,
+                cost["total_cache_write_tokens"] or 0,
+            ),
+        )
 
 
 def _insert_session_link(

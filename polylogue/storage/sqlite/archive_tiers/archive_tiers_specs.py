@@ -1483,7 +1483,6 @@ SESSION_PROFILES_SPEC = _make_table_spec(
             "thinking_count",
             """thinking_count                  INTEGER NOT NULL DEFAULT 0 CHECK(thinking_count >= 0)""",
         ),
-        _raw_column("total_cost_usd", """total_cost_usd                  REAL NOT NULL DEFAULT 0"""),
         _raw_column(
             "total_duration_ms",
             """total_duration_ms               INTEGER NOT NULL DEFAULT 0 CHECK(total_duration_ms >= 0)""",
@@ -1515,10 +1514,6 @@ SESSION_PROFILES_SPEC = _make_table_spec(
         ),
         _raw_column("terminal_state_evidence_json", """terminal_state_evidence_json    TEXT NOT NULL DEFAULT '{}'"""),
         _raw_column(
-            "cost_is_estimated",
-            """cost_is_estimated               INTEGER NOT NULL DEFAULT 0 CHECK(cost_is_estimated IN (0, 1))""",
-        ),
-        _raw_column(
             "thinking_duration_ms",
             """thinking_duration_ms            INTEGER NOT NULL DEFAULT 0 CHECK(thinking_duration_ms >= 0)""",
         ),
@@ -1535,25 +1530,6 @@ SESSION_PROFILES_SPEC = _make_table_spec(
         _raw_column(
             "timing_provenance", """timing_provenance               TEXT NOT NULL DEFAULT 'sort_key_estimated'"""
         ),
-        _raw_column(
-            "total_input_tokens",
-            """total_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0)""",
-        ),
-        _raw_column(
-            "total_output_tokens",
-            """total_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0)""",
-        ),
-        _raw_column(
-            "total_cache_read_tokens",
-            """total_cache_read_tokens         INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_read_tokens >= 0)""",
-        ),
-        _raw_column(
-            "total_cache_write_tokens",
-            """total_cache_write_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0)""",
-        ),
-        _raw_column("total_credit_cost", """total_credit_cost               REAL NOT NULL DEFAULT 0.0"""),
-        _raw_column("cost_provenance", """cost_provenance                 TEXT NOT NULL DEFAULT 'unknown'"""),
-        _raw_column("per_model_cost_json", """per_model_cost_json             TEXT NOT NULL DEFAULT '{}'"""),
         _raw_column("evidence_payload_json", """evidence_payload_json           TEXT NOT NULL DEFAULT '{}'"""),
         _raw_column("inference_payload_json", """inference_payload_json          TEXT NOT NULL DEFAULT '{}'"""),
         _raw_column("enrichment_payload_json", """enrichment_payload_json         TEXT NOT NULL DEFAULT '{}'"""),
@@ -1574,10 +1550,6 @@ SESSION_PROFILES_SPEC = _make_table_spec(
         _raw_column(
             "duration_ms", """duration_ms                     INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0)"""
         ),
-        _raw_column("cost_credits", """cost_credits                    REAL"""),
-        _raw_column("cost_usd", """cost_usd                        REAL"""),
-        _raw_column("priced_with", """priced_with                     TEXT"""),
-        _raw_column("priced_at_ms", """priced_at_ms                    INTEGER"""),
         _raw_column(
             "primary_model_name",
             """-- 1vpm.1: dominant model by assistant output-token share + its canonical
