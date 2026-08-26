@@ -45,7 +45,11 @@ async def replace_session_profiles_bulk(
     transaction_depth: int,
 ) -> None:
     has_fallback_payload = await _table_has_column(conn, "session_profiles", "payload_json") if records else False
-    columns = session_profile_insert_columns(has_fallback_payload=has_fallback_payload)
+    has_content_hash = await _table_has_column(conn, "session_profiles", "input_content_hash") if records else False
+    columns = session_profile_insert_columns(
+        has_fallback_payload=has_fallback_payload,
+        has_content_hash=has_content_hash,
+    )
     await replace_insight_rows(
         conn,
         table="session_profiles",
@@ -53,7 +57,11 @@ async def replace_session_profiles_bulk(
         id_values=session_ids,
         columns=columns,
         records=records,
-        extractor=lambda r: session_profile_insert_values(r, has_fallback_payload=has_fallback_payload),
+        extractor=lambda r: session_profile_insert_values(
+            r,
+            has_fallback_payload=has_fallback_payload,
+            has_content_hash=has_content_hash,
+        ),
         transaction_depth=transaction_depth,
     )
 

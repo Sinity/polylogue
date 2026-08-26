@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,10 @@ from polylogue.storage.insights.session.profiles import (
     profile_inference_search_text,
     session_enrichment_payload,
     user_turn_texts,
+)
+from polylogue.storage.insights.session.storage import (
+    replace_session_profile_sync,
+    session_profile_insert_columns,
 )
 from tests.infra.builders import make_conv, make_msg
 
@@ -344,6 +349,28 @@ def test_session_profile_record_exposes_tool_active_duration() -> None:
     assert record.evidence_payload.tool_active_duration_ms == 180_000
     assert record.inference_payload.tool_active_duration_ms == 180_000
     assert record.inference_payload.tool_active_minutes == 3.0
+
+
+def test_session_profile_input_content_hash_round_trips_through_storage() -> None:
+    """The content binding must survive the production profile INSERT route.
+
+    Anti-vacuity: removing the model field, insert column, or corresponding
+    binding would either raise during record construction/INSERT or make this
+    assertion lose the sentinel hash.
+    """
+    profile = build_session_profile(_enrichment_session())
+    record = build_session_profile_record(profile, input_content_hash="a1b2c3")
+    columns = session_profile_insert_columns(has_fallback_payload=False)
+
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE session_profiles (" + ", ".join(f'"{column}" TEXT' for column in columns) + ")")
+        replace_session_profile_sync(conn, record)
+        row = conn.execute(
+            "SELECT input_content_hash FROM session_profiles WHERE session_id = ?",
+            (record.session_id,),
+        ).fetchone()
+
+    assert row == ("a1b2c3",)
 
 
 def test_session_profile_evidence_payload_exposes_token_cost_fields() -> None:
