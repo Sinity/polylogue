@@ -18,6 +18,7 @@ from polylogue.archive.semantic.cost_compute import (
     compute_session_cost,
 )
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
+from polylogue.archive.semantic.pricing import CostEstimatePayload, CostUsagePayload
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -42,6 +43,30 @@ def test_nonzero_model_usage_row_stays_provider_reported() -> None:
     (breakdown,) = per_model.values()
     assert breakdown.confidence == "reported"
     assert breakdown.provenance == "provider_reported"
+
+
+def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() -> None:
+    """polylogue-t2ugv: reported money and canonical token lanes are orthogonal.
+
+    Anti-vacuity: restoring the exact-cost early return makes the summary
+    report the message estimate's zero tokens instead of 100/20.
+    """
+
+    session = make_conv(id="exact-provider-with-rollup", provider="chatgpt", messages=[])
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(
+            origin="chatgpt",
+            status="exact",
+            total_usd=1.0,
+            usage=CostUsagePayload(),
+        ),
+        model_usage=[ModelUsageTotals(model_name="gpt-4o", input_tokens=100, output_tokens=20)],
+    )
+
+    assert summary.total_input_tokens == 100
+    assert summary.total_output_tokens == 20
+    assert summary.total_api_cost_usd == 1.0
 
 
 def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_usage() -> None:

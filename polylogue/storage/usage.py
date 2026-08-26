@@ -1801,6 +1801,7 @@ def _pricing_lane_reports(
         elif model_name:
             normalized = _normalize_model(model_name)
             if normalized in PRICING:
+                pricing = PRICING[normalized]
                 catalog_cost = estimate_cost(
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
@@ -1808,7 +1809,15 @@ def _pricing_lane_reports(
                     cache_write_tokens=usage.cache_write_tokens,
                     model=normalized,
                 )
-                bucket.matched_model_row_count += row_count
+                missing_cache_rate = (
+                    (usage.cached_input_tokens > 0 and pricing.cache_read_usd_per_1m == 0.0)
+                    or (usage.cache_write_tokens > 0 and pricing.cache_write_usd_per_1m == 0.0)
+                ) and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
+                if missing_cache_rate:
+                    bucket.unmatched_model_row_count += row_count
+                    caveats_by_provenance[provenance].add("missing_cache_price")
+                else:
+                    bucket.matched_model_row_count += row_count
             else:
                 bucket.unmatched_model_row_count += row_count
                 caveats_by_provenance[provenance].add("missing_price")
