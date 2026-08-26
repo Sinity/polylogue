@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.why import _EXPLANATIONS, _latest_run, _render
+from devtools.why import _EXPLANATIONS, _history_projection, _latest_run, _render
 
 
 def _write_run(root: Path, run_id: str, payload: dict[str, object]) -> Path:
@@ -151,3 +151,35 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
     assert "9999" not in output
     assert "selected nothing and ran the full corpus" in output
     assert "under-counted" in output, "the record omits killed runs and must say so"
+
+
+def test_history_projection_preserves_selection_and_uncovered_paths() -> None:
+    projection = _history_projection(
+        {
+            "run_id": "run-1",
+            "tier": "affected",
+            "status": "failed",
+            "duration_s": 12.5,
+            "testmon_selection": {
+                "selection_mode": "affected",
+                "state_status": "incomplete",
+                "state_reason": "changed executable modules are absent from the native dependency graph",
+                "missing_executable_paths": ["polylogue/example.py"],
+            },
+            "pytest_aggregate": {"selected_union_count": 7},
+        }
+    )
+
+    assert projection == {
+        "run_id": "run-1",
+        "started_at": None,
+        "tier": "affected",
+        "graph_state": "incomplete",
+        "selection_reason": "changed executable modules are absent from the native dependency graph",
+        "selection_mode": "affected",
+        "selected_count": 7,
+        "uncovered_executable_paths": ["polylogue/example.py"],
+        "wall_time_s": 12.5,
+        "outcome": "failed",
+        "diagnosis": None,
+    }

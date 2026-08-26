@@ -203,11 +203,26 @@ def test_affected_corpus_retains_testmon_selection() -> None:
 def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
     aggregate = verify._aggregate_pytest_results(
         [
-            {"name": "pytest native parallel 1/3 (all)", "statistics": {"outcomes": {"passed": 7, "skipped": 1}}},
-            {"name": "pytest native parallel 2/3 (all)", "statistics": {"outcomes": {"passed": 11}}},
-            {"name": "pytest native parallel 3/3 (all)", "statistics": {"outcomes": {"passed": 5, "xfailed": 1}}},
-            {"name": "pytest native serial (all)", "statistics": {"outcomes": {"passed": 2}}},
-            {"name": "pytest native storage-scale (all)", "statistics": {"outcomes": {"passed": 1}}},
+            {
+                "name": "pytest native parallel 1/3 (all)",
+                "statistics": {"selected_count": 10, "terminal_count": 10, "outcomes": {"passed": 7, "skipped": 1}},
+            },
+            {
+                "name": "pytest native parallel 2/3 (all)",
+                "statistics": {"selected_count": 11, "terminal_count": 11, "outcomes": {"passed": 11}},
+            },
+            {
+                "name": "pytest native parallel 3/3 (all)",
+                "statistics": {"selected_count": 6, "terminal_count": 6, "outcomes": {"passed": 5, "xfailed": 1}},
+            },
+            {
+                "name": "pytest native serial (all)",
+                "statistics": {"selected_count": 2, "terminal_count": 2, "outcomes": {"passed": 2}},
+            },
+            {
+                "name": "pytest native storage-scale (all)",
+                "statistics": {"selected_count": 1, "terminal_count": 1, "outcomes": {"passed": 1}},
+            },
         ],
         expected_step_count=5,
         mode="all",
@@ -216,6 +231,8 @@ def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
 
     assert aggregate == {
         "selection_mode": "all",
+        "selected_union_count": 30,
+        "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
         "terminal_green": True,
         "complete_corpus_covered": True,
