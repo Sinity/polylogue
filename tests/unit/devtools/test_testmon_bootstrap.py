@@ -703,5 +703,5 @@ def test_an_interrupted_bootstrap_does_not_delete_every_environments_graph(tmp_p
 def test_canonical_test_nodeid_strips_only_loadgroup_suffix(nodeid: str, canonical: str) -> None:
     # xdist loadgroup lanes record `id@group`, single-process lanes record `id`;
     # comparing across shapes without one canonical form invented 509 phantom
-    # missing/attested tests and a permanent re-execution treadmill.
+    # missing tests and a permanent re-execution treadmill.
     assert canonical_test_nodeid(nodeid) == canonical

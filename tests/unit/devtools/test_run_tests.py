@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any, cast
 
 import pytest
 
-from devtools import pytest_scratch, run_tests
+from devtools import run_tests
 from devtools.pytest_collection_contract import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
@@ -194,7 +193,7 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr("devtools.run_tests.run_managed_pytest", direct_subprocess)
+    monkeypatch.setattr("devtools.run_tests.subprocess.run", direct_subprocess)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
     monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
@@ -303,56 +302,6 @@ def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
         assert payload["pytest_aggregate"]["selection_mode"] == "focused"
         assert payload["git_head"] == "head"
         assert payload["final_git_head"] == "head"
-
-
-def test_main_preserves_sigterm_for_managed_cancellation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    history: dict[str, Any] = {}
-    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-
-    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, str]]:
-        raise run_tests.ManagedTestInterrupted(signal.SIGTERM)
-
-    monkeypatch.setattr(run_tests, "_run", interrupt)
-
-    assert run_tests.main(["tests/unit/example.py"]) == 143
-    assert history["exit_code"] == 143
-    assert history["steps"][0]["termination_reason"] == "sigterm"
-
-
-def test_managed_pytest_kills_process_group_for_sigterm(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class SyntheticBaseException(BaseException):
-        pass
-
-    class _Process:
-        pid = 77
-        waits = 0
-
-        def wait(self, timeout: float | None = None) -> int:
-            self.waits += 1
-            if timeout is None:
-                raise SyntheticBaseException()
-            if self.waits == 2:
-                raise subprocess.TimeoutExpired("pytest", timeout)
-            return 143
-
-    killed: list[tuple[int, signal.Signals]] = []
-    monkeypatch.setattr(pytest_scratch.subprocess, "Popen", lambda *_args, **_kwargs: _Process())  # type: ignore[attr-defined]
-    monkeypatch.setattr(pytest_scratch.os, "killpg", lambda pid, signum: killed.append((pid, signum)))  # type: ignore[attr-defined]
-
-    with pytest.raises(SyntheticBaseException):
-        run_tests.run_managed_pytest(["pytest"], cwd=Path.cwd(), env={})  # type: ignore[attr-defined]
-
-    assert killed == [(77, signal.SIGTERM), (77, signal.SIGKILL)]
 
 
 def test_main_records_rewritten_focused_exit_and_why_surfaces_the_failure(
@@ -545,55 +494,6 @@ def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
     monkeypatch.setattr("devtools.run_tests._run", _fake_run)
     assert run_tests.main(["tests/unit/does_not_exist"]) == 5
-
-
-@pytest.mark.parametrize(
-    ("result", "expected_exit", "expected_outcome"),
-    [
-        ((0, 0.01, {"diagnosis": "pytest_passed"}), 0, "success"),
-        ((1, 0.01, {"diagnosis": "pytest_failed"}), 1, "failure"),
-        ((3, 0.01, {"diagnosis": "pytest_failed"}), 3, "worker_crash"),
-        (KeyboardInterrupt(), 130, "cancelled"),
-    ],
-)
-def test_managed_runner_reclaims_its_scratch_for_every_terminal_outcome(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    result: tuple[int, float, dict[str, str]] | KeyboardInterrupt,
-    expected_exit: int,
-    expected_outcome: str,
-) -> None:
-    """Mutation: removing the runner's ``finally`` leaks the private lease."""
-    scratch_root = tmp_path / "scratch"
-    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
-    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
-    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr(run_tests, "scratch_root_from_environment", lambda _env: scratch_root)
-
-    def fake_run(_label: str, command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, str]]:
-        basetemp = Path(next(part.split("=", 1)[1] for part in command if part.startswith("--basetemp=")))
-        basetemp.mkdir(parents=True)
-        basetemp.joinpath("small-diagnostic.txt").write_text("evidence", encoding="utf-8")
-        if isinstance(result, KeyboardInterrupt):
-            raise result
-        if result[0] == 0:
-            _write_passing_evidence(run_tests.ROOT, _kwargs["run"])
-        return result
-
-    monkeypatch.setattr(run_tests, "_run", fake_run)
-
-    assert run_tests.main(["tests/unit/example.py"]) == expected_exit
-
-    metrics = next((tmp_path / ".cache" / "verify" / "runs").glob("*/steps/*/scratch-metrics.json"))
-    payload = json.loads(metrics.read_text())
-    assert payload["outcome"] == expected_outcome
-    assert payload["cleanup_complete"] is True
-    runs = scratch_root / "runs"
-    assert not list(runs.rglob("lease.json"))
-    assert not list(runs.iterdir())
 
 
 @pytest.mark.parametrize("invocation_location", ["inside", "external"])

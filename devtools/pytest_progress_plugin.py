@@ -1,9 +1,9 @@
 """Incremental pytest event and selection ledgers for ``devtools verify``.
 
 The pytest-json-report and JUnit artifacts are written at session end. When a
-long verify run is killed for timeout or output stall, those reports may never
-flush. This plugin writes one JSON object per completed test call so the
-operator still has node-level failure evidence after an interrupted run.
+long verify run is interrupted, those reports may never flush. This plugin
+writes one JSON object per completed test call so the operator still has
+node-level failure evidence after an interrupted run.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -38,8 +37,6 @@ _SLOW_REPORT_LIMIT = 20
 _DEFAULT_SELECTION_NODEID_LIMIT = 500
 _COLLECTION_FACT_SUFFIX = ".collection.json"
 _ARTIFACT_ENV_NAMES = (_EVENTS_ENV, _EVENTS_DIR_ENV, _SELECTION_ENV, _SUMMARY_ENV)
-_SCRATCH_HIGH_WATER: dict[str, int] = {"apparent_bytes": 0, "allocated_bytes": 0, "file_count": 0, "directory_count": 0}
-_TEST_SCRATCH_TREES: dict[str, Path] = {}
 
 
 @dataclass
@@ -53,8 +50,6 @@ class _SessionState:
     collection_duration_s: float | None
     controller_collection_payload: dict[str, Any] | None
     artifact_environment: dict[str, str | None]
-    scratch_high_water: dict[str, int]
-    test_scratch_trees: dict[str, Path]
 
 
 _SESSION_STATE_STACK: list[_SessionState] = []
@@ -73,8 +68,6 @@ def _capture_session_state() -> _SessionState:
             dict(_CONTROLLER_COLLECTION_PAYLOAD) if _CONTROLLER_COLLECTION_PAYLOAD else None
         ),
         artifact_environment={name: os.environ.get(name) for name in _ARTIFACT_ENV_NAMES},
-        scratch_high_water=dict(_SCRATCH_HIGH_WATER),
-        test_scratch_trees=dict(_TEST_SCRATCH_TREES),
     )
 
 
@@ -95,10 +88,6 @@ def _restore_session_state(state: _SessionState) -> None:
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
-    _SCRATCH_HIGH_WATER.clear()
-    _SCRATCH_HIGH_WATER.update(state.scratch_high_water)
-    _TEST_SCRATCH_TREES.clear()
-    _TEST_SCRATCH_TREES.update(state.test_scratch_trees)
 
 
 def _reset_session_state() -> None:
@@ -112,63 +101,6 @@ def _reset_session_state() -> None:
     _COLLECTION_STARTED_AT = None
     _COLLECTION_DURATION_S = None
     _CONTROLLER_COLLECTION_PAYLOAD = None
-    for key in _SCRATCH_HIGH_WATER:
-        _SCRATCH_HIGH_WATER[key] = 0
-    _TEST_SCRATCH_TREES.clear()
-
-
-def record_test_scratch_usage(nodeid: str, root: Path) -> None:
-    """Record the test-owned temp tree without scanning every worker root."""
-    if not os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT"):
-        return
-    from devtools.pytest_scratch import measure_tree
-
-    usage = measure_tree(root)
-    payload = {
-        "apparent_bytes": usage.apparent_bytes,
-        "allocated_bytes": usage.allocated_bytes,
-        "file_count": usage.file_count,
-        "directory_count": usage.directory_count,
-    }
-    for key, value in payload.items():
-        _SCRATCH_HIGH_WATER[key] = max(_SCRATCH_HIGH_WATER[key], value)
-    _TEST_SCRATCH_TREES[nodeid] = root
-    _write_event(
-        {
-            "event": "scratch_test_observed",
-            "nodeid": nodeid,
-            "lane": os.environ.get("POLYLOGUE_PYTEST_SCRATCH_LANE"),
-            "usage": payload,
-            "high_water": dict(_SCRATCH_HIGH_WATER),
-        }
-    )
-
-
-def _remove_completed_test_tree(nodeid: str) -> None:
-    """Remove one worker-owned tree after its durable teardown report exists.
-
-    Failure details and measured scratch usage are written to the event ledger
-    before this hook runs.  Keeping completed failure trees until session end
-    lets a small number of failures exhaust the bounded scratch filesystem and
-    turn the rest of a run into unrelated ENOSPC errors.  An interrupted test
-    has no teardown report, so its tree remains available to the lease
-    finalizer as bounded crash evidence.
-    """
-    root = _TEST_SCRATCH_TREES.pop(nodeid, None)
-    scratch_raw = os.environ.get("POLYLOGUE_PYTEST_SCRATCH_ROOT")
-    if not scratch_raw or root is None:
-        return
-    try:
-        scratch_root = Path(scratch_raw).resolve(strict=True)
-        resolved_root = root.resolve(strict=True)
-        relative = resolved_root.relative_to(scratch_root)
-        if not relative.parts or resolved_root == scratch_root or root.is_symlink():
-            return
-        shutil.rmtree(resolved_root)
-    except (OSError, RuntimeError, ValueError):
-        # A missing or changed tree is left alone rather than
-        # broadening deletion to an ambiguous path.
-        return
 
 
 def _isolate_nested_artifact_destinations() -> None:
@@ -474,8 +406,6 @@ def pytest_runtest_logreport(report: Any) -> None:
         _record_phase_report(report, write_event=False)
         return
     _record_phase_report(report)
-    if str(getattr(report, "when", "")) == "teardown":
-        _remove_completed_test_tree(str(getattr(report, "nodeid", "")))
 
 
 @pytest.hookimpl
@@ -483,13 +413,6 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
     del session
     try:
-        _write_event(
-            {
-                "event": "scratch_worker_high_water",
-                "lane": os.environ.get("POLYLOGUE_PYTEST_SCRATCH_LANE"),
-                "high_water": dict(_SCRATCH_HIGH_WATER),
-            }
-        )
         # Worker processes have their own in-memory slowest lists. The controller
         # receives the forwarded timings and is the only writer for the shared
         # summary path, so an empty worker summary cannot overwrite it.

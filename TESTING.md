@@ -29,16 +29,8 @@ devtools verify
 nix flake check
 ```
 
-Managed pytest invocations allocate a unique Btrfs/NVMe scratch lease under
-`/realm/tmp/polylogue-pytest/runs`. The runner records apparent and allocated
-bytes, file counts, Btrfs exclusive/shared extent evidence where available,
-and per-worker/test observed high-water values in its verification receipt.
-The high-water record is explicitly scoped to observed test trees and the
-terminal lease scan; it does not claim a complete concurrent peak.
-The lease is removed after every terminal outcome. Failed runs retain at most
-64 MiB of small diagnostic files plus a manifest; abandoned leases are reclaimed
-only after their owner process is proven dead. Do not pass `--basetemp` to
-`devtools test` or `devtools verify`: the runner owns that isolation boundary.
+AgentCTL owns scratch placement and cleanup for declared verification jobs.
+Foreground commands use pytest's ordinary temporary-directory behavior.
 
 ### First-party browser credential journey
 
@@ -101,15 +93,6 @@ mirrored to
 Focused and verification runs are foreground semantic commands. Devtools records
 project selection, gate results, decoded pytest outcomes, and the scope it
 actually ran.
-
-Managed pytest scratch records each test tree's high-water usage. Once a test's
-teardown report has durably recorded its outcome and failure details, its tree
-is removed regardless of outcome so completed failures cannot exhaust the
-bounded scratch filesystem and cascade into unrelated ENOSPC errors. A test
-interrupted before teardown keeps its tree until the lease finalizer copies
-bounded failure evidence into the run detail. The finalizer then removes its
-authenticated lease root regardless of outcome, so a completed run does not
-leave the full pytest tree behind.
 
 Selection artifacts preserve exact selected/deselected counts but sample node
 IDs by default (`POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT`, default 500) so

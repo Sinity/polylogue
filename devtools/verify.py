@@ -26,7 +26,6 @@ from devtools.pytest_collection_contract import (
     SERIAL_MARKER_EXPRESSION,
     STORAGE_SCALE_MARKER_EXPRESSION,
 )
-from devtools.pytest_scratch import PytestScratchLease, run_managed_pytest, scratch_root_from_environment
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
@@ -346,30 +345,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-        lane = label.removeprefix("pytest native ").split(" ", 1)[0]
-        lease = PytestScratchLease.acquire(
-            root=scratch_root_from_environment(env), run_id=run.run_id, lane=lane, evidence_dir=artifacts.step_dir
-        )
-        managed_command = lease.command(command)
-        try:
-            completed = run_managed_pytest(
-                managed_command,
-                cwd=ROOT,
-                env=lease.environment(env),
-                stdout=sys.stderr,
-                stderr=sys.stderr,
-                resource_metrics_path=artifacts.step_dir / "process-memory.json",
-            )
-        except KeyboardInterrupt:
-            lease.finalize("cancelled")
-            raise
-        except BaseException:
-            lease.finalize("failure")
-            raise
-        else:
-            lease.finalize(
-                "success" if completed.returncode == 0 else "worker_crash" if completed.returncode == 3 else "failure"
-            )
+        completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
     else:
         executable_result = executable_gate_result(command, gate=label, env=env)
         if not executable_result.ok:

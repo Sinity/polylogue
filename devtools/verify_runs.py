@@ -174,7 +174,7 @@ def git_dirty(cwd: Path | None = None) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
-    return bool(result.stdout.strip())
+    return bool((result.stdout or "").strip())
 
 
 def git_head(cwd: Path | None = None) -> str | None:
@@ -325,16 +325,6 @@ class VerifyRun:
                     step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
                     if self.mirror_current:
                         shutil.copyfile(step_dir / "statistics.json", self.root / CURRENT_STATISTICS_PATH)
-                scratch_metrics = _read_json(step_dir / "scratch-metrics.json")
-                if scratch_metrics:
-                    step["scratch_metrics"] = scratch_metrics
-                    step["scratch_metrics_path"] = str(
-                        self.relative_run_dir / "steps" / step_id / "scratch-metrics.json"
-                    )
-                process_memory = _read_json(step_dir / "process-memory.json")
-                if process_memory:
-                    step["process_memory"] = process_memory
-                    step["process_memory_path"] = str(self.relative_run_dir / "steps" / step_id / "process-memory.json")
             self.write()
             return dict(step)
         return None

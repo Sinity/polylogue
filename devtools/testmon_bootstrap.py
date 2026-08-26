@@ -753,7 +753,7 @@ def canonical_test_nodeid(nodeid: str) -> str:
     xdist loadgroup runs record ``path::test[param]@group`` while single-process
     lanes record ``path::test[param]``; graph rows and coverage
     math must compare on ONE form or every cross-shape comparison invents
-    phantom missing/attested tests (509 of them, observed 2026-08-18). Only a
+    phantom missing tests (509 of them, observed 2026-08-18). Only a
     trailing ``@group`` outside any param bracket is stripped, so params that
     themselves contain ``@`` survive.
     """

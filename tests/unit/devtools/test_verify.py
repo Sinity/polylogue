@@ -263,12 +263,6 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     (artifacts.events_dir / "gw0.jsonl").write_text(
         json.dumps({"event": "test_report", "updated_at": "2026-01-01T00:00:00Z"}) + "\n", encoding="utf-8"
     )
-    (artifacts.step_dir / "scratch-metrics.json").write_text(
-        json.dumps({"high_water_usage": {"apparent_bytes": 128}}), encoding="utf-8"
-    )
-    (artifacts.step_dir / "process-memory.json").write_text(
-        json.dumps({"aggregate_peak": {"pss_bytes": 256}}), encoding="utf-8"
-    )
 
     result = run.finish_step(step_id=artifacts.step_id, result={"exit": 1, "duration_s": 0.1})
 
@@ -277,19 +271,14 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     assert statistics["outcomes"] == {"passed": 1, "failed": 1}
     assert statistics["selected_count"] == 2
     assert statistics["event_count"] == 1
-    assert result["scratch_metrics"]["high_water_usage"]["apparent_bytes"] == 128
-    assert result["process_memory"]["aggregate_peak"]["pss_bytes"] == 256
 
 
 def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(verify, "scratch_root_from_environment", lambda _env: tmp_path / "scratch")
     monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
     monkeypatch.setattr(
-        verify,
-        "run_managed_pytest",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0),
+        "devtools.verify.subprocess.run", lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0)
     )
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
