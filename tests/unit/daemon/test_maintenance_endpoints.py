@@ -78,6 +78,37 @@ class TestMaintenanceAPIRoutes:
             handler.do_POST()
             mock.assert_called_once()
 
+    def test_demo_augment_route_dispatched(self) -> None:
+        handler = _make_handler("/api/demo/augment", body={"with_overlays": True})
+        with patch.object(handler, "_handle_demo_augment") as mock:
+            handler.do_POST()
+            mock.assert_called_once()
+
+    def test_demo_augment_runs_inside_daemon_write_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+        handler = _make_handler("/api/demo/augment", body={"with_overlays": True})
+        calls: list[str] = []
+
+        class Bridge:
+            def run_sync_with_timeout(self, actor, timeout, function):
+                assert actor == "http.demo.augment"
+                assert timeout == 120.0
+                calls.append("bridge")
+                function()
+
+        handler.server.write_bridge = Bridge()
+        with (
+            patch("polylogue.demo.apply_demo_post_ingest_augmentation") as augment,
+            patch("polylogue.scenarios.seed_demo_user_overlays") as overlays,
+            patch.object(handler, "_send_json") as send,
+        ):
+            handler._handle_demo_augment()
+
+        assert calls == ["bridge"]
+        augment.assert_called_once_with(tmp_path)
+        overlays.assert_called_once_with(tmp_path)
+        send.assert_called_once_with(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": True})
+
     def test_rebuild_index_route_dispatched(self) -> None:
         handler = _make_handler("/api/maintenance/rebuild-index", body={})
         with patch.object(handler, "_handle_rebuild_index") as mock:
