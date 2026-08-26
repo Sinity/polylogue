@@ -30,7 +30,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
-from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
+from polylogue.sources.hooks import HookSpoolSourceSpec, drain_hook_event_spool, pending_hook_spool_dir
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.archive_open import _source_tier_acquisition_required
 from polylogue.sources.live.batch import (
@@ -192,6 +192,10 @@ class WatchSource:
     root: Path
     suffixes: tuple[str, ...] = (".jsonl",)
     ignored_dir_names: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+    # Hook sources carry durable topology identity.  Ordinary sources retain
+    # their historical name-only contract.
+    source_id: str | None = None
+    role: str | None = None
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -203,6 +207,20 @@ class WatchSource:
     def ignores_directory(self, path: Path) -> bool:
         """Return whether a subtree cannot contain a live source artifact."""
         return path.name in self.ignored_dir_names
+
+
+def hook_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[WatchSource, ...]:
+    """Adapt the typed spool topology to the pending directories watcher owns."""
+    return tuple(
+        WatchSource(
+            name="hooks",
+            root=pending_hook_spool_dir(spec.root),
+            suffixes=(".json",),
+            source_id=spec.source_id,
+            role=spec.role,
+        )
+        for spec in specs
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,8 +348,11 @@ class LiveWatcher:
         # Hook commands create their first pending envelope lazily.  Ensure the
         # nested root exists before ``awatch`` snapshots its roots, otherwise a
         # daemon that starts before the first hook event never sees that file.
-        for source in self._sources:
-            if source.name == "hooks":
+        for source in self._hook_sources():
+            # Untagged single-root callers predate the topology contract and
+            # are necessarily the primary.  Tagged legacy roots remain
+            # strictly read-only and are never created by the watcher.
+            if source.role in {None, "primary-writable"}:
                 source.root.mkdir(parents=True, exist_ok=True)
         roots = self._existing_source_roots()
         if not roots:
@@ -381,7 +402,7 @@ class LiveWatcher:
                         needs_first_envelope_retry = self._is_hook_spool_shard_directory(
                             observed_path
                         ) and not self._hook_spool_directory_has_envelope(observed_path)
-                        await self._drain_hook_spool()
+                        await self._drain_hook_spools()
                         if needs_first_envelope_retry:
                             self._schedule_hook_spool_directory_retry(observed_path)
                         continue
@@ -393,7 +414,7 @@ class LiveWatcher:
                 if not self._source_accepts(path):
                     continue
                 if self._is_hook_spool_path(path):
-                    await self._drain_hook_spool()
+                    await self._drain_hook_spools()
                     self._cancel_hook_spool_directory_retry_if_acknowledged(path.parent)
                     continue
                 self._enqueue(path)
@@ -480,6 +501,9 @@ class LiveWatcher:
                 if not directory.exists():
                     return
                 if any(directory.glob("*.json")):
+                    # Keep this narrow compatibility seam injectable for
+                    # retry tests/callers; the default implementation invokes
+                    # the topology scheduler.
                     await self._drain_hook_spool()
                     if not any(directory.glob("*.json")):
                         return
@@ -521,7 +545,7 @@ class LiveWatcher:
     async def _catch_up(self, roots: list[Path]) -> None:
         candidates = self._scan_catch_up_candidates(roots)
         if not candidates:
-            await self._drain_hook_spool()
+            await self._drain_hook_spools()
             return
 
         now = time.time()
@@ -539,7 +563,7 @@ class LiveWatcher:
             if self._stop.is_set() or not group:
                 break
             await self._catch_up_candidates(group)
-        await self._drain_hook_spool()
+        await self._drain_hook_spools()
 
     async def _catch_up_candidates(self, candidates: tuple[CandidateSourceFile, ...]) -> None:
         """Plan and ingest one priority class of catch-up candidates."""
@@ -682,7 +706,20 @@ class LiveWatcher:
             )
             raise
 
-    async def _drain_hook_spool(self) -> None:
+    def _hook_sources(self) -> tuple[WatchSource, ...]:
+        """Return the declared hook topology, preserving configured order.
+
+        ``source_id`` is the identity.  The name-only fallback is limited to
+        old callers constructing a single ``WatchSource(name='hooks', ...)``;
+        production defaults below always tag the source explicitly.
+        """
+        return tuple(
+            source
+            for source in self._sources
+            if source.source_id is not None and source.role in {"primary-writable", "legacy-read-only"}
+        ) or tuple(source for source in self._sources if source.name == "hooks")
+
+    async def _drain_hook_spools(self) -> None:
         """Acknowledge hook envelopes only after their source-tier write commits.
 
         Drains in bounded batches, releasing the writer between them, so a
@@ -697,25 +734,35 @@ class LiveWatcher:
                 logger.warning("live.watcher: hook-spool drain refused by cursor authority: %s", exc)
                 return
 
+            # One bounded batch per ready root is a round.  The coordinator
+            # call is deliberately outside a loop: returning to the event
+            # loop between roots/batches releases the sole writer and keeps a
+            # continuously busy primary from starving a sibling.
             total_acknowledged = 0
-            while True:
+            for source in self._hook_sources():
+                root = self._hook_spool_root_for_source(source)
                 result = await self._run_writer_sync(
-                    "watcher.hook_spool.drain",
+                    f"watcher.hook_spool.drain.{source.source_id or source.name}",
                     drain_hook_event_spool,
                     Path(self._polylogue.archive_root),
-                    root=self._hook_spool_root(),
+                    root=root,
                     limit=_HOOK_SPOOL_DRAIN_BATCH_LIMIT,
+                    source_id=source.source_id or source.name,
+                    role=cast(Any, source.role or "primary-writable"),
                 )
                 total_acknowledged += result.acknowledged
                 if result.failed:
                     logger.warning(
-                        "live.watcher: hook spool drain left %d event(s) pending",
+                        "live.watcher: hook spool source=%s left %d event(s) pending",
+                        source.source_id or source.name,
                         result.failed,
                     )
-                if result.acknowledged == 0 or result.remaining <= result.failed:
-                    break
             if total_acknowledged:
                 logger.info("live.watcher: acknowledged %d hook spool event(s)", total_acknowledged)
+
+    async def _drain_hook_spool(self) -> None:
+        """Compatibility entry point; the scheduler now drains all roots."""
+        await self._drain_hook_spools()
 
     def _scan_catch_up_candidates(self, roots: list[Path]) -> tuple[CandidateSourceFile, ...]:
         root_set = {root.resolve() for root in roots}
@@ -723,7 +770,7 @@ class LiveWatcher:
         for source in self._sources:
             if not source.exists() or source.root.resolve() not in root_set:
                 continue
-            if source.name == "hooks":
+            if source in self._hook_sources():
                 continue
             for directory, dirnames, filenames in os.walk(source.root, followlinks=False):
                 dirnames[:] = [
@@ -1656,9 +1703,7 @@ class LiveWatcher:
         return source.accepts(path) if source is not None else False
 
     def _is_hook_spool_path(self, path: Path) -> bool:
-        for source in self._sources:
-            if source.name != "hooks":
-                continue
+        for source in self._hook_sources():
             try:
                 return path.resolve().is_relative_to(source.root.resolve())
             except OSError:
@@ -1668,9 +1713,7 @@ class LiveWatcher:
     def _is_hook_spool_shard_directory(self, path: Path) -> bool:
         """Return whether ``path`` is a direct day shard beneath ``pending``."""
 
-        for source in self._sources:
-            if source.name != "hooks":
-                continue
+        for source in self._hook_sources():
             try:
                 return path.resolve().parent == source.root.resolve()
             except OSError:
@@ -1685,12 +1728,18 @@ class LiveWatcher:
             return False
 
     def _hook_spool_root(self) -> Path:
-        """Return the root paired with this watcher's hook source."""
+        """Compatibility accessor for callers that inspect the primary."""
+        primary = next((source for source in self._hook_sources() if source.role == "primary-writable"), None)
+        if primary is None:
+            primary = next(iter(self._hook_sources()), None)
+        if primary is None:
+            raise RuntimeError("no declared hook spool source")
+        return self._hook_spool_root_for_source(primary)
 
-        for source in self._sources:
-            if source.name == "hooks":
-                return source.root.parent
-        return hook_spool_root()
+    @staticmethod
+    def _hook_spool_root_for_source(source: WatchSource) -> Path:
+        """Resolve either a pending-dir WatchSource or a typed spool root."""
+        return source.root.parent if source.root.name == "pending" else source.root
 
     def _is_hermes_database(self, path: Path) -> bool:
         resolved = path.resolve()
@@ -1897,7 +1946,13 @@ def default_sources(*, hermes_root: Path | None = None, beads_roots: tuple[Path,
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
+        WatchSource(
+            name="hooks",
+            root=pending_hook_spool_dir(),
+            suffixes=(".json",),
+            source_id="primary-hook-spool",
+            role="primary-writable",
+        ),
         *beads_sources,
     )
 
