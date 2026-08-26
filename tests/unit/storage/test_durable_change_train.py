@@ -26,6 +26,7 @@ from polylogue.operations.durable_change_train import (
     adopt_missing_audit_tier,
     audit_adoption_receipt_path,
     restore_adopted_audit_tier,
+    validate_audit_adoption_receipt,
 )
 from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
@@ -2544,6 +2545,43 @@ def test_audit_adoption_binds_only_the_source_user_authority(workspace_env: dict
 
     assert (archive_root / "index.db").is_file()
     assert (archive_root / "ops.db").is_file()
+
+
+def test_audit_adoption_continuity_survives_index_generation_promotion(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Promotion of a new physical index root does not invalidate audit adoption."""
+    from polylogue.storage.archive_identity import ArchiveIdentity
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    audit_path = archive_root / "audit.db"
+    audit_path.unlink()
+    backup = backup_archive(output_dir=archive_root.parent / "backup", profile="full_evidence", verify=True)
+    assert backup.ok, backup.error
+    assert backup.output_path is not None
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:audit-promotion-authority") as owner:
+        adopt_missing_audit_tier(
+            audit_path,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+            directory_fd=owner.directory_fd,
+            stopped_daemon_check=lambda: "proof:test-daemon-stopped",
+        )
+
+    durable_authority_before = ArchiveIdentity.resolve(archive_root).durable_id
+    adoption_receipt = json.loads(audit_adoption_receipt_path(archive_root).read_text(encoding="utf-8"))
+
+    generation_store = IndexGenerationStore.for_archive_root(archive_root)
+    candidate = generation_store.create(source_snapshot="audit-adoption-promotion-proof")
+    promoted = generation_store.promote(candidate)
+
+    assert promoted.state == "active"
+    assert ArchiveIdentity.resolve(archive_root).durable_id == durable_authority_before
+    assert validate_audit_adoption_receipt(archive_root) == audit_adoption_receipt_path(archive_root)
+    assert json.loads(audit_adoption_receipt_path(archive_root).read_text(encoding="utf-8")) == adoption_receipt
+    initialize_active_archive_root(archive_root)
 
 
 def test_audit_adoption_receipt_keeps_initial_schema_evidence_after_upgrade(
