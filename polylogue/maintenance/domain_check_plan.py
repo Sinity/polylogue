@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.outcomes import OutcomeOwner
 from polylogue.operations.specs import RUNTIME_OPERATION_SPECS
 
 PlanPhase = Literal["source", "candidate"]
@@ -115,14 +116,14 @@ class DomainCheckPlan:
                         identity=str(raw["identity"]),
                         version=int(raw["version"]),
                         owner_operation=str(raw["owner_operation"]),
-                        phase=raw["phase"],  # type: ignore[arg-type]
+                        phase=raw["phase"],
                         denominator=str(raw["denominator"]),
                         target_bindings=tuple(str(item) for item in raw["target_bindings"]),
                     )
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise DomainCheckPlanError(f"malformed plan row: {exc}") from exc
-        plan = compile_domain_check_plan(parsed, phase=phase)  # type: ignore[arg-type]
+        plan = compile_domain_check_plan(parsed, phase=phase)
         if plan.to_dict() != json_document(dict(payload)):
             raise DomainCheckPlanError("plan is not canonical")
         return plan
@@ -189,13 +190,13 @@ def compile_domain_check_plan(
 
 
 def declarations_from_outcome_owners(
-    owners: Iterable[object], *, phase: PlanPhase
+    owners: Iterable[OutcomeOwner], *, phase: PlanPhase
 ) -> tuple[DomainCheckDeclaration, ...]:
     """Adapt existing domain-owned outcome declarations without storing them."""
     result: list[DomainCheckDeclaration] = []
     for owner in owners:
-        name = str(getattr(owner, "name", ""))
-        routes = getattr(owner, "applicable_routes", frozenset())
+        name = owner.name
+        routes = owner.applicable_routes
         candidate_routes = {
             "reindex-index-candidate",
             "reindex-cross-tier-candidate",
@@ -210,12 +211,12 @@ def declarations_from_outcome_owners(
                 version=1,
                 owner_operation="candidate-build",
                 phase=phase,
-                denominator="|".join(str(item) for item in getattr(owner, "population", ())),
+                denominator="|".join(owner.population),
                 target_bindings=tuple(
-                    sorted(str(route) for route in routes if phase == "source" or route in candidate_routes)
+                    sorted(route for route in routes if phase == "source" or route in candidate_routes)
                 ),
-                production_route=str(getattr(owner, "production_route", "")),
-                oracle_reference=str(getattr(owner, "owned_reference", "")),
+                production_route=owner.production_route,
+                oracle_reference=owner.owned_reference,
             )
         )
     return tuple(result)
