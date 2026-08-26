@@ -257,6 +257,7 @@ SELECT
     reported_duration_ms,
     created_at_ms,
     updated_at_ms,
+    hex(content_hash) AS content_hash,
     CAST(sort_key_ms AS REAL) / 1000.0 AS sort_key,
     CASE WHEN created_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', created_at_ms / 1000.0, 'unixepoch') END AS created_at,
     CASE WHEN updated_at_ms IS NULL THEN NULL ELSE strftime('%Y-%m-%dT%H:%M:%f+00:00', updated_at_ms / 1000.0, 'unixepoch') END AS updated_at,
@@ -848,6 +849,7 @@ def build_session_insight_records(
     logical_session_id: str | None = None,
     model_usage: Sequence[ModelUsageTotals] | None = None,
     marker_blocks: Sequence[BlockRecord] = (),
+    input_content_hash: str | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> SessionInsightRecordBundle:
     from polylogue.storage.insights.session.repo_observations import attribution_to_observations
@@ -892,6 +894,7 @@ def build_session_insight_records(
         analysis=analysis,
         logical_session_id=logical_session_id,
         materialized_at=materialized_at,
+        input_content_hash=input_content_hash,
     )
     add_timing("build_records.profile_record", t0)
     t0 = time.perf_counter()
@@ -1008,12 +1011,14 @@ def build_session_insight_record_bundles(
     logical_session_ids_by_session: dict[str, str] | None = None,
     model_usage_by_session: dict[str, list[ModelUsageTotals]] | None = None,
     marker_blocks_by_session: Mapping[str, Sequence[BlockRecord]] | None = None,
+    input_content_hash_by_session: Mapping[str, str] | None = None,
     stage_timing_add: Callable[[str, float], None] | None = None,
 ) -> list[SessionInsightRecordBundle]:
     compaction_counts = compaction_counts_by_session or {}
     logical_ids = logical_session_ids_by_session or {}
     model_usage = model_usage_by_session or {}
     marker_blocks = marker_blocks_by_session or {}
+    content_hashes = input_content_hash_by_session or {}
     jobs = [
         functools.partial(
             build_session_insight_records,
@@ -1022,6 +1027,7 @@ def build_session_insight_record_bundles(
             logical_session_id=logical_ids.get(str(session.id)),
             model_usage=model_usage.get(str(session.id)),
             marker_blocks=marker_blocks.get(str(session.id), ()),
+            input_content_hash=content_hashes.get(str(session.id)),
             stage_timing_add=stage_timing_add,
         )
         for session in sessions
@@ -1377,6 +1383,7 @@ def _large_session_profile_record_from_row(
         source_sort_key=source_sort_key,
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source="provider_ts" if source_updated_at else "fallback_date",
+        input_content_hash=str(row["content_hash"]).lower() if row["content_hash"] is not None else None,
         input_row_count=message_count,
         source_name=origin,
         title=title or None,
@@ -2070,28 +2077,30 @@ def rebuild_session_insights_sync(
                     for session_id in chunk_degraded_ids
                 )
                 add_timing("build_degraded_records", t0)
-            if chunk_full_ids:
-                t0 = time.perf_counter()
-                batch = load_sync_batch(conn, chunk_full_ids)
-                add_timing("load_batch", t0)
-                t0 = time.perf_counter()
-                root_ids_by_session = thread_root_ids_sync(conn, chunk_full_ids)
-                add_timing("thread_root_lookup", t0)
-                t0 = time.perf_counter()
-                hydrated_sessions = hydrate_sessions(batch)
-                add_timing("hydrate", t0)
-                t0 = time.perf_counter()
-                record_bundles.extend(
-                    build_session_insight_record_bundles(
-                        hydrated_sessions,
-                        compaction_counts_by_session=batch.compaction_counts_by_session,
-                        logical_session_ids_by_session=root_ids_by_session,
-                        model_usage_by_session=batch.model_usage_by_session,
-                        marker_blocks_by_session=batch.marker_blocks_by_session,
-                        stage_timing_add=add_timing,
-                    )
+        if chunk_full_ids:
+            t0 = time.perf_counter()
+            batch = load_sync_batch(conn, chunk_full_ids)
+            add_timing("load_batch", t0)
+            t0 = time.perf_counter()
+            root_ids_by_session = thread_root_ids_sync(conn, chunk_full_ids)
+            add_timing("thread_root_lookup", t0)
+            t0 = time.perf_counter()
+            hydrated_sessions = hydrate_sessions(batch)
+            input_content_hashes = {str(record.session_id): str(record.content_hash) for record in batch.sessions}
+            add_timing("hydrate", t0)
+            t0 = time.perf_counter()
+            record_bundles.extend(
+                build_session_insight_record_bundles(
+                    hydrated_sessions,
+                    compaction_counts_by_session=batch.compaction_counts_by_session,
+                    logical_session_ids_by_session=root_ids_by_session,
+                    model_usage_by_session=batch.model_usage_by_session,
+                    marker_blocks_by_session=batch.marker_blocks_by_session,
+                    input_content_hash_by_session=input_content_hashes,
+                    stage_timing_add=add_timing,
                 )
-                add_timing("build_records", t0)
+            )
+            add_timing("build_records", t0)
         t0 = time.perf_counter()
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         add_timing("count_records", t0)
@@ -2365,6 +2374,9 @@ async def rebuild_session_insights_async(
                     compaction_counts_by_session=batch.compaction_counts_by_session,
                     logical_session_ids_by_session=root_ids_by_session,
                     model_usage_by_session=batch.model_usage_by_session,
+                    input_content_hash_by_session={
+                        str(record.session_id): str(record.content_hash) for record in batch.sessions
+                    },
                 )
             )
 

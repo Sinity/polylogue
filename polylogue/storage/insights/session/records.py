@@ -29,6 +29,10 @@ class SessionProfileRecord(BaseModel):
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
+    # Complete source binding.  Timestamps and row counts are useful display
+    # provenance, but are not a correctness key: authored values can change
+    # without changing either.  This is the value-complete binding used by
+    # convergence inspection.
     input_row_count: int = 0
     source_name: str
     title: str | None = None
@@ -121,6 +125,7 @@ class SessionLatencyProfileRecord(BaseModel):
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
     input_high_water_mark_source: str | None = None
+    input_content_hash: str | None = None
     input_row_count: int = 0
     source_name: str
     title: str | None = None

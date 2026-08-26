@@ -340,6 +340,7 @@ def build_session_profile_record(
     analysis: SessionAnalysis | None = None,
     logical_session_id: str | None = None,
     materialized_at: str | None = None,
+    input_content_hash: str | None = None,
 ) -> SessionProfileRecord:
     built_at = materialized_at or now_iso()
     evidence = profile_evidence_payload(profile)
@@ -360,6 +361,7 @@ def build_session_profile_record(
         source_sort_key=source_sort_timestamp.timestamp() if source_sort_timestamp else None,
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source=classify_profile_hwm_source(profile.updated_at),
+        input_content_hash=input_content_hash,
         input_row_count=profile.message_count,
         source_name=profile.origin,
         title=profile.title,

@@ -1441,6 +1441,7 @@ SESSION_PROFILES_SPEC = _make_table_spec(
         _raw_column("source_sort_key", """source_sort_key                 REAL"""),
         _raw_column("input_high_water_mark", """input_high_water_mark           TEXT"""),
         _raw_column("input_high_water_mark_source", """input_high_water_mark_source    TEXT"""),
+        _raw_column("input_content_hash", """input_content_hash              TEXT"""),
         _raw_column(
             "input_row_count",
             """input_row_count                 INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0)""",
