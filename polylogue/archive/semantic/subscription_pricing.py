@@ -82,11 +82,28 @@ class ModelCreditRate:
 
 
 MODEL_CREDIT_RATES: dict[str, ModelCreditRate] = {
-    # Subscription credits are "billed at API rates"
-    # (https://docs.anthropic.com/en/docs/claude-code/pricing), and every Claude
-    # model prices output at 5x input ($15/$75 Opus, $3/$15 Sonnet, $0.80/$4
-    # Haiku). So output_credits must be 5x input_credits; cache writes (5-min)
-    # bill at the input rate, cache reads are free on subscription plans.
+    # Subscription credits are billed at API rates: with the divisor of 15,
+    # credits equal twice the dollar price per million tokens, which holds for
+    # every family ($5/$25 Opus -> 10/50, $2/$10 Sonnet 5 -> 4/20, $3/$15
+    # Sonnet 4.6 -> 6/30, $1/$5 Haiku -> 2/10). Every model prices output at 5x
+    # input. Cache writes bill at the input rate and cache reads are free on
+    # subscription plans, which is what makes an API-equivalent figure a lower
+    # bound for agentic work.
+    "claude-fable-5": ModelCreditRate(
+        "anthropic", "claude-fable-5", 20, 100, cache_read_credits=0, cache_write_credits=20
+    ),
+    "claude-opus-5": ModelCreditRate(
+        "anthropic", "claude-opus-5", 10, 50, cache_read_credits=0, cache_write_credits=10
+    ),
+    "claude-opus-4-8": ModelCreditRate(
+        "anthropic", "claude-opus-4-8", 10, 50, cache_read_credits=0, cache_write_credits=10
+    ),
+    "claude-opus-4-7": ModelCreditRate(
+        "anthropic", "claude-opus-4-7", 10, 50, cache_read_credits=0, cache_write_credits=10
+    ),
+    "claude-sonnet-5": ModelCreditRate(
+        "anthropic", "claude-sonnet-5", 4, 20, cache_read_credits=0, cache_write_credits=4
+    ),
     "claude-opus-4-6": ModelCreditRate(
         "anthropic", "claude-opus-4-6", 10, 50, cache_read_credits=0, cache_write_credits=10
     ),

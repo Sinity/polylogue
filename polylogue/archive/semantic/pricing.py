@@ -207,13 +207,20 @@ class ModelPricing:
 # we've checked stay exact even if upstream drifts. Provider-reported exact
 # archive costs still take precedence over both.
 _CURATED_PRICING: dict[str, ModelPricing] = {
-    "claude-opus-4-8": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
-    "claude-opus-4-7": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
-    "claude-opus-4-6": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
-    "claude-opus-4-5": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
+    # Anthropic list prices, cache-write column is the 5-minute rate (1.25x
+    # input); the 1-hour rate is 2x input and is not modelled separately.
+    "claude-fable-5": ModelPricing("anthropic", 10.0, 50.0, 1.0, 12.5),
+    "claude-mythos-5": ModelPricing("anthropic", 10.0, 50.0, 1.0, 12.5),
+    "claude-opus-5": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-8": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-7": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-6": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-5": ModelPricing("anthropic", 5.0, 25.0, 0.5, 6.25),
+    "claude-opus-4-1": ModelPricing("anthropic", 15.0, 75.0, 1.5, 18.75),
+    "claude-sonnet-5": ModelPricing("anthropic", 2.0, 10.0, 0.2, 2.5),
     "claude-sonnet-4-6": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
     "claude-sonnet-4-5": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
-    "claude-haiku-4-5": ModelPricing("anthropic", 0.8, 4.0, 0.08, 1.0),
+    "claude-haiku-4-5": ModelPricing("anthropic", 1.0, 5.0, 0.1, 1.25),
     "claude-3-5-sonnet-20241022": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
     "claude-3-5-sonnet-20240620": ModelPricing("anthropic", 3.0, 15.0, 0.3, 3.75),
     "claude-3-5-haiku-20241022": ModelPricing("anthropic", 0.8, 4.0, 0.08, 1.0),
