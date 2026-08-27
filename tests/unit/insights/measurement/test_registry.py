@@ -73,6 +73,36 @@ def test_empty_composition_has_no_fabricated_zero() -> None:
     assert compose_measure(registry, MeasurePlan(spec.ref), []) == ()
 
 
+def test_composition_checks_declared_coverage_preconditions() -> None:
+    registry = MeasureRegistry()
+    base = _spec()
+    spec = MeasureSpec(
+        base.name,
+        base.metric,
+        base.evidence_tier,
+        base.sample_frame,
+        base.confounds,
+        coverage_preconditions=("coverage_complete",),
+    )
+    registry.register(spec)
+    with pytest.raises(MeasureValidityError, match="complete frame coverage"):
+        compose_measure(registry, MeasurePlan(spec.ref), [{"ref": "session:a", "value": 1}])
+    result = compose_measure(
+        registry,
+        MeasurePlan(spec.ref),
+        [{"ref": "session:a", "value": 1, "coverage_complete": True}],
+    )
+    assert result[0].value == 1
+
+
+def test_composition_rejects_fake_evidence_payloads() -> None:
+    registry = MeasureRegistry()
+    spec = _spec()
+    registry.register(spec)
+    with pytest.raises(MeasureValidityError, match="must be an EvidenceValue"):
+        compose_measure(registry, MeasurePlan(spec.ref), [{"ref": "session:a", "value": 1, "evidence": {}}])
+
+
 def test_production_registry_contains_existing_measure_families() -> None:
     assert len(DEFAULT_MEASURE_REGISTRY) >= 5
     assert {spec.name for spec in DEFAULT_MEASURE_REGISTRY} >= {

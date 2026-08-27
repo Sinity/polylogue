@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from polylogue.declarations.models import CompletenessEdge, DeclarationSpec, ExampleSpec, HandlerBinding, OutputSpec
-from polylogue.declarations.registry import DeclarationRegistry
+from polylogue.declarations.registry import DeclarationRegistryProtocol
 
 
 def _deterministic_bytes(payload: list[dict[str, object]]) -> bytes:
@@ -142,7 +142,7 @@ def _normalized(declaration: DeclarationSpec) -> dict[str, object]:
     return asdict(declaration)
 
 
-def derivation_inputs(registry: DeclarationRegistry) -> tuple[DerivationInput, ...]:
+def derivation_inputs(registry: DeclarationRegistryProtocol) -> tuple[DerivationInput, ...]:
     """Return stable typed full-declaration inputs, independent of registration order."""
 
     return tuple(
@@ -156,7 +156,7 @@ def derivation_inputs(registry: DeclarationRegistry) -> tuple[DerivationInput, .
     )
 
 
-def name_inputs(registry: DeclarationRegistry) -> tuple[NameInput, ...]:
+def name_inputs(registry: DeclarationRegistryProtocol) -> tuple[NameInput, ...]:
     """Return stable typed name/identity inputs plus source provenance."""
 
     return tuple(
@@ -170,7 +170,7 @@ def name_inputs(registry: DeclarationRegistry) -> tuple[NameInput, ...]:
     )
 
 
-def contract_inputs(registry: DeclarationRegistry) -> tuple[ContractInput, ...]:
+def contract_inputs(registry: DeclarationRegistryProtocol) -> tuple[ContractInput, ...]:
     """Return stable typed contract inputs plus source provenance."""
 
     return tuple(
@@ -185,7 +185,7 @@ def contract_inputs(registry: DeclarationRegistry) -> tuple[ContractInput, ...]:
     )
 
 
-def schema_doc_inputs(registry: DeclarationRegistry) -> tuple[SchemaDocInput, ...]:
+def schema_doc_inputs(registry: DeclarationRegistryProtocol) -> tuple[SchemaDocInput, ...]:
     """Return stable typed schema/doc-fragment inputs plus source provenance."""
 
     return tuple(
@@ -199,7 +199,7 @@ def schema_doc_inputs(registry: DeclarationRegistry) -> tuple[SchemaDocInput, ..
     )
 
 
-def example_inputs(registry: DeclarationRegistry) -> tuple[ExampleInput, ...]:
+def example_inputs(registry: DeclarationRegistryProtocol) -> tuple[ExampleInput, ...]:
     """Return stable typed example inputs plus source provenance."""
 
     return tuple(
@@ -212,7 +212,7 @@ def example_inputs(registry: DeclarationRegistry) -> tuple[ExampleInput, ...]:
     )
 
 
-def discovery_inputs(registry: DeclarationRegistry) -> tuple[DiscoveryInput, ...]:
+def discovery_inputs(registry: DeclarationRegistryProtocol) -> tuple[DiscoveryInput, ...]:
     """Return stable typed discovery-text inputs plus source provenance."""
 
     return tuple(
@@ -226,7 +226,7 @@ def discovery_inputs(registry: DeclarationRegistry) -> tuple[DiscoveryInput, ...
     )
 
 
-def completeness_inputs(registry: DeclarationRegistry) -> tuple[CompletenessInput, ...]:
+def completeness_inputs(registry: DeclarationRegistryProtocol) -> tuple[CompletenessInput, ...]:
     """Return stable typed completeness-projection inputs plus source provenance."""
 
     return tuple(
@@ -239,44 +239,44 @@ def completeness_inputs(registry: DeclarationRegistry) -> tuple[CompletenessInpu
     )
 
 
-def normalized_derivation_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_derivation_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize full-declaration derivation inputs deterministically for drift checks."""
 
     payload = [item.normalized for item in derivation_inputs(registry)]
     return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
 
-def normalized_name_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_name_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize name/identity inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in name_inputs(registry)])
 
 
-def normalized_contract_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_contract_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize contract inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in contract_inputs(registry)])
 
 
-def normalized_schema_doc_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_schema_doc_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize schema/doc-fragment inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in schema_doc_inputs(registry)])
 
 
-def normalized_example_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_example_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize example inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in example_inputs(registry)])
 
 
-def normalized_discovery_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_discovery_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize discovery-text inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in discovery_inputs(registry)])
 
 
-def normalized_completeness_bytes(registry: DeclarationRegistry) -> bytes:
+def normalized_completeness_bytes(registry: DeclarationRegistryProtocol) -> bytes:
     """Serialize completeness-projection inputs deterministically for drift checks."""
 
     return _deterministic_bytes([asdict(item) for item in completeness_inputs(registry)])

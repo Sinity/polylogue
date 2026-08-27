@@ -27,6 +27,10 @@ Run the tour in a throwaway archive:
 uvx polylogue demo tour
 ```
 
+The command is complete when the terminal prints `Polylogue demo tour:
+passed`. It writes a report, transcript, command outputs, and recording source
+under `polylogue-demo-tour/`.
+
 The tour imports sample files for the supported providers, queries structured
 tool results, and reconstructs a parent session with its child branch while
 preserving source references. It does not require a provider account or access

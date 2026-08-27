@@ -223,6 +223,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "internals",
     ),
     _entry(
+        "Runtime and Concurrency Contract",
+        "runtime-concurrency.md",
+        "Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger.",
+        "internals",
+    ),
+    _entry(
         "Daemon Threat Model",
         "daemon-threat-model.md",
         "Local API assets, threats, mitigations, and roles.",
@@ -274,12 +280,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry(
         "Release Checklist", "release.md", "Cut-time packaging, installed-artifact, and publish checks.", "operations"
-    ),
-    _entry(
-        "Artifact Publication Contract",
-        "artifact-publication.md",
-        "Shared filesystem contract for cache and reusable-fixture publication.",
-        "operations",
     ),
     # Evidence and product
     _entry(
@@ -436,6 +436,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "CLI Interaction Oracle Deletion Ledger",
         "plans/cli-interaction-deletion-ledger.md",
         "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
+        "design",
+    ),
+    _entry(
+        "Typed WebUI Capability Matrix",
+        "plans/webui-capability-matrix.md",
+        "Cutover inventory for typed and legacy browser capabilities.",
         "design",
     ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),

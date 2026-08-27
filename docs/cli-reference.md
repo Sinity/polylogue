@@ -168,7 +168,6 @@ Options:
 
 Commands:
   Search, read, and action workflows:
-    find      Search the archive, then optionally run an...
     read      Read matched sessions (route to view/destination).
     select    Select one matched session or print candidate identities.
     mark      Mark selected sessions with tags, notes, and durable marks.
@@ -208,6 +207,7 @@ Commands:
     agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
     compare      Blind pairwise comparative judgment and calibration.
+    context
     setting      Get, set, and list durable user settings.
 ```
 

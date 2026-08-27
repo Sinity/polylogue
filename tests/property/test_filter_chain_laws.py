@@ -8,8 +8,8 @@ Four laws are verified against a real SQLite archive:
                    IDs and count.
 4. Idempotency   — applying the same filter twice is equivalent to applying it once.
 
-Tests use a fixed seeded database (built once per Hypothesis example via a
-temporary directory) so the archive content is deterministic per draw.  Each
+Tests use one immutable fixed seeded database for the whole module so the
+archive content is deterministic per draw without repeating filesystem copies. Each
 test draws filter parameters from ``filter_params_strategy()`` which covers the
 main independently-testable filter dimensions.
 """
@@ -50,6 +50,7 @@ _BASE_DT = datetime(2024, 1, 1, tzinfo=timezone.utc)
 _MID_DT = datetime(2024, 6, 1, tzinfo=timezone.utc)
 _END_DT = datetime(2024, 12, 31, tzinfo=timezone.utc)
 _TEMPLATE_ARCHIVE_DIR: Path | None = None
+_TEST_ARCHIVE_DIR: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +204,19 @@ def _cleanup_template_dir(path: Path) -> None:
 
 
 def _copy_seeded_archive(target_dir: Path) -> Path:
-    shutil.copytree(_seeded_archive_template_dir(), target_dir, dirs_exist_ok=True)
-    return target_dir / "index.db"
+    """Return one writable module archive, ignoring per-example targets."""
+    del target_dir
+    global _TEST_ARCHIVE_DIR
+    if _TEST_ARCHIVE_DIR is None or not _TEST_ARCHIVE_DIR.exists():
+        _TEST_ARCHIVE_DIR = Path(tempfile.mkdtemp(prefix="polylogue-filter-laws-"))
+        shutil.copytree(_seeded_archive_template_dir(), _TEST_ARCHIVE_DIR, dirs_exist_ok=True)
+        atexit.register(_cleanup_template_dir, _TEST_ARCHIVE_DIR)
+    return _TEST_ARCHIVE_DIR / "index.db"
+
+
+def _seeded_archive_root() -> Path:
+    """Return the shared writable archive root used by every law example."""
+    return _copy_seeded_archive(Path()).parent
 
 
 # ---------------------------------------------------------------------------
@@ -282,18 +294,16 @@ def _apply_params(filter_obj: Any, params: FilterParams) -> Any:
 @pytest.mark.asyncio
 async def test_filter_result_is_subset_of_unfiltered(params: FilterParams) -> None:
     """filter(X) result IDs must be a subset of the unfiltered result IDs."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = _copy_seeded_archive(Path(tmpdir))
+    archive_root = _seeded_archive_root()
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as archive:
+        all_convs = await archive.filter().list()
+        all_ids = {str(c.id) for c in all_convs}
 
-        async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
-            all_convs = await archive.filter().list()
-            all_ids = {str(c.id) for c in all_convs}
+        filtered_convs = await _apply_params(archive.filter(), params).list()
+        filtered_ids = {str(c.id) for c in filtered_convs}
 
-            filtered_convs = await _apply_params(archive.filter(), params).list()
-            filtered_ids = {str(c.id) for c in filtered_convs}
-
-        extra = filtered_ids - all_ids
-        assert not extra, f"Filtered result contains IDs not in unfiltered set: {extra!r}\nparams={params!r}"
+    extra = filtered_ids - all_ids
+    assert not extra, f"Filtered result contains IDs not in unfiltered set: {extra!r}\nparams={params!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -312,20 +322,18 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
 
     More constraints → same or fewer results.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = _copy_seeded_archive(Path(tmpdir))
+    archive_root = _seeded_archive_root()
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as archive:
+        count_a = await _apply_params(archive.filter(), params_a).count()
+        # Apply both A and B together
+        f_ab = archive.filter()
+        f_ab = _apply_params(f_ab, params_a)
+        f_ab = _apply_params(f_ab, params_b)
+        count_ab = await f_ab.count()
 
-        async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
-            count_a = await _apply_params(archive.filter(), params_a).count()
-            # Apply both A and B together
-            f_ab = archive.filter()
-            f_ab = _apply_params(f_ab, params_a)
-            f_ab = _apply_params(f_ab, params_b)
-            count_ab = await f_ab.count()
-
-        assert count_ab <= count_a, (
-            f"Adding filter B increased count: {count_a} → {count_ab}\nparams_a={params_a!r}\nparams_b={params_b!r}"
-        )
+    assert count_ab <= count_a, (
+        f"Adding filter B increased count: {count_a} → {count_ab}\nparams_a={params_a!r}\nparams_b={params_b!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -341,31 +349,29 @@ async def test_adding_filter_never_increases_count(params_a: FilterParams, param
 @pytest.mark.asyncio
 async def test_filter_application_order_is_commutative(params_a: FilterParams, params_b: FilterParams) -> None:
     """filter(A).filter(B) and filter(B).filter(A) must yield identical IDs and counts."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = _copy_seeded_archive(Path(tmpdir))
+    archive_root = _seeded_archive_root()
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as archive:
+        # A then B
+        f_ab = archive.filter()
+        f_ab = _apply_params(f_ab, params_a)
+        f_ab = _apply_params(f_ab, params_b)
+        convs_ab = await f_ab.list()
+        ids_ab = {str(c.id) for c in convs_ab}
 
-        async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
-            # A then B
-            f_ab = archive.filter()
-            f_ab = _apply_params(f_ab, params_a)
-            f_ab = _apply_params(f_ab, params_b)
-            convs_ab = await f_ab.list()
-            ids_ab = {str(c.id) for c in convs_ab}
+        # B then A
+        f_ba = archive.filter()
+        f_ba = _apply_params(f_ba, params_b)
+        f_ba = _apply_params(f_ba, params_a)
+        convs_ba = await f_ba.list()
+        ids_ba = {str(c.id) for c in convs_ba}
 
-            # B then A
-            f_ba = archive.filter()
-            f_ba = _apply_params(f_ba, params_b)
-            f_ba = _apply_params(f_ba, params_a)
-            convs_ba = await f_ba.list()
-            ids_ba = {str(c.id) for c in convs_ba}
-
-        assert ids_ab == ids_ba, (
-            f"Filter order changed results:\n"
-            f"  A→B only: {ids_ab - ids_ba!r}\n"
-            f"  B→A only: {ids_ba - ids_ab!r}\n"
-            f"params_a={params_a!r}\n"
-            f"params_b={params_b!r}"
-        )
+    assert ids_ab == ids_ba, (
+        f"Filter order changed results:\n"
+        f"  A→B only: {ids_ab - ids_ba!r}\n"
+        f"  B→A only: {ids_ba - ids_ab!r}\n"
+        f"params_a={params_a!r}\n"
+        f"params_b={params_b!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -378,24 +384,22 @@ async def test_filter_application_order_is_commutative(params_a: FilterParams, p
 @pytest.mark.asyncio
 async def test_filter_applied_twice_equals_once(params: FilterParams) -> None:
     """Applying the same filter params twice must yield the same result as once."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = _copy_seeded_archive(Path(tmpdir))
+    archive_root = _seeded_archive_root()
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as archive:
+        # Apply once
+        convs_once = await _apply_params(archive.filter(), params).list()
+        ids_once = {str(c.id) for c in convs_once}
 
-        async with Polylogue(archive_root=Path(tmpdir), db_path=db_path) as archive:
-            # Apply once
-            convs_once = await _apply_params(archive.filter(), params).list()
-            ids_once = {str(c.id) for c in convs_once}
+        # Apply twice
+        f_twice = archive.filter()
+        f_twice = _apply_params(f_twice, params)
+        f_twice = _apply_params(f_twice, params)
+        convs_twice = await f_twice.list()
+        ids_twice = {str(c.id) for c in convs_twice}
 
-            # Apply twice
-            f_twice = archive.filter()
-            f_twice = _apply_params(f_twice, params)
-            f_twice = _apply_params(f_twice, params)
-            convs_twice = await f_twice.list()
-            ids_twice = {str(c.id) for c in convs_twice}
-
-        assert ids_once == ids_twice, (
-            f"Applying filter twice changed results:\n"
-            f"  once-only: {ids_once - ids_twice!r}\n"
-            f"  twice-only: {ids_twice - ids_once!r}\n"
-            f"params={params!r}"
-        )
+    assert ids_once == ids_twice, (
+        f"Applying filter twice changed results:\n"
+        f"  once-only: {ids_once - ids_twice!r}\n"
+        f"  twice-only: {ids_twice - ids_once!r}\n"
+        f"params={params!r}"
+    )
