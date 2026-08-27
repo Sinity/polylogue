@@ -18,7 +18,7 @@ The change is limited to the existing maintenance validator and its focused test
 - `nix develop --command devtools verify oracle-integrity` passed: 1,156 modules scanned, 0 type-checking-only routes, 30 baselined.
 - `nix develop --command devtools verify --quick` passed after rebase: format, lint, mypy, rendering, layering, patterns, command and schema checks, oracle integrity, reachability, and privacy registry all passed.
 - `nix develop --command devtools verify` refused with exit 2 because the compatible native Testmon graph was unavailable. `devtools why` reported `native_testmon_graph_unavailable` and the absent seed `polylogue-312644d25c43e826db4ddd199302808ba5d4948efd84fefb2f91f13b833fa337`.
-- The branch rebased cleanly onto current `origin/master` at commit `e3d94ae34`.
+- The branch rebased cleanly onto current `origin/master`; implementation commit is `73af5c516` and the lane record commit is `a4dd5c8ec`.
 
 ## Residual risk
 
