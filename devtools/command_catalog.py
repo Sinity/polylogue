@@ -518,7 +518,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_slos",
         use_when=(
             "Run directly to confirm read-surface "
-            "(query / reader / facets / context / cost) latencies stay within their declared SLOs. "
+            "and interactive (daemon query / completion / cold CLI / ingest-to-searchable) latencies "
+            "stay within their declared SLOs. "
             "Exits non-zero when any measured surface exceeds its budget."
         ),
         examples=(
