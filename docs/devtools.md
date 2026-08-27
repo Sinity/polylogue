@@ -106,15 +106,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
 | `devtools verify patterns` | Enforce AST-shape defect-family rules with shrinking grandfathered baselines. |
 | `devtools verify portfolio-frontier` | Validate complete Beads ambition, active-set, and execution-focus views. |
-
-The portfolio-frontier report keeps the complete ambition map (priority and
-`frontier`/`mid`/`vision` horizon) separate from active admission. Active
-admission reports every admitted leaf by owning program, readiness
-(`ready`, `blocked-near-next`, or `in_progress`), and claim state. Execution
-focus is a derived, smaller selection using claims, priority, critical-path
-unlock leverage, conflicts, and the declared resource policy. The default
-30-leaf target and 50-leaf warning are soft diagnostics: they never truncate,
-close, demote, or hide records.
 | `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
