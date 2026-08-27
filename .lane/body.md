@@ -16,7 +16,7 @@ Verification
 
 `cp -a --reflink=auto /realm/state/polylogue /realm/state/polylogue-rehearsal` -> exit 1 after 7m18.65s: four vanished `source.db`/`user.db` WAL/SHM sidecars.
 
-`nix develop --accept-flake-config --command polylogue ops backup --output-dir /realm/tmp/work/polylogue-74kj3-full-backup --profile full_evidence --verify` -> stopped after tier snapshots and blob evidence, with no verification receipt.
+`nix develop --accept-flake-config --command polylogue ops backup --output-dir /realm/tmp/work/polylogue-74kj3-full-backup --profile full_evidence --verify` -> copied all tier snapshots and wrote blob evidence, but produced no verification receipt; its worker remained in uninterruptible I/O at report time.
 
 `POLYLOGUE_ARCHIVE_ROOT=/realm/state/polylogue-rehearsal .venv/bin/polylogue ops maintenance rebuild-index --preflight --output-format json` -> exit 1: `Error: Search index is incomplete`.
 
