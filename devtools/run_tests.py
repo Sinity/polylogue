@@ -409,6 +409,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cmd = build_pytest_cmd(selection)
+    # pytest keeps its temp trees under a per-shell TMPDIR, where its own
+    # "keep the last three runs" pruning never fires because each shell starts
+    # a fresh root. Owning the directory here means the run can dispose of it
+    # when it is no longer needed instead of relying on an age sweep days
+    # later. A failed run keeps its tree: that is when the fixtures are worth
+    # reading.
+    run_temp = PYTEST_REPORT_DIR / "tmp"
+    shutil.rmtree(run_temp, ignore_errors=True)
+    cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(cmd)
     run = VerifyRun(
         tier="focused-test",
@@ -454,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
+    if rc == 0:
+        shutil.rmtree(run_temp, ignore_errors=True)
     payload = run.finish(
         exit_code=rc,
         duration_s=elapsed,
