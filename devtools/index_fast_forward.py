@@ -630,7 +630,11 @@ def prepare_forward(
         clone = Path(generation.index_path)
         try:
             clone.unlink()
-            reflink_clone(active_pointer, clone)
+            # ``active_pointer`` is the archive's own ``index.db``, which
+            # ``promote()`` replaces with a symlink to the live generation.
+            # The clone primitive refuses a symlink source on purpose, so the
+            # generation file it points at is what gets cloned.
+            reflink_clone(active_pointer.resolve(strict=True), clone)
             if _file_identity(active_pointer) != active_identity:
                 raise IndexFastForwardError("active index changed while its clone was created")
             postflight = _transform_clone(clone, plan=plan, before_schema=before_schema)

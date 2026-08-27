@@ -170,12 +170,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Dry-run-first offline quarantine for invalid blob namespace entries.",
     ),
     (
-        "attachment-acquisition-debt",
-        "_blob_integrity",
-        "attachment_acquisition_debt_command",
-        "Classify index-tier attachment acquisition state without mutating the archive.",
-    ),
-    (
         "blob-reference-recovery-plan",
         "_blob_integrity",
         "blob_reference_recovery_plan_command",

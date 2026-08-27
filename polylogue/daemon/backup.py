@@ -685,7 +685,7 @@ def _copy_referenced_blobs(
             + "; details: blob-reference-debt.json"
             + " (this counts source.db canonical liveness -- unfetched"
             " index-tier attachments with a NULL blob_hash are never counted"
-            " here; see `polylogue ops maintenance attachment-acquisition-debt`"
+            " here; archive verification reports attachment coverage"
             " for attachment-tier acquisition state)"
         )
     return count, size, debt_report

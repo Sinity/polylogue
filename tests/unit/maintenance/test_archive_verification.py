@@ -1409,9 +1409,9 @@ def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> Non
         )
         conn.commit()
 
-    report = verify_archive(tmp_path, checks=("attachment-acquisition-debt",))
+    report = verify_archive(tmp_path, checks=("attachment-coverage",))
 
-    check = _check(report, "attachment-acquisition-debt")
+    check = _check(report, "attachment-coverage")
     assert check.status is OutcomeStatus.ERROR
     assert report.blocking
     assert check.evidence["unreachable_count"] == 1
@@ -2332,7 +2332,7 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
         "session-lineage-acyclic",
         "blob-refs-liveness",
         "blob-integrity",
-        "attachment-acquisition-debt",
+        "attachment-coverage",
         "raw-failure-lifecycle",
         "embeddings-refs-liveness",
         "user-tier-refs",

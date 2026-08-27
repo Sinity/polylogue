@@ -1017,7 +1017,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
     assert [row[0] for row in stored_positions] == [2, 3]
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
     # The prefix-anchored attachment lost its only ref; the row must be swept,
-    # not left acquired-but-unreachable (attachment-acquisition-debt).
+    # not left acquired-but-unreachable for archive verification.
     assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
     event_ref = conn.execute(
         """

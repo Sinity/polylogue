@@ -3743,8 +3743,8 @@ def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids:
     cleanup ``prune_attachments`` and ``delete_session_sql`` perform after
     their own ref deletions -- otherwise an acquired ``attachments`` row
     survives with a stale ref_count and no canonical ref, which
-    ``attachment-acquisition-debt`` / ``blob-reference-closure`` report as
-    archive-verification errors.
+    archive verification / ``blob-reference-closure`` report as archive
+    verification errors.
     """
     if not attachment_ids:
         return
