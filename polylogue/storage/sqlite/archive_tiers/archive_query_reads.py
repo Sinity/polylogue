@@ -90,6 +90,7 @@ class ArchiveMessageQueryRow:
     session_id: str
     origin: str
     title: str | None
+    repo: str | None
     role: str
     message_type: str
     material_origin: str
@@ -2637,6 +2638,14 @@ def query_messages(
             m.session_id,
             s.origin,
             s.title,
+            (SELECT group_concat(repo_name, ', ')
+             FROM (
+                 SELECT r.repo_name
+                 FROM session_repos sr
+                 JOIN repos r ON r.repo_id = sr.repo_id
+                 WHERE sr.session_id = m.session_id
+                 ORDER BY r.repo_name
+             )) AS repo,
             m.role,
             m.message_type,
             m.material_origin,
@@ -2670,6 +2679,7 @@ def query_messages(
             session_id=str(row["session_id"]),
             origin=str(row["origin"]),
             title=str(row["title"]) if row["title"] is not None else None,
+            repo=str(row["repo"]) if row["repo"] is not None else None,
             role=str(row["role"]),
             message_type=str(row["message_type"]),
             material_origin=str(row["material_origin"]),
@@ -2727,6 +2737,14 @@ def query_session_messages(
             m.session_id,
             s.origin,
             s.title,
+            (SELECT group_concat(repo_name, ', ')
+             FROM (
+                 SELECT r.repo_name
+                 FROM session_repos sr
+                 JOIN repos r ON r.repo_id = sr.repo_id
+                 WHERE sr.session_id = m.session_id
+                 ORDER BY r.repo_name
+             )) AS repo,
             m.role,
             m.message_type,
             m.material_origin,
@@ -2759,6 +2777,7 @@ def query_session_messages(
             session_id=str(row["session_id"]),
             origin=str(row["origin"]),
             title=str(row["title"]) if row["title"] is not None else None,
+            repo=str(row["repo"]) if row["repo"] is not None else None,
             role=str(row["role"]),
             message_type=str(row["message_type"]),
             material_origin=str(row["material_origin"]),

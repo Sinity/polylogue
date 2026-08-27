@@ -380,9 +380,12 @@ export type QueryUnitAggregateEnvelope = {
   readonly [key: string]: unknown;
 }) | null;
   readonly pipeline_stages?: ReadonlyArray<{
+  readonly args?: {
+};
   readonly field?: string;
-  readonly kind: "session_scope" | "sort" | "limit" | "offset" | "group" | "count";
+  readonly kind: "session_scope" | "sort" | "limit" | "offset" | "group" | "count" | "agg" | "transform" | "terminal";
   readonly metric?: "count";
+  readonly name?: string;
   readonly predicate?: {
 };
   readonly sort?: {
@@ -423,9 +426,12 @@ export type QueryUnitEnvelope = {
   readonly [key: string]: unknown;
 }) | null;
   readonly pipeline_stages?: ReadonlyArray<{
+  readonly args?: {
+};
   readonly field?: string;
-  readonly kind: "session_scope" | "sort" | "limit" | "offset" | "group" | "count";
+  readonly kind: "session_scope" | "sort" | "limit" | "offset" | "group" | "count" | "agg" | "transform" | "terminal";
   readonly metric?: "count";
+  readonly name?: string;
   readonly predicate?: {
 };
   readonly sort?: {
@@ -433,6 +439,7 @@ export type QueryUnitEnvelope = {
   readonly value?: number;
   readonly [key: string]: unknown;
 }>;
+  readonly projected_items?: ReadonlyArray<QueryUnitProjectedRowPayload>;
   readonly query: string;
   readonly query_ref?: string | null;
   readonly result_ref?: string | null;
@@ -465,6 +472,7 @@ export type QueryUnitPipelineAst = {
 
 export type QueryUnitPipelineResultAst = {
   readonly aggregate?: "count" | null;
+  readonly fields?: ReadonlyArray<string> | null;
   readonly group_by?: string | null;
   readonly limit?: number | null;
   readonly offset?: number | null;
@@ -474,6 +482,10 @@ export type QueryUnitPipelineResultAst = {
 export type QueryUnitPipelineSourceAst = {
   readonly predicate: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
   readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
+};
+
+export type QueryUnitProjectedRowPayload = {
+  readonly [key: string]: unknown;
 };
 
 export type QueryUnitSessionScopeStageAst = {
