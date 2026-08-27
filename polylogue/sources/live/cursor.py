@@ -1513,10 +1513,14 @@ class CursorStore:
                     next_retry_at,
                     materializer_version
                 FROM convergence_debt
-                ORDER BY priority DESC, updated_at_ms DESC, debt_id DESC
+                ORDER BY
+                    CASE WHEN next_retry_at IS NULL OR next_retry_at <= ? THEN 0 ELSE 1 END,
+                    priority DESC,
+                    updated_at_ms DESC,
+                    debt_id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (datetime.now(UTC).isoformat(), limit),
             ).fetchall()
         return [
             LiveConvergenceDebt(

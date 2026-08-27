@@ -27,6 +27,30 @@ EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT = 500
 EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS = 5 * 60 * 1000
 
 
+def recover_embedding_catchup_receipts(archive_root: Path) -> int:
+    """Mark unfinished catch-up receipts interrupted so the next tick retries."""
+    ops_db = archive_root / "ops.db"
+    if not ops_db.exists():
+        return 0
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    with open_daemon_connection(ops_db, timeout=30.0) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        updated = conn.execute(
+            """
+            UPDATE embedding_catchup_runs
+            SET status = 'interrupted', finished_at_ms = ?,
+                error_message = COALESCE(error_message, 'daemon restarted before catch-up receipt completed')
+            WHERE status IN ('accepted', 'pending', 'running')
+            """,
+            (int(time.time() * 1000),),
+        ).rowcount
+        conn.commit()
+    return int(updated)
+
+
 async def periodic_embedding_backlog_check(
     *,
     catch_up_complete: asyncio.Event | None = None,

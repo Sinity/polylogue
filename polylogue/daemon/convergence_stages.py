@@ -203,7 +203,7 @@ def make_fts_stage(db_path: Path) -> ConvergenceStage:
                 logger.info("fts: domain convergence deferred because sqlite is busy: %s", exc)
                 return False
             logger.warning("fts: domain convergence failed", exc_info=True)
-            return False
+            raise
 
     return ConvergenceStage(
         name="fts",
@@ -1005,8 +1005,9 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
             )
         except Exception:
             logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
-            return False
-        return _raw_parse_recovery_pending_count(db_path, path, archive_root=configured_root) == 0
+            raise
+        pending = _raw_parse_recovery_pending_count(db_path, path, archive_root=configured_root)
+        return pending == 0
 
     return ConvergenceStage(
         name="raw_parse_recovery",
@@ -1057,7 +1058,7 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
             )
         except Exception:
             logger.warning("raw_authority_verdict_cache: bounded warmup failed", exc_info=True)
-            return False
+            raise
         logger.info(
             "raw_authority_verdict_cache: warmed cohorts=%d pending=%s",
             outcome.warmed_cohorts,
@@ -1937,7 +1938,7 @@ def _archive_embed_check(db_path: Path, path: Path, *, archive_root: Path | None
         return True
 
 
-def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
+def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> StageExecuteReturn:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
@@ -1947,12 +1948,13 @@ def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | No
             conn.close()
         if not pending_ids:
             return True
-        return _embed_archive_sessions_sync(
-            db_path, pending_ids, archive_root=archive_root
-        ) and not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
+        result = _embed_archive_sessions_sync(db_path, pending_ids, archive_root=archive_root)
+        if not bool(result):
+            return result
+        return not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
     except Exception:
         logger.warning("embed: archive failed", exc_info=True)
-        return False
+        raise
 
 
 def _archive_embed_check_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None) -> set[Path]:
@@ -1973,7 +1975,9 @@ def _archive_embed_check_many(db_path: Path, paths: Sequence[Path], *, archive_r
         return set(paths)
 
 
-def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None) -> bool:
+def _archive_embed_execute_many(
+    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
+) -> StageExecuteReturn:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
@@ -1984,12 +1988,13 @@ def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path], *, archive
             conn.close()
         if not pending_ids:
             return True
-        return _embed_archive_sessions_sync(
-            db_path, pending_ids, archive_root=archive_root
-        ) and not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
+        result = _embed_archive_sessions_sync(db_path, pending_ids, archive_root=archive_root)
+        if not bool(result):
+            return result
+        return not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
     except Exception:
         logger.warning("embed: archive batch failed", exc_info=True)
-        return False
+        raise
 
 
 def _archive_embed_check_sessions(
@@ -2014,12 +2019,14 @@ def _archive_embed_check_sessions(
 
 def _archive_embed_execute_sessions(
     db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
-) -> bool:
+) -> StageExecuteReturn:
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return True
-    ok = _embed_archive_sessions_sync(db_path, ids, archive_root=archive_root)
-    return ok and not _archive_embedding_debt_remaining(db_path, ids, archive_root=archive_root)
+    result = _embed_archive_sessions_sync(db_path, ids, archive_root=archive_root)
+    if not bool(result):
+        return result
+    return not _archive_embedding_debt_remaining(db_path, ids, archive_root=archive_root)
 
 
 def _archive_embedding_debt_remaining(
@@ -2040,9 +2047,13 @@ def _archive_embedding_debt_remaining(
 
 def _embed_archive_sessions_sync(
     db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
-) -> bool:
+) -> StageExecuteReturn:
     from polylogue.storage.embeddings.materialization import embed_archive_session_sync
     from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.storage.search_providers.sqlite_vec_support import (
+        ESTIMATED_TOKENS_PER_MESSAGE,
+        VOYAGE_4_COST_PER_1M_TOKENS,
+    )
 
     cfg = load_polylogue_config()
     voyage_key = cfg.get("voyage_api_key")
@@ -2063,9 +2074,26 @@ def _embed_archive_sessions_sync(
 
     errors = 0
     embedded = 0
+    processed = 0
+    deferred = False
+    message_budget = _DAEMON_EMBED_MAX_MESSAGES
+    session_budget = _DAEMON_EMBED_MAX_SESSIONS
+    monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
+    cumulative_cost = 0.0
+    monthly_cap_configured = monthly_cap > 0.0
+    if monthly_cap_configured:
+        from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
+
+        monthly_cap = max(monthly_cap - _archive_embedding_catchup_estimated_cost_this_month(root / "ops.db"), 0.0)
+        if monthly_cap == 0.0:
+            deferred = True
     started_at = time.monotonic()
-    for session_id in tuple(dict.fromkeys(session_ids)):
-        if time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
+    for processed, session_id in enumerate(tuple(dict.fromkeys(session_ids))):
+        if processed >= session_budget or time.monotonic() - started_at >= _DAEMON_EMBED_STOP_AFTER_SECONDS:
+            deferred = True
+            break
+        if message_budget <= 0:
+            deferred = True
             break
         outcome = embed_archive_session_sync(
             db_path,
@@ -2075,6 +2103,13 @@ def _embed_archive_sessions_sync(
         )
         if outcome.status == "embedded":
             embedded += 1
+            message_budget -= outcome.embedded_message_count
+            cumulative_cost += (
+                outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
+            )
+            if monthly_cap_configured and cumulative_cost >= monthly_cap:
+                deferred = True
+                break
         elif outcome.status in {"no_messages", "no_embeddable_messages"}:
             logger.info("embed: archive %s has no embeddable messages", session_id)
         elif outcome.status == "error":
@@ -2083,7 +2118,9 @@ def _embed_archive_sessions_sync(
             if errors >= _DAEMON_EMBED_MAX_ERRORS:
                 break
     logger.info("embed: archive %d done, %d errors", embedded, errors)
-    return errors == 0
+    if errors:
+        return False
+    return not deferred
 
 
 def _archive_hot_insight_session_ids(
@@ -2312,6 +2349,8 @@ def _archive_insights_execute_sessions(
         conn = _open_archive_insight_write_connection(db_path)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
+            if archive_root is None:
+                return _archive_insights_execute_ids(conn, ids)
             return _archive_insights_execute_ids(conn, ids, archive_root=archive_root)
         finally:
             conn.close()
@@ -2320,7 +2359,7 @@ def _archive_insights_execute_sessions(
             logger.info("insights: archive session refresh deferred because sqlite is busy: %s", exc)
             return False
         logger.warning("insights: archive session refresh failed", exc_info=True)
-        return False
+        raise
 
 
 def _archive_insights_execute_ids(
@@ -2352,14 +2391,23 @@ def _archive_insights_execute_ids(
         if user_db.exists():
             marker_conn = _open_archive_insight_write_connection(user_db)
     try:
-        counts = rebuild_session_insights_sync(
-            conn,
-            session_ids=list(session_ids),
-            marker_conn=marker_conn,
-            page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix="insights",
-        )
+        if marker_conn is None:
+            counts = rebuild_session_insights_sync(
+                conn,
+                session_ids=list(session_ids),
+                page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix="insights",
+            )
+        else:
+            counts = rebuild_session_insights_sync(
+                conn,
+                session_ids=list(session_ids),
+                marker_conn=marker_conn,
+                page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix="insights",
+            )
     finally:
         if marker_conn is not None:
             marker_conn.close()
@@ -2377,7 +2425,11 @@ def _archive_insights_execute_ids(
         counts.threads,
         len(remaining),
     )
-    return StageExecutionResult(success=not hot_ids and not remaining, stage_timings_s=stage_timings_s)
+    return StageExecutionResult(
+        success=not hot_ids and not remaining,
+        deferred=False,
+        stage_timings_s=stage_timings_s,
+    )
 
 
 __all__ = [
