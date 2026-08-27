@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.maintenance.source_manifest_continuity import (
+    ConsumptionReceipt,
     MemberState,
     SourceContinuityError,
     SourceDeclaration,
@@ -60,7 +61,7 @@ def test_duplicate_roots_and_symlinks_fail_closed(tmp_path: Path) -> None:
         )
     link = tmp_path / "link"
     link.symlink_to(root, target_is_directory=True)
-    with pytest.raises(SourceContinuityError, match="real directory"):
+    with pytest.raises(SourceContinuityError, match="real directory|unreadable"):
         build_source_manifest([SourceDeclaration("link", SourceRole.DIRECTORY, link, True)])
 
 
@@ -95,10 +96,52 @@ def test_consumed_requires_exact_authenticated_acquisition(tmp_path: Path) -> No
     (root / member.relative_path).unlink()
     key = "spool:one.jsonl"
     assert (
-        recheck_source_manifest(baseline, consumed={key: member.content_sha256}).states[key]
+        recheck_source_manifest(
+            baseline,
+            consumption_receipts={key: ConsumptionReceipt(member.content_sha256, "sealed-generation-1")},
+        ).states[key]
         is MemberState.CONSUMED_AND_ACQUIRED
     )
-    assert not recheck_source_manifest(baseline, consumed={key: "wrong"}).safe
+    assert not recheck_source_manifest(baseline, consumed={key: member.content_sha256}).safe
+
+
+def test_append_requires_the_original_prefix(tmp_path: Path) -> None:
+    root = _source(tmp_path, "append-prefix")
+    baseline = build_source_manifest([SourceDeclaration("append", SourceRole.APPEND_JSONL, root, True)])
+    (root / "one.jsonl").write_text("changed\nlater\n", encoding="utf-8")
+    result = recheck_source_manifest(baseline)
+    assert not result.safe
+    assert "append:one.jsonl" in result.states
+    assert result.states["append:one.jsonl"] is MemberState.BLOCKED
+
+
+def test_sqlite_uses_transactional_logical_evidence_not_file_bytes(tmp_path: Path) -> None:
+    root = _source(tmp_path, "sqlite")
+    declaration = SourceDeclaration("archive", SourceRole.MUTABLE_SQLITE, root, True)
+    logical = {"one.jsonl": "relation-hash-1", "two.json": "relation-hash-2"}
+    baseline = build_source_manifest([declaration], logical_snapshot=lambda _: logical)
+    (root / "one.jsonl").write_text("page-layout-changed", encoding="utf-8")
+    assert recheck_source_manifest(baseline, logical_snapshot=lambda _: logical).safe
+    assert not recheck_source_manifest(
+        baseline, logical_snapshot=lambda _: {**logical, "one.jsonl": "relation-hash-new"}
+    ).safe
+
+
+def test_replacement_with_same_bytes_is_not_unchanged(tmp_path: Path) -> None:
+    root = _source(tmp_path)
+    baseline = build_source_manifest([SourceDeclaration("live", SourceRole.DIRECTORY, root, True)])
+    content = (root / "one.jsonl").read_bytes()
+    (root / "one.jsonl").unlink()
+    (root / "one.jsonl").write_bytes(content)
+    assert not recheck_source_manifest(baseline).safe
+
+
+def test_baseline_cannot_self_refresh(tmp_path: Path) -> None:
+    root = _source(tmp_path)
+    baseline = build_source_manifest([SourceDeclaration("live", SourceRole.DIRECTORY, root, True)])
+    object.__setattr__(baseline, "manifest_sha256", "refreshed")
+    with pytest.raises(SourceContinuityError, match="integrity"):
+        recheck_source_manifest(baseline)
 
 
 def test_backup_evidence_is_external_authenticated_and_fresh() -> None:
