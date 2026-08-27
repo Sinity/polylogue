@@ -25,8 +25,8 @@
 # Tiering separates execution cost:
 #   * cheap-local — runnable in `devtools verify` defaults. Small fixtures, low
 #     repetition counts, total run under a few seconds. Always enforced.
-#   * lab — heavier benchmarks runnable via `devtools bench slo --include-lab` or
-#     `devtools bench slo --include-lab`. Skipped in the default loop so
+#   * lab — heavier benchmarks runnable via `devtools bench slo --include-lab`.
+#     Skipped in the default loop so
 #     commit-frequency verification stays fast.
 
 surfaces:
@@ -81,14 +81,10 @@ surfaces:
 
   # --- Interactive tier (polylogue-20d.14) -----------------------------
   #
-  # Named latency budgets for the CLI-to-daemon hot path (polylogue-20d.1).
-  # These are the epic's own measurement contract: sibling beads (daemon
-  # result cache 20d.12, SSE push 20d.13, ingest-to-searchable lag 20d.6)
-  # cite these budgets rather than inventing their own. Only the surfaces
-  # that are actually implemented and benchmarkable today are "required";
-  # the rest are informational placeholders naming the bead that must land
-  # before the row can gate (mirrors the existing context/cost pattern
-  # above, which defers to #838/#803/#870 the same way).
+  # Named latency budgets for the interactive front door (polylogue-20d.14).
+  # Sibling performance work cites these values rather than defining private
+  # budgets. Rows remain informational until their production route and
+  # seeded-corpus measurement are both stable enough to gate.
 
   daemon_cli_query:
     description: "Installed CLI-to-daemon typed UDS operation for an ordinary find-mode session page"
@@ -143,6 +139,14 @@ surfaces:
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_concurrent_reads"
     p50_ms: 250
     p95_ms: 500
+    gate: "informational"
+    tier: "lab"
+
+  ingest_to_searchable:
+    description: "Live daemon ingest through FTS publication until the new content is visible to find"
+    benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"
+    p50_ms: 5000
+    p95_ms: 10000
     gate: "informational"
     tier: "lab"
 

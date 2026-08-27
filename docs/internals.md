@@ -304,8 +304,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `fts_invariant_snapshot_sync` snapshot on a quiet cadence, so a recorded
   `identity_mismatch_rows` count is refreshed by full reconciliation rather
   than only ever moving via ingest-time repair or the
-  `daemon/fts_startup.py` bounded STALE-write path (which can reset a
-  nonzero count to 0 without recomputing it). Existing index tiers must
+  ordinary FTS convergence path. Existing index tiers must
   be rebuilt from source evidence (`polylogue ops reset --index && polylogued
   run`) to populate the new ledger for already-indexed rows; a declared
   clone-safe fast-forward exists (`IndexDeltaDeclaration` v43 in
@@ -1195,7 +1194,8 @@ Series are derived from existing daemon state tables via
 `open_readonly_connection` — `live_ingest_attempt` (totals by status,
 in-flight gauge, recent-attempt duration min/mean/max), unresolved
 `live_convergence_debt` grouped by stage, and the expected FTS sync triggers
-from `active_fts_triggers_sync`. The same scrape also exposes embedding
+from `storage/fts/derivation.py:active_fts_triggers_sync`. The same scrape
+also exposes embedding
 backlog counts and the latest `embedding_catchup_runs` progress row so
 semantic-search catch-up is visible in normal daemon dashboards without
 running an operator CLI command. Missing tables degrade to zero samples rather than 5xx-ing on a fresh

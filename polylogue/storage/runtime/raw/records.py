@@ -35,15 +35,12 @@ class RawSessionRecord(BaseModel):
     complete_prefix_size: int | None = Field(default=None, exclude=True)
     captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
     # Frozen provider-assembly sidecar snapshot (polylogue-ih67 AC#3/4),
-    # resolved once by the main process before dispatch and carried across
-    # the ProcessPoolExecutor boundary so ``ingest_record`` never re-reads
-    # live home-directory sidecars (session_index.jsonl/history.jsonl/
-    # state_5.sqlite) during replay. ``None`` means "not resolved here" --
-    # either a non-Codex provider, or a caller (e.g. direct unit tests) that
-    # bypasses the batch resolver -- and falls back to on-demand disk
-    # discovery. An empty dict is a valid resolved-but-nothing-found snapshot
-    # and is distinct from None: it must NOT trigger a fallback disk read.
-    sidecar_snapshot: dict[str, dict[str, str]] | None = Field(default=None, exclude=True)
+    # resolved during acquisition and carried across the ProcessPoolExecutor
+    # boundary. ``ingest_record`` never re-reads live home-directory sidecars
+    # during replay. ``None`` and an empty dict both mean that no optional
+    # evidence is available; the former is ordinary absence, while the latter
+    # is an explicit acquisition result. Neither permits ambient discovery.
+    sidecar_snapshot: dict[str, object] | None = Field(default=None, exclude=True)
 
     @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod

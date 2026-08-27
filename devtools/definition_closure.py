@@ -18,6 +18,7 @@ from pathlib import Path
 MAX_DEFINITIONS = 256
 MAX_EDGES_PER_DEFINITION = 32
 MAX_DIAGNOSTICS = 128
+MAX_GRAPH_ROWS = 1024
 
 
 class EdgeKind(StrEnum):
@@ -88,12 +89,26 @@ class ClosurePolicy:
         required = set(self.required_edge_kinds)
         if not required:
             raise ValueError(f"{self.family}: at least one required edge kind is required")
+        if len(required) != len(self.required_edge_kinds):
+            raise ValueError(f"{self.family}: duplicate required edge kind")
         if len(self.definitions) > MAX_DEFINITIONS:
             raise ValueError(f"{self.family}: inventory exceeds bounded definition limit")
+        definition_refs = [definition.ref for definition in self.definitions]
+        if len(set(definition_refs)) != len(definition_refs):
+            raise ValueError(f"{self.family}: duplicate definition ref")
         for definition in self.definitions:
+            if not definition.ref:
+                raise ValueError(f"{self.family}: definition ref cannot be empty")
             unknown = set(definition.required_edges) - required
             if unknown:
                 raise ValueError(f"{definition.ref}: edge kinds not declared by policy: {sorted(unknown)}")
+        unknown_absences = set(self.intentional_absences) - set(definition_refs)
+        if unknown_absences:
+            raise ValueError(f"{self.family}: intentional absence has unknown definition: {sorted(unknown_absences)}")
+        if self.intentional_absences and not self.exception_authority:
+            raise ValueError(f"{self.family}: intentional absences require exception authority")
+        if any(not authority.strip() for authority in self.intentional_absences.values()):
+            raise ValueError(f"{self.family}: intentional absence authority cannot be empty")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -157,7 +172,14 @@ class DefinitionClosureGraph:
             "families": [policy.to_dict() for policy in self.policies],
             "inventory_counts": {policy.family: len(policy.definitions) for policy in self.policies},
             "status_counts": dict(sorted(counts.items())),
-            "rows": [row.to_dict() for row in self.rows[:MAX_DEFINITIONS]],
+            "required_edge_count": sum(len(row.required_edges) for row in self.rows),
+            "actual_edge_count": sum(sum(len(refs) for refs in row.actual_edges.values()) for row in self.rows),
+            "unresolved_rows": [
+                row.definition_ref
+                for row in self.rows
+                if row.status not in {ClosureStatus.SATISFIED, ClosureStatus.INTENTIONAL_ABSENCE}
+            ],
+            "rows": [row.to_dict() for row in self.rows[:MAX_GRAPH_ROWS]],
             "coverage_limits": list(self.coverage_limits),
         }
 
@@ -181,13 +203,20 @@ def evaluate(
     evidence = evidence or {}
     rows: list[ClosureRow] = []
     policy_tuple = tuple(policies)
+    row_count = 0
     for policy in policy_tuple:
         for definition in policy.definitions[:MAX_DEFINITIONS]:
+            if row_count >= MAX_GRAPH_ROWS:
+                break
             required = definition.required_edges or policy.required_edge_kinds
             supplied = evidence.get(definition.ref, {})
-            actual = {
-                edge: tuple(refs)[:MAX_EDGES_PER_DEFINITION] for edge, refs in supplied.items() if edge in required
-            }
+            actual: dict[EdgeKind, tuple[EvidenceRef, ...]] = {}
+            for raw_edge, refs in supplied.items():
+                try:
+                    edge = EdgeKind(raw_edge)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{definition.ref}: unknown evidence edge {raw_edge!r}") from exc
+                actual[edge] = tuple(refs)[:MAX_EDGES_PER_DEFINITION]
             missing = tuple(
                 edge for edge in required if not any(ref.source == "production" for ref in actual.get(edge, ()))
             )
@@ -197,6 +226,10 @@ def evaluate(
             exception = policy.intentional_absences.get(definition.ref)
             if not evidence_available:
                 status, diagnostic = ClosureStatus.UNAVAILABLE, f"{definition.ref}: evidence unavailable"
+            elif any(ref.route == "bypass" for refs in actual.values() for ref in refs):
+                status, diagnostic = ClosureStatus.BYPASS, f"{definition.ref}: bypasses shared substrate"
+            elif any(ref.twin for refs in actual.values() for ref in refs):
+                status, diagnostic = ClosureStatus.DIVERGENT_TWIN, f"{definition.ref}: divergent twin evidence"
             elif missing:
                 if exception:
                     status, diagnostic = (
@@ -207,12 +240,8 @@ def evaluate(
                     supplied_refs = tuple(ref for refs in actual.values() for ref in refs)
                     tests_only = bool(supplied_refs) and all(ref.source == "tests" for ref in supplied_refs)
                     status = ClosureStatus.TESTS_ONLY if tests_only else ClosureStatus.MISSING
-                    edge = missing[0].value
-                    diagnostic = f"{definition.ref}: missing edge {edge}"
-            elif any(ref.route == "bypass" for refs in actual.values() for ref in refs):
-                status, diagnostic = ClosureStatus.BYPASS, f"{definition.ref}: bypasses shared substrate"
-            elif any(ref.twin for refs in actual.values() for ref in refs):
-                status, diagnostic = ClosureStatus.DIVERGENT_TWIN, f"{definition.ref}: divergent twin evidence"
+                    missing_edge = missing[0].value
+                    diagnostic = f"{definition.ref}: missing edge {missing_edge}"
             rows.append(
                 ClosureRow(
                     policy.family,
@@ -226,6 +255,7 @@ def evaluate(
                     diagnostic,
                 )
             )
+            row_count += 1
     return DefinitionClosureGraph(policy_tuple, tuple(rows), evidence_available, tuple(coverage_limits))
 
 

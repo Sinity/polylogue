@@ -29,14 +29,23 @@ def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: Read
     del request
     assert invocation.session_id is not None
     options = cast(ReadViewCorrelationOptions, invocation.options or ReadViewCorrelationOptions())
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     run_correlation_view(
         env,
         session_id=invocation.session_id,
-        repo_path=options.repo_path,
-        since_hours=options.since_hours,
+        repo_path=projection.correlation_repo_path
+        if projection and projection.correlation_repo_path is not None
+        else options.repo_path,
+        since_hours=projection.correlation_since_hours
+        if projection and projection.correlation_since_hours is not None
+        else options.since_hours,
         output_format=invocation.output_format,
-        confidence_threshold=options.confidence_threshold,
-        github_api=options.github_api,
+        confidence_threshold=projection.correlation_confidence_threshold
+        if projection and projection.correlation_confidence_threshold is not None
+        else options.confidence_threshold,
+        github_api=projection.correlation_github_api
+        if projection and projection.correlation_github_api is not None
+        else options.github_api,
     )
 
 

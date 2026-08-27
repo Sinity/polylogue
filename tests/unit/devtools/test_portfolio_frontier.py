@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -94,3 +95,38 @@ def test_full_ambition_remains_queryable_by_horizon() -> None:
     report = build_views([program(), row("frontier"), mid])
     assert report["ambition"]["frontier"] == ["frontier", "program"]
     assert report["ambition"]["mid"] == ["mid"]
+
+
+def test_views_keep_priority_readiness_and_claims_as_separate_dimensions() -> None:
+    ready = row("ready", status="in_progress", claimed_at="2026-08-27T10:00:00Z", owner="alice")
+    ready["metadata"]["critical_path"] = True
+    blocked = row("blocked")
+    blocked["dependencies"] = [{"depends_on_id": "ready", "type": "blocks"}]
+    report = build_views([program(), ready, blocked], now=datetime(2026, 8, 27, tzinfo=UTC))
+    assert report["priority"]["1"] == ["blocked", "ready"]
+    assert report["active"]["readiness"] == {
+        "ready": [],
+        "blocked-near-next": ["blocked"],
+        "in_progress": ["ready"],
+    }
+    assert report["active"]["claims"]["claimed"] == ["ready"]
+    assert report["execution_focus"][0]["id"] == "ready"
+
+
+def test_receipt_row_count_and_stale_claims_fail_closed() -> None:
+    with pytest.raises(PortfolioPolicyError, match="receipt says"):
+        build_views(
+            [program(), row("leaf")],
+            receipt={"schema": 1, "complete": True, "source_fingerprint": "x", "rows": 99},
+        )
+    with pytest.raises(PortfolioPolicyError, match="stale claim"):
+        build_views(
+            [program(), row("leaf", claimed_at="2026-08-01T00:00:00Z", owner="alice")],
+            now=datetime(2026, 8, 27, tzinfo=UTC),
+        )
+
+
+def test_production_scale_input_is_not_truncated() -> None:
+    report = build_views([program(), *(row(f"leaf-{i}") for i in range(1000))])
+    assert report["active"]["count"] == 1000
+    assert len(report["ambition"]["frontier"]) == 1001

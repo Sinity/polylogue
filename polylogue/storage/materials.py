@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Literal
 
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, get_blob_store
 
 MaterialState = Literal[
     "claimed",
@@ -53,6 +53,16 @@ class MaterialObservation:
     created_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialEvidenceLink:
+    evidence_ref: str
+    relation: MaterialRelation
+    authority: Literal["provider", "operator", "repository", "inferred", "unknown"]
+    confidence: float
+    observed_at_ms: int
+    source_diagnostic: str
+
+
 def _material_id(source_uri: str, referrer_ref: str, payload: bytes | None) -> str:
     digest = hashlib.sha256()
     digest.update(source_uri.encode("utf-8"))
@@ -82,14 +92,17 @@ def extraction_manifest(payload: bytes, media_type: str | None) -> dict[str, obj
         except (OSError, zipfile.BadZipFile) as exc:
             manifest["diagnostic"] = f"zip extraction failed: {type(exc).__name__}: {exc}"
     elif kind.startswith("text/") or not kind:
-        manifest["text_prefix"] = payload[:4096].decode("utf-8", errors="replace")
+        # Keep the manifest safe to expose through query surfaces. Raw text is
+        # available from the CAS blob; it must not be copied into indexable
+        # metadata or synthetic/public fixtures by default.
+        manifest["text"] = {"available": True, "encoding": media_type or "unknown"}
     return manifest
 
 
 def admit_material(
     conn: sqlite3.Connection,
     *,
-    blob_store: BlobStore,
+    blob_store: BlobStore | None,
     source_uri: str,
     referrer_ref: str,
     observed_at_ms: int,
@@ -110,7 +123,8 @@ def admit_material(
         raise ValueError("synthetic materials cannot carry arbitrary raw bytes")
     material_state: MaterialState = state or ("acquired" if payload is not None else "claimed")
     if payload is not None:
-        blob_hash, byte_size = blob_store.write_from_bytes(payload)
+        resolved_blob_store = blob_store or get_blob_store()
+        blob_hash, byte_size = resolved_blob_store.write_from_bytes(payload)
         custody: Literal["claimed", "retained", "verified", "released"] = "retained"
         media_type = media_type or mimetypes.guess_type(filename or "")[0]
         manifest = extraction_manifest(payload, media_type)
@@ -124,6 +138,16 @@ def admit_material(
             "claimed",
         )
     material_id = _material_id(source_uri, referrer_ref, payload)
+    if blob_hash is not None:
+        duplicate = (
+            conn.execute(
+                "SELECT 1 FROM material_observations WHERE blob_hash = ? LIMIT 1",
+                (bytes.fromhex(blob_hash),),
+            ).fetchone()
+            is not None
+        )
+        if duplicate and state is None:
+            material_state = "duplicate"
     now = observed_at_ms
     conn.execute(
         """INSERT INTO material_observations
@@ -204,10 +228,12 @@ def link_material(
 
 
 def get_material(conn: sqlite3.Connection, material_id: str) -> MaterialObservation | None:
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM material_observations WHERE material_id = ?", (material_id,)).fetchone()
+    cursor = conn.execute("SELECT * FROM material_observations WHERE material_id = ?", (material_id,))
+    row = cursor.fetchone()
     if row is None:
         return None
+    columns = [column[0] for column in cursor.description or ()]
+    row = dict(zip(columns, row, strict=True))
     return MaterialObservation(
         material_id=row["material_id"],
         referrer_ref=row["referrer_ref"],
@@ -228,9 +254,18 @@ def get_material(conn: sqlite3.Connection, material_id: str) -> MaterialObservat
     )
 
 
+def read_material(conn: sqlite3.Connection, material_id: str, *, blob_store: BlobStore | None = None) -> bytes:
+    """Read retained bytes for one material, preserving claim-only absence."""
+    observation = get_material(conn, material_id)
+    if observation is None:
+        raise KeyError(material_id)
+    if observation.blob_hash is None:
+        raise FileNotFoundError(f"material {material_id!r} has no retained bytes")
+    return (blob_store or get_blob_store()).read_all(observation.blob_hash)
+
+
 def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None) -> list[MaterialObservation]:
     """List truthful observations, optionally through a direct evidence link."""
-    conn.row_factory = sqlite3.Row
     if evidence_ref is None:
         rows = conn.execute("SELECT * FROM material_observations ORDER BY created_at_ms, material_id").fetchall()
     else:
@@ -254,4 +289,6 @@ __all__ = [
     "get_material",
     "link_material",
     "list_materials",
+    "read_material",
+    "MaterialEvidenceLink",
 ]

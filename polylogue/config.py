@@ -371,14 +371,6 @@ class PolylogueConfig:
         return bool(self._data.get("no_daemon"))
 
     @property
-    def daemon_host(self) -> str:
-        return str(self._data.get("daemon_host", "127.0.0.1"))
-
-    @property
-    def daemon_port(self) -> int:
-        return int(str(self._data.get("daemon_port", 8766)))
-
-    @property
     def embedding_enabled(self) -> bool:
         return bool(self._data.get("embedding_enabled"))
 
@@ -969,22 +961,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="deployment-policy",
         reload_behavior="per-invocation-client",
         description="Disable daemon client routing for one resolved invocation.",
-    ),
-    ConfigInventoryEntry(
-        "daemon_host",
-        toml_path="daemon.host",
-        env_var="POLYLOGUE_DAEMON_HOST",
-        owner_class="network-security",
-        reload_behavior="startup-bound",
-        description="Legacy daemon listen host alias kept for TOML/Nix compatibility.",
-    ),
-    ConfigInventoryEntry(
-        "daemon_port",
-        toml_path="daemon.port",
-        env_var="POLYLOGUE_DAEMON_PORT",
-        owner_class="network-security",
-        reload_behavior="startup-bound",
-        description="Legacy daemon listen port alias kept for TOML/Nix compatibility.",
     ),
     ConfigInventoryEntry(
         "api_host",
@@ -1660,7 +1636,6 @@ _ENV_CONFIG_KEY_MAP = {entry.env_var: entry.key for entry in _CONFIG_INVENTORY i
 _INT_CONFIG_KEYS = frozenset(
     {
         "api_port",
-        "daemon_port",
         "browser_capture_port",
         "embedding_dimension",
         "health_check_interval_s",
@@ -1836,8 +1811,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "daemon_url": "http://127.0.0.1:8766",
         "daemon_client_mode": "auto",
         "no_daemon": False,
-        "daemon_host": "127.0.0.1",
-        "daemon_port": 8766,
         "api_host": "127.0.0.1",
         "api_port": 8766,
         "api_auth_token": None,

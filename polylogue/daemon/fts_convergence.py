@@ -1,28 +1,19 @@
-"""Single daemon owner for recurring FTS convergence.
-
-Startup recovery, archive-wide exact auditing, and persisted surface-debt
-repair used to be scheduled by separate daemon loops.  This owner is the
-single recurring route; it delegates to the existing transaction-bound FTS
-repair and exact-generation snapshot routines.
-"""
+"""Single daemon owner for recurring message-FTS convergence."""
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
 logger = get_logger(__name__)
 
-FTS_CONVERGENCE_EXACT_INTERVAL = timedelta(hours=24)
-
 
 def _is_transient_sqlite_lock(exc: BaseException) -> bool:
-    import sqlite3
-
     return isinstance(exc, sqlite3.OperationalError) and any(
         token in str(exc).lower() for token in ("database is locked", "database table is locked", "database is busy")
     )
@@ -69,77 +60,70 @@ class FtsConvergenceOwner:
         *,
         reason: FtsRunReason,
         surfaces: tuple[str, ...] = (),
+        partition_keys: tuple[str, ...] | None = None,
     ) -> FtsOwnerResult:
         if not self._db_path.exists():
             return FtsOwnerResult(FtsOwnerState.ABSENT, exact=False)
         try:
-            if reason is FtsRunReason.STARTUP:
-                from polylogue.daemon.fts_startup import ensure_fts_startup_readiness_sync
+            from polylogue.storage.fts.derivation import FtsDerivationAdapter, FtsOutcome
 
-                ensure_fts_startup_readiness_sync()
-                return self._exact_result()
-            if reason is FtsRunReason.PERIODIC:
-                if not self._exact_due():
-                    return FtsOwnerResult(FtsOwnerState.PENDING, exact=False, detail="exact FTS audit not due")
-                from polylogue.daemon.fts_identity_convergence import run_fts_identity_drift_recompute_once_sync
-                from polylogue.daemon.fts_orphan_audit import run_fts_orphan_audit_once_sync
-
-                audit = run_fts_identity_drift_recompute_once_sync(self._db_path)
-                orphan = run_fts_orphan_audit_once_sync(self._db_path)
+            # ``surfaces`` is the legacy debt subject field.  The domain has
+            # one surface and its partitions are session keys, so a
+            # messages_fts debt item means a whole-domain pass rather than a
+            # partition literally named ``messages_fts``.
+            unsupported = tuple(surface for surface in surfaces if surface != "messages_fts")
+            if unsupported:
                 return FtsOwnerResult(
-                    FtsOwnerState.READY_EXACT if audit.ready else FtsOwnerState.PENDING,
-                    exact=audit.ran,
-                    repaired_surfaces=orphan.orphaned_sessions_found,
+                    FtsOwnerState.FAILED,
+                    exact=False,
+                    detail=f"unsupported FTS surface(s): {', '.join(unsupported)}",
                 )
-            return self._repair_debt(surfaces)
+            with open_daemon_connection(self._db_path, timeout=30.0) as conn:
+                result = FtsDerivationAdapter().converge(conn, keys=partition_keys)
+                if result.outcome is FtsOutcome.DONE:
+                    self._publish_readiness_projection(conn)
+            state = {
+                FtsOutcome.DONE: FtsOwnerState.READY_EXACT,
+                FtsOutcome.PENDING: FtsOwnerState.PENDING,
+                FtsOutcome.FAILED: FtsOwnerState.FAILED,
+            }[result.outcome]
+            return FtsOwnerResult(
+                state,
+                exact=result.outcome is FtsOutcome.DONE,
+                repaired_surfaces=result.written_partitions,
+                detail=result.detail,
+            )
         except Exception as exc:
             if _is_transient_sqlite_lock(exc):
                 return FtsOwnerResult(FtsOwnerState.DEFERRED, exact=False, detail=str(exc))
             logger.warning("fts convergence owner failed reason=%s", reason, exc_info=True)
             return FtsOwnerResult(FtsOwnerState.FAILED, exact=False, detail=f"{type(exc).__name__}: {exc}")
 
-    def _repair_debt(self, surfaces: tuple[str, ...]) -> FtsOwnerResult:
-        from polylogue.daemon.convergence_stages import repair_fts_surface_result
-
-        attempted = tuple(dict.fromkeys(surfaces))
-        if not attempted:
-            return FtsOwnerResult(FtsOwnerState.PENDING, exact=False)
-        results = tuple(repair_fts_surface_result(self._db_path, surface) for surface in attempted)
-        if any(result.deferred for result in results):
-            return FtsOwnerResult(FtsOwnerState.DEFERRED, exact=False, detail="SQLite writer busy")
-        if all(result.success for result in results):
-            return self._exact_result(repaired_surfaces=len(results))
-        return FtsOwnerResult(FtsOwnerState.PENDING, exact=True, repaired_surfaces=len(results))
-
-    def _exact_due(self) -> bool:
-        import sqlite3
-
-        try:
-            with sqlite3.connect(f"file:{self._db_path}?mode=ro", uri=True) as conn:
-                row = conn.execute(
-                    "SELECT exact_checked_at FROM fts_freshness_state WHERE surface = 'messages_fts'"
-                ).fetchone()
-        except sqlite3.Error:
-            return True
-        if row is None or row[0] is None:
-            return True
-        try:
-            return (
-                datetime.now(UTC) - datetime.fromisoformat(str(row[0])).astimezone(UTC)
-                >= FTS_CONVERGENCE_EXACT_INTERVAL
-            )
-        except ValueError:
-            return True
-
-    def _exact_result(self, *, repaired_surfaces: int = 0) -> FtsOwnerResult:
-        from polylogue.daemon.fts_identity_convergence import run_fts_identity_drift_recompute_once_sync
-
-        result = run_fts_identity_drift_recompute_once_sync(self._db_path)
-        return FtsOwnerResult(
-            FtsOwnerState.READY_EXACT if result.ready else FtsOwnerState.PENDING,
-            exact=result.ran,
-            repaired_surfaces=repaired_surfaces,
+    @staticmethod
+    def _publish_readiness_projection(conn: sqlite3.Connection) -> None:
+        """Expose a completed domain pass without making freshness authoritative."""
+        from polylogue.storage.fts.freshness import (
+            EXACT,
+            FRESHNESS_TABLE,
+            READY,
+            ensure_fts_freshness_table_sync,
+            record_fts_invariant_snapshot_sync,
         )
+        from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+        snapshot = fts_invariant_snapshot_sync(conn)
+        surface = snapshot.messages
+        if not surface.ready:
+            return
+        ensure_fts_freshness_table_sync(conn)
+        generation = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+        row = conn.execute(
+            f"SELECT state, verification_kind, exact_generation FROM {FRESHNESS_TABLE} WHERE surface = ?",
+            ("messages_fts",),
+        ).fetchone()
+        if row is not None and row[0] == READY and row[1] == EXACT and row[2] == generation:
+            return
+        record_fts_invariant_snapshot_sync(conn, snapshot)
 
 
-__all__ = ["FTS_CONVERGENCE_EXACT_INTERVAL", "FtsConvergenceOwner", "FtsOwnerResult", "FtsOwnerState", "FtsRunReason"]
+__all__ = ["FtsConvergenceOwner", "FtsOwnerResult", "FtsOwnerState", "FtsRunReason"]

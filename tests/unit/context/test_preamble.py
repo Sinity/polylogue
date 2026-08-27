@@ -23,6 +23,7 @@ import pytest
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
 from polylogue.context.scheduler import read_context_ledger
 from polylogue.core.refs import ExecutionContextRef
+from polylogue.markers import parse_markers
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 
 
@@ -195,3 +196,104 @@ class TestBuildContextPreambleGitEnrichment:
             "session_id",
         )
         assert execution_context.unknown_fields == ("runtime",)
+
+
+@pytest.mark.asyncio
+async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
+    tmp_path: Path,
+) -> None:
+    """Exercise the judged-memory loop through the real archive facade.
+
+    The marker is the agent-facing authoring boundary; the candidate write
+    route preserves its body and scope, the operator judgment promotes it,
+    and a newly opened facade resolves the ref carried by the preamble.
+    Mutating any stage to skip promotion, scope filtering, or public ref
+    resolution makes one of the assertions below fail.
+    """
+    from polylogue.api import Polylogue
+    from polylogue.core.enums import AssertionKind
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
+    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
+    initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    session_ref = "session:codex:judged-memory-loop"
+    repo_ref = "repo:polylogue"
+    try:
+        marker = parse_markers("::decision: Keep context as refs, not raw logs.\n")[0]
+        assert marker.kind == "decision"
+
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            upsert_assertion(
+                conn,
+                assertion_id="marker-judged-memory-loop",
+                target_ref=session_ref,
+                scope_ref=repo_ref,
+                kind=AssertionKind.DECISION,
+                body_text=marker.body,
+                author_ref="agent:codex",
+                author_kind="agent",
+                evidence_refs=(session_ref,),
+                status="candidate",
+                visibility="private",
+                context_policy={"inject": False},
+                staleness={"expires_at_ms": 9_999_999_999_999},
+                now_ms=1_700_000_000_000,
+            )
+        candidates = await archive.list_assertion_candidates(target_ref=session_ref, limit=1)
+        assert len(candidates) == 1
+        candidate = candidates[0]
+        assert candidate.status is not None
+        assert candidate.status.value == "candidate"
+        assert candidate.scope_ref == repo_ref
+        assert candidate.staleness is not None
+        assert candidate.staleness["expires_at_ms"] > candidate.created_at_ms
+
+        review = await archive.judge_assertion_candidate(
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="accept",
+            reason="The operator accepted this scoped context rule.",
+            actor_ref="user:local",
+            inject=True,
+        )
+        assert review.outcome == "applied"
+        assert review.resulting_assertion is not None
+        emitted_ref = f"assertion:{candidate.assertion_id}"
+        assert review.resulting_assertion.status is not None
+        assert review.resulting_assertion.status.value == "active"
+
+        archive.get_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        archive.find_resume_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        preamble = await build_context_preamble_payload(
+            archive,
+            session_id=session_ref.removeprefix("session:"),
+            repo_path=repo_ref,
+            require_session=False,
+        )
+        assert preamble is not None
+        assert preamble.injected_at is not None
+        assert preamble.guidance is not None
+        guidance = preamble.guidance
+        assert not isinstance(guidance, str)
+        assert guidance.assertions[0].quoted_evidence is not None
+        assert guidance.assertions[0].evidence_refs == [session_ref, emitted_ref]
+        assert guidance.assertions[0].scope_ref == repo_ref
+        assert guidance.assertions[0].quoted_evidence.text == marker.body
+
+    finally:
+        await archive.close()
+
+    rebooted = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    try:
+        resolved = await rebooted.resolve_ref(emitted_ref)
+        assert resolved.resolved is True
+        assert resolved.payload_kind == "assertion-claim"
+        assert resolved.payload is not None
+        assert resolved.payload["assertion_id"] == emitted_ref.removeprefix("assertion:")
+    finally:
+        await rebooted.close()

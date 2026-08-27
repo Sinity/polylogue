@@ -12,6 +12,12 @@ class MutationCampaign(NamedScenarioSource):
     paths_to_mutate: tuple[str, ...]
     tests: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    # A policy belongs to the obligation-owned campaign, not to the freshness
+    # verifier. Catalog entries must declare a risk-shaped floor; ``None`` is
+    # retained in the type so the catalog invariant can catch omissions.
+    min_kill_rate: float | None = None
+    consequence: str = "standard"
+    budget_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if self.origin == "authored":
@@ -30,6 +36,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="SessionFilter semantics and summary/picker contracts",
         paths_to_mutate=("polylogue/archive/filter/filters.py",),
         tests=("tests/unit/core/test_filters_props.py",),
+        min_kill_rate=0.6,
+        consequence="query-filter-semantics",
         notes=(
             "Targets the historical largest no-test blind spot.",
             "Timeout tail is expected in filter pipeline helpers.",
@@ -44,12 +52,16 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/core/test_message_laws.py",
             "tests/unit/core/test_session_semantics.py",
         ),
+        min_kill_rate=0.7,
+        consequence="message-session-semantics",
     ),
     "json": MutationCampaign(
         name="json",
         description="JSON serialization and parser laws",
         paths_to_mutate=("polylogue/core/json.py",),
         tests=("tests/unit/core/test_json.py",),
+        min_kill_rate=0.7,
+        consequence="serialization-integrity",
     ),
     "hybrid": MutationCampaign(
         name="hybrid",
@@ -64,6 +76,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/core/test_filters_props.py",
             "tests/unit/archive/test_query_search_runtime.py",
         ),
+        min_kill_rate=0.7,
+        consequence="retrieval-ranking",
     ),
     "schema-core": MutationCampaign(
         name="schema-core",
@@ -82,6 +96,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/core/test_verification.py",
             "tests/unit/storage/test_schema_safety.py",
         ),
+        min_kill_rate=0.8,
+        consequence="schema-contract",
         notes=("Larger campaign; use when law and privacy work are stable.",),
     ),
     "schema-inference": MutationCampaign(
@@ -93,6 +109,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/core/test_schema_laws.py",
             "tests/unit/core/test_schema_privacy.py",
         ),
+        min_kill_rate=0.75,
+        consequence="schema-inference",
     ),
     "schema-validation": MutationCampaign(
         name="schema-validation",
@@ -107,6 +125,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/core/test_verification.py",
             "tests/unit/storage/test_schema_safety.py",
         ),
+        min_kill_rate=0.8,
+        consequence="schema-validation",
     ),
     "pipeline-services": MutationCampaign(
         name="pipeline-services",
@@ -120,6 +140,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/pipeline/test_stage_independence.py",
             "tests/unit/pipeline/test_resilience.py",
         ),
+        min_kill_rate=0.75,
+        consequence="ingest-pipeline",
         notes=("Likely to need more helper-level laws to reduce timeout noise.",),
     ),
     "cli-query": MutationCampaign(
@@ -135,6 +157,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/cli/test_query_exec_laws.py",
             "tests/unit/cli/test_query_fmt.py",
         ),
+        min_kill_rate=0.7,
+        consequence="query-routing",
     ),
     "ui-core": MutationCampaign(
         name="ui-core",
@@ -148,6 +172,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/ui/test_ui_visual.py",
             "tests/unit/ui/test_tui.py",
         ),
+        min_kill_rate=0.6,
+        consequence="user-interaction",
     ),
     "drive-client": MutationCampaign(
         name="drive-client",
@@ -164,6 +190,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/sources/test_drive_auth.py",
             "tests/unit/sources/test_drive_ops.py",
         ),
+        min_kill_rate=0.7,
+        consequence="external-ingest",
         notes=("Targets the historical Drive not_checked cluster with focused tests.",),
     ),
     "repository": MutationCampaign(
@@ -174,6 +202,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/storage/test_store_ops.py",
             "tests/unit/storage/test_tree_laws.py",
         ),
+        min_kill_rate=0.75,
+        consequence="storage-crud",
         notes=("Large surface; use to gauge storage law readiness before repository-law work.",),
     ),
     "source-detection": MutationCampaign(
@@ -193,6 +223,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/sources/test_parsers_props.py",
             "tests/unit/sources/test_parsers_drive.py",
         ),
+        min_kill_rate=0.8,
+        consequence="source-dispatch",
     ),
     "provider-parsers": MutationCampaign(
         name="provider-parsers",
@@ -212,6 +244,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/sources/test_compaction.py",
             "tests/unit/sources/test_assembly.py",
         ),
+        min_kill_rate=0.8,
+        consequence="provider-parsing",
         notes=("Focused on the parser modules where semantic correctness is most critical.",),
     ),
     "providers-semantics": MutationCampaign(
@@ -227,6 +261,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/sources/test_parsers_props.py",
             "tests/unit/sources/test_assembly.py",
         ),
+        min_kill_rate=0.8,
+        consequence="provider-semantics",
         notes=("Directly relevant to the next provider-law wave.",),
     ),
     "sources-parse": MutationCampaign(
@@ -251,6 +287,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
             "tests/unit/sources/test_models.py",
             "tests/unit/sources/test_token_store.py",
         ),
+        min_kill_rate=0.8,
+        consequence="source-parsing",
         notes=("Broadest campaign here; best run after law-wave work lands.",),
     ),
     "daemon-http": MutationCampaign(
@@ -258,6 +296,8 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Daemon HTTP API endpoint handler contracts",
         paths_to_mutate=("polylogue/daemon/http.py",),
         tests=("tests/unit/daemon/test_daemon_http.py",),
+        min_kill_rate=0.75,
+        consequence="http-api",
         notes=(
             "CI-compatible subset; run with fast timeout tiers.",
             "HTTP endpoint handlers should remain deterministic under test fixtures.",
@@ -268,10 +308,80 @@ MUTATION_CAMPAIGNS: dict[str, MutationCampaign] = {
         description="Storage repair logic, preview/idempotence/failure state effects",
         paths_to_mutate=("polylogue/storage/repair.py",),
         tests=("tests/unit/storage/test_repair.py",),
+        min_kill_rate=0.8,
+        consequence="repair-safety",
         notes=(
             "Repair is a maintenance-critical path; preview/dry-run/execute contracts must hold.",
             "Keep timeout generous - repair tests may perform full FTS5 rebuilds.",
         ),
+    ),
+    "blob-liveness-delete": MutationCampaign(
+        name="blob-liveness-delete",
+        description="Blob liveness, durable GC intent, and irreversible deletion safety",
+        paths_to_mutate=("polylogue/storage/blob_gc.py", "polylogue/storage/blob_liveness.py"),
+        tests=(
+            "tests/unit/storage/test_blob_gc.py",
+            "tests/unit/storage/test_blob_gc_durable_intent.py",
+            "tests/unit/storage/test_blob_liveness.py",
+        ),
+        min_kill_rate=0.8,
+        consequence="irreversible-delete",
+        budget_seconds=900,
+    ),
+    "cursor-publication": MutationCampaign(
+        name="cursor-publication",
+        description="Cursor publication only after the owning durable work commits",
+        paths_to_mutate=("polylogue/sources/live/cursor.py", "polylogue/sources/live/batch.py"),
+        tests=(
+            "tests/unit/sources/test_live_cursor_locking.py",
+            "tests/unit/sources/test_live_cursor_persistence.py",
+            "tests/unit/sources/test_cursor_lifecycle.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="durable-cursor",
+        budget_seconds=900,
+    ),
+    "lineage-identity-publication": MutationCampaign(
+        name="lineage-identity-publication",
+        description="Lineage and identity publication through the parsed-session write seam",
+        paths_to_mutate=("polylogue/storage/sqlite/archive_tiers/write.py",),
+        tests=(
+            "tests/unit/storage/test_write_path_state_machine.py",
+            "tests/unit/storage/test_archive_identity.py",
+            "tests/unit/sources/test_revision_backfill.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="identity-lineage",
+        budget_seconds=900,
+    ),
+    "durable-transition": MutationCampaign(
+        name="durable-transition",
+        description="Durable source-item and change-train transitions under interruption",
+        paths_to_mutate=(
+            "polylogue/storage/sqlite/archive_tiers/source_items.py",
+            "polylogue/storage/sqlite/durable_change_train.py",
+        ),
+        tests=(
+            "tests/unit/storage/test_source_items.py",
+            "tests/unit/storage/test_durable_change_train.py",
+            "tests/unit/storage/test_write_path_state_machine.py",
+        ),
+        min_kill_rate=0.75,
+        consequence="durable-transition",
+        budget_seconds=900,
+    ),
+    "authored-cost-accounting": MutationCampaign(
+        name="authored-cost-accounting",
+        description="Authoredness-preserving usage and cost aggregation",
+        paths_to_mutate=("polylogue/storage/usage.py", "polylogue/storage/sqlite/archive_tiers/write.py"),
+        tests=(
+            "tests/unit/storage/test_session_usage_reconciliation.py",
+            "tests/unit/storage/test_session_profile_model_usage_consistency.py",
+            "tests/unit/storage/test_archive_tiers_write.py",
+        ),
+        min_kill_rate=0.8,
+        consequence="accounting",
+        budget_seconds=900,
     ),
 }
 

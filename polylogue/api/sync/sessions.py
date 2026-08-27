@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.product.workflows import TopicPackRequest, TopicPackResult
 
 if TYPE_CHECKING:
     from polylogue.api import ArchiveStats, Polylogue
@@ -200,6 +201,10 @@ class SyncSessionQueriesMixin:
                 window_hours=window_hours,
             )
         )
+
+    def topic_pack(self, request: TopicPackRequest) -> TopicPackResult:
+        """Run the bounded staged topic-lineage read workflow."""
+        return run_coroutine_sync(self._facade.topic_pack(request))
 
 
 __all__ = ["SyncSessionQueriesMixin"]

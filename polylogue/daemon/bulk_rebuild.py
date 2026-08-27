@@ -490,6 +490,11 @@ async def run_daemon_bulk_rebuild_pass(
         # before reaching the shared replay engine.  The boolean remains an
         # internal daemon routing decision only; it is not a wire/request
         # capability and it cannot carry caller-selected paths or knobs.
+        from polylogue.maintenance.archive_verification import archive_verification_domain_adapters
+        from polylogue.maintenance.domain_check_plan import (
+            compile_domain_check_plan,
+            declarations_from_outcome_owners,
+        )
         from polylogue.operations.candidate_build import (
             CandidateBuildBudget,
             CandidateBuildObligation,
@@ -497,6 +502,11 @@ async def run_daemon_bulk_rebuild_pass(
             CandidateBuildRequest,
             SourceSeal,
             plan_candidate_build,
+        )
+
+        check_plan = compile_domain_check_plan(
+            declarations_from_outcome_owners(archive_verification_domain_adapters(root), phase="candidate"),
+            phase="candidate",
         )
 
         root_stat = root.stat()
@@ -518,6 +528,8 @@ async def run_daemon_bulk_rebuild_pass(
             origin_declarations=("canonical-origin-specs",),
             recipe_version="rebuild-recipe-v1",
             semantic_version="rebuild-semantics-v1",
+            check_plan_digest=check_plan.digest,
+            check_plan_members=check_plan.member_identities,
         )
         generation = await asyncio.to_thread(store.load, transaction.generation_id)
         candidate_plan = plan_candidate_build(
@@ -536,6 +548,8 @@ async def run_daemon_bulk_rebuild_pass(
                     CandidateBuildObligation(name="lineage"),
                     CandidateBuildObligation(name="inactive-generation"),
                 ),
+                expected_check_plan_digest=check_plan.digest,
+                expected_check_plan_members=check_plan.member_identities,
             ),
         )
         if candidate_plan.request_digest != candidate_request.identity_digest:

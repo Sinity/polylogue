@@ -63,7 +63,9 @@ from polylogue.storage.sqlite.archive_tiers.index_convergence import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
+    DurableChangeTrainError,
     DurableMigrationClaim,
+    durable_change_train_from_payload,
     durable_change_train_policy_report,
     durable_migration_claim_for_sql,
 )
@@ -75,6 +77,7 @@ from polylogue.storage.sqlite.lifecycle import (
     IndexDeltaDeclarationReport,
     index_delta_declaration_report,
 )
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 
 ROOT = _get_root()
 MIGRATIONS_DIR = ROOT / "polylogue" / "storage" / "sqlite" / "migrations"
@@ -337,6 +340,91 @@ def _durable_migration_claims_on_disk() -> tuple[DurableMigrationClaim, ...]:
     return tuple(claims)
 
 
+def _master_migration_head(tier: ArchiveTier) -> int:
+    """Return the numbered migration head recorded by ``origin/master``."""
+    prefix = f"polylogue/storage/sqlite/migrations/{tier.value}/"
+    result = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "origin/master", "--", prefix],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    versions = [
+        int(match.group(1))
+        for path in result.stdout.splitlines()
+        if (match := re.fullmatch(rf"{re.escape(prefix)}(\d{{3,}})_[a-z0-9_]+\.sql", path))
+    ]
+    if not versions:
+        raise RuntimeError(f"origin/master has no durable migrations for {tier.value}")
+    return max(versions)
+
+
+def _changed_paths_against_master() -> tuple[str, ...]:
+    """Return paths changed by this checkout relative to the integration head."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "origin/master", "--"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    paths = {path for path in result.stdout.splitlines() if path}
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for line in status.stdout.splitlines():
+        if line.startswith("?? "):
+            paths.add(line[3:])
+    return tuple(sorted(paths))
+
+
+def _durable_slot_reservation_violations(
+    *,
+    changed_paths: Iterable[str] | None = None,
+    master_heads: dict[ArchiveTier, int] | None = None,
+) -> list[str]:
+    """Ensure changed trains reserve the next slot after master's head.
+
+    Historical sidecars intentionally retain their predecessor version. Only
+    sidecars changed by this checkout are reservations, so old released trains
+    do not become false positives when the gate runs on master itself.
+    """
+    paths = tuple(changed_paths) if changed_paths is not None else _changed_paths_against_master()
+    heads = master_heads or {}
+    violations: list[str] = []
+    for tier in sorted(DURABLE_MIGRATION_TIERS, key=lambda item: item.value):
+        prefix = f"polylogue/storage/sqlite/migrations/{tier.value}/"
+        for relative in paths:
+            match = re.fullmatch(rf"{re.escape(prefix)}(\d{{3,}})\.train\.json", relative)
+            if match is None:
+                continue
+            sidecar_path = ROOT / relative
+            try:
+                payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+                train = durable_change_train_from_payload(payload)
+                master_head = heads.get(tier)
+                if master_head is None:
+                    master_head = _master_migration_head(tier)
+            except (OSError, json.JSONDecodeError, ValueError, RuntimeError, DurableChangeTrainError) as exc:
+                violations.append(f"{relative}: cannot validate durable slot reservation: {exc}")
+                continue
+            if train.current_version != master_head:
+                violations.append(
+                    f"{relative}: durable slot reservation is stale: train current_version "
+                    f"v{train.current_version} does not match origin/master {tier.value} head v{master_head}; "
+                    "rebase and renumber the train onto the next unowned target slot"
+                )
+            elif train.target_version != master_head + 1:
+                violations.append(
+                    f"{relative}: durable slot reservation targets v{train.target_version}, but "
+                    f"origin/master {tier.value} head v{master_head} requires v{master_head + 1}; "
+                    "rebase and renumber the train onto the next unowned target slot"
+                )
+    return violations
+
+
 def durable_migration_collision_report(
     claims: Iterable[DurableMigrationClaim],
 ) -> dict[str, object]:
@@ -352,6 +440,7 @@ def _format_report(
     ddl_lifecycle_violations: list[DDLLifecycleViolation],
     durable_change_train_reports: dict[str, dict[str, object]] | None = None,
     durable_migration_collisions: dict[str, object] | None = None,
+    durable_slot_reservation_violations: list[str] | None = None,
 ) -> str:
     durable_change_train_reports = durable_change_train_reports or {}
     durable_violations = [
@@ -366,12 +455,14 @@ def _format_report(
         for reservation in cast(tuple[object, ...], report.get("reservations", ()))
     ]
     durable_migration_collisions = durable_migration_collisions or {}
+    durable_slot_reservation_violations = durable_slot_reservation_violations or []
     collision_entries = cast(tuple[object, ...], durable_migration_collisions.get("collisions", ()))
     lines = [
         f"invalid durable migration resources found: {len(invalid_migrations)}",
         f"durable change-train reservations found: {len(durable_reservations)}",
         f"durable change-train violations found: {len(durable_violations)}",
         f"durable migration slot collisions found: {len(collision_entries)}",
+        f"durable migration slot reservation violations found: {len(durable_slot_reservation_violations)}",
         f"undeclared index schema deltas found: {len(delta_report['missing_versions'])}",
         f"invalid index benign-DDL registry entries found: {len(benign_ddl_violations)}",
         f"undeclared tier DDL lifecycle changes found: {len(ddl_lifecycle_violations)}",
@@ -418,6 +509,10 @@ def _format_report(
         lines.append("")
         lines.append("Durable migration slot collisions:")
         lines.extend(f"  {collision}" for collision in collision_entries)
+    if durable_slot_reservation_violations:
+        lines.append("")
+        lines.append("Durable migration slot reservation violations:")
+        lines.extend(f"  {violation}" for violation in durable_slot_reservation_violations)
     if (
         not invalid_migrations
         and bool(delta_report["ok"])
@@ -425,6 +520,7 @@ def _format_report(
         and not ddl_lifecycle_violations
         and not durable_violations
         and not collision_entries
+        and not durable_slot_reservation_violations
     ):
         lines.append("")
         lines.append("Schema evolution policy intact.")
@@ -445,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
         for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
     }
     durable_migration_collisions = durable_migration_collision_report(_durable_migration_claims_on_disk())
+    try:
+        durable_slot_reservation_violations = _durable_slot_reservation_violations()
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        durable_slot_reservation_violations = [f"cannot inspect origin/master for durable slot reservations: {exc}"]
     delta_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
     benign_ddl_violations = _invalid_benign_ddl_entries()
     ddl_lifecycle_violations = _ddl_lifecycle_report()
@@ -456,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
         and not ddl_lifecycle_violations
         and all(bool(report.get("ok")) for report in durable_change_train_reports.values())
         and bool(durable_migration_collisions["ok"])
+        and not durable_slot_reservation_violations
     )
 
     if args.json:
@@ -463,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             "invalid_migration_resources": [str(path.relative_to(ROOT)) for path in invalid_migrations],
             "durable_change_trains": durable_change_train_reports,
             "durable_migration_collisions": durable_migration_collisions,
+            "durable_slot_reservation_violations": durable_slot_reservation_violations,
             "index_delta_declarations": delta_report,
             "invalid_benign_ddl_entries": [
                 {"name": violation.entry_name, "reason": violation.reason} for violation in benign_ddl_violations
@@ -483,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
                 ddl_lifecycle_violations=ddl_lifecycle_violations,
                 durable_change_train_reports=durable_change_train_reports,
                 durable_migration_collisions=durable_migration_collisions,
+                durable_slot_reservation_violations=durable_slot_reservation_violations,
             )
         )
 
