@@ -110,7 +110,7 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
 def test_gc_mid_batch_unlink_crash_leaves_durable_intent_for_the_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A crash during unlink leaves a committed generation and exact pending members."""
+    """A crash during unlink preserves each completed member outcome durably."""
     initialize_active_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     first_hash, _ = store.write_from_bytes(b"first crash-window member")
@@ -133,7 +133,9 @@ def test_gc_mid_batch_unlink_crash_leaves_durable_intent_for_the_batch(
         blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        generation = conn.execute("SELECT generation_id, completed_at_ms FROM gc_generations").fetchone()
+        generation = conn.execute(
+            "SELECT generation_id, completed_at_ms, reclaimed_count FROM gc_generations"
+        ).fetchone()
         members = conn.execute(
             "SELECT hex(blob_hash), outcome FROM gc_generation_members ORDER BY blob_hash"
         ).fetchall()
@@ -141,11 +143,12 @@ def test_gc_mid_batch_unlink_crash_leaves_durable_intent_for_the_batch(
     assert generation is not None
     assert generation[1] is None
     expected_hashes = sorted((first_hash.upper(), second_hash.upper()))
-    assert members == [(blob_hash, "pending") for blob_hash in expected_hashes]
+    assert generation[2] == 0
+    assert members == [(expected_hashes[0], "removed"), (expected_hashes[1], "pending")]
     assert not store.exists(expected_hashes[0].lower())
     assert store.exists(expected_hashes[1].lower())
-    # Anti-vacuity: moving the generation/member commit after the unlink loop
-    # makes this crash leave no durable generation or exact batch denominator.
+    # Anti-vacuity: deferring outcome commits until the loop ends leaves both
+    # members pending after the second unlink raises.
 
 
 @pytest.mark.uses_real_clock("backdates a temporary blob to pass production GC's age gate")
@@ -727,12 +730,12 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
 
     rows = _member_rows(tmp_path / "source.db")
     assert {row[1:] for row in rows} == {
-        (first_hash.upper(), "pending"),
-        (second_hash.upper(), "pending"),
+        (min(first_hash, second_hash).upper(), "removed"),
+        (max(first_hash, second_hash).upper(), "pending"),
     }
     generation_id = rows[0][0]
-    assert not store.exists(first_hash)
-    assert store.exists(second_hash)
+    assert not store.exists(min(first_hash, second_hash))
+    assert store.exists(max(first_hash, second_hash))
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
     retry = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root, max_batch=2)
@@ -743,7 +746,7 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
             conn.execute(
                 "SELECT completed_at_ms, reclaimed_count FROM gc_generations WHERE generation_id = ?", (generation_id,)
             ).fetchone()[1]
-            == 1
+            == 2
         )
 
 
