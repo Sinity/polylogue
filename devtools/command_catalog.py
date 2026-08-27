@@ -552,6 +552,33 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench daemon-operation",),
     ),
     CommandSpec(
+        "bench concurrency",
+        "benchmarking",
+        "Run the managed bounded-compute scaling profile across representative workloads.",
+        "devtools.concurrency_profile",
+        use_when=(
+            "Compare bounded worker and admission configurations for tiny-file, ordinary, whale, mixed-ingest, "
+            "derivation, and interactive-read workloads on the selected free-threaded runtime."
+        ),
+        examples=("devtools bench concurrency", "devtools bench concurrency --json"),
+    ),
+    CommandSpec(
+        "verify runtime",
+        "verification",
+        "Verify the CPython 3.14 free-threaded runtime and required native extensions.",
+        "devtools.runtime_contract",
+        use_when="Prove runtime identity and extension imports before running concurrency-sensitive work.",
+        examples=("devtools verify runtime", "devtools verify runtime --json"),
+    ),
+    CommandSpec(
+        "verify runtime-census",
+        "verification",
+        "Census production concurrency boundaries and classify every discovered item.",
+        "devtools.runtime_census",
+        use_when="Audit executors, SQLite connections, synchronization, caches, registries, and mutable globals.",
+        examples=("devtools verify runtime-census", "devtools verify runtime-census --json"),
+    ),
+    CommandSpec(
         "bench cli-interaction",
         "benchmarking",
         "Run the complete installed CLI and direct typed-UDS interaction profile.",

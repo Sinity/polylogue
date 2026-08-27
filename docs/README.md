@@ -68,6 +68,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Daemon Concurrency Profile](daemon-concurrency-profile.md) | Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger. |
+| [Runtime and Concurrency Contract](runtime-concurrency.md) | Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |

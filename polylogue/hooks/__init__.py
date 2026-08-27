@@ -884,6 +884,9 @@ def _hook_sidecar_dir_arg(args: list[str]) -> Path | None:
 def hook_main(argv: list[str] | None = None) -> int:
     """Record one harness hook event without loading the archive runtime."""
 
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue hook")
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print("Usage: polylogue-hook <event-type> [--provider claude-code|codex] [--sidecar-dir PATH]", file=sys.stderr)
