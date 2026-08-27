@@ -78,6 +78,49 @@ class WorkloadRunStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class WorkloadAdapterDeclaration:
+    """One named measurement path and its receipt disposition."""
+
+    name: str
+    owner: str
+    disposition: str
+    evidence: str
+
+    def __post_init__(self) -> None:
+        if not all((self.name, self.owner, self.disposition, self.evidence)):
+            raise ValueError("workload adapter declarations require complete identity and evidence")
+        if self.disposition not in {"shared-receipt", "explicit-adapter"}:
+            raise ValueError(f"unknown workload adapter disposition: {self.disposition}")
+
+
+WORKLOAD_ADAPTER_DECLARATIONS: tuple[WorkloadAdapterDeclaration, ...] = (
+    WorkloadAdapterDeclaration("query-memory", "devtools.query_memory_budget", "shared-receipt", "run_memory_budget"),
+    WorkloadAdapterDeclaration(
+        "pipeline-probe", "devtools.pipeline_probe.result", "shared-receipt", "_pipeline_workload_receipt"
+    ),
+    WorkloadAdapterDeclaration(
+        "scenario-execution",
+        "polylogue.scenarios.execution",
+        "explicit-adapter",
+        "execution specs delegate measurement to their declared runner",
+    ),
+    WorkloadAdapterDeclaration(
+        "ingest/source-observation",
+        "devtools.ingest_throughput_probe and tests.infra.append_cohort_memory_counter",
+        "shared-receipt",
+        "_workload_receipt and AppendCohortMemoryCounter.workload_receipt",
+    ),
+    WorkloadAdapterDeclaration("verify-run", "devtools.verify", "shared-receipt", "_verification_workload_receipt"),
+    WorkloadAdapterDeclaration("slo-catalog", "devtools.verify_slos", "shared-receipt", "_slo_workload_receipt"),
+)
+
+
+def workload_adapter_declarations() -> tuple[WorkloadAdapterDeclaration, ...]:
+    """Return the immutable, exhaustive measurement-path inventory."""
+    return WORKLOAD_ADAPTER_DECLARATIONS
+
+
+@dataclass(frozen=True, slots=True)
 class WorkloadInputRef:
     """Stable identity for the executable corpus/profile input."""
 
@@ -716,4 +759,7 @@ __all__ = [
     "raw_authority_fixed_point_spec",
     "tool_pairing_canary_spec",
     "watcher_append_cohort_canary_spec",
+    "WORKLOAD_ADAPTER_DECLARATIONS",
+    "WorkloadAdapterDeclaration",
+    "workload_adapter_declarations",
 ]

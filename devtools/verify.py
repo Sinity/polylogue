@@ -71,6 +71,7 @@ from polylogue.scenarios import (
     WorkloadPhaseObservation,
     WorkloadReceipt,
     WorkloadRunStatus,
+    workload_adapter_declarations,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -558,7 +559,10 @@ def _verification_workload_receipt(
         generation_id=None,
         frame_id=None,
         phases=observations,
-        notes=("Verifier adapter records step wall time only; resource dimensions are explicitly unavailable.",),
+        notes=(
+            "Verifier adapter records step wall time only; resource dimensions are explicitly unavailable.",
+            f"Measurement-path inventory contains {len(workload_adapter_declarations())} declared dispositions.",
+        ),
     )
     return receipt.to_payload()
 
