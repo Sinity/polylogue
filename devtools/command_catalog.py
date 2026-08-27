@@ -256,7 +256,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "verification",
         "Validate complete Beads ambition, active-set, and execution-focus views.",
         "devtools.portfolio_frontier",
-        use_when="Inspect the complete external Beads export; soft active-set bands diagnose growth but never truncate work.",
+        use_when=(
+            "Inspect the complete external Beads export; soft active-set bands diagnose growth but never "
+            "truncate work. The report keeps the complete ambition map (priority and frontier/mid/vision "
+            "horizon) separate from active admission. Active admission reports every admitted leaf by "
+            "owning program, readiness (ready, blocked-near-next, or in_progress), and claim state. "
+            "Execution focus is a derived, smaller selection using claims, priority, critical-path unlock "
+            "leverage, conflicts, and the declared resource policy. The default 30-leaf target and 50-leaf "
+            "warning are soft diagnostics: they never truncate, close, demote, or hide records."
+        ),
         examples=("devtools verify portfolio-frontier /path/to/issues.jsonl",),
     ),
     CommandSpec(
