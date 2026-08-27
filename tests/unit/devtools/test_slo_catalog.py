@@ -68,6 +68,7 @@ def test_benchmark_runner_uses_private_basetemp_despite_inherited_tmpfs(
         "POLYLOGUE_PYTEST_BASETEMP_ROOT": "/dev/shm/inherited-benchmark",
     }
     assert any(argument.startswith("--basetemp=") for argument in captured_command)
+    assert any(captured_command[index : index + 2] == ["-m", "benchmark"] for index in range(len(captured_command) - 1))
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:

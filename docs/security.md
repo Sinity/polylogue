@@ -227,10 +227,7 @@ substitute for the other.
 preview, `--yes` to apply) removes a session across every local tier:
 
 1. `embeddings.db` — the session's message vectors (if embedded).
-2. `index.db` — `sessions` cascades to `messages`/`blocks`/`session_links`
-   via `ON DELETE CASCADE`; the FTS triggers clean the contentless search
-   index automatically.
-3. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
+2. `source.db` — `blob_refs` and `raw_sessions` rows (cascading to
    `raw_session_memberships`/`raw_membership_census`), then a durable
    removed-hash marker is recorded in the new `excised_content` table
    (migration `011_excised_content.sql`, `SOURCE_SCHEMA_VERSION` 11) for
@@ -239,10 +236,13 @@ preview, `--yes` to apply) removes a session across every local tier:
    across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a
    session's inline attachments (whose content hash can differ from the raw
    payload's) each get their own non-resurrection marker too.
-4. `user.db` — content-bearing assertions targeting the excised
+3. `user.db` — content-bearing assertions targeting the excised
    session/messages/blocks are removed, and one durable
    `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,
    removed hashes, per-tier counts).
+4. `index.db` — `sessions` cascades to `messages`/`blocks`/`session_links`
+   via `ON DELETE CASCADE`; the FTS triggers clean the contentless search
+   index automatically.
 
 **Ordinary re-ingest cannot resurrect excised content.** The removed-hash
 marker is consulted at *both* acquire-time raw-session write functions in
