@@ -299,7 +299,7 @@ def _protected_auth_error_response(description: str) -> dict[str, Any]:
 
 def _build_openapi_document() -> dict[str, Any]:
     schemas = _collect_component_schemas()
-    document = {
+    document: dict[str, Any] = {
         "openapi": OPENAPI_VERSION,
         "info": {
             "title": "Polylogue Search API",
