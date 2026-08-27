@@ -43,6 +43,12 @@
           "required_initial": false
         },
         {
+          "description": "Offset for projections that use decimal offset pagination.",
+          "kind": "integer",
+          "name": "offset",
+          "required_initial": false
+        },
+        {
           "description": "Public origin filter.",
           "kind": "string",
           "name": "origin",
