@@ -8,13 +8,15 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.evidence_families import (
+    USAGE_LANE_CATALOG_COST_FAMILY,
+    USAGE_LANE_EXACT_TOKENS_FAMILY,
+)
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.usage import (
-    USAGE_LANE_CATALOG_COST_FAMILY,
-    USAGE_LANE_EXACT_TOKENS_FAMILY,
     origin_usage_report_from_connection,
     provider_usage_coverage_matrix,
 )

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Final
 
-from polylogue.archive.query.source_freshness import SOURCE_CURSOR_BYTE_LAG_FAMILY
 from polylogue.core.evidence_value import (
     EvidenceAxis,
     FactFamilySpec,
@@ -18,12 +17,205 @@ from polylogue.core.evidence_value import (
     ValueState,
 )
 from polylogue.core.refs import ObjectRef
-from polylogue.daemon.status_snapshot import STATUS_SNAPSHOT_STATE_FAMILY
-from polylogue.storage.usage import (
-    SESSION_USAGE_RECONCILED_COST_FAMILY,
-    SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
-    USAGE_LANE_CATALOG_COST_FAMILY,
-    USAGE_LANE_EXACT_TOKENS_FAMILY,
+
+_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="source-cursor-byte-lag:v1",
+)
+SOURCE_CURSOR_BYTE_LAG_FAMILY: Final = FactFamilySpec(
+    family="archive.source_cursor_byte_lag",
+    owner="polylogue.archive.query.source_freshness",
+    source_adapter="project_named_source_freshness",
+    public_field="byte_lag",
+    renderer_label="cursor byte lag",
+    value_schema="integer",
+    unit="bytes",
+    grain="source_path",
+    denominator="declared exact source paths",
+    definition_ref=_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown", "unavailable"}),
+    allowed_authorities=frozenset({"structural"}),
+    authority_precedence=("structural",),
+    requires_last_good_when_degraded=True,
+)
+
+
+_STATUS_SNAPSHOT_STATE_DEFINITION_REF = ObjectRef(
+    kind="insight",
+    object_id="daemon-status-snapshot-state:v1",
+)
+STATUS_SNAPSHOT_STATE_FAMILY = FactFamilySpec(
+    family="daemon.status_snapshot_state",
+    owner="polylogue.daemon.status_snapshot",
+    source_adapter="StatusSnapshot.with_metadata",
+    public_field="status_snapshot.state_evidence",
+    renderer_label="status snapshot state",
+    value_schema="string",
+    unit="state",
+    grain="status_snapshot",
+    denominator="one cached daemon status snapshot",
+    definition_ref=_STATUS_SNAPSHOT_STATE_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known"}),
+    allowed_authorities=frozenset({"structural"}),
+    authority_precedence=("structural",),
+    requires_last_good_when_degraded=True,
+)
+
+
+_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-exact-total-tokens:v1",
+)
+USAGE_LANE_EXACT_TOKENS_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_exact_total_tokens",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].exact_total_tokens_evidence",
+    renderer_label="exact total tokens",
+    value_schema="integer",
+    unit="tokens",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "model-derived", "structural"}),
+    authority_precedence=("provider-reported", "structural", "model-derived"),
+)
+
+_USAGE_LANE_CATALOG_COST_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="usage-lane-catalog-api-equivalent-cost:v1",
+)
+USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
+    family="usage.pricing_lane_catalog_api_equivalent_cost",
+    owner="polylogue.storage.usage",
+    source_adapter="_pricing_lane_reports",
+    public_field="pricing_lanes[].catalog_api_equivalent_evidence",
+    renderer_label="catalog API-equivalent cost",
+    value_schema="number",
+    unit="USD",
+    grain="pricing_lane",
+    denominator="session_model_usage rows in the declared lane",
+    definition_ref=_USAGE_LANE_CATALOG_COST_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"catalog-derived"}),
+    authority_precedence=("catalog-derived",),
+)
+
+
+_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="session-usage-reconciled-total-tokens:v1",
+)
+SESSION_USAGE_RECONCILED_TOKENS_FAMILY: Final = FactFamilySpec(
+    family="usage.session_reconciled_total_tokens",
+    owner="polylogue.storage.usage",
+    source_adapter="build_session_usage_reconciliation",
+    public_field="session_usage_reconciliation.reconciled_tokens_evidence",
+    renderer_label="reconciled session total tokens",
+    value_schema="integer",
+    unit="tokens",
+    grain="session",
+    denominator="canonical per-session token sources (session_model_usage rollup, session_profiles estimate)",
+    definition_ref=_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "structural", "model-derived"}),
+    authority_precedence=("provider-reported", "structural", "model-derived"),
+)
+
+_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF: Final = ObjectRef(
+    kind="insight",
+    object_id="session-usage-reconciled-catalog-cost:v1",
+)
+SESSION_USAGE_RECONCILED_COST_FAMILY: Final = FactFamilySpec(
+    family="usage.session_reconciled_catalog_cost",
+    owner="polylogue.storage.usage",
+    source_adapter="build_session_usage_reconciliation",
+    public_field="session_usage_reconciliation.reconciled_cost_evidence",
+    renderer_label="reconciled session catalog-equivalent cost",
+    value_schema="number",
+    unit="USD",
+    grain="session",
+    denominator=(
+        "canonical per-session cost sources (fresh catalog price of the reconciled tokens, "
+        "legacy session_profiles/cost-insight total)"
+    ),
+    definition_ref=_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF,
+    required_axes=frozenset(
+        {
+            "value_state",
+            "measurement_authority",
+            "evidence_refs",
+            "definition_ref",
+            "temporal",
+            "enumeration",
+            "coverage",
+            "freshness",
+        }
+    ),
+    allowed_states=frozenset({"known", "unknown"}),
+    allowed_authorities=frozenset({"provider-reported", "catalog-derived", "model-derived"}),
+    authority_precedence=("provider-reported", "catalog-derived", "model-derived"),
 )
 
 _COMMON_AXES: Final[frozenset[EvidenceAxis]] = frozenset(
@@ -201,6 +393,12 @@ def fact_family_schema() -> tuple[dict[str, object], ...]:
 
 __all__ = [
     "FACT_FAMILY_BY_NAME",
+    "SESSION_USAGE_RECONCILED_COST_FAMILY",
+    "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",
+    "SOURCE_CURSOR_BYTE_LAG_FAMILY",
+    "STATUS_SNAPSHOT_STATE_FAMILY",
+    "USAGE_LANE_CATALOG_COST_FAMILY",
+    "USAGE_LANE_EXACT_TOKENS_FAMILY",
     "FACT_FAMILY_DECLARATIONS",
     "fact_family_declarations",
     "fact_family_schema",

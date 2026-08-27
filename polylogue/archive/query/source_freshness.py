@@ -28,10 +28,10 @@ from typing import Any, Final, Literal, cast
 from urllib.parse import quote
 
 from polylogue.core.dates import utc_now
+from polylogue.core.evidence_families import SOURCE_CURSOR_BYTE_LAG_FAMILY
 from polylogue.core.evidence_value import (
     CoverageExclusion,
     EvidenceValue,
-    FactFamilySpec,
     FrameCoverage,
     FreshnessProvenance,
     TemporalProvenance,
@@ -42,39 +42,6 @@ from polylogue.core.refs import ObjectRef
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
 _REPLAY_PREVENTION_OWNER: Final = "polylogue-yla8"
-
-_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF: Final = ObjectRef(
-    kind="insight",
-    object_id="source-cursor-byte-lag:v1",
-)
-SOURCE_CURSOR_BYTE_LAG_FAMILY: Final = FactFamilySpec(
-    family="archive.source_cursor_byte_lag",
-    owner="polylogue.archive.query.source_freshness",
-    source_adapter="project_named_source_freshness",
-    public_field="byte_lag",
-    renderer_label="cursor byte lag",
-    value_schema="integer",
-    unit="bytes",
-    grain="source_path",
-    denominator="declared exact source paths",
-    definition_ref=_SOURCE_CURSOR_BYTE_LAG_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known", "unknown", "unavailable"}),
-    allowed_authorities=frozenset({"structural"}),
-    authority_precedence=("structural",),
-    requires_last_good_when_degraded=True,
-)
 
 
 class NamedSourceStage(str, Enum):
