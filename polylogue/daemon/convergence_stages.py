@@ -430,6 +430,60 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+# ── Stage: delegation work-evidence projection ───────────────────
+
+
+def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
+    """Project the canonical delegation view into the shared work graph."""
+
+    def archive_root() -> Path:
+        active_index = _active_archive_index_path(db_path)
+        return (active_index or db_path).parent
+
+    def check(path: Path) -> bool:
+        del path
+        try:
+            from polylogue.insights.delegation_work_evidence_materializer import (
+                delegation_work_evidence_materialization_needed,
+            )
+
+            return delegation_work_evidence_materialization_needed(archive_root())
+        except FileNotFoundError:
+            return False
+        except Exception:
+            logger.warning("delegation work-evidence freshness probe failed", exc_info=True)
+            return True
+
+    def execute(path: Path) -> StageExecuteReturn:
+        del path
+        try:
+            from polylogue.insights.delegation_work_evidence_materializer import (
+                materialize_delegation_work_evidence_archive,
+            )
+
+            count = materialize_delegation_work_evidence_archive(archive_root())
+            logger.info("delegation work-evidence: materialized rows=%d", count)
+            return True
+        except Exception:
+            logger.warning("delegation work-evidence materialization failed", exc_info=True)
+            return False
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        return set(paths) if paths and check(next(iter(paths))) else set()
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        return True if not paths else execute(paths[0])
+
+    return ConvergenceStage(
+        name="delegation_work_evidence",
+        description="Project canonical delegation evidence into the generic work graph",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+    )
+
+
 # ── Stage: insights ────────────────────────────────────────────────
 
 
@@ -1057,6 +1111,7 @@ def make_default_convergence_stages(
             make_fts_stage(db_path),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
+            make_delegation_work_evidence_stage(db_path),
             make_insights_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
@@ -2327,6 +2382,7 @@ def _archive_insights_execute_ids(
 
 __all__ = [
     "make_claude_workflow_stage",
+    "make_delegation_work_evidence_stage",
     "make_default_convergence_stages",
     "make_embed_stage",
     "make_fts_stage",
