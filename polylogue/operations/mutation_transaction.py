@@ -395,6 +395,11 @@ def build_typed_plan(
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
+    if len(targets) > MAX_MUTATION_PLAN_TARGETS:
+        raise ValueError(
+            f"{operation!r} plan has {len(targets)} target(s), exceeding the "
+            f"{MAX_MUTATION_PLAN_TARGETS}-target recovery-adjudication budget"
+        )
     target_digest = compute_target_digest(targets)
     plan_hash = compute_typed_plan_hash(
         operation=operation,
@@ -580,6 +585,8 @@ class RecoveryDisposition:
             raise ValueError("unknown recovery must block an operator")
         if self.kind == "confirmed-partial" and self.action not in {"retry-exact", "rollback", "forward"}:
             raise ValueError("partial recovery requires a declared continuation action")
+        if self.kind == "confirmed-partial" and not self.target_dispositions:
+            raise ValueError("partial recovery requires target outcomes")
         if self.kind in {"confirmed-not-applied", "confirmed-applied"} and self.action == "operator-blocking":
             raise ValueError("confirmed recovery cannot use an operator-blocking action")
         if self.kind == "confirmed-applied" and any(item.state != "applied" for item in self.target_dispositions):

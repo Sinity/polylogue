@@ -283,21 +283,18 @@ def _literal_container_roots(modules: Iterable[ast.Module], module_names: Sequen
     roots: set[str] = set()
     for tree, module_name in zip(modules, module_names, strict=True):
         bindings = _imports_from_nodes(tree.body, module_name)
-        local = {
-            node.name: f"{module_name}.{node.name}"
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
         # Declarations may be assembled in a function and returned as a
-        # literal rather than stored in a module-level assignment. Walk those
-        # containers too: the dispatch call still holds a direct production
-        # reference even though the binding is not global.
-        values = [
-            node.value
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and node.value is not None
-        ]
-        values.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Return) and node.value is not None)
+        # literal rather than stored in a module-level assignment, so returns
+        # count as well as assignments: the dispatch call still holds a direct
+        # production reference even though the binding is not global. One
+        # traversal collects the definitions and both kinds of value.
+        local: dict[str, str] = {}
+        values: list[ast.expr] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                local[node.name] = f"{module_name}.{node.name}"
+            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.Return)) and node.value is not None:
+                values.append(node.value)
         for value in values:
             for element in _walk_literal_references(value):
                 resolved = local.get(element) or bindings.get(element)
@@ -413,13 +410,18 @@ def module_import_edges(
     """
     runtime: set[str] = set()
     type_only: set[str] = set()
-    guarded: set[int] = set()
-    for node in ast.walk(tree):
+    # One traversal carrying the guard state, rather than a pass to collect
+    # every node under a TYPE_CHECKING block and a second pass to classify.
+    # The old shape walked each guard's subtree again for every guard, and this
+    # check walks 22.5 million nodes across the corpus.
+    stack: list[tuple[ast.AST, bool]] = [(tree, False)]
+    while stack:
+        node, in_guard = stack.pop()
         if isinstance(node, ast.If) and _is_type_checking_guard(node):
-            for child in ast.walk(node):
-                guarded.add(id(child))
-    for node in ast.walk(tree):
-        target = type_only if id(node) in guarded else runtime
+            in_guard = True
+        for child in ast.iter_child_nodes(node):
+            stack.append((child, in_guard))
+        target = type_only if in_guard else runtime
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith(PRODUCTION_PACKAGE):

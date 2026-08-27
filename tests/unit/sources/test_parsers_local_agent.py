@@ -1051,20 +1051,17 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     assert classification.parse_as_session is False
     assert classification.kind is ArtifactKind.AGENT_SIDECAR_META
 
-    # ``parse_brain_metadata`` remains a parser-level compatibility helper,
-    # but source acquisition never promotes this sidecar to a session.
-    [session] = parse_payload(
-        Provider.ANTIGRAVITY,
-        payload,
-        "fallback",
-        source_path=str(metadata),
+    # The generic payload dispatcher has no session route for sidecars. The
+    # live and batch routes retain them as typed artifacts instead.
+    assert (
+        parse_payload(
+            Provider.ANTIGRAVITY,
+            payload,
+            "fallback",
+            source_path=str(metadata),
+        )
+        == []
     )
-
-    assert session.source_name is Provider.ANTIGRAVITY
-    assert session.provider_session_id == "03c22aa3-8b7f-438d-baa8-d12567249cd9:implementation_plan.md"
-    assert session.updated_at == "2026-01-07T19:08:15.216541610Z"
-    assert session.messages[0].text == "# Implementation Plan\n\nDo the work.\n"
-    assert session.source_name is Provider.ANTIGRAVITY
 
 
 def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
@@ -1127,9 +1124,9 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
         source_name="antigravity",
     )
 
-    assert admission.succeeded == [conversation_path]
+    assert admission.succeeded == [metadata_path, conversation_path]
     assert admission.failed == []
-    assert str(metadata_path) in processor._cursor.list_excluded()
+    assert str(metadata_path) not in processor._cursor.list_excluded()
     assert str(conversation_path) not in processor._cursor.list_excluded()
 
 
@@ -1199,12 +1196,19 @@ def test_antigravity_source_walk_prefers_language_server_exports(
         antigravity.AntigravitySessionSummary(cascade_id="cascade-1", title="Session"),
     )
 
-    def fake_exports(root: Path, *, only_cascade_ids: frozenset[str] | None = None) -> list[ParsedSession]:
+    (tmp_path / "conversations" / "cascade-1.pb").write_bytes(b"opaque protobuf")
+
+    def fake_exports(
+        root: Path, *, only_cascade_ids: frozenset[str] | None = None
+    ) -> list[antigravity.AntigravityExportOutcome]:
         assert root == tmp_path
         del only_cascade_ids
-        return [exported]
+        return [antigravity.AntigravityExportOutcome(tmp_path / "conversations/cascade-1.pb", "cascade-1", exported)]
 
-    monkeypatch.setattr("polylogue.sources.source_parsing.antigravity.iter_language_server_exports", fake_exports)
+    monkeypatch.setattr(
+        "polylogue.sources.source_parsing.antigravity.iter_language_server_export_results",
+        fake_exports,
+    )
 
     sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
 
