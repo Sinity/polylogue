@@ -5507,8 +5507,17 @@ def _price_provider_usage_tokens(
 
     normalized = _normalize_model(model_name)
     billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-    if normalized not in PRICING or billable <= 0:
+    pricing = PRICING.get(normalized)
+    if pricing is None or billable <= 0:
         return None, None
+    # A zero cache rate is also the catalog's sentinel for an omitted rate.
+    # Do not persist a complete-looking cost for a paid model while silently
+    # assigning its cached lanes a zero price.
+    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
+        if cache_read_tokens and pricing.cache_read_usd_per_1m == 0.0:
+            return None, None
+        if cache_write_tokens and pricing.cache_write_usd_per_1m == 0.0:
+            return None, None
     cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
     return "priced", cost_usd
 
