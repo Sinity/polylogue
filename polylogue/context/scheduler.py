@@ -36,6 +36,11 @@ class ContextItem:
     expires_at_ms: int | None = None
     target_session: str | None = None
     policy_refs: tuple[str, ...] = ()
+    kind: str | None = None
+    author_kind: str | None = None
+    author_ref: str | None = None
+    status: str | None = None
+    revoked: bool = False
     degrade: Callable[[ContextItem], ContextItem | None] | None = field(default=None, compare=False, repr=False)
     authority_reason: str = ""
 
@@ -143,13 +148,22 @@ def _item_dict(item: ContextItem) -> dict[str, object]:
         "expires_at_ms": item.expires_at_ms,
         "target_session": item.target_session,
         "policy_refs": list(item.policy_refs),
+        "kind": item.kind,
+        "author_kind": item.author_kind,
+        "author_ref": item.author_ref,
+        "status": item.status,
+        "revoked": item.revoked,
     }
 
 
 def _policy_is_authorized(item: ContextItem, *, target_session: str | None, now_ms: int) -> tuple[bool, str]:
     """Only an explicitly adopted, scoped policy may enter instructions."""
-    if item.material_class != "policy" or item.trust_class != "operator":
+    if item.material_class != "policy" or item.kind != "policy" or item.trust_class != "operator":
         return False, "only operator-adopted policy may instruct"
+    if item.author_kind != "user" or not item.author_ref or not item.author_ref.startswith("user:"):
+        return False, "policy author is not an operator"
+    if item.status != "active" or item.revoked:
+        return False, "policy is not active"
     if not item.policy_refs or not all(ref.startswith("policy:") for ref in item.policy_refs):
         return False, "missing or malformed policy reference"
     if item.target_session is not None and item.target_session != target_session:
@@ -220,6 +234,38 @@ def schedule_context(
                     )
                 )
                 continue
+            if item.revoked:
+                rows.append(
+                    _row(
+                        "dropped",
+                        item,
+                        rank,
+                        before,
+                        before,
+                        "revoked",
+                        "rejected",
+                        "candidate revoked",
+                        execution_context,
+                        target_session,
+                    )
+                )
+                continue
+            if item.trust_class not in {"operator", "system", "quoted"}:
+                rows.append(
+                    _row(
+                        "dropped",
+                        item,
+                        rank,
+                        before,
+                        before,
+                        "malformed",
+                        "rejected",
+                        "unknown trust class",
+                        execution_context,
+                        target_session,
+                    )
+                )
+                continue
             authority_ok, authority_reason = _policy_is_authorized(item, target_session=target_session, now_ms=now)
             if item.material_class == "policy" and not authority_ok:
                 rows.append(
@@ -285,7 +331,17 @@ def schedule_context(
                     target_session,
                 )
             )
-    payload = json.dumps([row.as_dict() for row in rows], sort_keys=True, separators=(",", ":"))
+    payload = json.dumps(
+        {
+            "budget": token_budget,
+            "execution_context": execution_context.context_id,
+            "items": [_item_dict(item) for item in (*included_evidence, *included_policy)],
+            "ledger": [row.as_dict() for row in rows],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     build_ref = "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
     return ContextAssembly(
         tuple(included_evidence),
