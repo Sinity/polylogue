@@ -37,6 +37,7 @@ from polylogue.core.sources import origin_from_provider, origin_provider_fiber, 
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -7415,6 +7416,7 @@ def run_safe_repairs(
     targets: tuple[str, ...] = (),
     session_insight_progress_callback: ProgressCallback | None = None,
     session_insight_progress_total: int | None = None,
+    session_ids: tuple[str, ...] | None = None,
 ) -> list[RepairResult]:
     preview_counts = preview_counts or {}
     selected = set(targets) if targets else set(SAFE_REPAIR_TARGETS)
@@ -7435,6 +7437,7 @@ def run_safe_repairs(
                     dry_run=dry_run,
                     progress_callback=session_insight_progress_callback,
                     progress_total=session_insight_progress_total,
+                    session_ids=session_ids,
                 )
             )
             continue
@@ -7472,6 +7475,7 @@ def run_selected_maintenance(
     targets: tuple[str, ...] = (),
     session_insight_progress_callback: ProgressCallback | None = None,
     session_insight_progress_total: int | None = None,
+    scope_filter: MaintenanceScopeFilter | None = None,
 ) -> list[RepairResult]:
     blockers = offline_maintenance_blockers(
         config,
@@ -7494,6 +7498,7 @@ def run_selected_maintenance(
                 targets=repair_targets,
                 session_insight_progress_callback=session_insight_progress_callback,
                 session_insight_progress_total=session_insight_progress_total,
+                session_ids=None if scope_filter is None else scope_filter.session_ids,
             )
         )
     if cleanup:

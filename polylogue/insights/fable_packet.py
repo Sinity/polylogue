@@ -15,7 +15,7 @@ from hashlib import sha256
 from typing import Literal
 
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryFieldRef
-from polylogue.core.refs import delegation_edge_object_id
+from polylogue.core.refs import ObjectRef, delegation_edge_object_id
 from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveDelegationQueryRow, ArchiveStore
 
@@ -73,10 +73,14 @@ class FableDelegationPacket:
     annotation_batches: tuple[str, ...]
     distributions: tuple[DescriptiveDistribution, ...]
     disagreement_count: int
+    adjudication_counts: tuple[tuple[str, int], ...]
     specimen_refs: tuple[str, ...]
     counterexample_refs: tuple[str, ...]
     limits: tuple[str, ...]
     not_supported_reasons: tuple[str, ...] = ()
+    manifest: CohortManifest | None = None
+    label_evidence_refs: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    aggregate_evidence_refs: tuple[str, ...] = ()
 
 
 def _unsupported(
@@ -96,10 +100,12 @@ def _unsupported(
         annotation_batches=(),
         distributions=(),
         disagreement_count=0,
+        adjudication_counts=(),
         specimen_refs=(),
         counterexample_refs=(),
         limits=("private_descriptive_only",),
         not_supported_reasons=tuple(sorted(set(reasons))),
+        manifest=manifest,
     )
 
 
@@ -109,6 +115,8 @@ def compile_private_fable_packet(
     rows: Sequence[DelegationPacketRow],
     annotation_schema_id: str | None,
     labels: Sequence[DelegationPacketLabel],
+    resolved_evidence_refs: frozenset[str] | None = None,
+    adjudication_counts: tuple[tuple[str, int], ...] = (),
 ) -> FableDelegationPacket:
     """Compile a private descriptive packet or fail closed with named gaps.
 
@@ -141,6 +149,10 @@ def compile_private_fable_packet(
             reasons.append("accepted_label_outside_deterministic_sample")
         if not label.evidence_refs:
             reasons.append("accepted_label_missing_evidence")
+        if resolved_evidence_refs is not None:
+            unresolved = sorted(set(label.evidence_refs) - resolved_evidence_refs)
+            if unresolved:
+                reasons.append("accepted_label_evidence_not_resolved")
     if reasons:
         return _unsupported(manifest, rows, reasons)
 
@@ -151,6 +163,7 @@ def compile_private_fable_packet(
     disagreement_count = 0
     specimen_refs: set[str] = set()
     counterexample_refs: set[str] = set()
+    label_evidence_refs: list[tuple[str, tuple[str, ...]]] = []
     for field, field_labels in sorted(labels_by_field.items()):
         counterexample_refs.update(label.delegation_ref for label in field_labels if label.applicable is False)
         applicable = [label for label in field_labels if label.applicable is not False]
@@ -171,6 +184,7 @@ def compile_private_fable_packet(
             )
         labels_by_ref: dict[str, set[str]] = defaultdict(set)
         for label in applicable:
+            label_evidence_refs.append((f"{label.delegation_ref}:{field}", tuple(sorted(label.evidence_refs))))
             if label.value is not None:
                 labels_by_ref[label.delegation_ref].add(label.value)
                 specimen_refs.add(label.delegation_ref)
@@ -188,6 +202,7 @@ def compile_private_fable_packet(
         annotation_batches=tuple(sorted({label.batch_id for label in accepted})),
         distributions=tuple(distributions),
         disagreement_count=disagreement_count,
+        adjudication_counts=adjudication_counts,
         specimen_refs=tuple(sorted(specimen_refs)),
         counterexample_refs=tuple(sorted(counterexample_refs)),
         limits=(
@@ -195,6 +210,9 @@ def compile_private_fable_packet(
             "no_comparative_authoritarianism_success_utility_or_routing_quality_claims",
             "edge_only_and_unresolved_rows_excluded_from_rhetoric_denominators",
         ),
+        manifest=manifest,
+        label_evidence_refs=tuple(sorted(label_evidence_refs)),
+        aggregate_evidence_refs=tuple(sorted(specimen_refs)),
     )
 
 
@@ -223,7 +241,10 @@ def regenerate_private_fable_packet(
     active labels flows into the compiler's explicit ``not_supported`` result.
     """
 
-    all_rows = archive.query_delegations(QueryBoolPredicate("and", ()), limit=100_000)
+    max_population = 100_000
+    all_rows = archive.query_delegations(QueryBoolPredicate("and", ()), limit=max_population + 1)
+    population_truncated = len(all_rows) > max_population
+    all_rows = all_rows[:max_population]
     packet_rows = tuple(
         DelegationPacketRow(
             delegation_ref=_delegation_ref(row),
@@ -259,10 +280,7 @@ def regenerate_private_fable_packet(
             for row in all_rows
         ),
     )
-    try:
-        schema = archive.get_annotation_schema(schema_id, schema_version)
-    except KeyError:
-        schema = None
+    schema = archive.get_annotation_schema(schema_id, schema_version)
     assertions = archive.query_assertions(
         QueryFieldPredicate(
             field="kind",
@@ -272,12 +290,21 @@ def regenerate_private_fable_packet(
         limit=100_000,
     )
     labels: list[DelegationPacketLabel] = []
+    referenced_batch_ids: set[str] = set()
+    evidence_refs: set[str] = set()
+    adjudication_counts: Counter[str] = Counter()
     qualified_schema_id = f"{schema_id}@v{schema_version}"
     for assertion in assertions:
         value = assertion.value
-        if assertion.status != "active" or not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
+        if not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
+            continue
+        status = getattr(assertion.status, "value", assertion.status)
+        adjudication_counts[str(status)] += 1
+        if status != "active":
             continue
         batch_id = assertion.scope_ref.removeprefix("annotation-batch:") if assertion.scope_ref else "unbatched"
+        referenced_batch_ids.add(batch_id)
+        evidence_refs.update(assertion.evidence_refs)
         applicable_value = value.get("applicable")
         confidence_value = value.get("confidence")
         for field, field_value in value.items():
@@ -295,12 +322,88 @@ def regenerate_private_fable_packet(
                     evidence_refs=assertion.evidence_refs,
                 )
             )
+    reasons: list[str] = []
+    if population_truncated:
+        reasons.append("population_scan_truncated")
+    for batch_id in sorted(referenced_batch_ids):
+        batch = None if batch_id == "unbatched" else archive.get_annotation_batch(batch_id)
+        if batch is None:
+            reasons.append("annotation_batch_metadata_missing")
+        elif (
+            batch.schema_id != schema_id
+            or batch.schema_version != schema_version
+            or batch.target_ref not in {label.delegation_ref for label in labels if label.batch_id == batch_id}
+        ):
+            reasons.append("annotation_batch_metadata_mismatch")
+    if reasons:
+        return _unsupported(manifest, packet_rows, reasons)
+
+    resolved_evidence = frozenset(ref for ref in evidence_refs if _evidence_ref_resolves(archive, ref))
     return compile_private_fable_packet(
         manifest=manifest,
         rows=packet_rows,
         annotation_schema_id=schema.schema.qualified_id if schema is not None else None,
         labels=labels,
+        resolved_evidence_refs=resolved_evidence,
+        adjudication_counts=tuple(sorted(adjudication_counts.items())),
     )
+
+
+def _evidence_ref_resolves(archive: ArchiveStore, ref: str) -> bool:
+    """Resolve a bounded label citation against canonical index evidence."""
+    try:
+        parsed = ObjectRef.parse(ref)
+    except ValueError:
+        # EvidenceRef is the compact session::message::position form.
+        try:
+            parts = ref.split("::")
+            if len(parts) == 1:
+                return (
+                    archive._conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", parts).fetchone() is not None
+                )
+            if len(parts) == 2:
+                return (
+                    archive._conn.execute(
+                        "SELECT 1 FROM messages WHERE message_id = ? AND session_id = ?", (parts[1], parts[0])
+                    ).fetchone()
+                    is not None
+                )
+            if len(parts) == 3:
+                return (
+                    archive._conn.execute(
+                        "SELECT 1 FROM blocks WHERE message_id = ? AND position = ?", (parts[1], int(parts[2]))
+                    ).fetchone()
+                    is not None
+                )
+        except (ValueError, TypeError):
+            return False
+        return False
+    if parsed.kind == "session":
+        return (
+            archive._conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parsed.object_id,)).fetchone()
+            is not None
+        )
+    if parsed.kind == "message":
+        return (
+            archive._conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (parsed.object_id,)).fetchone()
+            is not None
+        )
+    if parsed.kind == "block":
+        if parsed.qualifiers:
+            try:
+                position = int(parsed.qualifiers[0])
+            except ValueError:
+                return False
+            return (
+                archive._conn.execute(
+                    "SELECT 1 FROM blocks WHERE message_id = ? AND position = ?", (parsed.object_id, position)
+                ).fetchone()
+                is not None
+            )
+        return (
+            archive._conn.execute("SELECT 1 FROM blocks WHERE block_id = ?", (parsed.object_id,)).fetchone() is not None
+        )
+    return False
 
 
 __all__ = [

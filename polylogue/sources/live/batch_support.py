@@ -26,7 +26,7 @@ from polylogue.archive.raw_payload.decode import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
-from polylogue.pipeline.services.ingest_batch._core import _select_ingest_worker_count
+from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
@@ -474,7 +474,7 @@ def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
 
 def _full_ingest_worker_count(records: list[RawSessionRecord]) -> int:
     """Return the worker count for daemon live full-ingest batches."""
-    return _select_ingest_worker_count(records, _live_full_ingest_worker_limit())
+    return select_ingest_worker_count(records, _live_full_ingest_worker_limit())
 
 
 def _live_full_ingest_worker_limit() -> int:

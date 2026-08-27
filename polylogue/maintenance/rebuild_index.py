@@ -2096,6 +2096,12 @@ async def _rebuild_index_from_source_owned(
                     raise RuntimeError(
                         f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
                     )
+                # The generation-local membership is the resume authority. It
+                # is advanced only after replay has durably committed its
+                # corresponding candidate output. A crash before this update
+                # safely replays the same bounded page; a crash after it
+                # cannot make a later source arrival eligible.
+                generation_store.commit_candidate_membership(generation, selected_raw_ids)
                 assert page is not None
                 last_raw_id, last_blob_hash_hex, _blob_size = page.rows[-1]
                 elapsed_ms = int(time.time() * 1000) - pass_started_at_ms
@@ -2664,6 +2670,7 @@ def rebuild_status(
 
     transaction_payload: dict[str, object] | None = None
     delta: dict[str, object] | None = None
+    membership: dict[str, int] | None = None
     transaction = None
     if resolved_operation_id is not None:
         try:
@@ -2674,6 +2681,10 @@ def rebuild_status(
             transaction = None
         if transaction is not None:
             transaction_payload = cast(dict[str, object], asdict(transaction))
+            try:
+                membership = store.candidate_membership_status(store.load(transaction.generation_id))
+            except (OSError, RuntimeError, sqlite3.Error):
+                membership = None
             current_snapshot = (
                 rebuild_source_evidence_snapshot(archive_root) if (archive_root / "source.db").exists() else None
             )
@@ -2711,6 +2722,7 @@ def rebuild_status(
         "schema_version": schema_version,
         "operation_id": resolved_operation_id,
         "transaction": transaction_payload,
+        "membership": membership,
         "operation": _operation_evidence(
             archive_root,
             generation=None,

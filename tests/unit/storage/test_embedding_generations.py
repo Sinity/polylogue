@@ -48,6 +48,33 @@ def test_three_replacements_retain_active_and_one_predecessor(tmp_path: Path) ->
     assert receipt.reclaimed_generation_ids
 
 
+def test_reclamation_resume_removes_only_planned_renamed_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = EmbeddingGenerationStore(tmp_path)
+    for number in range(2):
+        candidate = tmp_path / f"candidate-{number}.db"
+        _sqlite(candidate, str(number))
+        store.replace(candidate, owner_id=f"owner-{number}")
+
+    original_rmtree = __import__("shutil").rmtree
+
+    def fail_once(path: Path, *args: object, **kwargs: object) -> None:
+        monkeypatch.setattr("shutil.rmtree", original_rmtree)
+        raise OSError("simulated crash after rename-to-trash")
+
+    monkeypatch.setattr("polylogue.storage.embeddings.generations.shutil.rmtree", fail_once)
+    candidate = tmp_path / "candidate-2.db"
+    _sqlite(candidate, "2")
+    with pytest.raises(OSError, match="simulated crash"):
+        store.replace(candidate, owner_id="owner-2")
+    retired = list((tmp_path / ".embeddings-generations").glob("retired-gen-*"))
+    assert len(retired) == 1
+
+    ensure_embedding_lifecycle(tmp_path)
+    assert not list((tmp_path / ".embeddings-generations").glob("retired-gen-*"))
+
+
 def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path: Path) -> None:
     _sqlite(tmp_path / "embeddings.db", "legacy")
     candidate = tmp_path / "candidate.db"
@@ -58,6 +85,18 @@ def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path
         for path in (tmp_path / ".embeddings-generations").glob("gen-*/generation.json")
     }
     assert states == {EmbeddingGenerationState.ACTIVE.value, EmbeddingGenerationState.RETAINED.value}
+
+
+def test_generation_admission_does_not_require_legacy_message_refs(tmp_path: Path) -> None:
+    """The generation contract is valid without the retired ref ledger."""
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "without-refs")
+    with sqlite3.connect(candidate) as conn:
+        conn.execute("DROP INDEX idx_message_embedding_refs_hash")
+        conn.execute("DROP INDEX idx_message_embedding_refs_session")
+        conn.execute("DROP TABLE message_embedding_refs")
+
+    EmbeddingGenerationStore(tmp_path).replace(candidate)
 
 
 def test_receipt_is_durable_and_legacy_chronology_fails_closed(tmp_path: Path) -> None:
@@ -72,6 +111,28 @@ def test_receipt_is_durable_and_legacy_chronology_fails_closed(tmp_path: Path) -
     receipt_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(EmbeddingGenerationError, match="malformed embedding retention receipt"):
         store.load_receipt(receipt_path.stem)
+
+
+def test_generation_metadata_must_match_published_database_contract(tmp_path: Path) -> None:
+    """A self-consistent but false metadata contract cannot authorize reuse.
+
+    Anti-vacuity: removing the database-contract comparison lets a changed
+    recipe or membership digest pass lifecycle collection even though the
+    published SQLite bytes never changed.
+    """
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "one")
+    store.replace(candidate)
+
+    metadata_path = next((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["recipe_hash"] = "f" * 64
+    payload["membership_digest"] = "e" * 64
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EmbeddingGenerationError, match="malformed embedding generation metadata"):
+        store.collect()
 
 
 def test_malformed_receipt_blocks_replacement_before_pointer_swap(tmp_path: Path) -> None:

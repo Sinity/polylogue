@@ -10,10 +10,10 @@ authority``. A live, read-only audit measured 15,737 quarantined
 membership ``revision_authority='byte_proven'`` -- a decided fact sitting
 one column away from where the rest of the archive reads authority from.
 
-This module only classifies. :mod:`polylogue.maintenance.raw_membership_writeback_apply`
-is the "act" half, following the same dry-run-by-default,
+This module only classifies; its historical one-shot "act" half is retired.
+It follows the same dry-run-by-default,
 verified-backup-required-to-apply, immutable-receipt pattern as the
-already-merged ``raw_live_source_reconciliation_apply`` (polylogue-u19l).
+already-merged live-source reconciliation actuator (polylogue-u19l).
 """
 
 from __future__ import annotations

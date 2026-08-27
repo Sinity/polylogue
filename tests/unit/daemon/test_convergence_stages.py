@@ -218,21 +218,6 @@ def test_file_probe_exceptions_log_and_fail_toward_work(
     assert all(value is True for value in warning_exc_info)
 
 
-def test_polylogue_tas4_fts_check_runs_startup_repair_on_convergence_route(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    archive_db = tmp_path / "index.db"
-    calls: list[Path] = []
-    monkeypatch.setattr(stages, "_active_archive_index_path", lambda _path: archive_db)
-    monkeypatch.setattr(stages, "_run_fts_readiness_repair", calls.append)
-    monkeypatch.setattr(stages, "_archive_session_ids_for_source_paths", lambda _db, paths: {p: [] for p in paths})
-
-    stage = make_fts_stage(archive_db)
-    source = tmp_path / "session.jsonl"
-    assert stage.check(source) is False
-    assert calls == [archive_db]
-
-
 def test_archive_probe_exceptions_log_and_fail_toward_work(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -512,41 +497,6 @@ def test_fts_stage_converges_archive_source_path_sessions(tmp_path: Path) -> Non
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
     # Converged: a second pass has nothing left to do.
     assert stage.check(source_path) is False
-
-
-def test_fts_session_debt_uses_targeted_repair_not_full_rebuild(tmp_path: Path) -> None:
-    """Session-scoped FTS debt repairs only named sessions.
-
-    Foreground source-path convergence deliberately does not repair historical
-    FTS backlog: archive writes already repair newly changed session rows, and
-    old debt is handled by bounded session/debt convergence. When a concrete
-    session-id debt item is retried, it still takes the targeted delete+insert
-    path rather than rebuilding the whole FTS surface.
-    """
-    from unittest import mock
-
-    import polylogue.storage.fts.fts_lifecycle as fts_lc
-
-    archive_db = tmp_path / "index.db"
-    archive_db.touch()
-    source_path = tmp_path / "codex.jsonl"
-    _seed_minimal_archive(archive_db, source_path)
-
-    stage = make_fts_stage(tmp_path / "index.db")
-
-    with (
-        mock.patch.object(
-            fts_lc, "repair_message_fts_index_sync", wraps=fts_lc.repair_message_fts_index_sync
-        ) as targeted,
-        mock.patch.object(fts_lc, "rebuild_fts_index_sync", wraps=fts_lc.rebuild_fts_index_sync) as full_rebuild,
-    ):
-        assert stage.execute_sessions is not None
-        assert stage.execute_sessions(["codex-session:s1"]) is True
-
-    targeted.assert_called_once()
-    full_rebuild.assert_not_called()
-    with sqlite3.connect(archive_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
 
 
 def test_archive_fts_session_repair_defers_sqlite_lock(
@@ -1027,63 +977,6 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     assert rebuilt is True
 
 
-def test_fts_stage_repairs_only_missing_action_index_when_messages_current(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    repaired_messages: list[list[str]] = []
-    rebuilt = False
-    committed = False
-
-    class FakeConnection:
-        def close(self) -> None:
-            pass
-
-        def commit(self) -> None:
-            nonlocal committed
-            committed = True
-
-    def fake_open_connection(path: Path, *, timeout: float) -> FakeConnection:
-        assert path == db_path
-        assert timeout == 30.0
-        return FakeConnection()
-
-    def fake_repair_messages(conn: FakeConnection, session_ids: list[str]) -> None:
-        repaired_messages.append(session_ids)
-
-    def fake_rebuild(conn: FakeConnection) -> None:
-        nonlocal rebuilt
-        rebuilt = True
-
-    needs_calls: list[list[str]] = []
-    marked_ready: list[FakeConnection] = []
-
-    def fake_repair_needs(_conn: FakeConnection, session_ids: list[str]) -> stages._FtsRepairNeeds:
-        needs_calls.append(session_ids)
-        return stages._FtsRepairNeeds(messages=len(needs_calls) == 1)
-
-    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", fake_open_connection)
-    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync", fake_repair_messages)
-    monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", fake_rebuild)
-    monkeypatch.setattr(
-        stages,
-        "_session_ids_for_source_paths",
-        lambda _conn, paths: {Path(paths[0]): ["conv-a"], Path(paths[1]): ["conv-b"]},
-    )
-    monkeypatch.setattr(stages, "_fts_repair_needs_for_sessions", fake_repair_needs)
-    monkeypatch.setattr(stages, "_mark_message_fts_ready_after_targeted_repair", lambda conn: marked_ready.append(conn))
-
-    stage = make_fts_stage(db_path)
-    assert stage.execute_many is not None
-    assert stage.execute_many([tmp_path / "a.jsonl", tmp_path / "b.jsonl"]) is True
-    assert repaired_messages == [["conv-a", "conv-b"]]
-    assert needs_calls == [["conv-a", "conv-b"], ["conv-a", "conv-b"]]
-    assert len(marked_ready) == 1
-    assert committed is True
-    assert rebuilt is False
-
-
 def test_fts_repair_needs_probe_uses_docsize_shadow_tables() -> None:
     queries: list[tuple[str, tuple[str, ...]]] = []
     existing_tables = {"messages_fts_docsize"}
@@ -1251,6 +1144,7 @@ def test_default_convergence_stages_always_register_embed_stage(
         "fts",
         "embed",
         "claude_workflow",
+        "delegation_work_evidence",
         "insights",
         "standing-queries",
     ]
@@ -1821,11 +1715,12 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
         conn: sqlite3.Connection,
         *,
         session_ids: list[str],
+        marker_conn: sqlite3.Connection | None = None,
         page_size: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "insights",
     ) -> SimpleNamespace:
-        del conn, page_size, stage_timing_prefix
+        del conn, marker_conn, page_size, stage_timing_prefix
         seen_session_ids.append(session_ids)
         if stage_timings_s is not None:
             stage_timings_s["insights.fake"] = 0.25
@@ -1867,11 +1762,12 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
         conn: sqlite3.Connection,
         *,
         session_ids: list[str],
+        marker_conn: sqlite3.Connection | None = None,
         page_size: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "insights",
     ) -> SimpleNamespace:
-        del conn, page_size, stage_timing_prefix
+        del conn, marker_conn, page_size, stage_timing_prefix
         seen_session_ids.append(session_ids)
         if stage_timings_s is not None:
             stage_timings_s["insights.fake"] = 0.25

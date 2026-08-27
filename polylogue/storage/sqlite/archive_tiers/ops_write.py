@@ -36,6 +36,25 @@ SCHEMA_DRIFT_SAMPLE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 SCHEMA_DRIFT_SAMPLE_ROW_CAP = 20_000
 
 
+def _record_ops_schema_state(conn: sqlite3.Connection, schema_digest: str) -> None:
+    """Record the DDL digest used to converge this disposable OPS database."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS polylogue_ops_schema_state (
+            schema_digest TEXT PRIMARY KEY
+        ) STRICT
+        """
+    )
+    conn.execute(
+        "DELETE FROM polylogue_ops_schema_state WHERE schema_digest <> ?",
+        (schema_digest,),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO polylogue_ops_schema_state(schema_digest) VALUES (?)",
+        (schema_digest,),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class OpsCompactState:
     """Compact one-row status snapshot from OPS-tier tables."""

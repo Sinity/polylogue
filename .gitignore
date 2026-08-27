@@ -116,3 +116,6 @@ _site/
 .dolt/
 *.db
 .beads-credential-key
+
+# Lane-authored publication text, read by the integrator.
+.lane/

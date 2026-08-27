@@ -48,6 +48,11 @@ def _model_usage_rows() -> tuple[ModelUsageTotals, ...]:
     )
 
 
+def _normalized_model_name(row: ModelUsageTotals) -> str:
+    assert row.model_name is not None
+    return _normalize_model(row.model_name)
+
+
 def test_exact_rollup_wins_over_stale_profile_estimate() -> None:
     """The exact session_model_usage rollup wins, not the stale estimate."""
 
@@ -146,6 +151,60 @@ def test_reconciled_cost_prefers_fresh_catalog_price_over_stale_zero() -> None:
 
     superseded = reconciliation.superseded_cost_observations()
     assert any(observation.value_state == "unknown" for observation in superseded)
+
+
+def test_multi_model_reprice_keeps_each_model_rate() -> None:
+    """A mixed session is priced as the sum of its per-model projections.
+
+    Anti-vacuity: replacing the implementation with the historical
+    ``max(output_tokens)`` model selection makes this red because the two
+    catalog models have different rates.
+    """
+
+    rows = (
+        ModelUsageTotals(
+            model_name="gpt-5.1-codex",
+            input_tokens=1_000,
+            output_tokens=100,
+        ),
+        ModelUsageTotals(
+            model_name="claude-sonnet-4-5",
+            input_tokens=2_000,
+            output_tokens=1_000,
+        ),
+    )
+    reconciliation = build_session_usage_reconciliation(
+        "codex-session:multi-model",
+        observed_at=_OBSERVED_AT,
+        model_usage_rows=rows,
+        profile_cost_usd=0.0,
+        profile_cost_provenance="unknown",
+        # The old implementation used this selected model for all tokens.
+        reconciled_model=_normalize_model("claude-sonnet-4-5"),
+    )
+
+    expected = round(
+        sum(
+            estimate_cost(
+                input_tokens=row.input_tokens,
+                output_tokens=row.output_tokens,
+                cache_read_tokens=row.cache_read_tokens,
+                cache_write_tokens=row.cache_write_tokens,
+                model=_normalized_model_name(row),
+            )
+            for row in rows
+        ),
+        6,
+    )
+    assert reconciliation.catalog_cost_evidence.value == expected
+    assert reconciliation.catalog_cost_evidence.value != round(
+        estimate_cost(
+            input_tokens=sum(row.input_tokens for row in rows),
+            output_tokens=sum(row.output_tokens for row in rows),
+            model=_normalize_model("claude-sonnet-4-5"),
+        ),
+        6,
+    )
 
 
 def test_agreeing_sources_reconcile_without_conflict() -> None:

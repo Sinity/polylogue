@@ -41,7 +41,7 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
             out_dir.mkdir(parents=True, exist_ok=True)
             _write_wheel(out_dir, entry_points=_runtime_entry_points())
         elif cmd[:2] == ("uv", "venv"):
-            venv = Path(cmd[2])
+            venv = Path(cmd[-1])
             bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
             bin_dir.mkdir(parents=True, exist_ok=True)
             for script in (*surface.RUNTIME_SCRIPTS, "python"):
@@ -64,11 +64,31 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
 
 
 def test_smoke_env_removes_source_pythonpath(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PYTHONPATH", "/repo/source")
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONBREAKPOINT",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "_PYTHON_SYSCONFIGDATA_NAME",
+        "_PYTHON_HOST_PLATFORM",
+    ):
+        monkeypatch.setenv(name, "/repo/source")
 
     env = surface._smoke_env(tmp_path / "archive")
 
-    assert "PYTHONPATH" not in env
+    assert all(
+        name not in env
+        for name in (
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "PYTHONBREAKPOINT",
+            "PYTHONUSERBASE",
+            "VIRTUAL_ENV",
+            "_PYTHON_SYSCONFIGDATA_NAME",
+            "_PYTHON_HOST_PLATFORM",
+        )
+    )
     assert env["POLYLOGUE_FORCE_PLAIN"] == "1"
 
 
