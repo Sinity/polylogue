@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+
+import pytest
+
+from polylogue.archive.semantic import pricing as pricing_module
 from polylogue.archive.semantic.pricing import estimate_cost
 from polylogue.storage.usage import UsageProjectionModel, project_provider_usage_events, rollup_usage_projections
 
@@ -67,3 +72,64 @@ def test_rollup_keeps_cost_unknown_when_one_model_is_incomplete() -> None:
     assert rollup.cost_usd is None
     assert rollup.state == "incomplete"
     assert rollup.incomplete_session_count == 1
+
+
+def test_paid_model_with_missing_cache_rate_is_not_persisted_as_priced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider rollup must not claim complete pricing for an omitted lane.
+
+    Anti-vacuity: restoring the old ``estimate_cost``-only writer path makes
+    this row ``priced`` with a zero-priced cache lane.
+    """
+    monkeypatch.setitem(
+        pricing_module.PRICING,
+        "paid-without-cache-rate",
+        pricing_module.ModelPricing(
+            source_name="test",
+            input_usd_per_1m=1.0,
+            output_usd_per_1m=2.0,
+            cache_read_usd_per_1m=0.0,
+            cache_write_usd_per_1m=0.0,
+        ),
+    )
+
+    from polylogue.storage.sqlite.archive_tiers.write import _price_provider_usage_tokens
+
+    conn = sqlite3.connect(":memory:")
+    provenance, cost = _price_provider_usage_tokens(
+        conn,
+        "paid-without-cache-rate",
+        input_tokens=100,
+        output_tokens=10,
+        cache_read_tokens=1_000,
+        cache_write_tokens=0,
+    )
+    conn.close()
+    assert provenance is None
+    assert cost is None
+
+
+def test_free_model_with_zero_cache_rate_remains_priced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero is a valid cache rate for a genuinely free catalog model."""
+    monkeypatch.setitem(
+        pricing_module.PRICING,
+        "free-with-zero-cache-rate",
+        pricing_module.ModelPricing(
+            source_name="test",
+            input_usd_per_1m=0.0,
+            output_usd_per_1m=0.0,
+        ),
+    )
+    events = [
+        {
+            "session_id": "s1",
+            "provider_event_type": "message_usage",
+            "model_name": "free-with-zero-cache-rate",
+            "last_input_tokens": 100,
+            "last_cached_input_tokens": 1_000,
+        }
+    ]
+    (projection,) = project_provider_usage_events(events, origin="test")
+    assert projection.state == "complete"
+    assert projection.cost_usd == 0.0

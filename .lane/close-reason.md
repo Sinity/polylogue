@@ -1,0 +1,2 @@
+DISPOSITION: close
+Merged lane fixes the four operator-facing cost defects: normalized rollup counts union sessions once, catalog-priced rows populate the API-equivalent lane, subscription credits are converted to USD, exact provider money no longer replaces canonical token lanes, and paid cached-token rows with missing rates are not reported as complete pricing. Regression coverage is green for the focused cost suite. Residual repository-baseline failures are recorded in the lane body.

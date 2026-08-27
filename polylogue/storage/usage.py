@@ -198,9 +198,17 @@ def project_provider_usage_events(
             reasons.append("missing_model")
         elif pricing is None:
             reasons.append("missing_model_price")
-        elif cache_read and pricing.cache_read_usd_per_1m == 0:
+        elif (
+            cache_read
+            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
+            and pricing.cache_read_usd_per_1m == 0
+        ):
             reasons.append("missing_cache_read_price")
-        elif cache_write and pricing.cache_write_usd_per_1m == 0:
+        elif (
+            cache_write
+            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
+            and pricing.cache_write_usd_per_1m == 0
+        ):
             reasons.append("missing_cache_write_price")
         else:
             cost = round(
