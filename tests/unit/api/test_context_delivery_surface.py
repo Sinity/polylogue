@@ -152,7 +152,11 @@ async def test_compile_and_record_context_refuses_assertion_read_failure(
 
     import polylogue.api.archive as archive_api
 
-    original_open = archive_api.open_readonly_connection
+    # archive_api imports this rather than exporting it, so take the same
+    # object from where it is defined and patch the name archive_api binds.
+    from polylogue.storage.sqlite.connection_profile import (
+        open_readonly_connection as original_open,
+    )
 
     def fail_user_db_read(path: Path) -> sqlite3.Connection:
         if path.name == "user.db":
