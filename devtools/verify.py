@@ -141,6 +141,18 @@ def _mypy_cmd() -> list[str]:
             return ["dmypy", "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+    try:
+        result = subprocess.run(
+            ["dmypy", "start", "--", "--no-error-summary"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=ROOT,
+        )
+        if result.returncode == 0:
+            return ["dmypy", "run", "--", "--no-error-summary"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
     return ["mypy"]
 
 
