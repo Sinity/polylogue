@@ -25,7 +25,7 @@ from polylogue.storage.blob_integrity import (
     referenced_blob_hashes,
     replace_raw_backed_blob_reference_debt_from_source,
     restore_direct_blob_reference_debt,
-    scan_attachment_acquisition_debt,
+    scan_attachment_coverage,
     scan_blob_integrity,
     scan_blob_reference_debt,
 )
@@ -384,7 +384,7 @@ def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
     )
 
 
-def test_scan_attachment_acquisition_debt_never_counts_unfetched_as_missing(
+def test_scan_attachment_coverage_never_counts_unfetched_as_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """83u.4: unfetched (blob_hash NULL) attachments are an honest floor, never debt."""
@@ -410,7 +410,7 @@ def test_scan_attachment_acquisition_debt_never_counts_unfetched_as_missing(
     )
     conn.close()
 
-    report = scan_attachment_acquisition_debt(index_db, store=store)
+    report = scan_attachment_coverage(index_db, store=store)
 
     assert report.total_attachments == 1
     assert report.unfetched_count == 1
@@ -421,7 +421,7 @@ def test_scan_attachment_acquisition_debt_never_counts_unfetched_as_missing(
     assert report.ok is True
 
 
-def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_file(
+def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An acquired attachment whose blob file vanished from the store is genuine debt."""
@@ -454,7 +454,7 @@ def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_f
 
     store.blob_path(blob_hash).unlink()
 
-    report = scan_attachment_acquisition_debt(index_db, store=store, sample_size=5)
+    report = scan_attachment_coverage(index_db, store=store, sample_size=5)
 
     assert report.total_attachments == 1
     assert report.acquired_count == 1
@@ -468,7 +468,7 @@ def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_f
     assert report.ok is False
 
 
-def test_scan_attachment_acquisition_debt_flags_acquired_row_with_no_attachment_ref(tmp_path: Path) -> None:
+def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_path: Path) -> None:
     """polylogue-w06b: an acquired attachment row with zero attachment_refs
     rows is unreachable from every session/message read path even though its
     bytes are genuinely on disk -- ``acquisition_status='acquired'`` alone
@@ -499,7 +499,7 @@ def test_scan_attachment_acquisition_debt_flags_acquired_row_with_no_attachment_
     conn.commit()
     conn.close()
 
-    report = scan_attachment_acquisition_debt(index_db, store=store, sample_size=5)
+    report = scan_attachment_coverage(index_db, store=store, sample_size=5)
 
     assert report.total_attachments == 1
     assert report.acquired_count == 1
