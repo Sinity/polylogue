@@ -57,6 +57,10 @@ class SessionViewProfile:
     def to_payload(self) -> JSONDocument:
         """Return a JSON-native representation for CLI/API/MCP surfaces."""
 
+        from polylogue.surfaces.projection_spec import projection_from_view
+
+        projection = projection_from_view(self.view_id)
+
         return {
             "view_id": self.view_id,
             "label": self.label,
@@ -71,6 +75,12 @@ class SessionViewProfile:
             "machine_payload": self.machine_payload,
             "degraded_states": list(self.degraded_states),
             "successor_handoff": self.successor_handoff,
+            "projection_contract": {
+                "families": [family.value for family in projection.projection.families],
+                "body_policy": projection.projection.body_policy.value,
+                "render_layout": projection.render.layout,
+                "timestamp_policy": projection.render.timestamps.value,
+            },
         }
 
 
