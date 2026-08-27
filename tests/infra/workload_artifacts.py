@@ -16,7 +16,6 @@ import json
 import math
 import os
 import re
-import shutil
 import sqlite3
 import stat
 import subprocess
@@ -400,27 +399,44 @@ def build_immutable_tree(
     artifacts = cache_root / "artifacts"
     locks = cache_root / ".locks"
     staging_root = cache_root / ".staging"
-    artifacts.mkdir(parents=True, exist_ok=True)
-    locks.mkdir(parents=True, exist_ok=True)
-    staging_root.mkdir(parents=True, exist_ok=True)
+    _mkdir_pinned(cache_root)
+    _mkdir_pinned(artifacts)
+    _mkdir_pinned(locks)
+    _mkdir_pinned(staging_root)
     name = hashlib.sha256(key.encode()).hexdigest()
     final_root = artifacts / name
     lock_path = locks / f"{name}.lock"
 
     def load() -> ImmutableTreeArtifact | None:
         manifest_path = final_root / "manifest.json"
-        if not manifest_path.is_file():
+        if _is_symlink_node(final_root) or _is_symlink_node(manifest_path) or not _is_regular(manifest_path):
             return None
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             if payload.get("protocol_version") != _ARTIFACT_PROTOCOL_VERSION or payload.get("key") != key:
                 return None
-            files = tuple(payload["files"])
-            for item in files:
-                path = final_root / str(item["path"])
-                if not path.is_file() or path.stat().st_size != item["size"] or _sha256(path) != item["sha256"]:
+            files = _manifest_file_entries(tuple(payload["files"]))
+            expected_paths = {path for path, _, _ in files}
+            actual_paths = {
+                str(path.relative_to(final_root))
+                for path in _pinned_paths(final_root)
+                if _is_regular(path) and not _is_reserved_root_file(path, final_root)
+            }
+            if actual_paths != expected_paths:
+                return None
+            write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+            for path in (final_root, *_pinned_paths(final_root)):
+                if _is_symlink_node(path) or _safe_stat(path).st_mode & write_bits:
                     return None
-            return ImmutableTreeArtifact(root=final_root, key=key, files=files)
+            for relative, size, digest in files:
+                path = final_root / relative
+                if not _is_regular(path) or _safe_stat(path).st_size != size or _sha256(path) != digest:
+                    return None
+            return ImmutableTreeArtifact(
+                root=final_root,
+                key=key,
+                files=tuple({"path": path, "size": size, "sha256": digest} for path, size, digest in files),
+            )
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return None
 
@@ -454,9 +470,14 @@ def build_immutable_tree(
 
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
     """Clone an immutable tree into a private writable root."""
+    if _is_symlink_node(destination):
+        raise ValueError(f"clone destination is a symlink: {destination}")
     if destination.exists():
+        if not destination.is_dir():
+            raise ValueError(f"clone destination is not a directory: {destination}")
         _remove_tree(destination)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_ancestors(destination.parent)
+    _mkdir_pinned(destination.parent)
     try:
         subprocess.run(
             ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
@@ -468,12 +489,25 @@ def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> 
         method = "reflink"
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         _remove_tree(destination)
-        shutil.copytree(artifact.root, destination)
+        _copy_tree(artifact.root, destination)
         method = "copy"
+    _assert_no_symlinks(destination)
+    source_files = _manifest_file_entries(artifact.files) if artifact.files else _archive_files(artifact.root)
+    expected = {path: (size, digest) for path, size, digest in source_files}
+    actual = {
+        str(path.relative_to(destination)): (_safe_stat(path).st_size, _sha256(path))
+        for path in _pinned_paths(destination)
+        if _is_regular(path) and not _is_reserved_root_file(path, destination)
+    }
+    if actual != expected:
+        _remove_tree(destination)
+        raise ValueError("immutable fixture clone failed authenticated file-set validation")
     for path in destination.rglob("*"):
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    (destination / "manifest.json").unlink(missing_ok=True)
+    if _safe_exists(destination / "manifest.json"):
+        _safe_unlink(destination / "manifest.json")
     return SeededArchiveClone(destination, artifact.manifest_id, method)
 
 

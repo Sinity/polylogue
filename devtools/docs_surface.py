@@ -269,6 +269,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Release Checklist", "release.md", "Cut-time packaging, installed-artifact, and publish checks.", "operations"
     ),
+    _entry(
+        "Artifact Publication Contract",
+        "artifact-publication.md",
+        "Shared filesystem contract for cache and reusable-fixture publication.",
+        "operations",
+    ),
     # Evidence and product
     _entry(
         "Demos and Proofs",
@@ -359,6 +365,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry("Project Memory", "design/project-memory.md", "Long-term memory model and product intent.", "design"),
     _entry(
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
+    ),
+    _entry(
+        "Analyze Projections",
+        "design/analyze-projections.md",
+        "Named aggregate projections and their shared query execution contract.",
+        "design",
     ),
     _entry(
         "Session Lineage Model",

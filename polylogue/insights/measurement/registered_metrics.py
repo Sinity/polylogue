@@ -24,6 +24,7 @@ composition/aggregation engine exists yet; that is 9l5.7's job) or attach a
 from __future__ import annotations
 
 from polylogue.insights.measurement.metric import MetricDefinition, MetricRegistry
+from polylogue.insights.measurement.registered_measures import DEFAULT_MEASURE_REGISTRY
 
 #: Session-level USD cost: provider-reported totals where available,
 #: catalog-priced (LiteLLM) estimates otherwise -- mirrors the mixed-basis
@@ -81,4 +82,9 @@ DEFAULT_METRIC_REGISTRY.register(SESSION_COST_USD_METRIC, name="session_cost_usd
 DEFAULT_METRIC_REGISTRY.register(PLAN_COMPLETION_RATE_METRIC, name="plan_completion_rate")
 
 
-__all__ = ["DEFAULT_METRIC_REGISTRY", "PLAN_COMPLETION_RATE_METRIC", "SESSION_COST_USD_METRIC"]
+__all__ = [
+    "DEFAULT_MEASURE_REGISTRY",
+    "DEFAULT_METRIC_REGISTRY",
+    "PLAN_COMPLETION_RATE_METRIC",
+    "SESSION_COST_USD_METRIC",
+]
