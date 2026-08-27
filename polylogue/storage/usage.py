@@ -1590,28 +1590,39 @@ def _model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[st
 def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
     """Return logical-session/model high-water usage by origin.
 
-    ``session_model_usage`` is the physical-session evidence stream.  Logical
-    accounting collapses continuation/fork/replay chains by grouping rows under
-    ``session_profiles.logical_session_id`` and taking the highest observed lane
-    value for each logical-session/model pair.  Summing those high-water rows
-    gives consumers a labeled logical view without erasing the physical rows.
+    ``session_model_usage`` is the physical-session evidence stream.  A
+    prefix-sharing child contains a tail delta, while non-lineage rows retain
+    cumulative observations.  Logical accounting therefore takes the highest
+    non-lineage observation and adds prefix-sharing deltas for each
+    logical-session/model pair.
     """
 
     rows = conn.execute(
         f"""
-        WITH logical_model AS (
+        WITH physical_model AS (
             SELECT s.origin AS origin,
                    COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                    u.model_name AS model_name,
-                   MAX(u.input_tokens) AS input_tokens,
-                   MAX(u.output_tokens) AS output_tokens,
-                   MAX(u.cache_read_tokens) AS cached_input_tokens,
-                   MAX(u.cache_write_tokens) AS cache_write_tokens
+                   u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+                   (l.src_session_id IS NOT NULL) AS is_prefix_delta
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles p ON p.session_id = u.session_id
+            LEFT JOIN session_links l
+              ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
             {_where_origin(origin, table_alias="s")}
-            GROUP BY s.origin, logical_session_id, u.model_name
+        ), logical_model AS (
+            SELECT origin, logical_session_id, model_name,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+            FROM physical_model
+            GROUP BY origin, logical_session_id, model_name
         )
         SELECT origin,
                COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -1728,18 +1739,29 @@ def _pricing_lane_reports(
     if logical:
         rows = conn.execute(
             f"""
-            WITH logical_model AS (
+            WITH physical_model AS (
                 SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
-                       MAX(u.input_tokens) AS input_tokens,
-                       MAX(u.output_tokens) AS output_tokens,
-                       MAX(u.cache_read_tokens) AS cached_input_tokens,
-                       MAX(u.cache_write_tokens) AS cache_write_tokens
+                       u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+                       (l.src_session_id IS NOT NULL) AS is_prefix_delta
                 FROM session_model_usage u
                 JOIN sessions s ON s.session_id = u.session_id
                 LEFT JOIN session_profiles p ON p.session_id = u.session_id
+                LEFT JOIN session_links l
+                  ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
                 {_where_origin(origin, table_alias="s")}
+            ), logical_model AS (
+                SELECT provenance, logical_session_id, model_name,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+                FROM physical_model
                 GROUP BY provenance, logical_session_id, model_name
             )
             SELECT provenance,
