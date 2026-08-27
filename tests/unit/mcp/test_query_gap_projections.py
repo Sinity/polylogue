@@ -325,3 +325,18 @@ class TestStatusSourcesAndEmbeddingsScopes:
             assert result["scope"] == "embeddings"
             assert "embeddings" in result
             assert "component_readiness" in result["embeddings"]
+
+    @pytest.mark.asyncio
+    async def test_status_sinex_scope_returns_durable_publication_status(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        tools = build_tools()
+        status_fn = tools["status"]
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(status_fn, scope="sinex"))
+
+        assert result.get("is_error") is not True, result
+        assert result["scope"] == "sinex"
+        assert result["sinex"]["mode"] == "off"
+        assert result["sinex"]["active_lag"] == 0

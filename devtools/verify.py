@@ -141,6 +141,18 @@ def _mypy_cmd() -> list[str]:
             return ["dmypy", "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
+    try:
+        result = subprocess.run(
+            ["dmypy", "start", "--", "--no-error-summary"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=ROOT,
+        )
+        if result.returncode == 0:
+            return ["dmypy", "run", "--", "--no-error-summary"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
     return ["mypy"]
 
 
@@ -602,6 +614,13 @@ def _finish_and_record_verification(
         run.write()
     append_verify_history(payload)
     prune_successful_verify_runs(root=ROOT)
+    if exit_code != 0:
+        try:
+            from polylogue.context.failure_seed import write_failure_seed
+
+            write_failure_seed(root=ROOT)
+        except (FileNotFoundError, ValueError, OSError):
+            pass
     return payload
 
 

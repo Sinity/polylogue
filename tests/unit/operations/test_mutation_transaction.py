@@ -25,9 +25,11 @@ from polylogue.operations.mutation_transaction import (
     MutationAuthorization,
     MutationPlan,
     MutationReceipt,
+    MutationTarget,
     OperationExecutor,
     PlanStaleError,
     build_plan,
+    build_typed_plan,
     compute_plan_hash,
     make_target_ref,
 )
@@ -138,6 +140,38 @@ def test_build_plan_refuses_over_256_targets() -> None:
         reversible=False,
     )
     assert plan.target_count == 256
+
+
+def test_build_typed_plan_refuses_over_256_targets() -> None:
+    """Typed plans cannot bypass the bounded recovery-adjudication budget."""
+
+    targets = tuple(
+        MutationTarget(
+            kind="session",
+            ref=f"session:{index}",
+            policy_key="session",
+            identity_digest=f"identity:{index}",
+            effect_identity=f"effect:{index}",
+            durability="derived",
+            recovery="none",
+        )
+        for index in range(257)
+    )
+    with pytest.raises(ValueError, match="256"):
+        build_typed_plan(
+            operation="mutate-bulk-fixture",
+            operation_version=1,
+            archive_instance_id="archive:test",
+            archive_identity_digest="identity:test",
+            targets=targets,
+            affected_tiers=("index",),
+            parameter_digest="params:test",
+            required_capabilities=("test.mutate",),
+            destructive_class="reversible",
+            required_confirmation="role_only",
+            prepared_at_ms=1,
+            expires_at_ms=2,
+        )
 
 
 def test_prepare_performs_zero_mutation() -> None:

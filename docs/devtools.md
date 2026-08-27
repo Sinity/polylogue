@@ -94,12 +94,14 @@ These are the commands worth remembering during normal repo work:
 | `devtools test` | Run focused pytest selections or inspect full-run timing outliers. |
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
+| `devtools verify atlas` | Check atlas citation anchors and verification-commit freshness. |
 | `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
 | `devtools verify consumer-reachability` | Require newly added modules, tables, and tools to have production consumers. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify definition-closure` | Evaluate representative definition-to-production closure policies as a bounded JSON matrix. |
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
+| `devtools verify falsification` | Run the bounded four-slice falsification gate after explicit rebuild-safety consent. |
 | `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
@@ -109,6 +111,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
+| `devtools verify runtime` | Verify the CPython 3.14 free-threaded runtime and required native extensions. |
+| `devtools verify runtime-census` | Census production concurrency boundaries and classify every discovered item. |
 | `devtools verify scenario` | Run a named archive verification scenario. |
 | `devtools verify schema-audit` | Run committed provider schema package quality checks. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
@@ -116,6 +120,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools verify semantic-fidelity` | Run the bounded production-route semantic contradiction and construct-flow census. |
 | `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
+| `devtools verify webui` | Run the declared typed WebUI generation, contract, unit, and build checks. |
 | `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools workspace schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools workspace schema explain` | Explain a committed package element schema with evidence and annotations. |
@@ -129,6 +134,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
+| `devtools bench concurrency` | Run the managed bounded-compute scaling profile across representative workloads. |
 | `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |

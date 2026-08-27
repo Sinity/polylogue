@@ -30,7 +30,7 @@ def test_config_show_json_output() -> None:
     data = json.loads(output.strip())
     assert isinstance(data, dict)
     assert "values" in data
-    assert "archive_root" in data["values"] or "daemon_host" in data["values"]
+    assert "archive_root" in data["values"]
 
 
 def test_config_show_toml_output() -> None:

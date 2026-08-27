@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socketserver
 import threading
+from collections import deque
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -66,6 +67,9 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self.coordination_cache_lock = threading.Lock()
         self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
         self.coordination_cache_building: set[tuple[str, int]] = set()
+        self.operation_ids_seen: set[str] = set()
+        self.operation_ids_order: deque[str] = deque(maxlen=4096)
+        self.operation_ids_lock = threading.Lock()
 
     def server_close(self) -> None:
         kernel = getattr(self, "execution_kernel", None)

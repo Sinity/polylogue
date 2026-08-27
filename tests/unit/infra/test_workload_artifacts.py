@@ -45,8 +45,10 @@ from tests.infra.workload_artifacts import (
     benchmark_corpus_specs,
     benchmark_workload_profile,
     benchmark_workload_tier,
+    build_immutable_tree,
     build_seeded_archive,
     c03_semantic_corpus_spec,
+    clone_immutable_tree,
     clone_seeded_archive,
     current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
@@ -224,6 +226,55 @@ def test_seeded_archive_rejects_symlinked_cache_ancestor(tmp_path: Path) -> None
     with pytest.raises(OSError):
         build_seeded_archive(cache_root=cache_root)
     assert not (outside / "artifacts").exists()
+
+
+def test_immutable_fixture_cache_rejects_closed_set_and_same_size_corruption(tmp_path: Path) -> None:
+    """Fixture reuse authenticates every member, not just the stable key.
+
+    Anti-vacuity: removing either the closed-set comparison or the digest
+    check makes one of the two mutations below reuse the poisoned artifact.
+    """
+    cache_root = tmp_path / "cache"
+
+    def builder(root: Path) -> None:
+        root.joinpath("payload.txt").write_text("fixture-payload", encoding="utf-8")
+
+    artifact = build_immutable_tree(cache_root=cache_root, key="hostile-fixture", builder=builder)
+    artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
+    artifact.root.joinpath("payload.txt").chmod(stat.S_IRUSR | stat.S_IWUSR)
+    artifact.root.joinpath("payload.txt").write_text("corrupt-payload", encoding="utf-8")
+    artifact.root.joinpath("unexpected.txt").write_text("unexpected", encoding="utf-8")
+
+    rebuilt = build_immutable_tree(cache_root=cache_root, key="hostile-fixture", builder=builder)
+    assert rebuilt.root.joinpath("payload.txt").read_text(encoding="utf-8") == "fixture-payload"
+    assert not rebuilt.root.joinpath("unexpected.txt").exists()
+
+
+def test_immutable_fixture_fast_and_copy_clones_have_equal_authenticated_sets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reflink and fallback publication expose identical detached bytes."""
+
+    def builder(root: Path) -> None:
+        root.joinpath("nested").mkdir()
+        root.joinpath("nested", "payload").write_bytes(b"payload")
+
+    artifact = build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="clone-equivalence",
+        builder=builder,
+    )
+    fast = clone_immutable_tree(artifact, tmp_path / "fast")
+
+    def reject_reflink(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, ["cp"])
+
+    monkeypatch.setattr(subprocess, "run", reject_reflink)
+    fallback = clone_immutable_tree(artifact, tmp_path / "fallback")
+    assert fast.clone_method in {"reflink", "copy"}
+    assert fallback.clone_method == "copy"
+    assert (fast.root / "nested" / "payload").read_bytes() == (fallback.root / "nested" / "payload").read_bytes()
+    assert not (artifact.root / "nested" / "payload").stat().st_mode & stat.S_IWUSR
 
 
 def test_seeded_archive_clone_rejects_symlink_inside_published_tree(tmp_path: Path) -> None:

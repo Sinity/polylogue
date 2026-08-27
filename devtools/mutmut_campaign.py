@@ -73,6 +73,9 @@ class CampaignResult:
     command: list[str]
     paths_to_mutate: list[str]
     tests: list[str]
+    consequence: str
+    min_kill_rate: float | None
+    budget_seconds: int | None
     counts: dict[str, int]
     dominant_survivors: list[tuple[str, int]]
     dominant_timeouts: list[tuple[str, int]]
@@ -337,6 +340,9 @@ def run_campaign(
             command=command,
             paths_to_mutate=list(campaign.paths_to_mutate),
             tests=list(campaign.tests),
+            consequence=campaign.consequence,
+            min_kill_rate=campaign.min_kill_rate,
+            budget_seconds=campaign.budget_seconds,
             counts=counts,
             dominant_survivors=survivors.most_common(10),
             dominant_timeouts=timeouts.most_common(10),

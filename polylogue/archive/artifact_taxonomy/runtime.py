@@ -146,7 +146,7 @@ def _classify_artifact_path_strong(
             parse_as_session=rule.parse_policy == "session",
             schema_eligible=rule.parse_policy == "session",
             default_priority=120 if rule.parse_policy == "session" else 80,
-            reason=f"OriginSpec Claude artifact rule: {rule.coverage_role}",
+            reason=f"OriginSpec {provider_token.value} artifact rule: {rule.coverage_role}",
         )
     # polylogue-omsw: generic/ad-hoc acquisition routes (the daemon's shared
     # "inbox" import source backing `polylogue import <path>`, and this
@@ -646,16 +646,6 @@ def _classify_dict(
             reason="Hermes NeMo Relay ATIF trajectory export (schema_version/session_id/steps)",
         )
 
-    if provider is Provider.ANTIGRAVITY and _is_antigravity_brain_metadata(payload, source_path):
-        return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.SESSION_DOCUMENT,
-            parse_as_session=True,
-            schema_eligible=True,
-            default_priority=100,
-            reason="Antigravity brain artifact metadata with sibling Markdown",
-        )
-
     if looks_like_hook_event(payload):
         return ArtifactClassification(
             provider=provider,
@@ -703,16 +693,6 @@ def _classify_dict(
         schema_eligible=False,
         default_priority=0,
         reason="unrecognized document payload",
-    )
-
-
-def _is_antigravity_brain_metadata(payload: JSONDocument, source_path: str | Path | None) -> bool:
-    normalized = normalize_source_path(source_path)
-    name = Path(normalized.rsplit(":", 1)[-1]).name.lower() if normalized else ""
-    return (
-        (not name or name.endswith((".json", ".md.metadata.json")))
-        and isinstance(payload.get("artifactType"), str)
-        and ("summary" in payload or "updatedAt" in payload)
     )
 
 

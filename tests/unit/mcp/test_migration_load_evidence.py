@@ -25,6 +25,11 @@ from typing import Any, cast
 
 import pytest
 
+# These tests exercise the incident-scale query response and cancellation
+# paths. Keep them in the isolated lane so their large transient payloads do
+# not contend with ordinary selected tests.
+pytestmark = pytest.mark.storage_scale
+
 from polylogue.archive.query.execution_control import (
     DEFAULT_CAPACITY,
     QueryAdmissionController,

@@ -155,7 +155,7 @@ class QuerySemanticPredicateAst(_AstModel):
 class QueryLineagePredicateAst(_AstModel):
     """Session-topology predicate selecting the seed's logical lineage."""
 
-    kind: Literal["lineage"] = "lineage"
+    kind: Literal["lineage", "logical"] = "lineage"
     unit: Literal["session"] = "session"
     seed_session_id: str
 
@@ -318,6 +318,7 @@ class QueryUnitPipelineResultAst(_AstModel):
     aggregate: Literal["count"] | None = None
     limit: int | None = None
     offset: int | None = None
+    fields: list[str] | None = None
 
 
 class QueryUnitPipelineAst(_AstModel):

@@ -47,6 +47,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
@@ -576,6 +577,34 @@ register(
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
+        ),
+    )
+)
+
+register(
+    InsightType(
+        name="command_shapes",
+        display_name="Command Shape Usage",
+        json_key="command_shapes",
+        item_model=CommandShapeUsage,
+        empty_message="No executed command shapes matched.",
+        query_model=CommandShapeUsageQuery,
+        operations_method_name="list_command_shape_usage",
+        cli_command_name="command-shapes",
+        cli_help="List normalized executed command shapes and last-use times.",
+        readiness_exempt=True,
+        mcp_default_limit=200,
+        cli_options=(
+            CliOption("session_id", ("--session-id",), help="Only commands from one session"),
+            CliOption("repository", ("--repository", "--repo"), help="Only commands associated with this repository"),
+        ),
+        fields=(
+            InsightField("shape", _attr("command_shape"), group=0),
+            InsightField("count", _attr("execution_count", "0"), group=0),
+            InsightField("sessions", _attr("session_count", "0"), group=0),
+            InsightField("origin", _attr("origin"), group=1),
+            InsightField("repo", _attr("repository"), group=1),
+            InsightField("last", _attr("last_used_at"), group=1),
         ),
     )
 )

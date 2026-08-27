@@ -17,8 +17,28 @@ from typing import Any
 
 ROOT_ID = "polylogue-reindex-2026"
 CAMPAIGN_ID = "reindex-2026"
-CORE = "execution_wave execution_lane lane_packet lane_order affected_paths conflict_keys write_scope verification_commands model_policy live_data_access decision_closure necessity_class judgment_class tdd_mode tdd_packet packet_intent integration_intent".split()  # noqa: SIM905
+CORE = "execution_wave execution_lane lane_packet lane_order ownership_resources verification_specs evidence_obligations live_data_access decision_stage necessity_class judgment_class tdd_mode tdd_packet packet_intent integration_intent".split()  # noqa: SIM905
 LAUNCH = "packet_execution_contract deadline_policy".split()  # noqa: SIM905
+LEGACY_METADATA_FIELDS = frozenset(
+    {
+        "affected_paths",
+        "write_scope",
+        "verification_commands",
+        "worker_model_class",
+        "review_model_class",
+        "residual_decision_load",
+        "dispatch_readiness",
+        "program_dispatch_readiness",
+    }
+)
+WORKER_CAPABILITIES = frozenset({"routine", "strong"})
+REVIEW_CAPABILITIES = frozenset({"none", "standard-independent", "strong-independent"})
+DECISION_STAGES = frozenset(
+    {"decision-closed", "bounded-experiment", "evidence-adjudication", "authorized-live-judgment"}
+)
+RESOURCE_KINDS = frozenset(
+    {"path-prefix", "generated-surface", "schema-slot", "fixture-authority", "database-tier", "runtime-resource"}
+)
 WAVES = {
     "reindex-prep-a": 1,
     "reindex-prep-b": 2,
@@ -200,6 +220,70 @@ def _task_revision(bead: Mapping[str, Any]) -> str:
 
 def _value(bead: Mapping[str, Any], name: str) -> object:
     return bead["metadata"].get(name)
+
+
+def _effective_policy(beads: Mapping[str, Mapping[str, Any]], bead: Mapping[str, Any]) -> object:
+    """Resolve the one campaign policy default, with an explicit leaf override."""
+    policy = _value(bead, "model_policy")
+    return policy if policy is not None else _value(beads[ROOT_ID], "model_policy")
+
+
+def _typed_resources(value: object) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return None
+    result: list[tuple[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"kind", "key"}:
+            return None
+        kind, key = item.get("kind"), item.get("key")
+        if not isinstance(kind, str) or kind not in RESOURCE_KINDS or not isinstance(key, str) or not key.strip():
+            return None
+        normalized = key.strip().replace("\\", "/").removeprefix("./")
+        if kind == "path-prefix" and (not normalized or normalized.startswith("/") or ".." in normalized.split("/")):
+            return None
+        result.append((kind, normalized.rstrip("/")))
+    return tuple(sorted(set(result)))
+
+
+def _valid_verification_specs(value: object) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return False
+    return all(
+        isinstance(item, Mapping)
+        and set(item) == {"argv"}
+        and isinstance(item["argv"], Sequence)
+        and not isinstance(item["argv"], (str, bytes))
+        and all(isinstance(token, str) and token for token in item["argv"])
+        for item in value
+    )
+
+
+def _valid_evidence_obligations(value: object) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return False
+    return all(
+        isinstance(item, Mapping)
+        and set(item) == {"kind", "producer", "binding"}
+        and all(isinstance(item[key], str) and item[key].strip() for key in ("kind", "producer", "binding"))
+        for item in value
+    )
+
+
+def _resources_overlap(left: set[tuple[str, str]], right: set[tuple[str, str]]) -> bool:
+    for left_kind, left_key in left:
+        for right_kind, right_key in right:
+            if left_kind != right_kind:
+                continue
+            if left_kind == "path-prefix":
+                if (
+                    left_key == right_key
+                    or left_key.startswith(right_key + "/")
+                    or right_key.startswith(left_key + "/")
+                ):
+                    return True
+            elif left_key == right_key:
+                return True
+    return False
 
 
 def _trimmed_string(bead: Mapping[str, Any], name: str) -> str:
@@ -624,9 +708,12 @@ def _projection(
         "launch_contract": {
             "packet_execution_contract": _value(leader, "packet_execution_contract"),
             "deadline_policy": _value(leader, "deadline_policy"),
-            "model_policy": _value(leader, "model_policy"),
-            "worker_capability": _value(leader, "worker_capability") or _value(leader, "worker_model_class"),
-            "review_capability": _value(leader, "review_capability") or _value(leader, "review_model_class"),
+            "model_policy": _effective_policy(beads, leader),
+            "worker_capability": _value(leader, "worker_capability"),
+            "review_capability": _value(leader, "review_capability"),
+            "ownership_resources": _value(leader, "ownership_resources"),
+            "verification_specs": _value(leader, "verification_specs"),
+            "evidence_obligations": _value(leader, "evidence_obligations"),
         },
         "task_identities": [asdict(TaskIdentity(bead_id, _task_revision(beads[bead_id]))) for bead_id in members],
         "operation_evidence": dict(operation_evidence or {}),
@@ -677,6 +764,9 @@ def validate(
         if (_value(beads[bead_id], "execution_shape") or _label(beads[bead_id], "execution-shape:")) in {"gate", "leaf"}
     )
     errors: list[str] = []
+    root_policy = _value(beads[root_id], "model_policy")
+    if not isinstance(root_policy, str) or not root_policy.startswith("provider-neutral-"):
+        errors.append(f"{root_id}: campaign root must define a provider-neutral model policy")
     warnings = []
     open_closure = frozenset(bead_id for bead_id in closure if beads[bead_id].get("status") != "closed")
     open_without_campaign = open_closure - labelled
@@ -709,16 +799,48 @@ def validate(
     for bead_id in sorted(selected):
         bead = beads[bead_id]
         shape = _value(bead, "execution_shape") or _label(bead, "execution-shape:")
+        legacy = sorted(field for field in LEGACY_METADATA_FIELDS if _present(_value(bead, field)))
+        if legacy:
+            leaf_failure(
+                bead,
+                "legacy-metadata",
+                f"{bead_id}: retired metadata field(s): {', '.join(legacy)}",
+                field=",".join(legacy),
+            )
         if shape == "gate":
-            for field in ("lane_packet", "lane_order", *LAUNCH, "worker_model_class", "worker_capability"):
+            for field in (
+                "lane_packet",
+                "lane_order",
+                *LAUNCH,
+                "worker_capability",
+                "review_capability",
+                "ownership_resources",
+                "verification_specs",
+                "evidence_obligations",
+            ):
                 if _present(_value(bead, field)):
                     errors.append(f"{bead_id}: gate carries {field}")
         elif bead.get("status") != "closed":
             missing = [field for field in CORE if not _present(_value(bead, field))]
-            if not any(_present(_value(bead, field)) for field in ("worker_model_class", "worker_capability")):
-                missing.append("worker capability")
-            if not any(_present(_value(bead, field)) for field in ("review_model_class", "review_capability")):
-                missing.append("reviewer capability")
+            if _value(bead, "worker_capability") not in WORKER_CAPABILITIES:
+                leaf_failure(bead, "worker-capability", f"{bead_id}: worker_capability is not a closed class")
+            if _value(bead, "review_capability") not in REVIEW_CAPABILITIES:
+                leaf_failure(bead, "review-capability", f"{bead_id}: review_capability is not a closed class")
+            decision_stage = _value(bead, "decision_stage")
+            if decision_stage not in DECISION_STAGES:
+                leaf_failure(bead, "decision-stage", f"{bead_id}: decision_stage is not a closed class")
+            resources = _typed_resources(_value(bead, "ownership_resources"))
+            if resources is None:
+                leaf_failure(bead, "ownership-resources", f"{bead_id}: ownership_resources must be typed resources")
+            else:
+                repo_root = Path(__file__).resolve().parents[1]
+                for kind, key in resources:
+                    if kind == "path-prefix" and not (repo_root / key).exists():
+                        leaf_failure(bead, "ownership-path", f"{bead_id}: ownership path does not exist: {key}")
+            if not _valid_verification_specs(_value(bead, "verification_specs")):
+                leaf_failure(bead, "verification-spec", f"{bead_id}: verification_specs must contain argv arrays")
+            if not _valid_evidence_obligations(_value(bead, "evidence_obligations")):
+                leaf_failure(bead, "evidence-obligation", f"{bead_id}: evidence_obligations must be typed obligations")
             if missing:
                 leaf_failure(
                     bead,
@@ -726,7 +848,10 @@ def validate(
                     f"{bead_id}: missing leaf carrier(s): {', '.join(missing)}",
                     field=",".join(missing),
                 )
-            if _present(_value(bead, "model_policy")) and "provider-neutral" not in str(_value(bead, "model_policy")):
+            policy = _value(bead, "model_policy")
+            if policy is not None and policy == root_policy:
+                leaf_failure(bead, "duplicate-model-policy", f"{bead_id}: repeated root model policy must be omitted")
+            if policy is not None and (not isinstance(policy, str) or not policy.startswith("provider-neutral-")):
                 leaf_failure(bead, "model-policy", f"{bead_id}: model policy is not provider-neutral")
             access = _value(bead, "live_data_access")
             if not isinstance(access, str):
@@ -784,14 +909,16 @@ def validate(
         for right_id, right in assignments.items():
             if left_id >= right_id or left[0] != right[0] or left[1] == right[1]:
                 continue
-            overlap = _keys(_value(beads[left_id], "conflict_keys")) & _keys(_value(beads[right_id], "conflict_keys"))
+            left_resources = set(_typed_resources(_value(beads[left_id], "ownership_resources")) or ())
+            right_resources = set(_typed_resources(_value(beads[right_id], "ownership_resources")) or ())
+            overlap = _resources_overlap(left_resources, right_resources)
             if overlap and not (
                 _path(graph, left_id, right_id)
                 or _path(graph, right_id, left_id)
                 or _serialized(beads[left_id])
                 or _serialized(beads[right_id])
             ):
-                error = f"{left_id}/{right_id}: exact conflict-key overlap is not serialized"
+                error = f"{left_id}/{right_id}: ownership-resource overlap is not serialized"
                 errors.append(error)
                 for bead_id in (left_id, right_id):
                     conflict_failures[bead_id].append(_failure("conflict-serialization", error, bead_id=bead_id))
@@ -940,13 +1067,6 @@ def validate(
             }
         )
     errors = list(dict.fromkeys(errors))
-    legacy_readiness_census = {
-        field: {
-            "count": len(ids := sorted(bead_id for bead_id, bead in beads.items() if _present(_value(bead, field)))),
-            "record_ids": ids,
-        }
-        for field in ("dispatch_readiness", "program_dispatch_readiness")
-    }
     counts = {
         "blocks_closure": len(closure),
         "mixed_relation_expansion": len(mixed),
@@ -975,7 +1095,6 @@ def validate(
         },
         "packets": packets,
         "global_launch_failures": unassigned_structural_failures,
-        "legacy_readiness_census": legacy_readiness_census,
         "structural_errors": errors,
         "warnings": warnings,
     }

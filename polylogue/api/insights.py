@@ -38,6 +38,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
 from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
@@ -96,6 +97,11 @@ if TYPE_CHECKING:
             self,
             query: ToolUsageInsightQuery | None = None,
         ) -> list[ToolUsageInsight]: ...
+
+        async def list_command_shape_usage(
+            self,
+            query: CommandShapeUsageQuery | None = None,
+        ) -> list[CommandShapeUsage]: ...
 
         async def list_session_cost_insights(
             self,
@@ -531,6 +537,22 @@ class PolylogueInsightsMixin:
             offset=getattr(query, "offset", 0),
             projection="tool-usage",
             stable_order="tool,origin",
+        )
+
+    async def list_command_shape_usage(
+        self,
+        query: CommandShapeUsageQuery | None = None,
+    ) -> list[CommandShapeUsage]:
+        request = query or CommandShapeUsageQuery()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.command_shapes.list",
+            arguments={"query": request},
+            work=lambda archive: archive.list_command_shape_usage(request),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="command-shapes",
+            stable_order="execution_count,command_shape,origin",
         )
 
     async def list_session_cost_insights(
