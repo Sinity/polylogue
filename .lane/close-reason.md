@@ -1,1 +1,0 @@
-Retired the temporary attachment acquisition-debt command and kept its byte/reference invariant in archive verification under the neutral attachment-coverage name. Current source acquisition remains the production route for reachable bytes and typed unavailable outcomes.
