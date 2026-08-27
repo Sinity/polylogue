@@ -2198,8 +2198,8 @@ def scan_blob_reference_debt(
 
 
 @dataclass(frozen=True)
-class AttachmentAcquisitionDebtReport:
-    """Index-tier attachment acquisition state (#83u.4).
+class AttachmentCoverageReport:
+    """Index-tier attachment coverage used by archive verification.
 
     Deliberately separate from :class:`BlobReferenceDebtReport`, which
     classifies source-tier backup debt from ``source.db``/``raw_sessions``
@@ -2257,13 +2257,13 @@ class AttachmentAcquisitionDebtReport:
         }
 
 
-def scan_attachment_acquisition_debt(
+def scan_attachment_coverage(
     db_path: str | Path,
     *,
     store: BlobStore | None = None,
     sample_size: int = _MAX_FINDING_SAMPLE,
-) -> AttachmentAcquisitionDebtReport:
-    """Classify index-tier attachment acquisition debt without mutating state.
+) -> AttachmentCoverageReport:
+    """Project index-tier attachment coverage without mutating state.
 
     ``db_path`` is the index-tier database (``index.db``), not ``source.db``.
     """
@@ -2309,7 +2309,7 @@ def scan_attachment_acquisition_debt(
 
     unreachable_sample = tuple(str(row["attachment_id"]) for row in unreachable_rows[:sample_size])
 
-    return AttachmentAcquisitionDebtReport(
+    return AttachmentCoverageReport(
         total_attachments=sum(status_counts.values()),
         acquired_count=status_counts.get("acquired", 0),
         acquired_missing_blob_count=missing_count,
@@ -2429,7 +2429,7 @@ def scan_blob_integrity(
 
 
 __all__ = [
-    "AttachmentAcquisitionDebtReport",
+    "AttachmentCoverageReport",
     "BlobIntegrityFinding",
     "BlobIntegrityKind",
     "BlobIntegrityReport",
@@ -2453,7 +2453,7 @@ __all__ = [
     "referenced_blob_hashes",
     "replace_raw_backed_blob_reference_debt_from_source",
     "restore_direct_blob_reference_debt",
-    "scan_attachment_acquisition_debt",
+    "scan_attachment_coverage",
     "scan_blob_reference_debt",
     "scan_blob_integrity",
 ]

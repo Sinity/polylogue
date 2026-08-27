@@ -242,7 +242,7 @@ def test_rebuild_preflight_rejects_acquired_unreachable_attachment_before_candid
         conn.commit()
     store = IndexGenerationStore.for_archive_root(root)
     active_before = store.active_pointer.resolve(strict=True)
-    with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*attachment-acquisition-debt"):
+    with pytest.raises(RuntimeError, match="reindex source preflight gate failed:.*attachment-coverage"):
         rebuild_index_from_source_sync(
             RebuildIndexRequest(archive_root=root, promote=True, schema_inference_receipt_path=candidate_receipt)
         )
