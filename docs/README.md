@@ -88,6 +88,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
+| [Full-Archive Dogfooding](operator-dogfooding.md) | Versioned question queue, cycle packet, comparison method, and priority review rules. |
 | [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded finding with a structural oracle, sample frame, calibration, and caveats. |
 | [Corpus Reliability and Closure Reliability](findings/corpus-reliability.md) | Measured distinction between stale assertions, void records, and closure reliability. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |

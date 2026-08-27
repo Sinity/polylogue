@@ -9,6 +9,7 @@ from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry, marker_s
 
 _LINE = re.compile(r"^(?P<indent>[ \t]*)::(?P<kind>[a-z][a-z0-9_-]*)(?:\((?P<args>[^)]*)\))?:[ \t]*(?P<body>.*)$")
 _INLINE = re.compile(r"\[\[(?P<kind>[a-z][a-z0-9_-]*):[ \t]*(?P<body>[^\]]*?)\]\]")
+_INLINE_OPEN = re.compile(r"\[\[(?P<kind>[a-z][a-z0-9_-]*):(?P<body>[^\n]*)$")
 _MALFORMED = re.compile(r"^[ \t]*::")
 
 
@@ -65,17 +66,32 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                     )
                 )
             for inline in _INLINE.finditer(line):
-                if inline.group("kind") not in registry:
-                    continue
+                kind = inline.group("kind")
                 matches.append(
                     MarkerMatch(
-                        inline.group("kind"),
+                        kind if kind in registry else "malformed",
                         inline.group("body"),
-                        {},
+                        {} if kind in registry else {"unregistered_kind": kind},
                         inline.group(0),
                         offset + inline.start(),
                         offset + inline.end(),
                         inline=True,
+                        malformed=kind not in registry,
+                    )
+                )
+            for inline in _INLINE_OPEN.finditer(line.rstrip("\r\n")):
+                if "]]" in line[inline.start() :]:
+                    continue
+                matches.append(
+                    MarkerMatch(
+                        "malformed",
+                        inline.group("body"),
+                        {"unregistered_kind": inline.group("kind")},
+                        inline.group(0),
+                        offset + inline.start(),
+                        offset + inline.end(),
+                        inline=True,
+                        malformed=True,
                     )
                 )
         offset += len(line)

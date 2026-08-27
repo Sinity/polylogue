@@ -18,6 +18,14 @@ def test_operation_request_rejects_untyped_payloads() -> None:
         DaemonOperationRequest.from_dict({"operation": "status", "payload": []})
 
 
+def test_operation_request_requires_the_negotiated_protocol() -> None:
+    with pytest.raises(ValueError, match="unsupported daemon operation protocol"):
+        DaemonOperationRequest.from_dict({"operation": "status", "payload": {}, "protocol": "v0"})
+
+    with pytest.raises(ValueError, match="unsupported daemon operation protocol"):
+        DaemonOperationRequest.from_dict({"operation": "status", "payload": {}})
+
+
 def test_archive_identity_contains_readiness_and_generation(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     archive.mkdir()
