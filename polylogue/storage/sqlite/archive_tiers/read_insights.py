@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
 from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 
@@ -56,6 +57,74 @@ class ArchiveReadInsights:
             materialized_at=datetime.now(UTC).isoformat(),
         )
         return [insight]
+
+    def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        request = query or ToolEpisodeQuery()
+        where = ["1=1"]
+        params: list[object] = []
+        if request.origin:
+            where.append("s.origin = ?")
+            params.append(self._normalize_origin(request.origin) or request.origin)
+        if request.session_id:
+            where.append("a.session_id = ?")
+            params.append(request.session_id)
+        if request.tool:
+            where.append("LOWER(COALESCE(a.tool_name, '')) = LOWER(?)")
+            params.append(request.tool)
+        if request.result_state:
+            where.append("a.result_state = ?")
+            params.append(request.result_state)
+        rows = self._conn.execute(
+            f"""
+            SELECT a.*, s.origin, tu.tool_input, m.position, m.variant_index,
+                   (SELECT GROUP_CONCAT(COALESCE(pm.role || ': ', '') || COALESCE(pm.text, ''), char(10))
+                      FROM messages pm WHERE pm.session_id=m.session_id AND
+                       (pm.position<m.position OR (pm.position=m.position AND pm.variant_index<m.variant_index))
+                     ORDER BY pm.position DESC, pm.variant_index DESC LIMIT 3) context_before,
+                   (SELECT GROUP_CONCAT(COALESCE(nm.role || ': ', '') || COALESCE(nm.text, ''), char(10))
+                      FROM messages nm WHERE nm.session_id=m.session_id AND
+                       (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
+                     ORDER BY nm.position, nm.variant_index LIMIT 3) context_after,
+                   (SELECT nm.text FROM messages nm WHERE nm.session_id=m.session_id AND
+                       (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
+                     ORDER BY nm.position, nm.variant_index LIMIT 1) next_action
+              FROM actions a JOIN sessions s ON s.session_id=a.session_id
+              JOIN messages m ON m.message_id=a.message_id JOIN blocks tu ON tu.block_id=a.tool_use_block_id
+             WHERE {" AND ".join(where)}
+             ORDER BY COALESCE(m.occurred_at_ms,s.sort_key_ms), a.tool_use_block_id LIMIT ? OFFSET ?
+        """,
+            (*params, request.limit if request.limit is not None else -1, request.offset),
+        ).fetchall()
+        result: list[ToolEpisodeInsight] = []
+        for row in rows:
+            state = str(row["result_state"])
+            result.append(
+                ToolEpisodeInsight(
+                    episode_id=f"episode:{row['tool_use_block_id']}",
+                    session_id=str(row["session_id"]),
+                    message_id=str(row["message_id"]),
+                    origin=str(row["origin"] or "unknown-export"),
+                    tool_use_block_id=str(row["tool_use_block_id"]),
+                    tool_result_block_id=str(row["tool_result_block_id"]) if row["tool_result_block_id"] else None,
+                    tool_name=str(row["tool_name"]) if row["tool_name"] else None,
+                    semantic_type=str(row["semantic_type"]) if row["semantic_type"] else None,
+                    call_input=str(row["tool_input"]) if row["tool_input"] is not None else None,
+                    result_output=str(row["output_text"]) if row["output_text"] is not None else None,
+                    is_error=int(row["is_error"]) if row["is_error"] is not None else None,
+                    exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
+                    result_state=state,
+                    context_before=tuple(reversed(str(row["context_before"]).split("\n")))
+                    if row["context_before"]
+                    else (),
+                    context_after=tuple(str(row["context_after"]).split("\n")) if row["context_after"] else (),
+                    next_action=str(row["next_action"])[:1000] if row["next_action"] else None,
+                    followup_class=str(row["followup_class"]) if row["followup_class"] else None,
+                    caveat="outcome unknown: no paired structural result"
+                    if state in {"no_result", "outcome_unknown"}
+                    else "structural outcome from tool result",
+                )
+            )
+        return result
 
     def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
         """Report normalized executed-command shapes from the actions view."""
