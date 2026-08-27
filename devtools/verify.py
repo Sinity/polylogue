@@ -134,7 +134,31 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
+def _is_primary_checkout() -> bool:
+    """True when ROOT is the repository's main checkout rather than a worktree."""
+    try:
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=ROOT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return True
+    if common.returncode != 0:
+        return True
+    return Path(common.stdout.strip()).parent.resolve() == ROOT.resolve()
+
+
 def _mypy_cmd() -> list[str]:
+    if not _is_primary_checkout():
+        # dmypy is a persistent daemon holding a type cache, and it is
+        # reparented to the user manager rather than to this run. A lane or
+        # batch worktree gates once and is then disposed, so the daemon is
+        # never reused and never exits: ten of them held 9.2 GB on this
+        # machine. The cache only pays for itself where runs repeat.
+        return ["mypy"]
     try:
         result = subprocess.run(["dmypy", "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
         if result.returncode == 0:
