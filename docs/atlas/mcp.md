@@ -39,4 +39,4 @@ The live MCP surface is a ten-tool operation algebra. Six read tools are always 
 ## Operation to contract flow
 
 
-verified: bb20b20d4266c47a0cb9cc8d63a39250c61810d6 2026-08-26
+verified: 24be873c0 2026-08-27
