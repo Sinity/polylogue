@@ -4910,7 +4910,10 @@ def _write_session_events(
             boundary_message_id = None
             if event.boundary_message_position is not None:
                 for fallback_position, message in enumerate(messages):
-                    if message.position == event.boundary_message_position:
+                    # Parsers may leave ``position`` unset; the ordinal is then
+                    # the message's position, exactly as ``_message_id`` derives it.
+                    effective_position = message.position if message.position is not None else fallback_position
+                    if effective_position == event.boundary_message_position:
                         boundary_message_id = _message_id(
                             session_id,
                             message,

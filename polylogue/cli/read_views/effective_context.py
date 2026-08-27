@@ -23,24 +23,22 @@ def build_effective_context_options(values: ReadViewOptionValues) -> ReadViewEff
 
 
 def run_read_effective_context(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    assert invocation.session_id is not None
+    session_id = invocation.session_id
+    assert session_id is not None
     options = cast(ReadViewEffectiveContextOptions, invocation.options or ReadViewEffectiveContextOptions())
 
     async def _run() -> list[dict[str, object]] | None:
         from polylogue.api import Polylogue
 
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            return await api.get_effective_context(invocation.session_id, at_position=options.at_position)
+            return await api.get_effective_context(session_id, at_position=options.at_position)
 
     payload = run_coroutine_sync(_run())
     if payload is None:
-        env.ui.error(f"Session not found: {invocation.session_id}")
+        env.ui.error(f"Session not found: {session_id}")
         return
     content = (
-        json.dumps(
-            {"session_id": invocation.session_id, "at_position": options.at_position, "messages": payload}, indent=2
-        )
-        + "\n"
+        json.dumps({"session_id": session_id, "at_position": options.at_position, "messages": payload}, indent=2) + "\n"
     )
     deliver_content(
         env, content, destination=invocation.destination, out_path=invocation.out_path, output_format="json"

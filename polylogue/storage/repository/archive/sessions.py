@@ -197,6 +197,18 @@ class RepositoryArchiveSessionMixin:
         messages = [message_from_record(r, attachments=[], origin=origin) for r in records]
         return messages, total, completeness
 
+    async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[Message]:
+        """Return the messages the model actually saw at ``at_position``.
+
+        A compaction boundary replaces its recorded range with the materialized
+        summary, so this is deliberately narrower than the lineage-composed
+        transcript ``get_messages_paginated`` returns.
+        """
+        conv_record = await self.queries.get_session(session_id)
+        origin = conv_record.origin if conv_record else None
+        records = await self.queries.get_effective_context(session_id, at_position)
+        return [message_from_record(record, attachments=[], origin=origin) for record in records]
+
     async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
         """Report whether ``session_id``'s composed transcript is the full
         logical transcript or was silently truncated (polylogue-ppkj).
