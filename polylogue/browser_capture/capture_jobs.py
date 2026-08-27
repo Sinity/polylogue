@@ -365,6 +365,7 @@ class CaptureJobRegistry:
                 row["revision"],
                 {},
                 {"provider": provider, "intent_key": intent["intent_key"]},
+                advance_revision=False,
             )
             return 201, {"created": True, "job": self._summary(row)}
 
@@ -426,6 +427,8 @@ class CaptureJobRegistry:
         expected_revision: int,
         refs: dict[str, object],
         payload: dict[str, object],
+        *,
+        advance_revision: bool = True,
     ) -> dict[str, object]:
         if not isinstance(kind, str) or kind not in {
             "created",
@@ -470,6 +473,7 @@ class CaptureJobRegistry:
         event_revision = connection.execute(
             "SELECT COALESCE(MAX(event_revision), -1) + 1 FROM capture_job_events WHERE job_id=?", (job_id,)
         ).fetchone()[0]
+        job_revision = expected_revision + 1 if advance_revision else expected_revision
         now = _stamp()
         event_id = str(uuid4())
         stored_payload = {"digest": digest, "value": payload}
@@ -479,7 +483,7 @@ class CaptureJobRegistry:
                 event_id,
                 job_id,
                 event_revision,
-                expected_revision,
+                job_revision,
                 kind,
                 canonical_json(refs),
                 canonical_json(stored_payload),
@@ -487,11 +491,18 @@ class CaptureJobRegistry:
                 now,
             ),
         )
+        if advance_revision:
+            updated = connection.execute(
+                "UPDATE capture_jobs SET revision=?, updated_at=? WHERE job_id=? AND revision=?",
+                (job_revision, now, job_id, expected_revision),
+            )
+            if updated.rowcount != 1:
+                raise CaptureJobError(409, "cas_mismatch")
         return {
             "event_id": event_id,
             "job_id": job_id,
             "event_revision": event_revision,
-            "job_revision": expected_revision,
+            "job_revision": job_revision,
             "kind": kind,
             "refs": refs,
             "payload": payload,
@@ -528,8 +539,12 @@ class CaptureJobRegistry:
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
             )
             self._require_live_lease(job_id, row, body)
+            existing = connection.execute(
+                "SELECT 1 FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
+            ).fetchone()
             event = self._append_event(connection, job_id, kind, request_id, expected_revision, refs, payload)
-            return {"event": event, "job": self._summary(row), "duplicate": False}
+            next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+            return {"event": event, "job": self._summary(next_row), "duplicate": existing is not None}
 
     def events(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         limit = body.get("limit", 100)

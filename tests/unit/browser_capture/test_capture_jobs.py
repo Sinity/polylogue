@@ -454,8 +454,20 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
         status, first = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", event_body)
         assert status == 200
         assert first["event"]["event_revision"] == 1
+        assert first["event"]["job_revision"] == adopted["job"]["revision"] + 1
+        assert first["job"]["revision"] == adopted["job"]["revision"] + 1
         status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", event_body)
-        assert status == 200 and replay["event"] == first["event"]
+        assert status == 200 and replay["event"] == first["event"] and replay["duplicate"] is True
+        stale_checkpoint = {
+            **event_body,
+            "request_id": "after-event-stale",
+            "expected_revision": adopted["job"]["revision"],
+            "checkpoint": {"sequence": 1, "payload": {}, "digest": canonical_digest({})},
+        }
+        status, rejected_checkpoint = request(
+            host, port, "PUT", f"/v1/capture-jobs/{job['job_id']}/checkpoint", stale_checkpoint
+        )
+        assert status == 409 and rejected_checkpoint["error"]["code"] == "cas_mismatch"
         stale = {**event_body, "request_id": "stale", "expected_revision": adopted["job"]["revision"] - 1}
         status, rejected = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", stale)
         assert status == 409 and rejected["error"]["code"] == "cas_mismatch"
