@@ -142,10 +142,7 @@ def _record_secret_scan_sweep_event(
     error: BaseException | None = None,
 ) -> None:
     """Persist the latest sweep outcome for daemon health readers."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-    from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+    from polylogue.operations.daemon_stage_recording import record_daemon_stage_event_for_archive
 
     payload: dict[str, object] = {"retryable": status == "failed"}
     if result is not None:
@@ -158,16 +155,13 @@ def _record_secret_scan_sweep_event(
     if error is not None:
         payload.update(error_type=type(error).__name__)
     try:
-        archive_root_path.mkdir(parents=True, exist_ok=True)
-        with open_daemon_connection(archive_root_path / "ops.db", timeout=30.0) as conn:
-            initialize_archive_tier(conn, ArchiveTier.OPS)
-            record_daemon_stage_event(
-                conn,
-                stage=SECRET_SCAN_SWEEP_STAGE,
-                status=status,
-                observed_at_ms=int(time.time() * 1000),
-                payload=payload,
-            )
+        record_daemon_stage_event_for_archive(
+            archive_root_path,
+            stage=SECRET_SCAN_SWEEP_STAGE,
+            status=status,
+            observed_at_ms=int(time.time() * 1000),
+            payload=payload,
+        )
     except Exception:
         logger.warning("secret_scan_sweep: failed to persist sweep outcome", exc_info=True)
 
