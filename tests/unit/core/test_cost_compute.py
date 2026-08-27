@@ -198,14 +198,17 @@ def test_compute_session_cost_downgrades_to_partial_when_one_model_unknown_along
 
 def test_catalog_gap_model_with_real_tokens_is_not_a_confident_zero() -> None:
     """polylogue-iuyr: a model with genuine, nonzero reported tokens but no
-    pricing-catalog entry (e.g. claude-opus-5, a confirmed live catalog gap)
-    must not surface as ``confidence='reported'``/``total_api_cost_usd=0.0`` --
-    that is indistinguishable from a provider that genuinely billed zero.
+    pricing-catalog entry must not surface as
+    ``confidence='reported'``/``total_api_cost_usd=0.0`` -- that is
+    indistinguishable from a provider that genuinely billed zero.
     ``estimate_cost()`` silently returns 0.0 for an unpriced model; the
     confidence must be downgraded to 'unknown' instead of trusting that zero.
+
+    The model here is deliberately synthetic. A real name eventually gains a
+    catalog entry and quietly stops exercising the gap this covers.
     """
 
-    model_usage = [ModelUsageTotals(model_name="claude-opus-5", input_tokens=1000, output_tokens=500)]
+    model_usage = [ModelUsageTotals(model_name="not-a-catalogued-model", input_tokens=1000, output_tokens=500)]
     session = make_conv(id="catalog-gap-session", provider="claude-code", messages=[])
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
