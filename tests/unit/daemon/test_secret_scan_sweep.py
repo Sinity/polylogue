@@ -15,6 +15,7 @@ from pathlib import Path
 from polylogue.core.enums import AssertionKind
 from polylogue.daemon.secret_scan_sweep import (
     SecretScanSweepResult,
+    _record_secret_scan_sweep_event,
     run_secret_scan_sweep_once_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -113,3 +114,20 @@ class TestRunSecretScanSweepOnceSync:
         second = run_secret_scan_sweep_once_sync(archive_root, max_sessions=2)
         assert second.sessions_scanned == 2
         assert second.remaining_pending == 0
+
+
+def test_failed_sweep_outcome_is_recorded_for_health_readers(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    _record_secret_scan_sweep_event(
+        archive_root,
+        status="failed",
+        error=sqlite3.OperationalError("schema drift"),
+    )
+
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        row = conn.execute("SELECT stage, status, payload_json FROM daemon_stage_events").fetchone()
+
+    assert row[0] == "maintenance.secret_scan_sweep"
+    assert row[1] == "failed"
+    assert '"retryable":true' in row[2]
+    assert '"error_type":"OperationalError"' in row[2]

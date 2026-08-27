@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,7 @@ SECRET_SCAN_SWEEP_SESSION_LIMIT = 50
 #: Quiet-cadence interval -- this is ambient background coverage, not a
 #: hot-path check, so it runs far less often than live convergence.
 SECRET_SCAN_SWEEP_INTERVAL_SECONDS = 900  # 15 minutes
+SECRET_SCAN_SWEEP_STAGE = "maintenance.secret_scan_sweep"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +105,11 @@ async def periodic_secret_scan_sweep(
         root = archive_root()
         try:
             result = await daemon_write_coordinator().run_sync(
-                "maintenance.secret_scan_sweep",
+                SECRET_SCAN_SWEEP_STAGE,
                 run_secret_scan_sweep_once_sync,
                 root,
             )
+            _record_secret_scan_sweep_event(root, status="completed", result=result)
             if result.ran and (result.sessions_scanned or result.candidates_found):
                 logger.info(
                     "secret_scan_sweep: scanned=%d candidates_found=%d errors=%d remaining_pending=%d",
@@ -118,15 +121,57 @@ async def periodic_secret_scan_sweep(
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
                 logger.info("secret_scan_sweep: archive busy; retrying on next tick: %s", exc)
+                _record_secret_scan_sweep_event(root, status="failed", error=exc)
                 continue
             logger.warning("secret_scan_sweep: sweep failed", exc_info=True)
-        except Exception:
+            _record_secret_scan_sweep_event(root, status="failed", error=exc)
+        except Exception as exc:
             logger.warning("secret_scan_sweep: sweep failed", exc_info=True)
+            _record_secret_scan_sweep_event(root, status="failed", error=exc)
+
+
+def _record_secret_scan_sweep_event(
+    archive_root_path: Path,
+    *,
+    status: str,
+    result: SecretScanSweepResult | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Persist the latest sweep outcome for daemon health readers."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+    payload: dict[str, object] = {"retryable": status == "failed"}
+    if result is not None:
+        payload.update(
+            sessions_scanned=result.sessions_scanned,
+            candidates_found=result.candidates_found,
+            errors=result.errors,
+            remaining_pending=result.remaining_pending,
+        )
+    if error is not None:
+        payload.update(error_type=type(error).__name__)
+    try:
+        archive_root_path.mkdir(parents=True, exist_ok=True)
+        with open_daemon_connection(archive_root_path / "ops.db", timeout=30.0) as conn:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            record_daemon_stage_event(
+                conn,
+                stage=SECRET_SCAN_SWEEP_STAGE,
+                status=status,
+                observed_at_ms=int(time.time() * 1000),
+                payload=payload,
+            )
+    except Exception:
+        logger.warning("secret_scan_sweep: failed to persist sweep outcome", exc_info=True)
 
 
 __all__ = [
     "SECRET_SCAN_SWEEP_INTERVAL_SECONDS",
     "SECRET_SCAN_SWEEP_SESSION_LIMIT",
+    "SECRET_SCAN_SWEEP_STAGE",
     "SecretScanSweepResult",
     "periodic_secret_scan_sweep",
     "run_secret_scan_sweep_once_sync",
