@@ -86,7 +86,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
-| [Artifact Publication Contract](artifact-publication.md) | Shared filesystem contract for cache and reusable-fixture publication. |
 
 ## Demos, Evidence, and Product
 
