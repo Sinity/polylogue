@@ -33,6 +33,7 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 # model. Their stable semantic consequences are compared through the current
 # revision heads, FTS readiness, materialization markers, and debt state.
 _NON_COMPARABLE_TABLES: dict[str, str] = {
+    "candidate_source_membership": ("generation-local rebuild resume state is validated by IndexGenerationStore"),
     "fts_freshness_state": "compared through FtsReadiness without its wall-clock check timestamp",
     "messages_fts_identity": "FTS support relation compared through public search and FtsReadiness",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
