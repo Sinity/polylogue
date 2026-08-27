@@ -31,6 +31,22 @@ def test_quick_steps_are_static_gates() -> None:
     assert not any(label.startswith("pytest") for label in labels)
 
 
+def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=1 if command[-1] == "status" else 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert verify._mypy_cmd() == ["dmypy", "run", "--", "--no-error-summary"]
+    assert calls == [
+        ["dmypy", "status"],
+        ["dmypy", "start", "--", "--no-error-summary"],
+    ]
+
+
 def test_removed_lab_mode_is_not_accepted() -> None:
     with pytest.raises(SystemExit) as raised:
         verify._main(["--lab"])

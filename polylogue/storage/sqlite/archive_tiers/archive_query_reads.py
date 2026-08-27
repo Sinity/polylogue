@@ -90,6 +90,7 @@ class ArchiveMessageQueryRow:
     session_id: str
     origin: str
     title: str | None
+    repo: str | None
     role: str
     message_type: str
     material_origin: str
@@ -2168,6 +2169,28 @@ def _lineage_predicate_clause(table_alias: str, predicate: QueryLineagePredicate
     )
 
 
+def _logical_predicate_clause(table_alias: str, predicate: QueryLineagePredicate) -> tuple[str, list[object]]:
+    """Match every physical session in the seed's materialized logical family."""
+    seed_session_id = predicate.seed_session_id.strip()
+    if not seed_session_id:
+        raise ValueError("logical predicate requires a session id")
+    return (
+        f"""
+        COALESCE(
+            (SELECT logical_session_id FROM session_profiles
+             WHERE session_id = {table_alias}.session_id),
+            {table_alias}.session_id
+        ) = (
+            SELECT COALESCE(seed_profile.logical_session_id, seed.session_id)
+            FROM sessions seed
+            LEFT JOIN session_profiles seed_profile ON seed_profile.session_id = seed.session_id
+            WHERE seed.session_id = ?
+        )
+        """.strip(),
+        [seed_session_id],
+    )
+
+
 def _boolean_predicate_clause(
     table_alias: str,
     predicate: QueryPredicate,
@@ -2185,6 +2208,8 @@ def _boolean_predicate_clause(
     if isinstance(predicate, QueryTextPredicate):
         return _fts_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryLineagePredicate):
+        if predicate.logical:
+            return _logical_predicate_clause(table_alias, predicate)
         return _lineage_predicate_clause(table_alias, predicate)
     if isinstance(predicate, QueryNotPredicate):
         clause, params = _boolean_predicate_clause(table_alias, predicate.child, tags_relation=tags_relation)
@@ -2637,6 +2662,14 @@ def query_messages(
             m.session_id,
             s.origin,
             s.title,
+            (SELECT group_concat(repo_name, ', ')
+             FROM (
+                 SELECT r.repo_name
+                 FROM session_repos sr
+                 JOIN repos r ON r.repo_id = sr.repo_id
+                 WHERE sr.session_id = m.session_id
+                 ORDER BY r.repo_name
+             )) AS repo,
             m.role,
             m.message_type,
             m.material_origin,
@@ -2670,6 +2703,7 @@ def query_messages(
             session_id=str(row["session_id"]),
             origin=str(row["origin"]),
             title=str(row["title"]) if row["title"] is not None else None,
+            repo=str(row["repo"]) if row["repo"] is not None else None,
             role=str(row["role"]),
             message_type=str(row["message_type"]),
             material_origin=str(row["material_origin"]),
@@ -2727,6 +2761,14 @@ def query_session_messages(
             m.session_id,
             s.origin,
             s.title,
+            (SELECT group_concat(repo_name, ', ')
+             FROM (
+                 SELECT r.repo_name
+                 FROM session_repos sr
+                 JOIN repos r ON r.repo_id = sr.repo_id
+                 WHERE sr.session_id = m.session_id
+                 ORDER BY r.repo_name
+             )) AS repo,
             m.role,
             m.message_type,
             m.material_origin,
@@ -2759,6 +2801,7 @@ def query_session_messages(
             session_id=str(row["session_id"]),
             origin=str(row["origin"]),
             title=str(row["title"]) if row["title"] is not None else None,
+            repo=str(row["repo"]) if row["repo"] is not None else None,
             role=str(row["role"]),
             message_type=str(row["message_type"]),
             material_origin=str(row["material_origin"]),

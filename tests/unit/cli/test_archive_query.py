@@ -1071,17 +1071,12 @@ class TestEmitDeleteMachineModeNoPrompt:
         configured_root.mkdir()
         selected_root.mkdir()
         initialized: list[Path] = []
-        probed: list[dict[str, object]] = []
 
         class Client:
             last_elapsed_ms = None
 
             def __init__(self, socket_path: Path, **_kwargs: object) -> None:
                 initialized.append(socket_path)
-
-            def probe(self, **kwargs: object) -> dict[str, object]:
-                probed.append(kwargs)
-                return {"ok": True}
 
             def request_mutation_json(self, _method: str, _path: str, _body: dict[str, object]) -> dict[str, object]:
                 return {"status": "prepared"}
@@ -1104,7 +1099,8 @@ class TestEmitDeleteMachineModeNoPrompt:
             "status": "prepared"
         }
         assert initialized == [selected_root / "daemon.sock"]
-        assert probed[0]["archive_root"] == str(selected_root)
+        # Confirmed mutations use the operation transport directly. A health
+        # probe would be a second request and could race the writer authority.
 
     def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Human interactive use (non-plain) must keep the confirmation prompt.

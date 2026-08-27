@@ -140,11 +140,11 @@ def reindex_campaign_corpus(reindex_campaign_template: ReindexCampaignCorpus, tm
 
 
 def test_reindex_campaign_manifest_has_positive_denominators(
-    reindex_campaign_corpus: ReindexCampaignCorpus,
+    reindex_campaign_template: ReindexCampaignCorpus,
 ) -> None:
     """Every campaign edge class has a real production-ingested witness."""
 
-    corpus = reindex_campaign_corpus
+    corpus = reindex_campaign_template
     corpus.manifest.assert_positive()
     assert {
         origin for origin, count in corpus.manifest.origin_session_counts if count > 0

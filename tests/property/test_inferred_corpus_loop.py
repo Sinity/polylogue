@@ -21,7 +21,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
-from polylogue.daemon.fts_startup import record_fts_freshness_snapshot_sync
 from polylogue.maintenance.archive_verification import verify_archive
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
@@ -31,6 +30,8 @@ from polylogue.schemas.synthetic.models import SyntheticSchemaSelection
 from polylogue.schemas.synthetic.wire_formats import build_wire_support_receipt
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
@@ -142,7 +143,7 @@ def _ingest_and_converge_sources(
     ).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
     with sqlite3.connect(archive_root / "index.db") as conn:
-        record_fts_freshness_snapshot_sync(conn)
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
     return session_ids
 
 
@@ -155,7 +156,7 @@ def _converge_existing_archive(archive_root: Path) -> None:
     ).converge_sessions(session_ids)
     assert states and all(state.converged and state.last_error is None for state in states.values())
     with sqlite3.connect(archive_root / "index.db") as conn:
-        record_fts_freshness_snapshot_sync(conn)
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 def _lineage_material() -> tuple[bytes, bytes, str, str]:

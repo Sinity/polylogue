@@ -17,7 +17,7 @@ from typing import cast
 import pytest
 
 from polylogue.mcp.server import build_server
-from tests.infra.mcp import MCPServerUnderTest, invoke_surface
+from tests.infra.mcp import EXPECTED_MINIMAL_ARGUMENTS, MCPServerUnderTest, invoke_surface
 
 #: Synthetic session id for tools that require one — we accept not_found.
 _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
@@ -27,14 +27,7 @@ _SYNTHETIC_REF = f"session:{_SYNTHETIC_CONV_ID}"
 #: Every read-role tool must have an entry (see
 #: ``test_read_tools_have_known_minimal_kwargs``) since all six declare at
 #: least one required argument.
-_KNOWN_MINIMAL: dict[str, dict[str, object]] = {
-    "query": {"expression": "messages where text:hello", "limit": 1},
-    "read": {"ref": _SYNTHETIC_REF},
-    "get": {"ref": _SYNTHETIC_REF},
-    "explain": {"subject": "capability"},
-    "context": {"intent": "resume"},
-    "status": {"scope": "archive"},
-}
+_KNOWN_MINIMAL = EXPECTED_MINIMAL_ARGUMENTS
 
 
 def _discover_read_tool_names() -> frozenset[str]:
@@ -120,16 +113,10 @@ def test_no_mutation_tools_in_read_role() -> None:
 
 
 def test_read_tools_have_known_minimal_kwargs() -> None:
-    """Every read tool has an entry in _KNOWN_MINIMAL.
-
-    When a new tool is added, this test fails so the developer adds a
-    minimal valid argument set, keeping the parametrized smoke test
-    comprehensive.
-    """
+    """Every read tool has a declaration-owned executable example."""
     uncovered = sorted(_READ_TOOL_NAMES - set(_KNOWN_MINIMAL))
     if uncovered:
-        msg = (
-            "New MCP read tools without _KNOWN_MINIMAL entry. "
-            "Add minimal valid kwargs to _KNOWN_MINIMAL in this file.\n" + "\n".join(f"  - {t}" for t in uncovered)
+        msg = "New MCP read tools without declaration-owned minimal kwargs:\n" + "\n".join(
+            f"  - {t}" for t in uncovered
         )
         pytest.fail(msg)

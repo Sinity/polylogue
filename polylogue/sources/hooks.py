@@ -54,6 +54,12 @@ from uuid import uuid4
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
+from polylogue.maintenance.source_manifest_continuity import (
+    SourceContinuityError,
+    SourceDeclaration,
+    SourceRole,
+    canonical_source_declarations,
+)
 from polylogue.paths import data_home, hooks_sidecar_dir
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -131,8 +137,16 @@ def validate_hook_spool_topology(
         raise HookSpoolTopologyError("topology requires exactly one primary-writable source")
     if any(spec.role not in {"primary-writable", "legacy-read-only"} for spec in declared):
         raise HookSpoolTopologyError("hook spool source role must be primary-writable or legacy-read-only")
+    try:
+        canonical = canonical_source_declarations(
+            configured=(
+                SourceDeclaration(spec.source_id, SourceRole.SPOOL, spec.root, mutable=True) for spec in declared
+            )
+        )
+    except SourceContinuityError as exc:
+        raise HookSpoolTopologyError(str(exc)) from exc
     ids = [spec.source_id for spec in declared]
-    roots = [spec.root.resolve() for spec in declared]
+    roots = [declaration.root.resolve() for declaration in canonical]
     if any(not source_id.strip() for source_id in ids):
         raise HookSpoolTopologyError("source_id must be nonempty")
     if len(set(ids)) != len(ids):

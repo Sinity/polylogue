@@ -11,11 +11,13 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
+    BrowserCaptureSpoolConflictError,
     BrowserCaptureWriteResult,
     capture_artifact_path,
     capture_artifact_ref,
     receiver_status_payload,
     write_capture_envelope,
+    write_capture_envelope_bytes,
 )
 
 __all__ = [
@@ -25,6 +27,7 @@ __all__ = [
     "BrowserCaptureEnvelope",
     "BrowserCaptureProvenance",
     "BrowserCaptureReceiverConfig",
+    "BrowserCaptureSpoolConflictError",
     "BrowserCaptureSession",
     "BrowserCaptureTurn",
     "BrowserCaptureWriteResult",
@@ -32,4 +35,5 @@ __all__ = [
     "capture_artifact_path",
     "receiver_status_payload",
     "write_capture_envelope",
+    "write_capture_envelope_bytes",
 ]

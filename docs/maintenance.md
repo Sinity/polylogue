@@ -50,6 +50,18 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root polylogue ops maintenance archive-root-
 
 If apply stops after recording a prepared receipt, daemon startup fails closed and names an exact command whose plan path is the retained plan bound by that receipt. Rerun that command with the same authorization after restoring offline ownership. Resume accepts only the exact post-CAS manifest hashes and relocation proof chain sealed for that plan. Do not use this operation for a copy, restore, new archive, migration, or live service move.
 
+This distinction matters for rehearsal clones: a FICLONE or copied archive has
+new source/user device-inode authority and must fail closed on the existing
+audit-adoption receipt. It is not an archive-root relocation. For a rehearsal,
+create the clone through the authorized established-archive adoption route,
+using a verified `full_evidence` backup and
+`migrate-tier audit --adopt-established-audit`; do not copy an adoption receipt
+into a new authority set. A normal inactive index-generation build and
+promotion keeps source/user authority in place, so the adopted audit receipt
+must remain valid across that promotion; the regression test
+`test_audit_adoption_continuity_survives_index_generation_promotion` proves
+that production path.
+
 ### Recovering the one historical liveness receipt shape
 
 `source-continuity-recovery` is a one-purpose bridge for a committed pre-#3868 blob-reference-liveness receipt that lacks the modern manifest digest and post-orphan fields. It does not make ordinary liveness receipts permissive. It requires an authenticated pre-mutation backup at the old source path, an authenticated post-mutation backup at that same old path, exact pre/post `blob_refs` delta proof, and a fresh zero-orphan census against the configured moved root. It creates no SQLite rows; apply CAS-revises only the current released source train and retained receipts.
@@ -877,7 +889,8 @@ Classification is one-pass and idempotent. A classified run is terminal, so
 restarting the daemon over an already-recovered archive appends no further
 `recovery_classified` events.
 
-Two terminal reasons deliberately keep an operation blocking:
+Recovery terminal reasons deliberately keep an operation visible to bounded
+inspection:
 
 - `recovery_unknown` keeps the run visible to overlap detection, so a later
   mutation touching the same targets is refused rather than racing an effect
@@ -885,7 +898,12 @@ Two terminal reasons deliberately keep an operation blocking:
 - `recovered_applied` installs the duplicate-effect barrier: a confirmed
   applied recovery refuses a second attempt at the same semantic effect.
 
-Both are adjudicable, which is what keeps them from being permanent wedges.
+- `recovered_partial:<action>` preserves the declared `retry-exact`, `forward`,
+  or `rollback` continuation. A retryable partial remains eligible for the
+  same exact plan; a forward or rollback continuation remains blocked until an
+  operator adjudicates it.
+
+These states are adjudicable, which keeps them from becoming permanent wedges.
 Adjudication is an offline operator route with no writer lease of its own, so
 it refuses to run beside a live `polylogued`:
 

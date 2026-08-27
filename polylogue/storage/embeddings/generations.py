@@ -116,7 +116,6 @@ _OWNER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _REQUIRED_TABLES = {
     "message_embeddings",
     "message_embeddings_meta",
-    "message_embedding_refs",
     "embedding_status",
     "embedding_derivation_state",
     "embedding_failures",
@@ -241,16 +240,36 @@ class EmbeddingGenerationStore:
         try:
             with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
                 rows = conn.execute(
-                    "SELECT vector_derivation_hash FROM message_embeddings_meta ORDER BY vector_derivation_hash"
+                    """
+                    SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash
+                    FROM message_embeddings_meta
+                    ORDER BY vector_derivation_hash
+                    """
                 ).fetchall()
         except sqlite3.Error as exc:
             raise EmbeddingGenerationError("cannot read embedding membership digest") from exc
         digest = hashlib.sha256()
-        for row in rows:
-            value = bytes(row[0])
+        recipe_values: set[bytes] = set()
+        output_values: set[bytes] = set()
+        model_values: set[str] = set()
+        dimensions: set[int] = set()
+        for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
+            value = bytes(vector_hash)
+            recipe_value = bytes(recipe_hash)
+            output_value = bytes(output_contract_hash)
             if len(value) != 32:
                 raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
+            if len(recipe_value) != 32 or len(output_value) != 32:
+                raise EmbeddingGenerationError("embedding membership contains malformed recipe identity")
+            recipe_values.add(recipe_value)
+            output_values.add(output_value)
+            model_values.add(str(model))
+            dimensions.add(int(dimension))
+            digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
+        if len(recipe_values) > 1 or len(output_values) > 1 or len(model_values) > 1 or len(dimensions) > 1:
+            raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
+        digest.update(len(rows).to_bytes(8, "big"))
 
         def stable(path_value: Path) -> str:
             try:
@@ -261,19 +280,8 @@ class EmbeddingGenerationStore:
 
         index = self.archive_root / "index.db"
         source = self.archive_root / "source.db"
-        recipe = ""
-        try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
-                recipe_row = conn.execute(
-                    "SELECT recipe_hash FROM message_embeddings_meta "
-                    "WHERE recipe_hash IS NOT NULL ORDER BY recipe_hash LIMIT 1"
-                ).fetchone()
-                if recipe_row is not None:
-                    recipe = bytes(recipe_row[0]).hex()
-        except sqlite3.Error as exc:
-            raise EmbeddingGenerationError("cannot read embedding recipe identity") from exc
         return {
-            "recipe_hash": recipe or "empty",
+            "recipe_hash": next(iter(recipe_values)).hex() if recipe_values else "empty",
             "source_generation": stable(source),
             "index_generation": stable(index),
             "schema_version": EMBEDDINGS_SCHEMA_VERSION,
@@ -348,6 +356,18 @@ class EmbeddingGenerationStore:
             if not _regular_file(expected_db):
                 raise ValueError("generation database is missing")
             self._validate_database(expected_db)
+            actual_contract = self._database_contract(expected_db)
+            for field in (
+                "recipe_hash",
+                "source_generation",
+                "index_generation",
+                "schema_version",
+                "physical_root",
+                "sealed",
+                "membership_digest",
+            ):
+                if getattr(generation, field) != actual_contract[field]:
+                    raise ValueError(f"generation metadata contract mismatch: {field}")
             return generation
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise EmbeddingGenerationError(f"malformed embedding generation metadata: {path}") from exc

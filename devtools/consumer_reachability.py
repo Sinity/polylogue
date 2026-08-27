@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
 import re
@@ -61,6 +63,61 @@ _TABLE = re.compile(
 )
 _TOOL_DECORATOR = re.compile(r"@(?:[A-Za-z_][\w.]*\.)?(?:tool|command|register_tool)\b")
 _FUNCTION = re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(")
+_CACHE_VERSION = 1
+
+
+def _cache_key(root: Path) -> str:
+    """Hash the production source and script-entrypoint authorities."""
+    digest = hashlib.sha256()
+    for directory in (root / "polylogue", root / "devtools"):
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and path.suffix == ".py":
+                digest.update(path.relative_to(root).as_posix().encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+    import tomllib
+
+    payload = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = payload.get("project", {}).get("scripts", {})
+    digest.update(json.dumps(scripts, sort_keys=True, separators=(",", ":")).encode())
+    return digest.hexdigest()
+
+
+def _cached_reachability(root: Path, entrypoints: tuple[str, ...]) -> tuple[set[str], frozenset[str]] | None:
+    path = root / ".cache" / "verify" / "consumer-reachability" / f"{_cache_key(root)}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("version") != _CACHE_VERSION or tuple(payload.get("entrypoints", ())) != entrypoints:
+            return None
+        reachable = payload["reachable"]
+        reachable_modules = payload["reachable_modules"]
+        if not isinstance(reachable, list) or not isinstance(reachable_modules, list):
+            return None
+        return set(reachable), frozenset(reachable_modules)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _store_reachability(
+    root: Path, entrypoints: tuple[str, ...], reachable: set[str], reachable_modules: frozenset[str]
+) -> None:
+    cache_dir = root / ".cache" / "verify" / "consumer-reachability"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{_cache_key(root)}.json"
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    payload = {
+        "version": _CACHE_VERSION,
+        "entrypoints": list(entrypoints),
+        "reachable": sorted(reachable),
+        "reachable_modules": sorted(reachable_modules),
+    }
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
 
 
 def _git(root: Path, *args: str) -> str:
@@ -203,32 +260,28 @@ def check(root: Path, *, base: str | None = None, head: str | None = None, waive
     added_files = _added_files(root, base_sha, head_sha)
     waivers = _waivers(waiver_body)
     production_root = root / "polylogue"
-    graph = _CallGraph(_production_modules(root.resolve(), _source_signature(production_root)))
-    reachable: set[str] = set()
     # Production entrypoints: the served surfaces plus the CLI package and
     # every console script pyproject declares (polylogue-browser-capture-
     # native-host, polylogue-agentctl-adapter, polylogued, ...). Omitting the
     # script targets made their whole packages "unreachable".
-    for entrypoint in (
+    entrypoints = (
         "polylogue.api",
         "polylogue.mcp",
         "polylogue.daemon",
         "polylogue.hooks",
         "polylogue.cli",
         *_console_script_modules(root),
-    ):
-        reachable.update(graph.reachable_from(entrypoint))
-    reachable_modules = _import_reachable_modules(
-        root,
-        (
-            "polylogue.api",
-            "polylogue.mcp",
-            "polylogue.daemon",
-            "polylogue.hooks",
-            "polylogue.cli",
-            *_console_script_modules(root),
-        ),
     )
+    cached = _cached_reachability(root, entrypoints)
+    if cached is None:
+        graph = _CallGraph(_production_modules(root.resolve(), _source_signature(production_root)))
+        reachable: set[str] = set()
+        for entrypoint in entrypoints:
+            reachable.update(graph.reachable_from(entrypoint))
+        reachable_modules = _import_reachable_modules(root, entrypoints)
+        _store_reachability(root, entrypoints, reachable, reachable_modules)
+    else:
+        reachable, reachable_modules = cached
     findings: list[Finding] = []
     for relative, lines in additions.items():
         path = root / relative

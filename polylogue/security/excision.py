@@ -5,10 +5,7 @@ replica to reconcile), local excision is *authoritative*. Applying an
 excision:
 
 1. Deletes the session's vectors from ``embeddings.db`` (if embedded).
-2. Deletes the session from ``index.db`` -- ``sessions`` cascades to
-   ``messages``/``blocks``/``session_links`` via ``ON DELETE CASCADE``, and
-   the FTS triggers clean the contentless search index.
-3. Deletes the session's ``blob_refs`` and ``raw_sessions`` rows from
+2. Deletes the session's ``blob_refs`` and ``raw_sessions`` rows from
    ``source.db`` (cascading to ``raw_session_memberships``/
    ``raw_membership_census``), then records a durable removed-hash marker in
    ``excised_content`` for *every distinct blob hash* grouped under that raw
@@ -22,10 +19,13 @@ excision:
    blob-ref/streaming routes respectively, shared by the CLI import path and
    the daemon watch path) refuse to re-store a payload whose blob hash is
    recorded there, even after an unrelated ``index.db`` rebuild.
-4. Deletes ``user.db`` assertions targeting the excised session/messages/
+3. Deletes ``user.db`` assertions targeting the excised session/messages/
    blocks (including any prior ``SECRET_CANDIDATE`` finding about that exact
    content -- its whole purpose was pointing at now-gone bytes) and writes
    one durable ``EXCISION_RECORD`` audit receipt.
+4. Deletes the session from ``index.db`` -- ``sessions`` cascades to
+   ``messages``/``blocks``/``session_links`` via ``ON DELETE CASCADE``, and
+   the FTS triggers clean the contentless search index.
 
 **Attachments referenced from elsewhere.** ``attachment_refs.session_id``/
 ``message_id`` carry ``ON DELETE CASCADE`` to ``sessions``/``messages``, so
@@ -63,6 +63,7 @@ only -- see ``docs/security.md`` for the full mode matrix and non-goals.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -452,7 +453,9 @@ def _apply_single_session_excision(
     counts: dict[str, int] = {
         "embeddings_vectors": 0,
         "embeddings_vectors_gc": 0,
-        "index_sessions": 0,
+        # The receipt is committed before index cleanup, so record the
+        # expected session deletion in it rather than waiting for rowcount.
+        "index_sessions": int(target.session_exists),
         "index_messages": len(target.message_ids),
         "index_blocks": len(target.block_ids),
         "source_blob_refs": 0,
@@ -516,17 +519,6 @@ def _apply_single_session_excision(
         finally:
             conn.close()
 
-    index_db = archive_root / "index.db"
-    if index_db.exists():
-        conn = _connect_rw(index_db)
-        conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            with conn:
-                cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                counts["index_sessions"] = max(cursor.rowcount, 0)
-        finally:
-            conn.close()
-
     source_db = archive_root / "source.db"
     removed_hashes: list[str] = []
     if source_db.exists() and target.raw_targets:
@@ -572,43 +564,87 @@ def _apply_single_session_excision(
         finally:
             conn.close()
 
+    # Durable source authority must commit before the rebuildable index loses
+    # the key needed to retry an interrupted excision. The receipt is written
+    # before index cleanup so a crash after the receipt remains attributable.
     user_db = archive_root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
     conn = _connect_rw(user_db)
+    existing_receipt: tuple[str, dict[str, object]] | None = None
+    receipt_id = _receipt_assertion_id(session_id, timestamp)
     try:
         with conn:
-            refs = _target_refs(target)
-            removed_assertions = 0
-            for ref in refs:
-                cursor = conn.execute("DELETE FROM assertions WHERE target_ref = ?", (ref,))
-                removed_assertions += max(cursor.rowcount, 0)
-            counts["user_assertions_removed"] = removed_assertions
+            row = conn.execute(
+                "SELECT assertion_id, value_json FROM assertions "
+                "WHERE target_ref = ? AND kind = ? ORDER BY created_at_ms LIMIT 1",
+                (f"session:{session_id}", AssertionKind.EXCISION_RECORD.value),
+            ).fetchone()
+            if row is not None and row[1]:
+                value = json.loads(str(row[1]))
+                if isinstance(value, dict):
+                    existing_receipt = (str(row[0]), value)
+            if existing_receipt is None:
+                refs = _target_refs(target)
+                removed_assertions = 0
+                for ref in refs:
+                    cursor = conn.execute("DELETE FROM assertions WHERE target_ref = ?", (ref,))
+                    removed_assertions += max(cursor.rowcount, 0)
+                counts["user_assertions_removed"] = removed_assertions
 
-            receipt_id = _receipt_assertion_id(session_id, timestamp)
-            from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+                from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
-            upsert_assertion(
-                conn,
-                assertion_id=receipt_id,
-                target_ref=f"session:{session_id}",
-                kind=AssertionKind.EXCISION_RECORD,
-                value={
-                    "reason": reason,
-                    "actor": actor,
-                    "mode": "standalone",
-                    "removed_blob_hashes": removed_hashes,
-                    "counts": counts,
-                    "excised_at_ms": timestamp,
-                },
-                author_ref="user:local",
-                author_kind="user",
-                status=AssertionStatus.ACTIVE,
-                visibility=AssertionVisibility.PRIVATE,
-                context_policy={"inject": False},
-                now_ms=timestamp,
-            )
+                upsert_assertion(
+                    conn,
+                    assertion_id=receipt_id,
+                    target_ref=f"session:{session_id}",
+                    kind=AssertionKind.EXCISION_RECORD,
+                    value={
+                        "reason": reason,
+                        "actor": actor,
+                        "mode": "standalone",
+                        "removed_blob_hashes": removed_hashes,
+                        "counts": counts,
+                        "excised_at_ms": timestamp,
+                    },
+                    author_ref="user:local",
+                    author_kind="user",
+                    status=AssertionStatus.ACTIVE,
+                    visibility=AssertionVisibility.PRIVATE,
+                    context_policy={"inject": False},
+                    now_ms=timestamp,
+                )
     finally:
         conn.close()
+
+    index_db = archive_root / "index.db"
+    if index_db.exists():
+        conn = _connect_rw(index_db)
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            with conn:
+                cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+                if existing_receipt is None:
+                    counts["index_sessions"] = max(cursor.rowcount, 0)
+        finally:
+            conn.close()
+
+    if existing_receipt is not None:
+        receipt_id, value = existing_receipt
+        stored_counts = value.get("counts")
+        stored_timestamp = value.get("excised_at_ms")
+        stored_hashes = value.get("removed_blob_hashes")
+        return ExcisionReceipt(
+            session_id=session_id,
+            found=True,
+            reason=str(value.get("reason", reason)),
+            actor=str(value.get("actor", actor)),
+            excised_at_ms=int(stored_timestamp) if isinstance(stored_timestamp, int) else timestamp,
+            receipt_assertion_id=receipt_id,
+            removed_blob_hashes=(
+                tuple(str(item) for item in stored_hashes) if isinstance(stored_hashes, (list, tuple)) else ()
+            ),
+            counts=dict(stored_counts) if isinstance(stored_counts, dict) else {},
+        )
 
     return ExcisionReceipt(
         session_id=session_id,

@@ -30,6 +30,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
@@ -510,11 +511,10 @@ def _blob_hash_text(value: object) -> str | None:
     return text if text else None
 
 
-_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events", "history_sidecars")
+_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events")
 _CURRENT_SOURCE_COLUMNS = {
     "raw_sessions": ("raw_id", "blob_hash"),
     "raw_hook_events": ("hook_event_id", "blob_hash"),
-    "history_sidecars": ("sidecar_id",),
     "blob_refs": ("blob_hash", "ref_id", "ref_type"),
 }
 
@@ -639,17 +639,23 @@ def project_source_blob_liveness(
     *,
     index_db: Path | None = None,
     immutable: bool = False,
+    source_generation_id: str | None = None,
 ) -> BlobLivenessProjection:
     """Return a complete canonical source projection or refuse incomplete evidence."""
 
     immutable_query = "&immutable=1" if immutable else ""
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as source_conn:
         if index_db is None:
-            projection = project_live_blob_hashes(source_conn)
+            projection = project_live_blob_hashes(source_conn, source_generation_id=source_generation_id)
             index_conn = None
         else:
             with closing(sqlite3.connect(f"file:{index_db}?mode=ro{immutable_query}", uri=True)) as index_conn:
-                projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
+                projection = project_live_blob_hashes(
+                    source_conn,
+                    index_conn=index_conn,
+                    require_index=True,
+                    source_generation_id=source_generation_id,
+                )
                 return _historical_projection(source_conn, projection, index_conn=index_conn, require_index=True)
         return _historical_projection(source_conn, projection, index_conn=index_conn)
 
@@ -1493,47 +1499,13 @@ def _default_blob_ref_quarantine_path(source_db: Path) -> Path:
 
 
 def _write_blob_ref_quarantine(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd: int | None = None
-    tmp_path: str | None = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = None
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
-                handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    payload = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    atomic_replace(path, payload.encode("utf-8"))
 
 
 def _write_jsonl_rows(path: Path, rows: Iterable[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd: int | None = None
-    tmp_path: str | None = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = None
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
-                handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    payload = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    atomic_replace(path, payload.encode("utf-8"))
 
 
 def _delete_blob_ref_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:

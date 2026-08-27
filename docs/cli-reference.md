@@ -168,7 +168,6 @@ Options:
 
 Commands:
   Search, read, and action workflows:
-    find      Search the archive, then optionally run an...
     read      Read matched sessions (route to view/destination).
     select    Select one matched session or print candidate identities.
     mark      Mark selected sessions with tags, notes, and durable marks.
@@ -208,6 +207,7 @@ Commands:
     agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
     compare      Blind pairwise comparative judgment and calibration.
+    context
     setting      Get, set, and list durable user settings.
 ```
 
@@ -259,13 +259,19 @@ Options:
   --help                          Show this message and exit.
 
 Commands:
-  insights  Check and export derived insight materialization.
-  latency   Analyze operational route latency (p50/p95) from ops-tier
-            telemetry.
-  pace      Analyze session pacing, gaps, and burstiness.
-  tools     Analyze tool usage across sessions.
-  turns     Analyze turn structure for one session.
-  usage     Analyze provider usage events.
+  by            Group the matched sessions by DIMENSION.
+  cost-outlook  Project the current billing cycle for PLAN.
+  count         Print the matched-session count.
+  facets        Show facet families for the matched query scope.
+  insights      Check and export derived insight materialization.
+  latency       Analyze operational route latency (p50/p95) from ops-tier
+                telemetry.
+  pace          Analyze session pacing, gaps, and burstiness.
+  portfolio     Render a sanitized portfolio report for the matched scope.
+  postmortem    Render a postmortem bundle for the matched scope.
+  tools         Analyze tool usage across sessions.
+  turns         Analyze turn structure for one session.
+  usage         Analyze provider usage events.
 ```
 
 ## Read Verb
@@ -366,6 +372,9 @@ Options:
 Usage: polylogue delete [OPTIONS]
 
   Delete matched sessions.
+
+  Output is JSON-only. Mutations emit a machine-consumable
+  ``MutationResultPayload`` envelope.
 
   Cardinality rules:
     --dry-run       Preview what would be deleted (no confirmation needed).
@@ -515,6 +524,7 @@ Options:
 Commands:
   audit          Report per-product rigor profile across materialized...
   export         Export versioned archive-insight bundles.
+  fable-packet   Cold-regenerate the private, descriptive Fable...
   hermes-health  Report the bounded Hermes-to-Polylogue integration...
   status         Report insight materialization coverage and readiness.
 ```

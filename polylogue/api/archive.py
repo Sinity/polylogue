@@ -24,7 +24,12 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
-from polylogue.archive.query.spec import normalize_action_sequence, normalize_action_terms, parse_query_date
+from polylogue.archive.query.spec import (
+    normalize_action_sequence,
+    normalize_action_terms,
+    parse_query_date,
+    resolve_default_root_filter,
+)
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
@@ -42,7 +47,7 @@ from polylogue.context.scheduler import (
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
-from polylogue.core.errors import PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
@@ -702,6 +707,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "tags": spec.tags,
         "excluded_tags": spec.excluded_tags,
         "repo_names": spec.repo_names,
+        "project_refs": spec.project_refs,
         "has_types": spec.has_types,
         "has_tool_use": spec.filter_has_tool_use,
         "has_thinking": spec.filter_has_thinking,
@@ -717,6 +723,7 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "typed_only": spec.typed_only,
         "message_type": _archive_message_type(spec.message_type),
         "title": spec.title,
+        "session_id": spec.session_id,
         "min_messages": spec.min_messages,
         "max_messages": spec.max_messages,
         "min_words": spec.min_words,
@@ -725,6 +732,10 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         "until_ms": _archive_query_date_ms("until", spec.until),
         "since_session_id": spec.since_session_id,
         "boolean_predicate": spec.boolean_predicate,
+        "root": resolve_default_root_filter(
+            spec.root,
+            boolean_predicate=spec.boolean_predicate,
+        ),
     }
     if limit is not None:
         kwargs["limit"] = limit
@@ -754,6 +765,15 @@ def _archive_list_summaries_for_spec(
 ) -> list[ArchiveSessionSummary]:
     query_text = _archive_text_query(spec)
     query_kwargs = _archive_query_kwargs(spec, default_limit=default_limit)
+    if spec.exclude_text_terms:
+        return _archive_list_summaries_with_post_filters(
+            archive,
+            spec,
+            query_text=query_text,
+            query_kwargs=query_kwargs,
+            limit=limit,
+            offset=offset,
+        )
     if limit is not None:
         query_kwargs["limit"] = limit
     if offset is not None:
@@ -762,6 +782,40 @@ def _archive_list_summaries_for_spec(
         query_kwargs.pop("sample", None)
         return [archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)]
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+
+
+def _archive_list_summaries_with_post_filters(
+    archive: Any,
+    spec: SessionQuerySpec,
+    *,
+    query_text: str | None,
+    query_kwargs: dict[str, object],
+    limit: int | None,
+    offset: int | None,
+) -> list[ArchiveSessionSummary]:
+    """Apply content-dependent spec filters after the SQL candidate query."""
+    query_kwargs = dict(query_kwargs)
+    query_kwargs.pop("limit", None)
+    query_kwargs["offset"] = 0
+    query_kwargs["limit"] = 1_000_000
+    if query_text is not None:
+        query_kwargs.pop("sample", None)
+        candidates = [
+            archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
+        ]
+    else:
+        candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+
+    sessions = [
+        _archive_session_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+        for summary in candidates
+    ]
+    matched = spec.to_plan()._apply_full_filters(sessions, sql_pushed=True)
+    matched_ids = {str(session.id) for session in matched}
+    filtered = [summary for summary in candidates if summary.session_id in matched_ids]
+    start = offset if offset is not None else 0
+    end = None if limit is None else start + limit
+    return filtered[start:end]
 
 
 def _archive_search_hits_for_spec(
@@ -780,6 +834,16 @@ def _archive_search_hits_for_spec(
 
 
 def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
+    if spec.exclude_text_terms:
+        return len(
+            _archive_list_summaries_for_spec(
+                archive,
+                spec,
+                default_limit=1_000_000,
+                limit=None,
+                offset=0,
+            )
+        )
     query_kwargs = _archive_query_kwargs(spec, default_limit=None)
     for key in ("limit", "offset", "sort", "reverse", "sample"):
         query_kwargs.pop(key, None)
@@ -800,7 +864,11 @@ def _archive_facet_buckets(
     if spec is None:
         summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=1_000_000))
     else:
-        summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+        from dataclasses import replace
+
+        summaries = _archive_list_summaries_for_spec(
+            archive, replace(spec, limit=None, offset=0), default_limit=1_000_000
+        )
     origins: dict[str, int] = {}
     tags: dict[str, int] = {}
     total_messages = 0
@@ -1131,29 +1199,38 @@ def _archive_list_assertion_claims(
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
 
     def _read(archive: Any) -> list[Any]:
-        conn = open_readonly_connection(archive.user_db_path)
-        conn.row_factory = sqlite3.Row
         try:
-            if kinds is None:
+            conn = open_readonly_connection(archive.user_db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                if kinds is None:
+                    return list_assertion_claims(
+                        conn,
+                        target_ref=target_ref,
+                        scope_ref=scope_ref,
+                        statuses=statuses,
+                        context_inject=context_inject,
+                        limit=limit,
+                    )
                 return list_assertion_claims(
                     conn,
+                    kinds=kinds,
                     target_ref=target_ref,
                     scope_ref=scope_ref,
                     statuses=statuses,
                     context_inject=context_inject,
                     limit=limit,
                 )
-            return list_assertion_claims(
-                conn,
-                kinds=kinds,
-                target_ref=target_ref,
-                scope_ref=scope_ref,
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-        finally:
-            conn.close()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ArchiveTierUnavailableError(
+                tier="user.db",
+                path=str(archive.user_db_path.resolve(strict=False)),
+                reason=f"cannot read SQLite database ({exc})",
+                guidance="restore or initialize the durable user tier at this path, then retry the query; "
+                "the reader will not create a replacement or search another archive root",
+            ) from exc
 
     return run_archive_read_sync(
         _active_archive_root(config),
@@ -2989,7 +3066,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             digest = await self._session_digest(sid)
             if digest is not None:
                 projections.append(digest.run_projection)
-        return compile_pathology_report(projections)
+        report = compile_pathology_report(projections)
+        return report.model_copy(
+            update={
+                "matched_session_count": matched,
+                "analyzed_session_count": len(projections),
+                "truncated": matched > cap,
+                "dropped_session_count": max(0, matched - cap),
+            }
+        )
 
     async def portfolio_bundle(
         self,
@@ -3366,6 +3451,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 limit=limit,
             ),
         )
+        matched = len(
+            _archive_list_assertion_candidate_reviews(
+                self.config, target_ref=target_ref, kinds=kinds, statuses=candidate_statuses, limit=None
+            )
+        )
         evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
         for review in review_rows:
             previews: list[AssertionEvidencePreviewPayload] = []
@@ -3419,6 +3509,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             target_ref=target_ref,
             candidate_statuses=candidate_statuses,
             evidence_previews=evidence_previews,
+            matched=matched,
         )
 
     async def assertion_candidate_queue_health(self) -> AssertionCandidateQueueHealthPayload:
@@ -3639,6 +3730,54 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     message_anchor_by_session[hit.session_id] = hit.message_id
         return session_ids, message_anchor_by_session, omitted
 
+    async def record_manual_continuation(self, child_session_id: str, parent_session_id: str) -> None:
+        """Record a spawned-fresh continuation and its first handoff claim."""
+        child = str(child_session_id).strip()
+        parent = str(parent_session_id).strip()
+        if not child or not parent or ":" not in child or ":" not in parent:
+            raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
+        parent_origin, parent_native = parent.split(":", 1)
+        root = _active_archive_root(self.config)
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        index = open_connection(root / "index.db")
+        try:
+            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
+                raise ValueError("manual continuation child session does not exist")
+            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
+                raise ValueError("manual continuation parent session does not exist")
+            index.execute(
+                """INSERT OR REPLACE INTO session_links
+                   (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
+                    resolved_dst_session_id, status, method, confidence, evidence_json, observed_at_ms)
+                   VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?, 'resolved',
+                           'manual-continuation', 1.0, '[]', ?)""",
+                (child, parent_origin, parent_native, parent, now_ms),
+            )
+            index.commit()
+        finally:
+            index.close()
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+        user = open_connection(root / "user.db")
+        try:
+            upsert_assertion(
+                user,
+                assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
+                target_ref=f"session:{child}",
+                kind=AssertionKind.HANDOFF,
+                body_text=f"Continuation from session {parent}.",
+                author_ref="service:polylogue",
+                author_kind="service",
+                evidence_refs=[f"session:{parent}", f"session:{child}"],
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=now_ms,
+            )
+            user.commit()
+        finally:
+            user.close()
+
     async def compile_context(self, spec: ContextSpec) -> ContextImage:
         """Compile a bounded context image from query/ref seeds and read views.
 
@@ -3653,6 +3792,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             compile_assertion_context_segment,
             compile_chronicle_context_segment,
             compile_messages_context_segment,
+            compile_prose_with_refs_context_segment,
             compile_query_unit_context_segment,
             compile_temporal_context_segment,
         )
@@ -3694,6 +3834,26 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         def append_messages_segment(session_id: str, session: Session, view: str) -> bool:
             nonlocal token_total
             remaining_tokens = None if token_budget is None else max(1, token_budget - token_total)
+            if spec.segment_profile == "prose_with_refs":
+                segment, recapped = compile_prose_with_refs_context_segment(
+                    session_id=session_id,
+                    title=session.title,
+                    messages=tuple(session.messages),
+                    max_tokens=remaining_tokens,
+                    evidence_refs=(EvidenceRef(session_id=session_id),),
+                )
+                if recapped:
+                    omitted.append(
+                        ContextOmission(
+                            ref=f"session:{session_id}",
+                            view=view,
+                            reason="budget",
+                            detail="oldest unprotected prose collapsed to one-line recaps",
+                        )
+                    )
+                token_total += segment.token_estimate
+                segments.append(segment)
+                return True
             messages, omitted_before, omitted_after, clipped_messages = _archive_context_message_window(
                 tuple(session.messages),
                 anchor_message_id=message_anchor_by_session.get(session_id),
@@ -4327,6 +4487,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 return self._resolve_message_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "block":
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
+            if object_ref.kind == "action":
+                return self._resolve_block_object_ref(
+                    archive,
+                    ref,
+                    normalized_ref,
+                    ObjectRef(kind="block", object_id=object_ref.object_id, qualifiers=object_ref.qualifiers),
+                    evidence_ref,
+                )
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
             if object_ref.kind == "finding":

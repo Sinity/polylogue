@@ -39,6 +39,7 @@ from polylogue.operations.mutation_transaction import (
     RecoveryDisposition,
     RecoveryOperation,
     RecoveryTargetDisposition,
+    _FailClosedRecovery,
     build_plan,
     make_target_ref,
 )
@@ -71,7 +72,7 @@ class SessionDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionDeleteActuator:
+class SessionDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-session``: permanent, re-ingest-resurrectable removal.
 
     Real production mutation: ``ArchiveStore.delete_sessions`` -- the single
@@ -163,7 +164,7 @@ class SessionExcisionArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionExcisionActuator:
+class SessionExcisionActuator(_FailClosedRecovery):
     """Actuator for ``mutate-session-excision``: durable, re-ingest-proof removal.
 
     Real production mutation: ``security.excision.plan_session_excision`` /
@@ -264,7 +265,7 @@ class SessionLifecycleRequestArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionLifecycleRequestActuator:
+class SessionLifecycleRequestActuator(_FailClosedRecovery):
     """Create the local lifecycle request through the audit-backed executor."""
 
     operation: str = "mutate-session-lifecycle-request"
@@ -322,7 +323,7 @@ class IdentityResetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class IdentityResetActuator:
+class IdentityResetActuator(_FailClosedRecovery):
     """Actuator for ``mutate-identity-reset``: tombstone + rebuildable-row delete.
 
     Real production mutation: the ``polylogue ops reset --session/--source``
@@ -419,7 +420,7 @@ class PendingBlobGCGenerationAbandonArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class PendingBlobGCGenerationAbandonActuator:
+class PendingBlobGCGenerationAbandonActuator(_FailClosedRecovery):
     """Terminalize a blocked GC intent without touching blob namespace bytes."""
 
     operation: str = "mutate-abandon-pending-blob-gc-generation"
@@ -525,7 +526,7 @@ class TagAddArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class TagAddActuator:
+class TagAddActuator(_FailClosedRecovery):
     """Actuator for ``mutate-add-tag``: reversible user.db tag assertion.
 
     Real production mutation: ``ArchiveStore.add_user_tags`` -- the same
@@ -581,7 +582,7 @@ class TagRemoveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class TagRemoveActuator:
+class TagRemoveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-remove-tag``: reversible user.db tag retraction.
 
     Real production mutation: ``ArchiveStore.remove_user_tags`` -- marks the
@@ -634,7 +635,7 @@ class BulkTagArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BulkTagActuator:
+class BulkTagActuator(_FailClosedRecovery):
     """Actuator for ``mutate-bulk-tag-sessions``: reversible multi-target tagging.
 
     Real production mutation: ``ArchiveStore.add_user_tags`` applied per
@@ -716,7 +717,7 @@ class MetadataSetArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MetadataSetActuator:
+class MetadataSetActuator(_FailClosedRecovery):
     """Actuator for ``mutate-set-metadata``: reversible user.db metadata write.
 
     Real production mutation: ``ArchiveStore.set_user_metadata``. Key
@@ -769,7 +770,7 @@ class MetadataDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MetadataDeleteActuator:
+class MetadataDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-metadata``: reversible user.db metadata retraction.
 
     Real production mutation: ``ArchiveStore.delete_user_metadata``, which
@@ -837,7 +838,7 @@ class MarkArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class MarkAddActuator:
+class MarkAddActuator(_FailClosedRecovery):
     """Actuator for ``mutate-add-mark``: reversible user.db mark assertion.
 
     Real production mutation: ``ArchiveStore.add_mark``, the same primitive
@@ -887,7 +888,7 @@ class MarkAddActuator:
 
 
 @dataclass(frozen=True, slots=True)
-class MarkRemoveActuator:
+class MarkRemoveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-remove-mark``: reversible user.db mark retraction.
 
     Real production mutation: ``ArchiveStore.remove_mark`` (undo =
@@ -1037,7 +1038,7 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureAssertionCandidateActuator:
+class CaptureAssertionCandidateActuator(_FailClosedRecovery):
     """Actuator for the durable terminal assertion candidate capture."""
 
     operation: str = "mutate-capture-assertion-candidate"
@@ -1163,7 +1164,7 @@ class AnnotationSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationSaveActuator:
+class AnnotationSaveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-save-annotation``: reversible user.db annotation upsert.
 
     Real production mutation: ``ArchiveStore.save_annotation``, the same
@@ -1230,7 +1231,7 @@ class AnnotationDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationDeleteActuator:
+class AnnotationDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-annotation``: reversible user.db annotation retraction.
 
     Real production mutation: ``ArchiveStore.delete_annotation``, which marks
@@ -1290,7 +1291,7 @@ class BlockerResolveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BlockerResolveActuator:
+class BlockerResolveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-resolve-raw-authority-blocker``: reopen raw replanning.
 
     Real production mutation: ``raw_authority.resolve_raw_authority_blocker``
@@ -1393,7 +1394,7 @@ class SavedViewSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SavedViewSaveActuator:
+class SavedViewSaveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-save-saved-view``: reversible user.db saved-view upsert.
 
     Real production mutation: ``ArchiveStore.save_view``, the same primitive
@@ -1456,7 +1457,7 @@ class SavedViewDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class SavedViewDeleteActuator:
+class SavedViewDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-saved-view``: reversible user.db saved-view retraction.
 
     Real production mutation: ``ArchiveStore.delete_view``, which marks the
@@ -1518,7 +1519,7 @@ class RecallPackSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallPackSaveActuator:
+class RecallPackSaveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-save-recall-pack``: reversible user.db recall-pack upsert.
 
     Real production mutation: ``ArchiveStore.save_recall_pack``, the same
@@ -1572,7 +1573,7 @@ class RecallPackDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class RecallPackDeleteActuator:
+class RecallPackDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-recall-pack``: reversible user.db recall-pack retraction.
 
     Real production mutation: ``ArchiveStore.delete_recall_pack`` (undo =
@@ -1635,7 +1636,7 @@ class WorkspaceSaveArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceSaveActuator:
+class WorkspaceSaveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-save-workspace``: reversible user.db workspace upsert.
 
     Real production mutation: ``ArchiveStore.save_workspace``, the same
@@ -1705,7 +1706,7 @@ class WorkspaceDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceDeleteActuator:
+class WorkspaceDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-workspace``: reversible user.db workspace retraction.
 
     Real production mutation: ``ArchiveStore.delete_workspace`` (undo =
@@ -1764,7 +1765,7 @@ class CorrectionRecordArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionRecordActuator:
+class CorrectionRecordActuator(_FailClosedRecovery):
     """Actuator for ``mutate-record-correction``: reversible user.db correction upsert.
 
     Real production mutation: ``ArchiveStore.record_correction``, the same
@@ -1828,7 +1829,7 @@ class CorrectionDeleteArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionDeleteActuator:
+class CorrectionDeleteActuator(_FailClosedRecovery):
     """Actuator for ``mutate-delete-correction``: reversible user.db correction retraction.
 
     Real production mutation: ``ArchiveStore.delete_correction``, which
@@ -1878,7 +1879,7 @@ class CorrectionsClearArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class CorrectionsClearActuator:
+class CorrectionsClearActuator(_FailClosedRecovery):
     """Actuator for ``mutate-clear-corrections``: reversible bulk user.db retraction.
 
     Real production mutation: ``ArchiveStore.clear_corrections``. Unlike
@@ -1960,7 +1961,7 @@ class BlackboardPostArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class BlackboardPostActuator:
+class BlackboardPostActuator(_FailClosedRecovery):
     """Actuator for ``mutate-blackboard-post``: append-only user.db note insert.
 
     Real production mutation: ``ArchiveStore.post_blackboard_note``, the same
@@ -2041,7 +2042,7 @@ class IndexRebuildArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class IndexRebuildActuator:
+class IndexRebuildActuator(_FailClosedRecovery):
     """Actuator for the trigger-maintained block FTS rebuild primitive.
 
     ``update_index`` historically accepts session ids for surface symmetry,
@@ -2089,7 +2090,7 @@ class InsightsRebuildArgs:
 
 
 @dataclass(frozen=True, slots=True)
-class InsightsRebuildActuator:
+class InsightsRebuildActuator(_FailClosedRecovery):
     """Actuator for the canonical durable session-insight materializer."""
 
     operation: str = "mutate-rebuild-insights"

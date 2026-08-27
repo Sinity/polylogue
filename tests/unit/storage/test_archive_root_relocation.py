@@ -28,6 +28,7 @@ from polylogue.operations.archive_root_relocation import (
     RelocationPostMoveWitness,
     RelocationTierEvidence,
     _check_backup_against_live,
+    _index_generation_evidence,
     apply_archive_root_relocation,
     assert_no_prepared_archive_root_relocation,
     load_archive_root_relocation_plan,
@@ -104,6 +105,15 @@ from polylogue.storage.sqlite.migration_runner import (
     release_durable_change_train,
     write_durable_change_train_manifest,
 )
+
+
+def test_relocation_names_generation_directory_missing_metadata(tmp_path: Path) -> None:
+    """A metadata-less generation is reported as an orphan with its path."""
+    generation_root = tmp_path / ".index-generations" / "gen-1755000000000-deadbeef"
+    generation_root.mkdir(parents=True)
+
+    with pytest.raises(ArchiveRootRelocationError, match="orphan.*gen-1755000000000-deadbeef"):
+        _index_generation_evidence(old_root=tmp_path, new_root=tmp_path, active_index_pointer=None)
 
 
 def test_historical_evidence_reads_keep_sqlite_temp_btrees_off_the_filesystem(tmp_path: Path) -> None:

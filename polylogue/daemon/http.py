@@ -42,7 +42,11 @@ from polylogue.daemon.execution import (
     DaemonOperationCancelled,
     current_cancellation,
 )
-from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
+from polylogue.daemon.route_contracts import (
+    RouteContract,
+    daemon_route_declaration,
+    route_contract_for_pattern,
+)
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.user_state_http import RouteMethod
 from polylogue.daemon.web_auth import (
@@ -124,7 +128,7 @@ logger = get_logger(__name__)
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
 _CLI_DELETE_SELECTION_MAX_BYTES = 64 * 1024 * 1024
-_CLI_DELETE_AUTHORIZATION_MAX_BYTES = 2_048
+_CLI_DELETE_AUTHORIZATION_MAX_BYTES = 8_192
 
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
 
@@ -318,7 +322,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/overview", "_handle_overview"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
-        _static_get_route("/api/sessions", "_handle_list_sessions", passes_params=True),
+        _declared_static_get_route("GET", "/api/sessions"),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
         _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
@@ -336,6 +340,19 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/sources", "_handle_sources"),
         _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
         _static_get_route("/api/maintenance/operations", "_handle_maintenance_operations"),
+    )
+
+
+def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
+    """Build a production GET adapter from the shared route declaration."""
+
+    declaration = daemon_route_declaration(method, path)
+    binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    return _StaticGetRoute(
+        contract=route_contract_for_pattern(method, path),
+        segments=_route_segments(declaration.path),
+        handler_name=binding.symbol,
+        passes_params=True,
     )
 
 
@@ -1727,52 +1744,64 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        # WebUI v2 is a strangler mount: semantic SSR at /app plus only
-        # manifest-governed local assets. It shares the legacy shell's
-        # loopback/bootstrap auth posture while the archive JSON remains under
-        # the normal scoped credential checks.
-        if path == ["app"]:
+        # The typed WebUI is the canonical browser surface.  Keep the route
+        # aliases here deliberately boring: they all enter the same SSR
+        # handlers, asset-manifest boundary, and auth checks.  In particular,
+        # the root route must not select the interpolated reader based on a
+        # feature flag or fallback condition.
+        if path in ([""], ["app"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_archive_overview()
             return
-        if path == ["app", "observability"]:
+        if path in (["observability"], ["app", "observability"]):
             if not self._check_auth():
                 return
             self._serve_webui_observability()
             return
-        if path == ["app", "cost"]:
+        if path in (["cost"], ["app", "cost"]):
             if not self._check_auth():
                 return
             self._serve_webui_cost()
             return
-        if path == ["app", "sessions"]:
+        if path in (["sessions"], ["app", "sessions"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_list(params)
             return
-        if len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2]):
+        if (len(path) == 2 and path[0] == "sessions" and bool(path[1])) or (
+            len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2])
+        ):
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_webui_session_read(path[2])
+            self._serve_webui_session_read(path[-1])
             return
-        if path == ["app", "search"]:
+        if path in (["search"], ["app", "search"]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_search(params)
             return
-        if len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2]):
+        if (len(path) == 2 and path[0] == "assets" and bool(path[1])) or (
+            len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2])
+        ):
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_webui_asset(path[2])
+            self._serve_webui_asset(path[-1])
             return
 
-        # Legacy web shell bootstrap (localhost only).
-        if (
-            path == [""]
-            or (len(path) == 2 and path[0] == "s" and bool(path[1]))
-            or (len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES)
-        ):
+        # The short session deep link is part of the typed reader contract.
+        # Keep its stable URL while routing it through the same SSR handler as
+        # the long form above.
+        if len(path) == 2 and path[0] == "s" and bool(path[1]):
+            if not self._check_shell_bootstrap_access():
+                return
+            self._serve_webui_session_read(path[1])
+            return
+
+        # Workspace, paste, and attachment entrypoints remain legacy-only
+        # capabilities until their typed replacements land. The canonical
+        # archive reader never delegates to this branch.
+        if len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_web_shell()
@@ -3549,12 +3578,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
-                envelope = (
-                    archive.read_session_page(session_id, limit=limit, offset=offset)
-                    if limit is not None
-                    else archive.read_session(session_id)
-                )
-                summary = archive.read_summary(session_id)
+
+                def read_session_data() -> tuple[ArchiveSessionEnvelope, ArchiveSessionSummary]:
+                    return (
+                        archive.read_session_page(session_id, limit=limit, offset=offset)
+                        if limit is not None
+                        else archive.read_session(session_id),
+                        archive.read_summary(session_id),
+                    )
+
+                envelope, summary = self._run_archive_bounded_query(archive, deadline_s=None, compute=read_session_data)
             except KeyError:
                 return None
 
@@ -5153,6 +5186,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # A request id is the exchange identity. Reusing it is ambiguous for
+        # a client that lost a response, so reject it before invoking any
+        # operation implementation.
+        seen_ids = getattr(self.server, "operation_ids_seen", None)
+        ids_lock = getattr(self.server, "operation_ids_lock", None)
+        if request.request_id is not None and seen_ids is not None and ids_lock is not None:
+            with ids_lock:
+                if request.request_id in seen_ids:
+                    self._send_operation_error(
+                        HTTPStatus.CONFLICT,
+                        request,
+                        archive,
+                        generation,
+                        readiness,
+                        "duplicate_request_id",
+                        "request_id was already used",
+                    )
+                    return
+                seen_ids.add(request.request_id)
+                ids_order = getattr(self.server, "operation_ids_order", None)
+                if ids_order is not None:
+                    if len(ids_order) == ids_order.maxlen:
+                        seen_ids.discard(ids_order[0])
+                    ids_order.append(request.request_id)
+
         captured: list[tuple[HTTPStatus, object]] = []
         original_send_json = self._send_json
 
@@ -5248,6 +5306,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "writes": "daemon-owned",
                 },
                 progress={"state": "failed"},
+                outcome="failed",
+                served_by={"daemon_version": POLYLOGUE_VERSION},
+                timing={"elapsed_ms": 0, "queue_ms": 0},
+                schema_versions={"index": INDEX_SCHEMA_VERSION},
                 error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
                 request_id=request.request_id,
             )
@@ -5265,6 +5327,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "writes": "daemon-owned",
             },
             progress={"state": "complete"},
+            outcome="complete",
+            served_by={"daemon_version": POLYLOGUE_VERSION},
+            timing={"elapsed_ms": 0, "queue_ms": 0},
+            schema_versions={"index": INDEX_SCHEMA_VERSION},
             result=result,
             request_id=request.request_id,
         )
@@ -5290,6 +5356,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             readiness=readiness,
             authority={"mode": "daemon", "writes": "daemon-owned"},
             progress={"state": "failed"},
+            outcome="failed",
             error={"code": code, "detail": detail},
         )
         self._send_json(status, envelope.to_dict())
@@ -5320,15 +5387,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_cli_delete_authorize(self) -> None:
         """Issue an authenticated caller's one-time delete authorization."""
 
-        preview_ref = self._read_cli_delete_token_field("preview_ref")
-        if preview_ref is None:
+        fields = self._read_cli_delete_refs_or_tokens("preview_ref", "preview_refs")
+        if fields is None:
             return
+        preview_refs = fields
         principal = self._cli_delete_principal()
 
-        async def _authorize(poly: Polylogue) -> str:
-            from polylogue.operations.delete_authorization import authorize_cli_delete
+        async def _authorize(poly: Polylogue) -> tuple[str, ...]:
+            from polylogue.operations.delete_authorization import authorize_cli_delete_many
 
-            return authorize_cli_delete(poly.config.archive_root, preview_ref, principal)
+            return authorize_cli_delete_many(poly.config.archive_root, preview_refs, principal)
 
         try:
             with self._write_gate("http.cli.delete.authorize"):
@@ -5336,21 +5404,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
-        self._send_json(HTTPStatus.OK, {"status": "authorized", "authorization_token": token})
+        tokens = cast(tuple[str, ...], token)
+        payload: dict[str, object] = {"status": "authorized"}
+        if len(tokens) == 1:
+            payload["authorization_token"] = tokens[0]
+        else:
+            payload["authorization_tokens"] = list(tokens)
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete_cancel(self) -> None:
         """Cancel an authenticated caller's unconfirmed delete preview."""
 
-        preview_ref = self._read_cli_delete_token_field("preview_ref")
-        if preview_ref is None:
+        fields = self._read_cli_delete_refs_or_tokens("preview_ref", "preview_refs")
+        if fields is None:
             return
+        preview_refs = fields
         principal = self._cli_delete_principal()
 
         async def _cancel(poly: Polylogue) -> None:
             from polylogue.operations.delete_authorization import cancel_cli_delete
 
-            cancel_cli_delete(poly.config.archive_root, preview_ref, principal)
+            for preview_ref in preview_refs:
+                cancel_cli_delete(poly.config.archive_root, preview_ref, principal)
 
         try:
             with self._write_gate("http.cli.delete.cancel"):
@@ -5358,22 +5434,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
-        self._send_json(HTTPStatus.OK, {"status": "cancelled", "preview_ref": preview_ref})
+        payload: dict[str, object] = {"status": "cancelled"}
+        if len(preview_refs) == 1:
+            payload["preview_ref"] = preview_refs[0]
+        else:
+            payload["preview_refs"] = list(preview_refs)
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete(self) -> None:
         """Consume one daemon-held authorization before deleting its exact targets."""
 
-        token = self._read_cli_delete_token_field("authorization_token")
-        if token is None:
+        tokens = self._read_cli_delete_refs_or_tokens("authorization_token", "authorization_tokens")
+        if tokens is None:
             return
+        authorization_tokens = tokens
         principal = self._cli_delete_principal()
 
         async def _delete(poly: Polylogue) -> int:
-            from polylogue.operations.delete_authorization import consume_cli_delete
+            from polylogue.operations.delete_authorization import consume_cli_delete_many
 
-            receipt = consume_cli_delete(poly.config.archive_root, token, principal)
-            return receipt.affected_count
+            return consume_cli_delete_many(poly.config.archive_root, authorization_tokens, principal)
 
         try:
             with self._write_gate("http.cli.delete"):
@@ -5423,6 +5504,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return None
         return value
+
+    def _read_cli_delete_refs_or_tokens(self, singular: str, plural: str) -> tuple[str, ...] | None:
+        body = self._read_bounded_json_body(_CLI_DELETE_AUTHORIZATION_MAX_BYTES)
+        if body is None or set(body) not in ({singular}, {plural}):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        value = body.get(singular) if singular in body else body.get(plural)
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item for item in values):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        if len(set(values)) != len(values):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        return tuple(values)
 
     def _read_bounded_json_body(self, max_bytes: int) -> dict[str, object] | None:
         raw_content_length = self.headers.get("Content-Length")

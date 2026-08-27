@@ -60,6 +60,18 @@ def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path
     assert states == {EmbeddingGenerationState.ACTIVE.value, EmbeddingGenerationState.RETAINED.value}
 
 
+def test_generation_admission_does_not_require_legacy_message_refs(tmp_path: Path) -> None:
+    """The generation contract is valid without the retired ref ledger."""
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "without-refs")
+    with sqlite3.connect(candidate) as conn:
+        conn.execute("DROP INDEX idx_message_embedding_refs_hash")
+        conn.execute("DROP INDEX idx_message_embedding_refs_session")
+        conn.execute("DROP TABLE message_embedding_refs")
+
+    EmbeddingGenerationStore(tmp_path).replace(candidate)
+
+
 def test_receipt_is_durable_and_legacy_chronology_fails_closed(tmp_path: Path) -> None:
     store = EmbeddingGenerationStore(tmp_path)
     candidate = tmp_path / "candidate.db"
@@ -72,6 +84,28 @@ def test_receipt_is_durable_and_legacy_chronology_fails_closed(tmp_path: Path) -
     receipt_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(EmbeddingGenerationError, match="malformed embedding retention receipt"):
         store.load_receipt(receipt_path.stem)
+
+
+def test_generation_metadata_must_match_published_database_contract(tmp_path: Path) -> None:
+    """A self-consistent but false metadata contract cannot authorize reuse.
+
+    Anti-vacuity: removing the database-contract comparison lets a changed
+    recipe or membership digest pass lifecycle collection even though the
+    published SQLite bytes never changed.
+    """
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "candidate.db"
+    _sqlite(candidate, "one")
+    store.replace(candidate)
+
+    metadata_path = next((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    payload["recipe_hash"] = "f" * 64
+    payload["membership_digest"] = "e" * 64
+    metadata_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(EmbeddingGenerationError, match="malformed embedding generation metadata"):
+        store.collect()
 
 
 def test_malformed_receipt_blocks_replacement_before_pointer_swap(tmp_path: Path) -> None:

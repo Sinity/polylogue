@@ -227,6 +227,11 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        # Kept on every receipt so later classification does not depend on a
+        # live interpreter or a reconstructed shell environment.
+        from devtools.verification_ledger import environment_fingerprint
+
+        self._payload["environment_fingerprint"] = environment_fingerprint(root=self.root)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
 

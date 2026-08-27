@@ -84,6 +84,22 @@ class MCPToolDeclaration:
     required_capability: MCPCapabilityFlag | None
     registration: MCPHandlerBinding
 
+    @property
+    def minimal_arguments(self) -> dict[str, object]:
+        """Return the executable example used by discovery smoke tests."""
+        example = self.kernel.examples[0] if self.kernel.examples else None
+        return dict(example.arguments) if example is not None else {}
+
+    @property
+    def contract_kind(self) -> str | tuple[str, frozenset[str]]:
+        """Return the declared response classification for surface tests."""
+        output = self.kernel.outputs[0] if self.kernel.outputs else None
+        kind = output.kind if output is not None else "single_object"
+        if kind.startswith("envelope:"):
+            fields = frozenset(kind.removeprefix("envelope:").split(","))
+            return ("envelope", fields)
+        return kind
+
     def __post_init__(self) -> None:
         if self.name != self.kernel.public_name:
             raise ValueError(f"MCP declaration name {self.name!r} != kernel public name {self.kernel.public_name!r}")

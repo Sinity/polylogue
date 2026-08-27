@@ -51,13 +51,19 @@ def marker_spec(registry: MarkerRegistry, kind: str) -> MarkerKindSpec | None:
 MARKER_REGISTRY = MarkerRegistry(
     (
         MarkerKindSpec("goal", "text", AssertionKind.NOTE, "session goal"),
+        MarkerKindSpec("claim", "text", AssertionKind.NOTE, "claim candidate"),
         MarkerKindSpec("assertion", "text", AssertionKind.NOTE, "assertion candidate"),
         MarkerKindSpec("decision", "text", AssertionKind.DECISION, "decision candidate"),
         MarkerKindSpec("event", "text", AssertionKind.RUN_STATE, "event candidate"),
         MarkerKindSpec("finding", "text", AssertionKind.FINDING, "finding candidate"),
         MarkerKindSpec("handoff", "text", AssertionKind.HANDOFF, "handoff candidate"),
+        MarkerKindSpec("lesson", "text", AssertionKind.LESSON, "lesson candidate"),
         MarkerKindSpec("policy", "text", AssertionKind.DECISION, "policy candidate"),
         MarkerKindSpec("note", "text", AssertionKind.NOTE, "note candidate"),
+        MarkerKindSpec("predict", "text", AssertionKind.NOTE, "prediction candidate"),
+        MarkerKindSpec("anchor", "text", AssertionKind.NOTE, "anchor candidate"),
+        MarkerKindSpec("bead", "text", AssertionKind.NOTE, "work-item candidate"),
+        MarkerKindSpec("eval", "text", AssertionKind.PROMPT_EVAL, "evaluation candidate"),
     )
 )
 MARKER_REGISTRY.validate()

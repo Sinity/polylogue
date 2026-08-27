@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
+from polylogue.browser_capture.capture_job_events import read_capture_job_events
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.paths import browser_capture_spool_root
 
@@ -135,6 +136,18 @@ class CaptureJobRegistry:
                 receipt_json TEXT NOT NULL, PRIMARY KEY(job_id, request_id)
             ) STRICT"""
         )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_events (
+                event_id TEXT PRIMARY KEY, job_id TEXT NOT NULL,
+                event_revision INTEGER NOT NULL, job_revision INTEGER NOT NULL, kind TEXT NOT NULL,
+                refs_json TEXT NOT NULL, payload_json TEXT NOT NULL,
+                request_id TEXT NOT NULL, occurred_at TEXT NOT NULL,
+                UNIQUE(job_id, request_id), UNIQUE(job_id, event_revision)
+            ) STRICT"""
+        )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_job_events)")}
+        if "job_revision" not in columns:
+            connection.execute("ALTER TABLE capture_job_events ADD COLUMN job_revision INTEGER NOT NULL DEFAULT 0")
         return connection
 
     @contextmanager
@@ -344,6 +357,15 @@ class CaptureJobRegistry:
                 ),
             )
             row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+            self._append_event(
+                connection,
+                job_id,
+                "created",
+                "create:" + job_id,
+                row["revision"],
+                {},
+                {"provider": provider, "intent_key": intent["intent_key"]},
+            )
             return 201, {"created": True, "job": self._summary(row)}
 
     def discover(self, body: dict[str, object]) -> dict[str, object]:
@@ -392,7 +414,137 @@ class CaptureJobRegistry:
                     (job_id,),
                 ).fetchall()
             ]
-            return {"job": self._summary(row), "receipts": [*receipts, *updates]}
+            events = read_capture_job_events(connection, job_id, 500)
+            return {"job": self._summary(row), "receipts": [*receipts, *updates], "events": events}
+
+    @staticmethod
+    def _append_event(
+        connection: sqlite3.Connection,
+        job_id: str,
+        kind: object,
+        request_id: str,
+        expected_revision: int,
+        refs: dict[str, object],
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        if not isinstance(kind, str) or kind not in {
+            "created",
+            "first-seen",
+            "detected-new",
+            "capture-attempted",
+            "acknowledged",
+            "held-with-reason",
+            "explicit-no-op",
+            "adopted",
+            "resumed",
+            "completed",
+            "abandoned",
+        }:
+            raise CaptureJobError(400, "invalid_capture_job_event")
+        if not isinstance(request_id, str):
+            raise CaptureJobError(400, "invalid_event_request_id")
+        if request_id == "":
+            raise CaptureJobError(400, "invalid_event_request_id")
+        if not isinstance(expected_revision, int):
+            raise CaptureJobError(400, "invalid_event_revision")
+        if isinstance(expected_revision, bool):
+            raise CaptureJobError(400, "invalid_event_revision")
+        if not isinstance(refs, dict):
+            raise CaptureJobError(400, "invalid_capture_job_event")
+        if not isinstance(payload, dict):
+            raise CaptureJobError(400, "invalid_capture_job_event")
+        existing = connection.execute(
+            "SELECT * FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
+        ).fetchone()
+        digest = canonical_digest({"kind": kind, "refs": refs, "payload": payload})
+        if existing is not None:
+            stored = json.loads(existing["payload_json"])
+            if not isinstance(stored, dict) or stored.get("digest") != digest:
+                raise CaptureJobError(409, "event_request_conflict")
+            return CaptureJobRegistry._event_dict(existing)
+        row = connection.execute("SELECT revision FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:
+            raise CaptureJobError(404, "capture_job_not_found")
+        if expected_revision != row["revision"]:
+            raise CaptureJobError(409, "cas_mismatch", {"revision": row["revision"]})
+        event_revision = connection.execute(
+            "SELECT COALESCE(MAX(event_revision), -1) + 1 FROM capture_job_events WHERE job_id=?", (job_id,)
+        ).fetchone()[0]
+        now = _stamp()
+        event_id = str(uuid4())
+        stored_payload = {"digest": digest, "value": payload}
+        connection.execute(
+            "INSERT INTO capture_job_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                job_id,
+                event_revision,
+                expected_revision,
+                kind,
+                canonical_json(refs),
+                canonical_json(stored_payload),
+                request_id,
+                now,
+            ),
+        )
+        return {
+            "event_id": event_id,
+            "job_id": job_id,
+            "event_revision": event_revision,
+            "job_revision": expected_revision,
+            "kind": kind,
+            "refs": refs,
+            "payload": payload,
+            "request_id": request_id,
+            "occurred_at": now,
+        }
+
+    @staticmethod
+    def _event_dict(row: sqlite3.Row) -> dict[str, object]:
+        payload = json.loads(row["payload_json"])
+        return {
+            "event_id": row["event_id"],
+            "job_id": row["job_id"],
+            "event_revision": row["event_revision"],
+            "job_revision": row["job_revision"],
+            "kind": row["kind"],
+            "refs": json.loads(row["refs_json"]),
+            "payload": payload.get("value", payload),
+            "request_id": row["request_id"],
+            "occurred_at": row["occurred_at"],
+        }
+
+    def event(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        request_id = body.get("request_id")
+        expected_revision = body.get("expected_revision")
+        kind, refs, payload = body.get("kind"), body.get("refs", {}), body.get("payload", {})
+        if not isinstance(kind, str) or not isinstance(request_id, str) or not isinstance(expected_revision, int):
+            raise CaptureJobError(400, "invalid_capture_job_event")
+        if isinstance(expected_revision, bool) or not isinstance(refs, dict) or not isinstance(payload, dict):
+            raise CaptureJobError(400, "invalid_capture_job_event")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+            )
+            self._require_live_lease(job_id, row, body)
+            event = self._append_event(connection, job_id, kind, request_id, expected_revision, refs, payload)
+            return {"event": event, "job": self._summary(row), "duplicate": False}
+
+    def events(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        limit = body.get("limit", 100)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+            raise CaptureJobError(400, "invalid_event_limit")
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+            )
+            events = read_capture_job_events(connection, job_id, limit)
+            total = connection.execute("SELECT COUNT(*) FROM capture_job_events WHERE job_id=?", (job_id,)).fetchone()[
+                0
+            ]
+            return {"events": events, "limit": limit, "has_more": total > limit}
 
     def _proof(self, job_id: str, lease: dict[str, object]) -> str:
         message = "\0".join(

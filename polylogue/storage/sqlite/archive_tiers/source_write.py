@@ -190,18 +190,6 @@ class ArchiveHookEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveHistorySidecar:
-    """A persisted history.jsonl-style sidecar payload."""
-
-    sidecar_id: str
-    origin: str
-    source_path: str
-    payload: dict[str, object]
-    observed_at_ms: int
-    content_hash: bytes
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveRawSessionEnvelope:
     """Compact read-back view of one raw-session row."""
 
@@ -226,7 +214,6 @@ class ArchiveRawSessionEnvelope:
     blob_refs: tuple[ArchiveSourceBlobRef, ...]
     artifact_ids: tuple[str, ...]
     hook_event_ids: tuple[str, ...]
-    history_sidecar_ids: tuple[str, ...]
 
 
 CaptureModeResolutionStatus = Literal["unknown", "unambiguous", "ambiguous"]
@@ -374,20 +361,6 @@ def deterministic_raw_session_id(
     digest.update(blob_hash)
     digest.update(b"\0")
     digest.update((native_id or "").encode("utf-8", errors="surrogatepass"))
-    return digest.hexdigest()
-
-
-def deterministic_history_sidecar_id(origin: Origin | str, source_path: str, content_hash: bytes) -> str:
-    """Deterministic text identifier for one history sidecar observation."""
-    origin_value = _enum_value(origin)
-    if origin_value is None:
-        raise ValueError("origin is required for history sidecar ids")
-    digest = hashlib.sha256()
-    digest.update(origin_value.encode("utf-8", errors="surrogatepass"))
-    digest.update(b"\0")
-    digest.update(source_path.encode("utf-8", errors="surrogatepass"))
-    digest.update(b"\0")
-    digest.update(content_hash)
     return digest.hexdigest()
 
 
@@ -545,32 +518,6 @@ def write_source_blob_refs(
                     publication_receipt_id=ref.publication_receipt_id,
                 ),
             )
-
-
-def write_history_sidecar(
-    conn: sqlite3.Connection,
-    *,
-    origin: Origin | str,
-    source_path: str,
-    payload: dict[str, object],
-    observed_at_ms: int,
-    sidecar_id: str | None = None,
-) -> str:
-    """Persist a history sidecar payload in the archive raw tier."""
-    origin_value = _enum_value(origin)
-    payload_json = _json_dumps(payload)
-    content_hash = deterministic_blob_hash(payload_json.encode("utf-8", errors="surrogatepass"))
-    resolved_sidecar_id = sidecar_id or deterministic_history_sidecar_id(origin, source_path, content_hash)
-    with conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO history_sidecars (
-                sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (resolved_sidecar_id, origin_value, source_path, payload_json, observed_at_ms, content_hash),
-        )
-    return resolved_sidecar_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -1188,19 +1135,6 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
             (row["origin"], row["native_id"], row["source_path"]),
         ).fetchall()
     )
-    history_sidecar_ids = tuple(
-        row["sidecar_id"]
-        for row in conn.execute(
-            """
-            SELECT sidecar_id
-            FROM history_sidecars
-            WHERE origin = ? AND source_path = ?
-            ORDER BY observed_at_ms, sidecar_id
-            """,
-            (row["origin"], row["source_path"]),
-        ).fetchall()
-    )
-
     return ArchiveRawSessionEnvelope(
         raw_id=row["raw_id"],
         origin=row["origin"],
@@ -1223,71 +1157,6 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         blob_refs=blob_refs,
         artifact_ids=artifact_ids,
         hook_event_ids=hook_event_ids,
-        history_sidecar_ids=history_sidecar_ids,
-    )
-
-
-def read_history_sidecar(conn: sqlite3.Connection, sidecar_id: str) -> ArchiveHistorySidecar:
-    """Read one persisted history sidecar payload."""
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        """
-        SELECT sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash
-        FROM history_sidecars
-        WHERE sidecar_id = ?
-        """,
-        (sidecar_id,),
-    ).fetchone()
-    if row is None:
-        raise KeyError(sidecar_id)
-    return ArchiveHistorySidecar(
-        sidecar_id=row["sidecar_id"],
-        origin=row["origin"],
-        source_path=row["source_path"],
-        payload=_json_loads(row["payload_json"]),
-        observed_at_ms=row["observed_at_ms"],
-        content_hash=row["content_hash"],
-    )
-
-
-def read_earliest_history_sidecar_for_path(
-    conn: sqlite3.Connection,
-    *,
-    origin: Origin | str,
-    source_path: str,
-) -> ArchiveHistorySidecar | None:
-    """Read the first-ever persisted sidecar snapshot for ``source_path``.
-
-    Provider assembly sidecars (Codex ``session_index.jsonl``/
-    ``history.jsonl``/``state_5.sqlite``) are frozen the first time a given
-    raw record's acquisition path is observed (polylogue-ih67 AC#3/4): once a
-    snapshot exists for ``(origin, source_path)``, every later ingest of that
-    same raw record replays this frozen row instead of re-reading the live
-    filesystem, so an ambient edit to the sidecar cannot silently change a
-    previously acquired replay's title. Returns ``None`` when no snapshot has
-    been captured yet -- the caller should discover from disk and persist one.
-    """
-    origin_value = _enum_value(origin)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        """
-        SELECT sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash
-        FROM history_sidecars
-        WHERE origin = ? AND source_path = ?
-        ORDER BY observed_at_ms ASC, sidecar_id ASC
-        LIMIT 1
-        """,
-        (origin_value, source_path),
-    ).fetchone()
-    if row is None:
-        return None
-    return ArchiveHistorySidecar(
-        sidecar_id=row["sidecar_id"],
-        origin=row["origin"],
-        source_path=row["source_path"],
-        payload=_json_loads(row["payload_json"]),
-        observed_at_ms=row["observed_at_ms"],
-        content_hash=row["content_hash"],
     )
 
 
@@ -1677,7 +1546,6 @@ def _enum_value(value: object) -> str | None:
 
 
 __all__ = [
-    "ArchiveHistorySidecar",
     "ArchiveHookEvent",
     "ArchiveRawArtifactEnvelope",
     "ArchiveRawSessionEnvelope",
@@ -1687,14 +1555,11 @@ __all__ = [
     "ContentExcisedError",
     "PENDING_RAW_LOGICAL_SOURCE_PREFIX",
     "deterministic_blob_hash",
-    "deterministic_history_sidecar_id",
     "deterministic_raw_session_id",
     "is_blob_hash_excised",
     "list_hook_events",
     "list_raw_artifacts",
     "read_capture_mode_resolution",
-    "read_earliest_history_sidecar_for_path",
-    "read_history_sidecar",
     "read_hook_event",
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
@@ -1703,7 +1568,6 @@ __all__ = [
     "record_excised_blob_hash",
     "pending_raw_logical_source_key",
     "upsert_raw_artifact",
-    "write_history_sidecar",
     "ReconstructedRawRow",
     "insert_reconstructed_raw_row",
     "write_source_raw_session",

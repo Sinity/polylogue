@@ -8,6 +8,8 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
 from pathlib import Path
 
+from polylogue.core.bounded import run_bounded
+
 
 @dataclass
 class VersionInfo:
@@ -122,12 +124,12 @@ def _read_head_commit(repo_root: Path) -> str | None:
 
 def _detect_git_dirty(repo_root: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = run_bounded(
             ["git", "status", "--porcelain"],
+            2,
             cwd=repo_root,
             capture_output=True,
             text=True,
-            timeout=2,
         )
         if result.returncode != 0:
             return False

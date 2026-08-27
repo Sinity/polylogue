@@ -44,6 +44,8 @@ class BlobOwner:
 BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "raw_sessions", blob_column="blob_hash"),
     BlobOwner("source", "raw_hook_events", blob_column="blob_hash"),
+    # Linked materials retain their bytes independently of session parsing.
+    BlobOwner("source", "material_observations", blob_column="blob_hash"),
     BlobOwner("index", "attachments", blob_column="blob_hash"),
     BlobOwner("source", "raw_sessions", ref_type="raw_payload", referent_column="raw_id"),
     BlobOwner("source", "raw_sessions", ref_type="attachment", referent_column="raw_id"),
@@ -58,8 +60,11 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
         referent_column="hook_event_id",
         rekeyable_legacy_ref=True,
     ),
-    BlobOwner("source", "history_sidecars", ref_type="sidecar", referent_column="sidecar_id"),
 )
+
+# A source owner introduced by an additive migration must not make older
+# archives unreadable to backup/GC before that migration is applied.
+_OPTIONAL_OWNER_TABLES = frozenset({"material_observations"})
 
 
 def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
@@ -179,6 +184,8 @@ def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> 
     for owner in _owners(tier=tier, ledger=False):
         assert owner.blob_column is not None
         if not _table_exists(conn, owner.table):
+            if owner.table in _OPTIONAL_OWNER_TABLES:
+                continue
             blockers.append(f"{tier}.{owner.table} is missing")
         elif not _column_exists(conn, owner.table, owner.blob_column):
             blockers.append(f"{tier}.{owner.table} is missing columns: {owner.blob_column}")
@@ -362,8 +369,9 @@ def project_live_blob_hashes(
     *,
     index_conn: sqlite3.Connection | None = None,
     require_index: bool = False,
+    source_generation_id: str | None = None,
 ) -> BlobLivenessProjection:
-    """Project all live hashes from the canonical owner/ref-kind descriptor."""
+    """Project live hashes, optionally scoped to one source generation."""
     blockers = _source_global_blockers(source_conn)
     if index_conn is None:
         if require_index:
@@ -383,7 +391,17 @@ def project_live_blob_hashes(
                 if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
                     continue
                 owner_name = f"{tier}.db.{owner.table}"
-                for row in conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
+                generation_filter = ""
+                params: tuple[object, ...] = ()
+                if source_generation_id is not None and owner.table == "raw_sessions":
+                    generation_filter = (
+                        " WHERE EXISTS (SELECT 1 FROM source_items si "
+                        "WHERE si.source_generation_id = ? AND si.raw_id = raw_sessions.raw_id)"
+                    )
+                    params = (source_generation_id,)
+                for row in conn.execute(
+                    f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}{generation_filter}", params
+                ):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
                         blob_hash = row[0].hex()
                         hashes.add(blob_hash)
@@ -397,10 +415,18 @@ def project_live_blob_hashes(
                     source_conn, owner.table, owner.referent_column
                 ):
                     continue
+                generation_filter = ""
+                params = (owner.ref_type,)
+                if source_generation_id is not None and owner.table == "raw_sessions":
+                    generation_filter = (
+                        " AND EXISTS (SELECT 1 FROM source_items si "
+                        "WHERE si.source_generation_id = ? AND si.raw_id = owner.raw_id)"
+                    )
+                    params += (source_generation_id,)
                 for row in source_conn.execute(
                     f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref WHERE ref.ref_type = ? AND EXISTS (
-                    SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
-                    (owner.ref_type,),
+                    SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id{generation_filter})""",
+                    params,
                 ):
                     if isinstance(row[0], bytes) and len(row[0]) == 32:
                         blob_hash = row[0].hex()

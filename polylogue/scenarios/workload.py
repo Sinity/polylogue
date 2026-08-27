@@ -199,6 +199,8 @@ class WorkloadEnvelopeSpec:
 _PHASE_MEASURES = frozenset(measure.value for measure in BudgetMeasure) | {
     "current_rss_bytes",
     "current_pss_bytes",
+    "peak_rss_self_bytes",
+    "peak_rss_children_bytes",
     "storage_bytes",
     "progress_completed",
     "progress_total",
@@ -217,6 +219,8 @@ class WorkloadPhaseObservation:
     cpu_ms: float | None = None
     current_rss_bytes: int | None = None
     peak_rss_bytes: int | None = None
+    peak_rss_self_bytes: int | None = None
+    peak_rss_children_bytes: int | None = None
     current_pss_bytes: int | None = None
     peak_pss_bytes: int | None = None
     anon_bytes: int | None = None
@@ -247,6 +251,38 @@ class WorkloadPhaseObservation:
         for measure in self.unavailable:
             if getattr(self, measure) is not None:
                 raise ValueError(f"Workload measure {measure} cannot be both observed and unavailable")
+        for field_name in (
+            "current_rss_bytes",
+            "peak_rss_bytes",
+            "peak_rss_self_bytes",
+            "peak_rss_children_bytes",
+            "current_pss_bytes",
+            "peak_pss_bytes",
+            "anon_bytes",
+            "file_cache_bytes",
+            "swap_bytes",
+            "temp_storage_bytes",
+            "storage_bytes",
+            "read_io_bytes",
+            "write_io_bytes",
+            "response_bytes",
+            "cancellation_latency_ms",
+            "progress_completed",
+            "progress_total",
+            "queue_depth",
+            "backpressure_ms",
+            "cleanup_reclaimed_bytes",
+            "sqlite_vm_steps",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, int | float) and value < 0:
+                raise ValueError(f"Workload measure {field_name} must be non-negative")
+        if self.peak_rss_self_bytes is not None or self.peak_rss_children_bytes is not None:
+            if self.peak_rss_self_bytes is None or self.peak_rss_children_bytes is None:
+                raise ValueError("Process-tree RSS requires both self and child measurements")
+            component_total = self.peak_rss_self_bytes + self.peak_rss_children_bytes
+            if self.peak_rss_bytes != component_total:
+                raise ValueError("Process-tree peak RSS must equal self plus child RSS")
 
     def to_payload(self) -> JSONDocument:
         values: dict[str, JSONValue] = {

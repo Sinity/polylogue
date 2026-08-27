@@ -31,6 +31,7 @@ from typing import get_args, get_origin
 from pydantic import BaseModel
 
 from polylogue.insights.archive_models import ArchiveInsightModel
+from polylogue.insights.command_shapes import COMMAND_SHAPES_INSIGHT_VERSION
 from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
@@ -312,20 +313,12 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         notes=(
             "Structural-only activity labels (polylogue-ve9z, 2026-07-16): "
-            "``inference.heuristic_label`` is now derived exclusively from "
-            "action-category (tool-use) evidence in "
-            "archive/session/extraction.py::_classify_range. The keyword "
-            "_TEXT_SIGNAL_TABLE (planning/debugging/testing/... prose "
-            "matching over user text) was DELETED per the polylogue-ve9z "
-            "ladder decision: its accuracy was never measured, and its "
-            "sibling keyword heuristic scored 50.5% (coin flip) against "
-            "structural truth in the 9e5.9 measurement. Ranges without "
-            "decisive action evidence now label as the coarse honest "
-            "defaults (SESSION for no-tools ranges, IMPLEMENTATION with low "
-            "confidence for weak signals) instead of a keyword guess. Finer "
-            "intent labels may return only via the ladder: versioned "
-            "AnalysisDefinition rule classifiers, agent-declared markers "
-            "(37t.2), or judged annotations."
+            "``inference.heuristic_label`` is derived from action-category "
+            "(tool-use) evidence in archive/session/extraction.py::_classify_range. "
+            "Ranges without decisive action evidence use coarse defaults. "
+            "The deterministic session digest does not extract run state or "
+            "decision candidates from message prose. Those judgments require "
+            "a model-authored product or an explicit typed annotation."
         ),
     ),
     RigorContract(
@@ -603,6 +596,41 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                     )
                 ),
             ),
+        ),
+    ),
+    RigorContract(
+        insight_name="command_shapes",
+        display_name="Command Shape Usage",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "Command shapes are deterministic normalizations of command strings in the canonical actions view. "
+            "An empty result means no matching execution was observed in the selected window, not that the command is unused."
+        ),
+        consumer_fields=(
+            "origin",
+            "repository",
+            "command_shape",
+            "execution_count",
+            "session_count",
+            "last_used_at",
+            "window_since",
+            "window_until",
+        ),
+        version_fields=(
+            RigorVersionField(name="materializer_version", current_version=COMMAND_SHAPES_INSIGHT_VERSION),
+        ),
+        field_exemptions=_true_zero_fields(
+            "Execution and session counts are direct counts of observed action rows; zero is a measured empty aggregate.",
+            "execution_count",
+            "session_count",
+            "materializer_version",
+        )
+        + _true_zero_fields(
+            "The epoch sort key is a timestamp projection and is nullable when no provider or session time exists.",
+            "last_used_sort_key",
         ),
     ),
     RigorContract(

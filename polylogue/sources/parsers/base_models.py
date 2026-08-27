@@ -586,6 +586,8 @@ class RawSessionData(BaseModel):
     blob_hash: str | None = None
     blob_size: int | None = None
     blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
+    # Captured during acquisition; never rediscovered from source_path.
+    sidecar_snapshot: dict[str, object] | None = Field(default=None, exclude=True)
 
     @field_validator("provider_hint", mode="before")
     @classmethod
