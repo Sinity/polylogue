@@ -26,6 +26,7 @@ BrowserCaptureRouteKind = Literal[
     "status",
     "archive_state",
     "capture_ingest",
+    "assertion_candidate_capture",
     "browser_action_capabilities",
     "browser_action_enqueue",
     "browser_action_list_claim",
@@ -99,6 +100,15 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "BrowserCaptureEnvelope",
         "BrowserCaptureAcceptedPayload | BrowserCaptureErrorPayload",
         "Accepts captures and returns a receiver-local artifact ref; extra web origins require bearer auth.",
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/assertion-candidates",
+        "assertion_candidate_capture",
+        "bearer_if_web_origin",
+        "candidate body, kind, exact evidence_refs, source_observation, idempotency_key",
+        "candidate assertion envelope | BrowserCaptureErrorPayload",
+        "Writes a user-tier candidate with inject=false; native message evidence is required.",
     ),
     BrowserCaptureRouteContract(
         "GET",
