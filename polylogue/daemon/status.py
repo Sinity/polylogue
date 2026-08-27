@@ -6,7 +6,6 @@ import json
 import os
 import re
 import sqlite3
-import sys
 import threading
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -1142,10 +1141,9 @@ def _gil_enabled() -> bool:
     running free-threaded (PEP 703); interpreters predating it never had a
     disableable GIL, so the safe fallback is ``True`` (GIL enabled).
     """
-    checker = getattr(sys, "_is_gil_enabled", None)
-    if checker is None:
-        return True
-    return bool(checker())
+    from polylogue.runtime import runtime_identity
+
+    return runtime_identity().gil_enabled
 
 
 def _fmt_bytes(value: int) -> str:

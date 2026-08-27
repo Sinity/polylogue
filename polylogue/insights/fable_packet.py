@@ -73,6 +73,7 @@ class FableDelegationPacket:
     annotation_batches: tuple[str, ...]
     distributions: tuple[DescriptiveDistribution, ...]
     disagreement_count: int
+    adjudication_counts: tuple[tuple[str, int], ...]
     specimen_refs: tuple[str, ...]
     counterexample_refs: tuple[str, ...]
     limits: tuple[str, ...]
@@ -99,6 +100,7 @@ def _unsupported(
         annotation_batches=(),
         distributions=(),
         disagreement_count=0,
+        adjudication_counts=(),
         specimen_refs=(),
         counterexample_refs=(),
         limits=("private_descriptive_only",),
@@ -114,6 +116,7 @@ def compile_private_fable_packet(
     annotation_schema_id: str | None,
     labels: Sequence[DelegationPacketLabel],
     resolved_evidence_refs: frozenset[str] | None = None,
+    adjudication_counts: tuple[tuple[str, int], ...] = (),
 ) -> FableDelegationPacket:
     """Compile a private descriptive packet or fail closed with named gaps.
 
@@ -199,6 +202,7 @@ def compile_private_fable_packet(
         annotation_batches=tuple(sorted({label.batch_id for label in accepted})),
         distributions=tuple(distributions),
         disagreement_count=disagreement_count,
+        adjudication_counts=adjudication_counts,
         specimen_refs=tuple(sorted(specimen_refs)),
         counterexample_refs=tuple(sorted(counterexample_refs)),
         limits=(
@@ -288,10 +292,15 @@ def regenerate_private_fable_packet(
     labels: list[DelegationPacketLabel] = []
     referenced_batch_ids: set[str] = set()
     evidence_refs: set[str] = set()
+    adjudication_counts: Counter[str] = Counter()
     qualified_schema_id = f"{schema_id}@v{schema_version}"
     for assertion in assertions:
         value = assertion.value
-        if assertion.status != "active" or not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
+        if not isinstance(value, dict) or value.get("_schema") != qualified_schema_id:
+            continue
+        status = getattr(assertion.status, "value", assertion.status)
+        adjudication_counts[str(status)] += 1
+        if status != "active":
             continue
         batch_id = assertion.scope_ref.removeprefix("annotation-batch:") if assertion.scope_ref else "unbatched"
         referenced_batch_ids.add(batch_id)
@@ -336,6 +345,7 @@ def regenerate_private_fable_packet(
         annotation_schema_id=schema.schema.qualified_id if schema is not None else None,
         labels=labels,
         resolved_evidence_refs=resolved_evidence,
+        adjudication_counts=tuple(sorted(adjudication_counts.items())),
     )
 
 

@@ -318,7 +318,7 @@ def test_iter_language_server_exports_yields_parsed_sessions(
     }
     fake = _FakeClientForExports(summaries, markdown)
 
-    sessions = list(iter_language_server_exports(tmp_path, client=fake))  # type: ignore[arg-type]
+    sessions = list(iter_language_server_exports(tmp_path, client=fake))
 
     assert [c.provider_session_id for c in sessions] == [
         "cascade-1",
@@ -353,7 +353,7 @@ def test_iter_language_server_exports_only_cascade_ids_filters_corpus(
     sessions = list(
         iter_language_server_exports(
             tmp_path,
-            client=fake,  # type: ignore[arg-type]
+            client=fake,
             only_cascade_ids=frozenset({"cascade-2"}),
         )
     )
@@ -373,7 +373,7 @@ def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
     sessions = list(
         iter_language_server_exports(
             tmp_path,
-            client=fake,  # type: ignore[arg-type]
+            client=fake,
             only_cascade_ids=frozenset(),
         )
     )
@@ -425,3 +425,46 @@ def test_iter_language_server_exports_closes_client_on_error(tmp_path: Path, mon
 
     assert fake.started is True
     assert fake.closed is True
+
+
+def test_export_results_reject_source_mutation_during_conversion(tmp_path: Path) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
+    class _MutatingClient:
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def search_sessions(self, **_kwargs: object) -> list[AntigravitySessionSummary]:
+            return []
+
+        def export_markdown(self, cascade_id: str) -> str:
+            (tmp_path / "conversations" / f"{cascade_id}.pb").write_bytes(b"changed")
+            return "### User Input\n\nhello"
+
+    outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=_MutatingClient()))
+
+    assert len(outcomes) == 1
+    assert outcomes[0].obtained is False
+    assert outcomes[0].error == "conversation protobuf changed during conversion"
+
+
+def test_language_server_version_handshake_accepts_declared_vendor_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER_VERSION", "2.1.1")
+
+    assert antigravity._discover_language_server_version(tmp_path / "language_server_linux_x64") == "2.1.1"
+
+
+def test_language_server_version_handshake_rejects_incompatible_vendor_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER_VERSION", "0.9.0")
+
+    with pytest.raises(AntigravityExportError, match="incompatible"):
+        antigravity._discover_language_server_version(tmp_path / "language_server_linux_x64")

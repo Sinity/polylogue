@@ -120,7 +120,7 @@ paths:
       description: When ``query`` is supplied, returns a ranked search envelope (``SearchEnvelope``) with per-hit match evidence
         and pagination handles. When ``query`` is omitted, returns ``SessionListResponse``. Ranked search exposes the opaque
         ``next_cursor`` handle; the current list mode remains offset-based.
-      operationId: searchSessions
+      operationId: findSessions
       security:
       - machineBearer: []
       - webCredentialCookie: []
@@ -246,6 +246,12 @@ paths:
           - capped
           - sampled
           - estimate
+      x-polylogue-declaration:
+        declaration_id: daemon.find.sessions
+        request_contract: SessionSearchQuery
+        response_contract: SearchEnvelope | SessionListResponse
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
   /api/query-units:
     get:
       summary: Terminal query-unit rows
@@ -2499,6 +2505,11 @@ components:
       - evidence_refs
       title: ObservedEventQueryRowPayload
       type: object
+    QueryUnitProjectedRowPayload:
+      additionalProperties: true
+      description: Generic field-name keyed row emitted by an explicit query projection.
+      title: QueryUnitProjectedRowPayload
+      type: object
     RunQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for runtime-transform runs.
@@ -2648,6 +2659,12 @@ components:
             - $ref: '#/components/schemas/DelegationQueryRowPayload'
           title: Items
           type: array
+        projected_items:
+          default: []
+          items:
+            $ref: '#/components/schemas/QueryUnitProjectedRowPayload'
+          title: Projected Items
+          type: array
         pipeline:
           anyOf:
           - additionalProperties: true
@@ -2668,6 +2685,9 @@ components:
                 - offset
                 - group
                 - count
+                - agg
+                - transform
+                - terminal
                 type: string
               predicate:
                 type: object
@@ -2681,6 +2701,10 @@ components:
                 enum:
                 - count
                 type: string
+              name:
+                type: string
+              args:
+                type: object
             required:
             - kind
             type: object
@@ -2826,6 +2850,9 @@ components:
                 - offset
                 - group
                 - count
+                - agg
+                - transform
+                - terminal
                 type: string
               predicate:
                 type: object
@@ -2839,6 +2866,10 @@ components:
                 enum:
                 - count
                 type: string
+              name:
+                type: string
+              args:
+                type: object
             required:
             - kind
             type: object
@@ -3243,6 +3274,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3293,6 +3325,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3343,6 +3376,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3524,8 +3558,10 @@ components:
       description: Session-topology predicate selecting the seed's logical lineage.
       properties:
         kind:
-          const: lineage
           default: lineage
+          enum:
+          - lineage
+          - logical
           title: Kind
           type: string
         unit:
@@ -3629,6 +3665,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3712,6 +3749,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3869,6 +3907,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3928,6 +3967,14 @@ components:
           - type: 'null'
           default: null
           title: Offset
+        fields:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Fields
       title: QueryUnitPipelineResultAst
       type: object
     QueryUnitPipelineSourceAst:
@@ -3954,6 +4001,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3990,6 +4038,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4070,6 +4119,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4094,6 +4144,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4307,6 +4358,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4557,7 +4609,8 @@ x-polylogue-route-contracts:
   kind: read_query
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: SearchEnvelope / SessionListResponse with route_state
+  response_contract: SearchEnvelope | SessionListResponse
+  notes: declaration=daemon.find.sessions; request=SessionSearchQuery
 - method: POST
   pattern: /api/cli/query
   kind: read_query

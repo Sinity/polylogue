@@ -9,10 +9,56 @@ from polylogue.context.compiler import (
     ContextSegment,
     ContextSpec,
     compile_assertion_context_segment,
+    compile_prose_with_refs_context_segment,
     compile_query_unit_context_segment,
     context_snapshot_record_from_image,
 )
 from polylogue.core.refs import EvidenceRef, ObjectRef
+
+
+def test_prose_with_refs_collapses_tools_and_preserves_resolvable_markers() -> None:
+    messages = [
+        SimpleNamespace(id="session:m1", role="user", text="first user", blocks=[]),
+        SimpleNamespace(
+            id="session:m2",
+            role="assistant",
+            text=None,
+            blocks=[{"type": "text", "text": "authored prose"}, {"type": "tool_use", "name": "Bash"}],
+        ),
+        SimpleNamespace(
+            id="session:m3",
+            role="tool",
+            text=None,
+            blocks=[{"type": "tool_result", "tool_use_id": "call-1", "text": "secret output"}],
+        ),
+    ]
+
+    segment, recapped = compile_prose_with_refs_context_segment(
+        session_id="session", title="handoff", messages=messages
+    )
+
+    assert recapped is False
+    assert "authored prose" in (segment.markdown or "")
+    assert "secret output" not in (segment.markdown or "")
+    assert "<ref:action:session:m2:1> Bash" in (segment.markdown or "")
+    assert "<ref:action:session:m3:0> tool_result" in (segment.markdown or "")
+    assert ObjectRef.parse("action:session:m2:1").format() == "action:session:m2:1"
+
+
+def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
+    messages = [
+        SimpleNamespace(id=f"s:m{i}", role="user" if i == 0 else "assistant", blocks=[], text="old prose " * 30)
+        for i in range(8)
+    ]
+
+    segment, recapped = compile_prose_with_refs_context_segment(
+        session_id="s", title="large", messages=messages, max_tokens=80, keep_last_messages=2
+    )
+
+    assert recapped is True
+    assert "[recap]" in (segment.markdown or "")
+    assert "old prose old prose" in (segment.markdown or "")
+    assert segment.lossiness == "budget_recapped_prose"
 
 
 def test_context_spec_allows_unit_query_only_recipes() -> None:

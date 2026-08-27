@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.security.excision as excision_module
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
     LineageDependentsError,
@@ -288,6 +289,61 @@ class TestApplySessionExcision:
         assert first.found is True
         second = apply_session_excision(tmp_path, session_id, reason="r-again", actor="user:local")
         assert second.found is False  # already gone; nothing left to touch
+
+    def test_retry_after_source_commit_before_index_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session_id = _seed_session(tmp_path, native_id="crash-source-index")
+        original_connect = excision_module._connect_rw
+        failed = False
+
+        def fail_user_commit(path: Path) -> sqlite3.Connection:
+            nonlocal failed
+            if path.name == "user.db" and not failed:
+                failed = True
+                raise RuntimeError("simulated crash after source commit")
+            return original_connect(path)
+
+        monkeypatch.setattr(excision_module, "_connect_rw", fail_user_commit)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+
+        # The durable marker exists while the rebuildable lookup key remains.
+        assert resolve_session_excision_target(tmp_path, session_id).found is True
+        source_conn = sqlite3.connect(tmp_path / "source.db")
+        try:
+            assert is_blob_hash_excised(source_conn, deterministic_blob_hash(b'{"native_id": "x"}')) is True
+        finally:
+            source_conn.close()
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
+        assert receipt.found is True
+        assert receipt.receipt_assertion_id is not None
+        assert resolve_session_excision_target(tmp_path, session_id).found is False
+
+    def test_retry_after_receipt_commit_before_index_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session_id = _seed_session(tmp_path, native_id="crash-receipt-index")
+        original_connect = excision_module._connect_rw
+        failed = False
+
+        def fail_index_commit(path: Path) -> sqlite3.Connection:
+            nonlocal failed
+            if path.name == "index.db" and not failed:
+                failed = True
+                raise RuntimeError("simulated crash after receipt commit")
+            return original_connect(path)
+
+        monkeypatch.setattr(excision_module, "_connect_rw", fail_index_commit)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="different", actor="other", now_ms=21)
+        assert receipt.found is True
+        assert receipt.reason == "crash"
+        assert receipt.actor == "user:test"
+        assert resolve_session_excision_target(tmp_path, session_id).found is False
 
     def test_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:
         payload = b'{"native_id": "resurrect-me", "secret": "sk-ant-abc123"}'
