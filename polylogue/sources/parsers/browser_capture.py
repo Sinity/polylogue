@@ -14,7 +14,6 @@ from polylogue.archive.ingest_flags import (
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
 )
-from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
     BrowserCaptureBlock,
@@ -32,10 +31,6 @@ from polylogue.sources.parsers.base_models import (
     ParsedSession,
     ParsedSessionEvent,
 )
-
-
-def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
-    return legacy_browser_capture_native_id(provider, provider_session_id)
 
 
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
@@ -664,7 +659,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
     envelope = BrowserCaptureEnvelope.model_validate(payload)
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
-    provider_session_id = _legacy_native_id(provider, envelope.session.provider_session_id) or fallback_id
+    provider_session_id = envelope.session.provider_session_id or fallback_id
     raw_provider_payload = envelope.raw_provider_payload
     if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt

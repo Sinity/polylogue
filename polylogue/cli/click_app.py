@@ -551,40 +551,6 @@ if cli.help is not None:
     cli.help = _render_query_help_examples(cli.help)
 
 
-@click.command("find", hidden=True, context_settings={"help_option_names": ["-h", "--help"]})
-def find_help() -> None:
-    """Search the archive, then optionally run an action.
-
-    \b
-    Usage:
-        polylogue find QUERY
-        polylogue find QUERY then ACTION
-
-    \b
-    Examples:
-        polylogue find "browser capture"
-        polylogue find id:abc then read --view messages
-        polylogue find 'repo:polylogue since:7d' then analyze --facets
-        polylogue find 'repo:polylogue tag:stale' then delete --dry-run
-
-    \b
-    Notes:
-        `find` is the explicit query marker, not a normal subcommand.
-        Put root filters before `find`, and verb-specific options after ACTION:
-        `polylogue --origin chatgpt-export find "sqlite" then read --all`.
-
-        Exact refs (`id:...`, `session:...`) are identity filters. A miss
-        returns no target instead of broadening to text search. Text queries can
-        return many ranked sessions; singleton actions require an exact ref, an
-        explicit selection, `--first`, or an action-specific multi flag.
-
-        Action ownership: `mark` changes selected session overlays;
-        root `polylogue judge` reviews assertion candidates; `analyze --facets`
-        reports named aggregate families and marks deferred families honestly.
-    """
-
-
-cli.add_command(find_help)
 register_root_commands(cli)
 
 _QUERY_VERB_HELP: dict[str, str] = {
