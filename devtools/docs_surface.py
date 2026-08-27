@@ -432,6 +432,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
         "design",
     ),
+    _entry(
+        "Typed WebUI Capability Matrix",
+        "plans/webui-capability-matrix.md",
+        "Cutover inventory for typed and legacy browser capabilities.",
+        "design",
+    ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),
     _entry("Time Machine", "design/time-machine.md", "Vision note for reconstructing work over time.", "design"),
     _entry("Whole Product", "design/whole-product.md", "Product vision and system relationships.", "design"),
