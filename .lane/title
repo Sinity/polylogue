@@ -1,1 +1,0 @@
-perf(storage): reuse immutable prototypes for every archive tier
