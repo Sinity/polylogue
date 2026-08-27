@@ -3561,12 +3561,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         ) as archive:
             try:
                 session_id = archive.resolve_session_id(conv_id)
-                envelope = (
-                    archive.read_session_page(session_id, limit=limit, offset=offset)
-                    if limit is not None
-                    else archive.read_session(session_id)
-                )
-                summary = archive.read_summary(session_id)
+
+                def read_session_data() -> tuple[ArchiveSessionEnvelope, ArchiveSessionSummary]:
+                    return (
+                        archive.read_session_page(session_id, limit=limit, offset=offset)
+                        if limit is not None
+                        else archive.read_session(session_id),
+                        archive.read_summary(session_id),
+                    )
+
+                envelope, summary = self._run_archive_bounded_query(archive, deadline_s=None, compute=read_session_data)
             except KeyError:
                 return None
 

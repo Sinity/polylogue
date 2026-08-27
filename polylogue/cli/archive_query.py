@@ -299,6 +299,9 @@ def _execute_reference_query_pipeline(
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
     """Render root query output to stdout."""
     params = dict(request.params)
+    from polylogue.surfaces.payloads import search_cursor_request_identity
+
+    cursor_request_identity = search_cursor_request_identity(params)
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
     config_started_at = perf_counter()
@@ -731,6 +734,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         limit=limit,
                         offset=page_offset,
                         retrieval_lane=resolved_lane,
+                        request_identity=cursor_request_identity,
                     )
                     if stream:
                         if not page_hits:
@@ -863,6 +867,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 limit=limit,
                 offset=page_offset,
                 retrieval_lane=resolved_lane,
+                request_identity=cursor_request_identity,
             )
             if stream:
                 if not page_hits:
@@ -932,7 +937,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             reverse=reverse,
             **filter_kwargs,
         )
-        page_summaries, next_cursor = _paginate_rows(summaries, limit=limit, offset=page_offset)
+        page_summaries, next_cursor = _paginate_rows(
+            summaries, limit=limit, offset=page_offset, request_identity=cursor_request_identity
+        )
         if stream:
             if not page_summaries:
                 _fail("Stream found no matching session.")
@@ -1877,14 +1884,23 @@ def _paginate_rows(
     limit: int,
     offset: int,
     retrieval_lane: str = "dialogue",
+    request_identity: str | None = None,
 ) -> tuple[list[_PageRow], str | None]:
     page = list(rows[:limit])
     if len(rows) <= limit or not page:
         return page, None
-    return page, _build_cursor(page[-1], rank=offset + len(page), retrieval_lane=retrieval_lane)
+    return page, _build_cursor(
+        page[-1], rank=offset + len(page), retrieval_lane=retrieval_lane, request_identity=request_identity
+    )
 
 
-def _build_cursor(row: ArchiveSessionSummary | ArchiveSessionSearchHit, *, rank: int, retrieval_lane: str) -> str:
+def _build_cursor(
+    row: ArchiveSessionSummary | ArchiveSessionSearchHit,
+    *,
+    rank: int,
+    retrieval_lane: str,
+    request_identity: str | None = None,
+) -> str:
     import base64
 
     from polylogue.surfaces.payloads import SEARCH_CURSOR_VERSION, SearchCursor
@@ -1895,6 +1911,7 @@ def _build_cursor(row: ArchiveSessionSummary | ArchiveSessionSearchHit, *, rank:
         s=None,
         c=row.session_id,
         lane=retrieval_lane,
+        query_hash=request_identity,
     )
     payload = cursor.model_dump_json(by_alias=True)
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")

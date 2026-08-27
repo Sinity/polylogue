@@ -20,6 +20,7 @@ domain models rather than plans:
 | [Query-action workflows](../product/workflows.md) | Standing selection, cardinality, and executable-evidence guide |
 | [Incident 14:32 proof world](incident-1432-proof-world.md) | Shared deterministic adversarial corpus for the still-open proof-world work (polylogue-212.11) |
 | [Prefix-blob reclamation](prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes; consent-gated durable-tier reclamation (polylogue-vzn6) |
+| [Derived-artifact freshness](derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state (polylogue-ntwtk) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 
 If a doc here stops matching the external task authority, update or purge it.
