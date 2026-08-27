@@ -6291,6 +6291,49 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             for event in events
         ]
 
+    async def record_work_event(
+        self,
+        session_id: str,
+        *,
+        event_id: str,
+        event_type: str,
+        summary: str,
+        payload: dict[str, object] | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Record one typed live-agent event through the archive writer."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            return archive.append_work_event(
+                session_id=session_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+                event_id=event_id,
+                summary=summary,
+                timestamp=timestamp,
+            )
+
+    async def emit_decision(
+        self,
+        session_id: str,
+        *,
+        event_id: str,
+        decision: str,
+        summary: str,
+        evidence_refs: tuple[str, ...] = (),
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Record a decision as the shared typed work-event kind."""
+        return await self.record_work_event(
+            session_id,
+            event_id=event_id,
+            event_type="decision",
+            summary=summary,
+            payload={"decision": decision, "evidence_refs": list(evidence_refs)},
+            timestamp=timestamp,
+        )
+
     async def get_file_edits(self, session_id: str) -> list[dict[str, object]] | None:
         """Return file-edit tool-call evidence (structuredPatch/originalFile/...) for one session.
 

@@ -66,6 +66,8 @@ TOOL_CONTRACT: dict[str, ToolKind] = {
     # maintenance operations, e.g. "list", return an items/total envelope
     # instead -- see "primary/declared contract" note above for read/get).
     "write": "operation_result",
+    "record_work_event": "operation_result",
+    "emit_decision": "operation_result",
     "maintenance": "operation_result",
     # judge always returns the bulk-judgment envelope (single candidate_ref
     # judgments are lowered into a one-item bulk call internally).
