@@ -93,3 +93,25 @@ def test_git_history_uses_committed_bytes(tmp_path: Path) -> None:
             observed_from_ms=0,
         ).content_hash
     )
+
+
+def test_git_history_preserves_same_second_revisions_as_ambiguous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+0000")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+0000")
+    path = tmp_path / "CLAUDE.md"
+    for payload in (b"first", b"second"):
+        path.write_bytes(payload)
+        subprocess.run(["git", "add", "CLAUDE.md"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", payload.decode()], cwd=tmp_path, check=True)
+
+    history = git_artifact_history(tmp_path, "CLAUDE.md", owner="operator", kind="instruction")
+
+    assert len(history) == 2
+    assert resolve_context(history, at_ms=1_767_225_600_000).status == "overlap"

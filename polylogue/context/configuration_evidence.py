@@ -199,7 +199,7 @@ def git_artifact_history(
         return ()
     revisions: list[ConfigurationArtifactVersion] = []
     commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    for index, commit in enumerate(commits):
+    for commit in reversed(commits):
         show = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=repository, capture_output=True, check=False)
         if show.returncode == 0:
             timestamp = subprocess.run(
@@ -212,9 +212,6 @@ def git_artifact_history(
             if timestamp.returncode != 0 or not timestamp.stdout.strip().isdigit():
                 continue
             observed_from_ms = int(timestamp.stdout.strip()) * 1000
-            observed_until_ms = None
-            if index:
-                observed_until_ms = revisions[-1].observed_from_ms
             revisions.append(
                 artifact_from_bytes(
                     kind=kind,
@@ -223,15 +220,21 @@ def git_artifact_history(
                     owner=owner,
                     repository=str(repository),
                     observed_from_ms=observed_from_ms,
-                    observed_until_ms=observed_until_ms,
                     source_revision=commit,
                 )
             )
-    revisions.sort(key=lambda item: item.observed_from_ms)
     return tuple(
-        replace(revision, observed_until_ms=revisions[index + 1].observed_from_ms)
-        if index + 1 < len(revisions)
-        else revision
+        replace(
+            revision,
+            observed_until_ms=next(
+                (
+                    later.observed_from_ms
+                    for later in revisions[index + 1 :]
+                    if later.observed_from_ms > revision.observed_from_ms
+                ),
+                None,
+            ),
+        )
         for index, revision in enumerate(revisions)
     )
 
