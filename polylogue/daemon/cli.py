@@ -3891,11 +3891,8 @@ def run_command(
         roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
     if parameter_is_default("debounce_s"):
         debounce_s = cfg.watch_debounce_s
-    if parameter_is_default("host"):
-        if cfg.layer_of("browser_capture_host") != "default":
-            host = cfg.browser_capture_host
-        elif cfg.layer_of("daemon_host") != "default":
-            host = cfg.daemon_host
+    if parameter_is_default("host") and cfg.layer_of("browser_capture_host") != "default":
+        host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
         port = cfg.browser_capture_port
     if parameter_is_default("spool_path") and cfg.browser_capture_spool_path:
@@ -3910,16 +3907,10 @@ def run_command(
         browser_capture_origins = tuple(
             origin.strip() for origin in cfg.browser_capture_allowed_origins.split(",") if origin.strip()
         )
-    if parameter_is_default("api_host"):
-        if cfg.layer_of("api_host") != "default":
-            api_host = cfg.api_host
-        elif cfg.layer_of("daemon_host") != "default":
-            api_host = cfg.daemon_host
-    if parameter_is_default("api_port"):
-        if cfg.layer_of("api_port") != "default":
-            api_port = cfg.api_port
-        elif cfg.layer_of("daemon_port") != "default":
-            api_port = cfg.daemon_port
+    if parameter_is_default("api_host") and cfg.layer_of("api_host") != "default":
+        api_host = cfg.api_host
+    if parameter_is_default("api_port") and cfg.layer_of("api_port") != "default":
+        api_port = cfg.api_port
     if parameter_is_default("api_auth_token") and cfg.api_auth_token:
         api_auth_token = cfg.api_auth_token
     if parameter_is_default("api_allow_no_auth"):
