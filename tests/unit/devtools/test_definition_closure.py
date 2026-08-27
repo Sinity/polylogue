@@ -1,6 +1,8 @@
 """Mutation-sensitive tests for the definition closure kernel."""
 
-from typing import cast
+from typing import Any, cast
+
+import pytest
 
 from devtools.definition_closure import (
     ClosurePolicy,
@@ -67,9 +69,45 @@ def test_unavailable_evidence_and_authorized_absence_remain_explicit() -> None:
         policy.family,
         policy.authoritative_inventory_ref,
         policy.required_edge_kinds,
+        exception_authority="bead:event",
         definitions=policy.definitions,
         intentional_absences={"event:append": "bead:event"},
     )
     absent = evaluate((absent_policy,), {}).rows[0]
     assert absent.status is ClosureStatus.INTENTIONAL_ABSENCE
     assert absent.exception_authority == "bead:event"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"intentional_absences": {"event:unknown": "bead:event"}}, "unknown definition"),
+        ({"intentional_absences": {"event:append": ""}}, "cannot be empty"),
+        ({"intentional_absences": {"event:append": "bead:event"}, "exception_authority": None}, "exception authority"),
+    ],
+)
+def test_intentional_absence_requires_known_explicit_authority(kwargs: dict[str, object], message: str) -> None:
+    base: dict[str, Any] = {
+        "family": "event",
+        "authoritative_inventory_ref": "polylogue.events.registry",
+        "required_edge_kinds": (EdgeKind.PRODUCER,),
+        "definitions": (Definition("event:append", (EdgeKind.PRODUCER,)),),
+        "exception_authority": "bead:event",
+    }
+    base.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        ClosurePolicy(**base)
+
+
+def test_matrix_reports_edge_totals_and_unresolved_rows() -> None:
+    evidence = _evidence()
+    del evidence["event:append"][EdgeKind.CONSUMER]
+    payload = evaluate((_policy(),), evidence).to_dict()
+    assert payload["required_edge_count"] == 3
+    assert payload["actual_edge_count"] == 2
+    assert payload["unresolved_rows"] == ["event:append"]
+
+
+def test_unknown_evidence_edge_is_not_silently_discarded() -> None:
+    with pytest.raises(ValueError, match="unknown evidence edge"):
+        evaluate((_policy(),), {"event:append": {"future-edge": ()}})  # type: ignore[dict-item]

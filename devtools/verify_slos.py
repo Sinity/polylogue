@@ -171,6 +171,11 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
             "0",
             "-p",
             "no:randomly",
+            # The repository default excludes benchmark-marked tests so the
+            # ordinary test loop stays fast. This command explicitly runs the
+            # benchmark tier it is responsible for measuring.
+            "-m",
+            "benchmark",
             f"--basetemp={pytest_basetemp}",
             "--benchmark-enable",
             f"--benchmark-json={json_path}",

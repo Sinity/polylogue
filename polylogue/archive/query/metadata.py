@@ -49,6 +49,10 @@ class QueryUnitDescriptor:
     #: unit's own projected payload model are safe to filter. Empty means the
     #: unit only supports the ``first:N``/``last:N`` window, not predicates.
     attached_bracket_fields: dict[str, str] = dataclass_field(default_factory=dict)
+    #: Fields that may be emitted by the terminal ``fields``/``select``
+    #: transform. Values are row attributes; session-scoped names are resolved
+    #: from the owning-session join.
+    projectable_fields: dict[str, str] = dataclass_field(default_factory=dict)
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
     example: str = ""
@@ -822,6 +826,23 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         aggregate_group_fields=("role", "type", "session.origin", "session.repo"),
         aggregate_metric_fields=("word_count",),
         attached_bracket_fields={"role": "role", "type": "message_type"},
+        projectable_fields={
+            "message_id": "message_id",
+            "session_id": "session_id",
+            "origin": "origin",
+            "title": "title",
+            "role": "role",
+            "message_type": "message_type",
+            "material_origin": "material_origin",
+            "occurred_at": "occurred_at_ms",
+            "occurred_at_ms": "occurred_at_ms",
+            "position": "position",
+            "word_count": "word_count",
+            "text": "text",
+            "session.origin": "origin",
+            "session.title": "title",
+            "session.repo": "repo",
+        },
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
         example=_unit_info("message").example,
@@ -1308,6 +1329,25 @@ def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStage
     if descriptor is None or not descriptor.terminal_supported:
         return ()
     stages: list[QueryPipelineStageInfo] = []
+    if descriptor.projectable_fields:
+        stages.extend(
+            (
+                QueryPipelineStageInfo(
+                    value="fields",
+                    insert="fields ",
+                    description="Emit selected field-name keyed rows alongside the typed terminal rows.",
+                    source_unit=descriptor.unit,
+                    lowerer_kind=descriptor.lowerer_kind,
+                ),
+                QueryPipelineStageInfo(
+                    value="select",
+                    insert="select ",
+                    description="Alias for the fields projection stage.",
+                    source_unit=descriptor.unit,
+                    lowerer_kind=descriptor.lowerer_kind,
+                ),
+            )
+        )
     if descriptor.lowerer_kind == "sql" and descriptor.time_sort_supported:
         stages.append(
             QueryPipelineStageInfo(

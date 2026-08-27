@@ -699,6 +699,70 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
     )
 
 
+@pytest.mark.parametrize("reverse_variants", [False, True])
+def test_archive_writer_propagates_active_leaf_path_and_preserves_inactive_variant(
+    tmp_path: Path, reverse_variants: bool
+) -> None:
+    """The writer carries leaf-only provider evidence through public reads.
+
+    Anti-vacuity: removing the parent-chain propagation makes the active
+    ancestor persist as inactive, while the explicit inactive sibling still
+    proves that this is not a blanket "all messages active" fallback.
+    """
+    conn = _connect(tmp_path / f"index-{reverse_variants}.db")
+    try:
+        variants = [
+            ParsedMessage(
+                provider_message_id="answer-old",
+                role=Role.ASSISTANT,
+                text="old answer",
+                parent_message_provider_id="question",
+                position=1,
+                variant_index=0,
+                is_active_path=False,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="old answer")],
+            ),
+            ParsedMessage(
+                provider_message_id="answer-new",
+                role=Role.ASSISTANT,
+                text="new answer",
+                parent_message_provider_id="question",
+                position=1,
+                variant_index=1,
+                is_active_path=False,
+                is_active_leaf=True,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="new answer")],
+            ),
+        ]
+        if reverse_variants:
+            variants.reverse()
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=f"leaf-only-{reverse_variants}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="question",
+                    role=Role.USER,
+                    text="question",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="question")],
+                ),
+                *variants,
+            ],
+            active_leaf_message_provider_id="answer-new",
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+        envelope = read_archive_session_envelope(conn, session_id)
+        by_native_id = {message.native_id: message for message in envelope.messages}
+
+        assert by_native_id["question"].is_active_path is True
+        assert by_native_id["answer-old"].is_active_path is False
+        assert by_native_id["answer-new"].is_active_path is True
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_writer_accepts_code_blocks(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

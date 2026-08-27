@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from polylogue.runtime import require_free_threaded_runtime
 
 ROOT = _get_root()
 RUNTIME_SCRIPTS = ("polylogue", "polylogued", "polylogue-mcp")
@@ -73,13 +74,18 @@ def main(argv: list[str] | None = None) -> int:
 def verify_distribution_surface(work_dir: Path) -> None:
     """Build and smoke installed wheel artifacts from checkout and unpacked sdist."""
     work_dir = work_dir.resolve()
+    require_free_threaded_runtime(consumer="distribution verifier")
+    managed_python = Path(sys.executable).resolve()
     dist_dir = work_dir / "dist"
-    _run(("uv", "build", "--out-dir", str(dist_dir), "--sdist", "--wheel", str(ROOT)), cwd=ROOT)
+    _run(
+        ("uv", "build", "--python", str(managed_python), "--out-dir", str(dist_dir), "--sdist", "--wheel", str(ROOT)),
+        cwd=ROOT,
+    )
 
     wheel = _single_artifact(dist_dir, "*.whl")
     sdist = _single_artifact(dist_dir, "*.tar.gz")
     _verify_wheel_surface(wheel)
-    _smoke_installed_wheel(wheel, work_dir / "wheel-install")
+    _smoke_installed_wheel(wheel, work_dir / "wheel-install", managed_python)
 
     unpacked = _unpack_sdist(sdist, work_dir / "unpacked-sdist")
     if (unpacked / ".git").exists():
@@ -88,10 +94,13 @@ def verify_distribution_surface(work_dir: Path) -> None:
         raise DistributionVerificationError("sdist is missing embedded polylogue/_build_info.py")
 
     sdist_wheel_dir = work_dir / "sdist-wheel"
-    _run(("uv", "build", "--out-dir", str(sdist_wheel_dir), "--wheel", str(unpacked)), cwd=work_dir)
+    _run(
+        ("uv", "build", "--python", str(managed_python), "--out-dir", str(sdist_wheel_dir), "--wheel", str(unpacked)),
+        cwd=work_dir,
+    )
     sdist_wheel = _single_artifact(sdist_wheel_dir, "*.whl")
     _verify_wheel_surface(sdist_wheel)
-    _smoke_installed_wheel(sdist_wheel, work_dir / "sdist-wheel-install")
+    _smoke_installed_wheel(sdist_wheel, work_dir / "sdist-wheel-install", managed_python)
 
 
 def _verify_wheel_surface(wheel: Path) -> None:
@@ -116,12 +125,12 @@ def _read_entry_points(archive: zipfile.ZipFile) -> str:
     return archive.read(matches[0]).decode()
 
 
-def _smoke_installed_wheel(wheel: Path, install_dir: Path) -> None:
+def _smoke_installed_wheel(wheel: Path, install_dir: Path, managed_python: Path) -> None:
     wheel = wheel.resolve()
     install_dir = install_dir.resolve()
     install_dir.mkdir(parents=True, exist_ok=True)
     venv_dir = install_dir / "venv"
-    _run(("uv", "venv", str(venv_dir)), cwd=install_dir)
+    _run(("uv", "venv", "--python", str(managed_python), str(venv_dir)), cwd=install_dir)
     python = _venv_python(venv_dir)
     _run(("uv", "pip", "install", "--python", str(python), str(wheel)), cwd=install_dir)
     env = _smoke_env(install_dir / "archive")
@@ -144,6 +153,8 @@ def _probe_runtime_imports(python: Path, install_dir: Path, env: dict[str, str])
     code = (
         "import importlib\nfrom importlib import resources\n"
         f"modules = {modules_literal}\nresources_to_read = {resources_literal}\n"
+        "from polylogue.runtime import require_free_threaded_runtime\n"
+        "require_free_threaded_runtime(consumer='installed distribution probe')\n"
         "for name in modules:\n    importlib.import_module(name)\n"
         "for package, resource in resources_to_read:\n    assert resources.files(package).joinpath(resource).read_text(encoding='utf-8')\n"
     )
@@ -152,7 +163,16 @@ def _probe_runtime_imports(python: Path, install_dir: Path, env: dict[str, str])
 
 def _smoke_env(archive_root: Path) -> dict[str, str]:
     env = os.environ.copy()
-    env.pop("PYTHONPATH", None)
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONBREAKPOINT",
+        "PYTHONUSERBASE",
+        "VIRTUAL_ENV",
+        "_PYTHON_SYSCONFIGDATA_NAME",
+        "_PYTHON_HOST_PLATFORM",
+    ):
+        env.pop(name, None)
     env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root.resolve())
     env["POLYLOGUE_FORCE_PLAIN"] = "1"
     return env

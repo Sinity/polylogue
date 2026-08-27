@@ -59,16 +59,17 @@ def meta(**changes: Any) -> dict[str, Any]:
         "execution_lane": "lane",
         "lane_packet": "1",
         "lane_order": "1",
-        "affected_paths": "polylogue/example.py; tests/unit/test_example.py",
-        "conflict_keys": "one; two",
-        "write_scope": "free-form scope",
-        "verification_commands": "devtools test",
-        "model_policy": "provider-neutral-capability-v1",
-        "worker_model_class": "cheap-capable",
-        "review_model_class": "strong-review",
+        "ownership_resources": [
+            {"kind": "path-prefix", "key": "devtools/reindex_packets.py"},
+            {"kind": "path-prefix", "key": "tests/unit/devtools/test_reindex_packets.py"},
+        ],
+        "verification_specs": [{"argv": ["devtools", "test", "focused-reindex-packets"]}],
+        "evidence_obligations": [{"kind": "test-receipt", "producer": "devtools", "binding": "packet"}],
+        "worker_capability": "routine",
+        "review_capability": "strong-independent",
         "live_data_access": "synthetic",
         "execution_kind": "implementation",
-        "decision_closure": "closed-by-spec",
+        "decision_stage": "decision-closed",
         "necessity_class": "required",
         "judgment_class": "mechanical",
         "tdd_mode": "focused",
@@ -167,7 +168,11 @@ def bind_diagnostic_evidence(beads: list[dict[str, Any]], evidence: dict[str, An
 
 def graph(*, operation: bool = False) -> list[dict[str, Any]]:
     member_ids = "a" if operation else "abc"
-    root = bead(ROOT_ID, {"campaign_id": "reindex-2026", "execution_shape": "gate"}, (dep("gate"),))
+    root = bead(
+        ROOT_ID,
+        {"campaign_id": "reindex-2026", "execution_shape": "gate", "model_policy": "provider-neutral-capability-v1"},
+        (dep("gate"),),
+    )
     gate = bead(
         "gate", {"campaign_id": "reindex-2026", "execution_shape": "gate"}, tuple(dep(item) for item in member_ids)
     )
@@ -216,9 +221,9 @@ def test_blocks_closure_and_gate_carriers_remain_diagnostic() -> None:
     assert "related" in report["mixed_relation_expansion"]
     assert report["differences"]["campaign_only_ids"] == ["related"]
 
-    beads[1]["metadata"]["worker_model_class"] = "worker"
+    beads[1]["metadata"]["worker_capability"] = "routine"
     assert (
-        "gate: gate carries worker_model_class"
+        "gate: gate carries worker_capability"
         in validate(FakeReader(beads), integration_head=HEAD)["structural_errors"]
     )
 
@@ -230,10 +235,12 @@ def test_packet_topology_conflicts_and_missing_launch_contract_stay_enforced() -
     assert any("internal blocker is not earlier" in error for error in report["structural_errors"])
 
     beads = graph()
-    beads[3]["metadata"] = meta(execution_lane="other", lane_order="2", conflict_keys="one")
+    beads[3]["metadata"] = meta(
+        execution_lane="other", lane_order="2", ownership_resources=[{"kind": "path-prefix", "key": "devtools"}]
+    )
     beads[3]["dependencies"] = []
     report = validate(FakeReader(beads), integration_head=HEAD)
-    assert any("exact conflict-key overlap" in error for error in report["structural_errors"])
+    assert any("ownership-resource overlap" in error for error in report["structural_errors"])
     assert all(not item["ready"] for item in report["packets"])
 
     beads = graph()
@@ -522,14 +529,12 @@ def test_wave_order_accepts_post_reindex_only_after_live_window_and_unknown_is_n
     assert not any("earlier wave blocks on later wave" in error for error in report["structural_errors"])
 
 
-def test_legacy_readiness_census_remains_diagnostic_only() -> None:
+def test_retired_readiness_metadata_is_rejected() -> None:
     beads = graph()
     beads[2]["metadata"]["dispatch_readiness"] = "blocked-on-unknown; needs a note"
     report = validate(FakeReader(beads), integration_head=HEAD)
-    assert report["legacy_readiness_census"] == {
-        "dispatch_readiness": {"count": 1, "record_ids": ["a"]},
-        "program_dispatch_readiness": {"count": 0, "record_ids": []},
-    }
+    assert not report["ok"]
+    assert any("retired metadata field" in error for error in report["structural_errors"])
 
 
 def test_operation_initial_launch_breaks_the_static_evidence_catch_22() -> None:
@@ -795,7 +800,11 @@ def test_reader_invocation_is_read_only_and_json_marks_it(monkeypatch: Any) -> N
                     "id": ROOT_ID,
                     "status": "closed",
                     "labels": ["campaign:reindex-2026"],
-                    "metadata": {"campaign_id": "reindex-2026", "execution_shape": "gate"},
+                    "metadata": {
+                        "campaign_id": "reindex-2026",
+                        "execution_shape": "gate",
+                        "model_policy": "provider-neutral-capability-v1",
+                    },
                     "dependencies": [],
                 }
             )

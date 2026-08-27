@@ -111,6 +111,12 @@ class ProjectionSpec(SurfacePayloadModel):
     body_offset: int | None = Field(default=None, ge=0)
     neighbor_limit: int | None = Field(default=None, ge=1)
     neighbor_window_hours: int | None = Field(default=None, ge=1)
+    context_related_limit: int | None = Field(default=None, ge=1)
+    context_max_sessions: int | None = Field(default=None, ge=1, le=20)
+    correlation_repo_path: str | None = None
+    correlation_since_hours: int | None = Field(default=None, ge=1)
+    correlation_confidence_threshold: float | None = Field(default=None, ge=0, le=1)
+    correlation_github_api: bool | None = None
     redact_paths: bool = True
     include_assertions: bool = False
 
@@ -218,6 +224,12 @@ def projection_from_views(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    context_related_limit: int | None = None,
+    context_max_sessions: int | None = None,
+    correlation_repo_path: str | None = None,
+    correlation_since_hours: int | None = None,
+    correlation_confidence_threshold: float | None = None,
+    correlation_github_api: bool | None = None,
     redact_paths: bool = True,
     include_assertions: bool = False,
 ) -> QueryProjectionSpec:
@@ -269,6 +281,12 @@ def projection_from_views(
             body_offset=body_offset,
             neighbor_limit=neighbor_limit,
             neighbor_window_hours=neighbor_window_hours,
+            context_related_limit=context_related_limit,
+            context_max_sessions=context_max_sessions,
+            correlation_repo_path=correlation_repo_path,
+            correlation_since_hours=correlation_since_hours,
+            correlation_confidence_threshold=correlation_confidence_threshold,
+            correlation_github_api=correlation_github_api,
             redact_paths=redact_paths,
             include_assertions=include_assertions,
         ),

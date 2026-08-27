@@ -54,6 +54,35 @@ class _Actuator:
         return RecoveryDisposition("unknown", "operator-blocking", "synthetic inspector")
 
 
+@dataclass
+class _UnclassifiedActuator:
+    operation: str = "mutate-fixture"
+    operation_version: int = 3
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, _args: object) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=("session:fixture",),
+            affected_tiers=("user",),
+            reversible=True,
+        )
+
+    def apply(self, plan: MutationPlan, _args: object) -> MutationReceipt:
+        return MutationReceipt(
+            operation=plan.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at="now",
+        )
+
+
 def _spec(*, policies: tuple[TargetAuthorityPolicy, ...] | None = None) -> OperationSpec:
     return OperationSpec(
         name="mutate-fixture",
@@ -110,6 +139,11 @@ def test_binding_rejects_version_mismatch_and_duplicate_catalog_entries() -> Non
         OperationBinding(_spec(), _Actuator(), operation_version=2).validate()
     with pytest.raises(BindingValidationError, match="duplicate"):
         OperationBindingCatalog.validate((binding, binding))
+
+
+def test_binding_rejects_an_actuator_without_a_recovery_contract() -> None:
+    with pytest.raises(BindingValidationError, match="no recovery inspector"):
+        OperationBinding(_spec(), _UnclassifiedActuator()).validate()
 
 
 def test_catalog_requires_every_executor_routed_spec_and_resolves_only_registered_actuators() -> None:

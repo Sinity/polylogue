@@ -353,15 +353,26 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 ) -> None:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    session_ids = _seed_delete_authority_archive(archive_root, 256)
+    session_ids = _seed_delete_authority_archive(archive_root, 513)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        token = _prepare_authorize(client, session_ids)
+        preview = client.request_mutation_json("POST", "/api/cli/delete/prepare", {"session_ids": list(session_ids)})  # type: ignore[attr-defined]
+        assert preview is not None
+        preview_refs = preview["preview_refs"]
+        assert isinstance(preview_refs, list)
+        assert len(preview_refs) == 3
+        authorization = client.request_mutation_json(  # type: ignore[attr-defined]
+            "POST", "/api/cli/delete/authorize", {"preview_refs": preview_refs}
+        )
+        assert authorization is not None
+        tokens = authorization["authorization_tokens"]
+        assert isinstance(tokens, list)
+        assert len(tokens) == 3
         result = client.request_mutation_json(  # type: ignore[attr-defined]
-            "POST", "/api/cli/delete", {"authorization_token": token}
+            "POST", "/api/cli/delete", {"authorization_tokens": tokens}
         )
 
-    assert result == {"status": "deleted", "operation": "delete", "session_count": 256, "affected_count": 256}
+    assert result == {"status": "deleted", "operation": "delete", "session_count": 513, "affected_count": 513}
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 

@@ -264,7 +264,15 @@ async def test_seed_injects_demo_cost_for_postmortem(tmp_path: Path) -> None:
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         row = conn.execute(
-            "SELECT total_cost_usd, total_input_tokens, total_output_tokens FROM session_profiles WHERE session_id = ?",
+            """
+            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd,
+                   COALESCE(SUM(u.input_tokens), 0) AS total_input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS total_output_tokens
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE s.session_id = ?
+            GROUP BY s.session_id, s.reported_cost_usd
+            """,
             (DEMO_CLAUDE_CODE_SESSION_ID,),
         ).fetchone()
 
@@ -301,7 +309,13 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     # ``apply_demo_post_ingest_augmentation`` materializes.
     with sqlite3.connect(archive_root / "index.db") as conn:
         pre_row = conn.execute(
-            "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
+            """
+            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE s.session_id = ?
+            GROUP BY s.session_id, s.reported_cost_usd
+            """,
             (DEMO_CLAUDE_CODE_SESSION_ID,),
         ).fetchone()
     assert pre_row is None or not pre_row[0]
@@ -313,8 +327,17 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         cost_row = conn.execute(
-            "SELECT total_cost_usd, total_input_tokens, total_output_tokens, repo_names_json "
-            "FROM session_profiles WHERE session_id = ?",
+            """
+            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd,
+                   COALESCE(SUM(u.input_tokens), 0) AS total_input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS total_output_tokens,
+                   p.repo_names_json
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            JOIN session_profiles AS p ON p.session_id = s.session_id
+            WHERE s.session_id = ?
+            GROUP BY s.session_id, s.reported_cost_usd, p.repo_names_json
+            """,
             (DEMO_CLAUDE_CODE_SESSION_ID,),
         ).fetchone()
     assert cost_row is not None

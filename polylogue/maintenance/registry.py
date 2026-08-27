@@ -32,6 +32,7 @@ resume code path keep working unchanged.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -61,6 +62,39 @@ _STATE_DIRNAME: Final[str] = ".maintenance-state"
 def _state_dir(config: Config) -> Path:
     """Return the on-disk state directory under ``archive_root``."""
     return Path(config.archive_root) / _STATE_DIRNAME
+
+
+def _fsync_directory(path: Path) -> None:
+    """Flush a directory after publishing a replacement entry."""
+    directory = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def persist_operation_snapshot(config: Config, operation: BackfillOperation, *, dry_run: bool) -> Path:
+    """Persist a synchronous operation so its returned id is immediately inspectable."""
+    directory = _state_dir(config)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{validate_operation_id(operation.operation_id)}.json"
+    temporary = path.with_suffix(".json.tmp")
+    payload = json_document(
+        {
+            "operation_id": operation.operation_id,
+            "targets": list(operation.targets),
+            "started_at": operation.started_at,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": operation.completed_at,
+            "dry_run": dry_run,
+            "results": list(operation.results),
+            "operation": operation.to_dict(),
+        }
+    )
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+    _fsync_directory(path.parent)
+    return path
 
 
 @dataclass(frozen=True)

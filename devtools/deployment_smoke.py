@@ -17,7 +17,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _CURRENT_USER = getpass.getuser()
@@ -457,10 +456,7 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                         ).fetchone()
                         if latest_row is None and latest_provider and latest_provider_session_id:
                             latest_origin = BROWSER_CAPTURE_PROVIDER_ORIGINS.get(latest_provider)
-                            latest_native_id = legacy_browser_capture_native_id(
-                                latest_provider, latest_provider_session_id
-                            )
-                            if latest_origin and latest_native_id:
+                            if latest_origin:
                                 latest_row = conn.execute(
                                     """
                                     SELECT raw_id, native_id, file_mtime_ms, source_path
@@ -469,7 +465,7 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                                     ORDER BY COALESCE(file_mtime_ms, 0) DESC, rowid DESC
                                     LIMIT 1
                                     """,
-                                    (latest_origin, latest_native_id),
+                                    (latest_origin, latest_provider_session_id),
                                 ).fetchone()
                         if latest_row is not None:
                             latest_raw_id = str(latest_row[0]) if latest_row[0] is not None else None
@@ -510,11 +506,7 @@ def _probe_browser_capture_archive(*, archive_root: Path) -> BrowserCaptureArchi
                 latest_indexed_message_count = int(row[3] or 0)
                 if latest_indexed_message_count <= 0:
                     error = "latest_spooled_indexed_without_messages"
-                elif (
-                    latest_provider_session_id is not None
-                    and latest_indexed_native_id
-                    != legacy_browser_capture_native_id(latest_provider, latest_provider_session_id)
-                ):
+                elif latest_provider_session_id is not None and latest_indexed_native_id != latest_provider_session_id:
                     error = "latest_spooled_indexed_native_id_mismatch"
         except sqlite3.Error as exc:
             error = f"index:{type(exc).__name__}: {exc}"

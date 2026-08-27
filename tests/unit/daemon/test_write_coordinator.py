@@ -460,7 +460,6 @@ def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
 @pytest.mark.parametrize(
     ("helper_name", "writer_name"),
     [
-        ("_run_startup_fts_readiness", "_ensure_fts_startup_readiness_sync"),
         ("_run_startup_lineage_readiness", "_ensure_lineage_startup_readiness_sync"),
     ],
 )

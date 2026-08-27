@@ -27,6 +27,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
@@ -101,6 +102,12 @@ class SyncInsightQueriesMixin:
         query: ToolUsageInsightQuery | None = None,
     ) -> list[ToolUsageInsight]:
         return run_coroutine_sync(self._facade.list_tool_usage_insights(query))
+
+    def list_command_shape_usage(
+        self,
+        query: CommandShapeUsageQuery | None = None,
+    ) -> list[CommandShapeUsage]:
+        return run_coroutine_sync(self._facade.list_command_shape_usage(query))
 
     def list_session_cost_insights(
         self,

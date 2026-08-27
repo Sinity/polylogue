@@ -111,6 +111,8 @@ class CandidateBuildRequest(SurfacePayloadModel):
     origin_declarations: tuple[str, ...]
     recipe_version: str
     semantic_version: str
+    check_plan_digest: str | None = None
+    check_plan_members: tuple[str, ...] = ()
     generation_policy: Literal["inactive-candidate-v1"] = CANDIDATE_BUILD_POLICY
     build_class: Literal["inactive-candidate"] = CANDIDATE_BUILD_CLASS
 
@@ -123,6 +125,24 @@ class CandidateBuildRequest(SurfacePayloadModel):
     @classmethod
     def validate_declarations(cls, value: tuple[str, ...], info: Any) -> tuple[str, ...]:
         return _ordered_unique(value, label=info.field_name)
+
+    @field_validator("check_plan_digest")
+    @classmethod
+    def validate_check_plan_digest(cls, value: str | None) -> str | None:
+        if value is not None and (_DIGEST_RE.fullmatch(value) is None):
+            raise ValueError("check_plan_digest must be a SHA-256 hex digest")
+        return value.lower() if value is not None else None
+
+    @field_validator("check_plan_members")
+    @classmethod
+    def validate_check_plan_members(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _ordered_unique(value, label="check_plan_members") if value else ()
+
+    @model_validator(mode="after")
+    def validate_check_plan_binding(self) -> CandidateBuildRequest:
+        if self.check_plan_members and self.check_plan_digest is None:
+            raise ValueError("check_plan_members require check_plan_digest")
+        return self
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> CandidateBuildRequest:
@@ -145,6 +165,8 @@ class CandidateBuildRequest(SurfacePayloadModel):
                 "origin_declarations": sorted(self.origin_declarations),
                 "recipe_version": self.recipe_version,
                 "semantic_version": self.semantic_version,
+                "check_plan_digest": self.check_plan_digest,
+                "check_plan_members": sorted(self.check_plan_members),
                 "generation_policy": self.generation_policy,
                 "build_class": self.build_class,
             }
@@ -440,10 +462,17 @@ class CandidateBuildPlanningContext:
     generation: IndexGeneration
     budget: CandidateBuildBudget
     obligations: tuple[CandidateBuildObligation, ...] = ()
+    expected_check_plan_digest: str | None = None
+    expected_check_plan_members: tuple[str, ...] = ()
 
     def plan(self, request: CandidateBuildRequest, *, preview: bool = False) -> CandidateBuildPlan:
         if request.source_seal != self.source_seal:
             raise ValueError("candidate request source seal is stale")
+        if self.expected_check_plan_digest is not None:
+            if request.check_plan_digest != self.expected_check_plan_digest:
+                raise ValueError("candidate request check plan is stale")
+            if tuple(request.check_plan_members) != tuple(sorted(self.expected_check_plan_members)):
+                raise ValueError("candidate request check plan members are stale")
         if self.generation.state != "inactive":
             raise ValueError("candidate target generation is not inactive")
         if Path(self.generation.archive_root).absolute() != self.archive_root.absolute():

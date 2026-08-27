@@ -313,9 +313,9 @@ def _plan_text_query(plan: SessionQueryPlan) -> str | None:
 def _fetch_limit(plan: SessionQueryPlan, *, default: int) -> int:
     limit = plan.limit if plan.limit is not None else default
     if plan.has_post_filters():
-        # Post-filters discard rows after fetch; over-fetch so the page still
-        # fills.  Unbounded plans already fetch everything.
-        return limit * 4 if limit < 1_000_000 else limit
+        # Post-filters discard rows after fetch. The caller repeats this
+        # bounded batch until the filtered page is full or candidates end.
+        return max(limit * 10, 500) if limit < 1_000_000 else limit
     return limit
 
 
@@ -372,16 +372,17 @@ def _archive_summaries(
 ) -> list[ArchiveSessionSummary]:
     filter_kwargs = _plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
+    post_filter_fetch = plan.has_post_filters() and plan.limit is not None
     sort = plan.sort
     reverse = plan.reverse
 
     if plan.similar_session_id is not None:
-        hits = _session_seed_hits(plan, archive, config=config, archive_root=archive_root)
-        return _summaries_from_hits(archive, hits)
+        search_hits = _session_seed_hits(plan, archive, config=config, archive_root=archive_root)
+        return _summaries_from_hits(archive, search_hits)
 
     if plan.similar_text is not None or plan.retrieval_lane in {"semantic", "hybrid"}:
         try:
-            hits = _semantic_hits(plan, archive, config=config, archive_root=archive_root)
+            search_hits = _semantic_hits(plan, archive, config=config, archive_root=archive_root)
         except Exception as exc:
             from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 
@@ -389,7 +390,7 @@ def _archive_summaries(
                 raise
             # Hybrid policy permits a partial lexical result; its search-hit
             # execution envelope records the unavailable vector lane.
-            hits = archive.search_summaries(
+            search_hits = archive.search_summaries(
                 _plan_text_query(plan) or "",
                 limit=limit,
                 offset=plan.offset,
@@ -397,28 +398,52 @@ def _archive_summaries(
                 reverse=reverse,
                 **filter_kwargs,
             )
-        return _summaries_from_hits(archive, hits)
+        return _summaries_from_hits(archive, search_hits)
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
-        hits = archive.search_summaries(
-            query_text,
+        hits: list[ArchiveSessionSearchHit] = []
+        fetch_offset = 0 if post_filter_fetch else plan.offset
+        while True:
+            batch = archive.search_summaries(
+                query_text,
+                limit=limit,
+                offset=fetch_offset,
+                sort=sort,
+                reverse=reverse,
+                **filter_kwargs,
+            )
+            hits.extend(batch)
+            if not post_filter_fetch or len(batch) < limit:
+                break
+            fetch_offset += len(batch)
+        return _summaries_from_hits(archive, hits)
+
+    if not post_filter_fetch:
+        return archive.list_summaries(
             limit=limit,
             offset=plan.offset,
             sort=sort,
             reverse=reverse,
+            sample=plan.sample is not None,
             **filter_kwargs,
         )
-        return _summaries_from_hits(archive, hits)
-
-    return archive.list_summaries(
-        limit=limit,
-        offset=plan.offset,
-        sort=sort,
-        reverse=reverse,
-        sample=plan.sample is not None,
-        **filter_kwargs,
-    )
+    summaries: list[ArchiveSessionSummary] = []
+    fetch_offset = 0
+    while True:
+        summary_batch = archive.list_summaries(
+            limit=limit,
+            offset=fetch_offset,
+            sort=sort,
+            reverse=reverse,
+            sample=False,
+            **filter_kwargs,
+        )
+        summaries.extend(summary_batch)
+        if len(summary_batch) < limit:
+            break
+        fetch_offset += len(summary_batch)
+    return summaries
 
 
 def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchHit]) -> list[ArchiveSessionSummary]:
@@ -518,6 +543,8 @@ async def list_summaries_archive(
     )
     filtered = plan._apply_common_filters(summaries, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_summaries(filtered)
+    if plan.has_post_filters() and plan.offset:
+        ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
 
@@ -573,6 +600,8 @@ async def list_archive(
     )
     filtered = plan._apply_full_filters(sessions, sql_pushed=True)
     ordered = filtered if rank_first else plan._sort_sessions(filtered)
+    if plan.has_post_filters() and plan.offset:
+        ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
 

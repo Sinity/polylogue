@@ -11,7 +11,7 @@ import json
 import logging
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +50,235 @@ from polylogue.storage.introspection import table_exists as _table_exists
 logger = logging.getLogger(__name__)
 
 UsageReportDetail = Literal["headline", "full"]
+
+UsageProjectionState = Literal["complete", "incomplete"]
+
+
+@dataclass(frozen=True, slots=True)
+class UsageProjectionModel:
+    """One model-split usage projection derived from provider events.
+
+    This is intentionally the only cost fold in the storage layer.  The
+    event rows are the evidence input; callers must not supply a pre-folded
+    ``session_model_usage`` row.  ``None`` cost means pricing evidence is
+    incomplete, never a measured zero.
+    """
+
+    session_id: str
+    model_name: str | None
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cost_usd: float | None
+    state: UsageProjectionState
+    missing_reasons: tuple[str, ...] = ()
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+
+@dataclass(frozen=True, slots=True)
+class UsageProjectionRollup:
+    """A deterministic origin/model rollup over model projections."""
+
+    origin: str
+    model_name: str | None
+    session_count: int
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    cost_usd: float | None
+    state: UsageProjectionState
+    incomplete_session_count: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+
+def _projection_int(row: Mapping[str, object], name: str) -> int:
+    try:
+        value = row.get(name)
+    except AttributeError:
+        value = row[name]  # sqlite3.Row supports indexed/name access, not get()
+    if value is None or isinstance(value, str) and not value.strip():
+        return 0
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"usage column {name!r} is not numeric: {type(value).__name__}")
+    return max(int(value), 0)
+
+
+def _projection_value(row: Mapping[str, object], name: str) -> object:
+    try:
+        return row.get(name)
+    except AttributeError:
+        return row[name]
+
+
+def _projection_event_lanes(row: Mapping[str, object]) -> tuple[int, int, int, int]:
+    """Return disjoint lanes for one event, preferring provider lane totals."""
+    total_input = _projection_int(row, "total_input_tokens")
+    total_output = _projection_int(row, "total_output_tokens")
+    total_cache_read = _projection_int(row, "total_cached_input_tokens")
+    total_cache_write = _projection_int(row, "total_cache_write_tokens")
+    if total_input or total_output or total_cache_read or total_cache_write:
+        # Codex totals include cache in input.  The stored projection's input
+        # lane is deliberately uncached input, so the two lanes cannot overlap.
+        return (
+            max(total_input - total_cache_read, 0),
+            total_output,
+            total_cache_read,
+            total_cache_write,
+        )
+    return (
+        _projection_int(row, "last_input_tokens"),
+        _projection_int(row, "last_output_tokens"),
+        _projection_int(row, "last_cached_input_tokens"),
+        _projection_int(row, "last_cache_write_tokens"),
+    )
+
+
+def project_provider_usage_events(
+    events: Iterable[Mapping[str, object]],
+    *,
+    origin: str,
+) -> tuple[UsageProjectionModel, ...]:
+    """Fold provider usage events once into model-split session projections.
+
+    Cumulative ``token_count`` rows are session-global: only the latest such
+    row contributes.  Delta rows are summed per model.  Pricing is resolved
+    through the canonical catalog and a non-zero cache lane requires a
+    non-zero catalog cache rate; otherwise the result is typed incomplete.
+    """
+    del origin  # retained in the public signature for rollup composition
+    grouped: dict[tuple[str, str | None], list[int]] = {}
+    latest_cumulative: dict[str, tuple[int, str | None, tuple[int, int, int, int]]] = {}
+    for row in events:
+        session_id = str(_projection_value(row, "session_id") or "")
+        if not session_id:
+            continue
+        model_raw = _projection_value(row, "model_name")
+        model = _normalize_model_name(model_raw) or None
+        lanes = _projection_event_lanes(row)
+        key = (session_id, model)
+        if str(_projection_value(row, "provider_event_type") or "") == "token_count" and any(
+            _projection_int(row, name)
+            for name in (
+                "total_input_tokens",
+                "total_output_tokens",
+                "total_cached_input_tokens",
+                "total_cache_write_tokens",
+            )
+        ):
+            position = _projection_int(row, "position")
+            prior = latest_cumulative.get(session_id)
+            if prior is None or position >= prior[0]:
+                latest_cumulative[session_id] = (position, model, lanes)
+            continue
+        bucket = grouped.setdefault(key, [0, 0, 0, 0])
+        for index, value in enumerate(lanes):
+            bucket[index] += value
+
+    for session_id, (_, model, lanes) in latest_cumulative.items():
+        # A session-global cumulative supersedes all deltas and prior model
+        # attribution.  Keeping one bucket prevents lineage/model double-add.
+        grouped = {key: value for key, value in grouped.items() if key[0] != session_id}
+        grouped[(session_id, model)] = list(lanes)
+
+    result: list[UsageProjectionModel] = []
+    for (session_id, model), raw_lanes in sorted(grouped.items()):
+        input_tokens, output_tokens, cache_read, cache_write = raw_lanes
+        reasons: list[str] = []
+        pricing = PRICING.get(_normalize_model(model)) if model else None
+        cost: float | None = None
+        if model is None:
+            reasons.append("missing_model")
+        elif pricing is None:
+            reasons.append("missing_model_price")
+        elif (
+            cache_read
+            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
+            and pricing.cache_read_usd_per_1m == 0
+        ):
+            reasons.append("missing_cache_read_price")
+        elif (
+            cache_write
+            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
+            and pricing.cache_write_usd_per_1m == 0
+        ):
+            reasons.append("missing_cache_write_price")
+        else:
+            cost = round(
+                estimate_cost(input_tokens, output_tokens, model, cache_read, cache_write),
+                6,
+            )
+        result.append(
+            UsageProjectionModel(
+                session_id=session_id,
+                model_name=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+                cost_usd=cost,
+                state="complete" if not reasons else "incomplete",
+                missing_reasons=tuple(reasons),
+            )
+        )
+    return tuple(result)
+
+
+def rollup_usage_projections(
+    projections: Iterable[UsageProjectionModel],
+    *,
+    origins: Mapping[str, str] | None = None,
+) -> tuple[UsageProjectionRollup, ...]:
+    """Aggregate model projections without converting incomplete cost to zero."""
+
+    @dataclass
+    class _Bucket:
+        sessions: int = 0
+        input_tokens: int = 0
+        output_tokens: int = 0
+        cache_read_tokens: int = 0
+        cache_write_tokens: int = 0
+        cost_usd: float | None = None
+        incomplete: int = 0
+
+    grouped: dict[tuple[str, str | None], _Bucket] = {}
+    for projection in projections:
+        origin = str((origins or {}).get(projection.session_id, "unknown"))
+        bucket = grouped.setdefault((origin, projection.model_name), _Bucket())
+        bucket.sessions += 1
+        bucket.input_tokens += projection.input_tokens
+        bucket.output_tokens += projection.output_tokens
+        bucket.cache_read_tokens += projection.cache_read_tokens
+        bucket.cache_write_tokens += projection.cache_write_tokens
+        if projection.cost_usd is None:
+            bucket.incomplete += 1
+        elif bucket.cost_usd is None:
+            bucket.cost_usd = projection.cost_usd
+        else:
+            bucket.cost_usd += projection.cost_usd
+    return tuple(
+        UsageProjectionRollup(
+            origin=origin,
+            model_name=model,
+            session_count=bucket.sessions,
+            input_tokens=bucket.input_tokens,
+            output_tokens=bucket.output_tokens,
+            cache_read_tokens=bucket.cache_read_tokens,
+            cache_write_tokens=bucket.cache_write_tokens,
+            cost_usd=(None if bucket.incomplete else round(bucket.cost_usd or 0.0, 6)),
+            state="incomplete" if bucket.incomplete else "complete",
+            incomplete_session_count=bucket.incomplete,
+        )
+        for (origin, model), bucket in sorted(grouped.items())
+    )
+
 
 # Match the whitespace contract of Python ``str.strip()``, which the provider
 # usage writer uses when resolving model names. SQLite ``TRIM`` removes only
@@ -197,6 +426,13 @@ SESSION_USAGE_RECONCILED_COST_FAMILY: Final = FactFamilySpec(
 
 def _normalize_model_name(value: object) -> str:
     return str(value).strip(_MODEL_NAME_STRIP_CHARS) if value else ""
+
+
+def _priceable_model_name(model_name: str | None) -> str | None:
+    if not model_name:
+        return None
+    normalized = _normalize_model(model_name)
+    return normalized if normalized in PRICING else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1583,28 +1819,39 @@ def _model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[st
 def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
     """Return logical-session/model high-water usage by origin.
 
-    ``session_model_usage`` is the physical-session evidence stream.  Logical
-    accounting collapses continuation/fork/replay chains by grouping rows under
-    ``session_profiles.logical_session_id`` and taking the highest observed lane
-    value for each logical-session/model pair.  Summing those high-water rows
-    gives consumers a labeled logical view without erasing the physical rows.
+    ``session_model_usage`` is the physical-session evidence stream.  A
+    prefix-sharing child contains a tail delta, while non-lineage rows retain
+    cumulative observations.  Logical accounting therefore takes the highest
+    non-lineage observation and adds prefix-sharing deltas for each
+    logical-session/model pair.
     """
 
     rows = conn.execute(
         f"""
-        WITH logical_model AS (
+        WITH physical_model AS (
             SELECT s.origin AS origin,
                    COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                    u.model_name AS model_name,
-                   MAX(u.input_tokens) AS input_tokens,
-                   MAX(u.output_tokens) AS output_tokens,
-                   MAX(u.cache_read_tokens) AS cached_input_tokens,
-                   MAX(u.cache_write_tokens) AS cache_write_tokens
+                   u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+                   (l.src_session_id IS NOT NULL) AS is_prefix_delta
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles p ON p.session_id = u.session_id
+            LEFT JOIN session_links l
+              ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
             {_where_origin(origin, table_alias="s")}
-            GROUP BY s.origin, logical_session_id, u.model_name
+        ), logical_model AS (
+            SELECT origin, logical_session_id, model_name,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+            FROM physical_model
+            GROUP BY origin, logical_session_id, model_name
         )
         SELECT origin,
                COALESCE(SUM(input_tokens), 0) AS input_tokens,
@@ -1721,18 +1968,29 @@ def _pricing_lane_reports(
     if logical:
         rows = conn.execute(
             f"""
-            WITH logical_model AS (
+            WITH physical_model AS (
                 SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
-                       MAX(u.input_tokens) AS input_tokens,
-                       MAX(u.output_tokens) AS output_tokens,
-                       MAX(u.cache_read_tokens) AS cached_input_tokens,
-                       MAX(u.cache_write_tokens) AS cache_write_tokens
+                       u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+                       (l.src_session_id IS NOT NULL) AS is_prefix_delta
                 FROM session_model_usage u
                 JOIN sessions s ON s.session_id = u.session_id
                 LEFT JOIN session_profiles p ON p.session_id = u.session_id
+                LEFT JOIN session_links l
+                  ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
                 {_where_origin(origin, table_alias="s")}
+            ), logical_model AS (
+                SELECT provenance, logical_session_id, model_name,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+                FROM physical_model
                 GROUP BY provenance, logical_session_id, model_name
             )
             SELECT provenance,
@@ -2357,11 +2615,31 @@ def _catalog_cost_evidence(
     cache_write_tokens: int,
     normalized_model: str | None,
     observed_at: str,
+    model_usage_rows: Sequence[ModelUsageTotals] = (),
 ) -> EvidenceValue[float]:
     fact_ref = _session_usage_fact_ref(session_id, "catalog-api-equivalent-cost")
     source_ref = _session_usage_source_ref(session_id, "reconciled_tokens_repriced")
     catalog_ref = ObjectRef(kind="insight", object_id=f"pricing-catalog:{CATALOG_EFFECTIVE_DATE}")
-    priceable = tokens_evidence.value_state == "known" and normalized_model is not None and normalized_model in PRICING
+    # A session may contain several models.  Reprice each model's token lanes
+    # under its own catalog entry; pricing the session-wide sum with the
+    # dominant model silently transfers the most expensive model's rates to
+    # every other model (polylogue-5uutw).
+    if model_usage_rows:
+        priced_rows: tuple[tuple[ModelUsageTotals, str], ...] = tuple(
+            (row, normalized)
+            for row in model_usage_rows
+            if (normalized := _priceable_model_name(row.model_name)) is not None
+        )
+        priceable = (
+            tokens_evidence.value_state == "known"
+            and len(priced_rows) == len(model_usage_rows)
+            and bool(model_usage_rows)
+        )
+    else:
+        priced_rows = ()
+        priceable = (
+            tokens_evidence.value_state == "known" and normalized_model is not None and normalized_model in PRICING
+        )
     value: float | None = None
     exclusions: tuple[CoverageExclusion, ...] = ()
     if priceable:
@@ -2371,16 +2649,31 @@ def _catalog_cost_evidence(
         # typically several times an input token's rate), so collapsing the
         # reconciled *total* into a single input_tokens argument would
         # systematically misprice any session with real output/cache volume.
-        value = round(
-            estimate_cost(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-                model=normalized_model or "",
-            ),
-            6,
-        )
+        if priced_rows:
+            value = round(
+                sum(
+                    estimate_cost(
+                        input_tokens=row.input_tokens,
+                        output_tokens=row.output_tokens,
+                        cache_read_tokens=row.cache_read_tokens,
+                        cache_write_tokens=row.cache_write_tokens,
+                        model=normalized,
+                    )
+                    for row, normalized in priced_rows
+                ),
+                6,
+            )
+        else:
+            value = round(
+                estimate_cost(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    model=normalized_model or "",
+                ),
+                6,
+            )
     elif tokens_evidence.value_state != "known":
         exclusions = (CoverageExclusion(subject_ref=source_ref, reason="reconciled-tokens-unknown"),)
     else:
@@ -2745,6 +3038,7 @@ def build_session_usage_reconciliation(
         cache_read_tokens=winning_cache_read_tokens,
         cache_write_tokens=winning_cache_write_tokens,
         normalized_model=reconciled_model,
+        model_usage_rows=model_usage_rows if model_usage_evidence.value_state == "known" else (),
         observed_at=observed_at,
     )
     legacy_cost = _legacy_cost_evidence(
@@ -2836,6 +3130,9 @@ __all__ = [
     "ProviderUsageCoverage",
     "ProviderUsageReport",
     "SessionUsageCost",
+    "UsageProjectionModel",
+    "UsageProjectionRollup",
+    "UsageProjectionState",
     "SESSION_USAGE_RECONCILED_COST_FAMILY",
     "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",
     "session_usage_costs_for_connection",
@@ -2846,4 +3143,6 @@ __all__ = [
     "origin_usage_report_for_archive_root",
     "origin_usage_report_from_connection",
     "session_usage_reconciliation_for_connection",
+    "project_provider_usage_events",
+    "rollup_usage_projections",
 ]

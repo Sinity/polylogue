@@ -343,7 +343,8 @@ def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
     assert digest.transform.input_session_id == "codex-session:demo"
     assert digest.size_metrics.message_count == 3
     assert digest.size_metrics.subagent_report_count == 1
-    assert digest.size_metrics.run_state_count == 1
+    assert digest.size_metrics.run_state_count == 0
+    assert digest.decision_candidates == ()
     assert digest.size_metrics.resume_bundle_bytes > 0
     assert digest.size_metrics.resume_bundle_bytes >= digest.size_metrics.normal_read_bytes
     assert digest.role_counts == {"user": 1, "assistant": 2}
@@ -390,13 +391,8 @@ def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
     assert subagent.caveats == ("Caveat: storage persistence not included.",)
     assert {ref.ref_kind for ref in subagent.raw_refs} == {"block"}
 
-    assert digest.run_state is not None
-    assert digest.run_state.goal == "burn down the backlog"
-    assert digest.run_state.done == ("#1910 merged", "#1818 closed")
-    assert digest.run_state.in_flight == ("#1913 CI",)
-    assert digest.run_state.blockers == ("none",)
-    assert digest.run_state.next_actions == ("merge PR #1911",)
-    assert digest.run_state.raw_refs[0].message_id == "m1"
+    # Run state is model-authored, not extracted from message headings.
+    assert digest.run_state is None
 
     # Structured in-session outcomes only: the Bash test tool returned exit 0.
     # The prose "MERGED #1910" / "Closed issue #1818" / "Review ... on PR #1911"
@@ -450,10 +446,7 @@ def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
     assert test_event.handler_kind == "test"
     assert test_event.status == "ok"
 
-    candidates = {candidate.text for candidate in digest.decision_candidates}
-    assert "goal: burn down the backlog" in candidates
-    assert "next: merge PR #1911" in candidates
-    assert "keep benchmarks outside verify coverage for scope, not flakiness." in candidates
+    assert digest.decision_candidates == ()
 
     assert "# Resume: Ship the backlog" in digest.resume_markdown
     assert "feature/demo" in digest.resume_markdown
@@ -461,8 +454,7 @@ def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
     assert "Explore — Map the transform surface and report caveats." in digest.resume_markdown
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in digest.resume_markdown
     assert "## Run State" in digest.resume_markdown
-    assert "- [assertion] done: #1910 merged" in digest.resume_markdown
-    assert "- [assertion] next: merge PR #1911" in digest.resume_markdown
+    assert "- none extracted" in digest.resume_markdown
     assert "Bash [test]" in digest.resume_markdown
     assert "Read [file_read]" in digest.resume_markdown
     assert "Every bundle row carries evidence refs and a support marker." in digest.resume_markdown
@@ -481,9 +473,7 @@ def test_every_extracted_claim_carries_raw_refs() -> None:
     for report in digest.subagent_reports:
         assert report.raw_refs
         assert all(ref.session_id == digest.session_id for ref in report.raw_refs)
-    assert digest.run_state is not None
-    assert digest.run_state.raw_refs
-    assert all(ref.session_id == digest.session_id for ref in digest.run_state.raw_refs)
+    assert digest.run_state is None
     for event in digest.events:
         assert event.raw_refs
         assert all(ref.session_id == digest.session_id for ref in event.raw_refs)
@@ -525,14 +515,6 @@ def test_forensic_index_groups_claims_by_raw_ref() -> None:
     assert session_entry.claim_labels == ("digest:session",)
     assert session_entry.raw_ref.ref_kind == "session"
 
-    run_state_entry = entries["codex-session:demo::m1"]
-    # m1 carries run_state + decision candidates, but no events: outcome events
-    # come from tool-result blocks, not message prose (#2482).
-    assert set(run_state_entry.claim_kinds) == {"run_state", "decision_candidate"}
-    assert "run_state" in run_state_entry.claim_labels
-    assert any(label.startswith("decision:run_state:") for label in run_state_entry.claim_labels)
-    assert run_state_entry.raw_ref.preview.startswith("Goal: burn down")
-
     # The bash tool_use block carries both its tool summary and the structured
     # outcome event extracted from its paired tool_result.
     bash_call_entry = entries["codex-session:demo::m2::0"]
@@ -573,12 +555,11 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
         "execution",
         "events",
         "subagents",
-        "run_state",
         "tools",
-        "decisions",
+        "evidence_gaps",
     }
     assert all(entry.evidence_refs for entry in bundle.entries)
-    assert {entry.support for entry in bundle.entries} >= {"raw_evidence", "assertion", "caveat", "inference"}
+    assert {entry.support for entry in bundle.entries} >= {"raw_evidence", "missing_evidence"}
     assert any(ref.format() == "codex-session:demo::m2::0" for entry in bundle.entries for ref in entry.evidence_refs)
     execution_entries = tuple(entry for entry in bundle.entries if entry.section == "execution")
     assert any(
@@ -683,7 +664,7 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
     assert "details: boundary=subagent_start; inheritance_mode=summary" in rendered
     assert "- [raw-evidence] test_passed: devtools verify --quick passed (exit 0)" in rendered
     assert "details: delivery_state=observed" in rendered
-    assert "- [caveat] blocker: none" in rendered
+    assert "No structured RunState section was extracted" in rendered
     assert "refs: subagent-report:codex-session:demo:0:tool-2, agent:codex/Explore" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
@@ -853,8 +834,7 @@ def test_continue_report_renders_successor_boot_bundle_with_evidence_refs() -> N
 
     assert report.startswith("# Continue: Ship the backlog [evidence: codex-session:demo]")
     assert "## Boot Bundle" in report
-    assert "- goal: burn down the backlog [evidence: codex-session:demo::m1]" in report
-    assert "- next: merge PR #1911 [evidence: codex-session:demo::m1]" in report
+    assert "- run_state: none extracted" in report
     # Structured outcomes are facts, not heuristic candidates (#2482).
     assert "## Recent Outcomes (structured tool/test results)" in report
     assert "- test_passed: devtools verify --quick passed (exit 0) [evidence: codex-session:demo::m2::0]" in report
@@ -887,7 +867,7 @@ def test_blame_report_renders_forensic_evidence_report_with_raw_refs() -> None:
     assert "output: ruff check ... ok 20 passed in 50.28s" in report
     assert "Explore [tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42]:" in report
     assert "## Evidence Timeline" in report
-    assert "raw: message message=m1" in report
+    assert "raw: message message=m1" not in report
     # No fabricated GitHub Events section.
     assert "## GitHub Events" not in report
     _assert_report_claim_lines_are_evidence_linked(report)
@@ -906,16 +886,6 @@ def test_prose_mined_tool_summary_fields_carry_text_derived_evidence_class() -> 
     assert clean.text_derived_fields == ()
 
 
-def test_decision_candidates_are_always_text_derived() -> None:
-    """polylogue-9e5.30: DecisionCandidate has no structural counterpart -- always text_derived."""
-    digest = compile_session_digest(_session())
-
-    assert digest.decision_candidates
-    for candidate in digest.decision_candidates:
-        assert candidate.evidence_class == "text_derived"
-        assert "text" in candidate.text_derived_fields
-
-
 def test_session_digest_event_stays_raw_evidence() -> None:
     """polylogue-9e5.30: structured tool/test outcomes (#2482) are never text_derived."""
     ref = TransformRawRef(session_id="s", message_id="m1")
@@ -928,10 +898,7 @@ def test_forensic_index_entry_evidence_class_is_union_of_contributing_claims() -
     digest = compile_session_digest(_session())
 
     decision_entries = [entry for entry in digest.forensic_index.entries if "decision_candidate" in entry.claim_kinds]
-    assert decision_entries
-    for entry in decision_entries:
-        assert entry.evidence_class == "text_derived"
-        assert "decision_candidate" in entry.text_derived_fields
+    assert decision_entries == []
 
     digest_entry = next(entry for entry in digest.forensic_index.entries if entry.claim_kinds == ("digest",))
     assert digest_entry.evidence_class == "raw_evidence"
@@ -948,9 +915,6 @@ def test_render_blame_report_marks_every_text_derived_claim_with_a_caveat() -> N
         if tool.evidence_class == "text_derived":
             line = next(line for line in report.splitlines() if line.startswith(f"- {tool.tool_name} ["))
             assert_forensic_conclusion_has_caveat(tool.evidence_class, line)
-    for candidate in digest.decision_candidates:
-        line = next(line for line in report.splitlines() if candidate.text in line)
-        assert_forensic_conclusion_has_caveat(candidate.evidence_class, line)
 
 
 def test_assert_forensic_conclusion_has_caveat_catches_a_missing_caveat() -> None:

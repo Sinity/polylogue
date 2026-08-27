@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -231,6 +231,14 @@ _READ_PROJECTION_EXPRESSION_KEYS = (
     "include-assertions",
     "include_assertions",
     "assertions",
+    "neighbor-limit",
+    "neighbor-window-hours",
+    "context-related-limit",
+    "context-max-sessions",
+    "correlation-repo-path",
+    "correlation-since-hours",
+    "correlation-confidence-threshold",
+    "correlation-github-api",
 )
 
 
@@ -306,12 +314,12 @@ def _parse_projection_bool(field: str, value: str) -> bool:
     raise click.UsageError(f"Invalid --projection {field} value {value!r}; expected true/false.")
 
 
-def _parse_read_projection_expression(expression: str | None) -> dict[str, int | bool]:
+def _parse_read_projection_expression(expression: str | None) -> dict[str, int | float | bool | str]:
     """Parse a compact projection expression into ProjectionSpec field aliases."""
 
     if expression is None:
         return {}
-    result: dict[str, int | bool] = {}
+    result: dict[str, int | float | bool | str] = {}
     try:
         tokens = shlex.split(expression.replace(",", " "))
     except ValueError as exc:
@@ -334,7 +342,20 @@ def _parse_read_projection_expression(expression: str | None) -> dict[str, int |
             key = "redact_paths"
         elif key == "assertions":
             key = "include_assertions"
-        if key not in {"max_tokens", "redact_paths", "include_assertions"}:
+        valid_keys = {
+            "max_tokens",
+            "redact_paths",
+            "include_assertions",
+            "neighbor_limit",
+            "neighbor_window_hours",
+            "context_related_limit",
+            "context_max_sessions",
+            "correlation_repo_path",
+            "correlation_since_hours",
+            "correlation_confidence_threshold",
+            "correlation_github_api",
+        }
+        if key not in valid_keys:
             raise click.UsageError(
                 f"Unknown --projection key {key!r}. Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
             )
@@ -342,14 +363,31 @@ def _parse_read_projection_expression(expression: str | None) -> dict[str, int |
             raise click.UsageError(f"Empty --projection value for {key!r}.")
         if key in result:
             raise click.UsageError(f"Duplicate --projection key {key!r}.")
-        if key == "max_tokens":
+        if key in {
+            "max_tokens",
+            "neighbor_limit",
+            "neighbor_window_hours",
+            "context_related_limit",
+            "context_max_sessions",
+            "correlation_since_hours",
+        }:
             try:
                 parsed_int = int(value)
             except ValueError as exc:
                 raise click.UsageError(f"Invalid --projection max-tokens value {value!r}; expected integer.") from exc
             if parsed_int < 1:
-                raise click.UsageError("Invalid --projection max-tokens value; expected integer >= 1.")
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected integer >= 1.")
             result[key] = parsed_int
+        elif key == "correlation_confidence_threshold":
+            try:
+                parsed_float = float(value)
+            except ValueError as exc:
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected number.") from exc
+            if not 0 <= parsed_float <= 1:
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected 0..1.")
+            result[key] = parsed_float
+        elif key == "correlation_repo_path":
+            result[key] = value
         else:
             result[key] = _parse_projection_bool(key, value)
     return result
@@ -374,6 +412,19 @@ def _merge_projection_int(field: str, expression_value: object | None, flag_valu
         raise click.UsageError(f"Invalid --projection {field}; expected integer.")
     if flag_value is None or flag_value == expression_value:
         return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_float(field: str, expression_value: object | None, flag_value: float | None) -> float | None:
+    if expression_value is None:
+        return flag_value
+    if not isinstance(expression_value, (int, float)) or isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected number.")
+    if flag_value is None or flag_value == expression_value:
+        return float(expression_value)
     raise click.UsageError(
         f"Conflicting projection {field}: --projection sets {expression_value!r} "
         f"but the dedicated flag sets {flag_value!r}."
@@ -669,12 +720,19 @@ def _build_read_projection_spec(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    context_related_limit: int | None = None,
+    context_max_sessions: int | None = None,
+    correlation_repo_path: str | None = None,
+    correlation_since_hours: int | None = None,
+    correlation_confidence_threshold: float | None = None,
+    correlation_github_api: bool | None = None,
     redact_paths: bool = True,
     include_assertions: bool = False,
 ) -> QueryProjectionSpec:
     """Build the typed selection/projection/render contract for read options."""
 
     from polylogue.surfaces.projection_spec import projection_from_views
+    from polylogue.surfaces.read_contract import ReadRequest
 
     primary_view = views[0] if views else "summary"
     effective_format = (
@@ -690,7 +748,7 @@ def _build_read_projection_spec(
         if len(query_spec.repo_names) == 1
         else None
     )
-    return projection_from_views(
+    selection_projection = projection_from_views(
         views,
         format=effective_format,
         destination=destination,
@@ -710,8 +768,43 @@ def _build_read_projection_spec(
         body_offset=body_offset,
         neighbor_limit=neighbor_limit,
         neighbor_window_hours=neighbor_window_hours,
+        context_related_limit=context_related_limit,
+        context_max_sessions=context_max_sessions,
+        correlation_repo_path=correlation_repo_path,
+        correlation_since_hours=correlation_since_hours,
+        correlation_confidence_threshold=correlation_confidence_threshold,
+        correlation_github_api=correlation_github_api,
         redact_paths=redact_paths,
         include_assertions=include_assertions,
+    )
+    normalized_request = ReadRequest.normalize(
+        {
+            "output_format": effective_format,
+            "views": views,
+            "destination": destination,
+            "layout": render_layout,
+            "timestamps": timestamp_policy,
+            "max_tokens": max_tokens,
+            "out": out_path,
+            "query": selection_query if selection_query is not None else _read_query_text(request),
+            "origin": selection_origin if selection_origin is not None else origin,
+            "since": selection_since if selection_since is not None else query_spec.since,
+            "until": selection_until if selection_until is not None else query_spec.until,
+            "project_path": project_path,
+            "project_repo": project_repo,
+            "limit": selection_limit,
+            "edge_limit": edge_limit,
+            "body_limit": body_limit,
+            "body_offset": body_offset,
+            "neighbor_limit": neighbor_limit,
+            "neighbor_window_hours": neighbor_window_hours,
+            "redact_paths": redact_paths,
+            "include_assertions": include_assertions,
+        },
+        preset=primary_view,
+    )
+    return selection_projection.model_copy(
+        update={"projection": normalized_request.projection, "render": normalized_request.render}
     )
 
 
@@ -1070,6 +1163,10 @@ def read_verb(
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    # Rendering inherits the root format, but the explained stage reports what
+    # the read verb itself was given: the stage describes this verb's options,
+    # not the invocation's output encoding.
+    local_output_format = output_format
     if output_format is None:
         inherited_format = request.params.get("output_format")
         if isinstance(inherited_format, str):
@@ -1102,6 +1199,50 @@ def read_verb(
         default=True,
     )
     no_redact = not redact_paths
+    commandline = click.core.ParameterSource.COMMANDLINE
+    projection_neighbor_limit_alias = _merge_projection_int(
+        "neighbor_limit",
+        projection_settings.get("neighbor_limit"),
+        limit if ctx.get_parameter_source("limit") is commandline else None,
+    )
+    projection_neighbor_window_hours = _merge_projection_int(
+        "neighbor_window_hours",
+        projection_settings.get("neighbor_window_hours"),
+        window_hours if ctx.get_parameter_source("window_hours") is commandline else None,
+    )
+    projection_context_related_limit = _merge_projection_int(
+        "context_related_limit",
+        projection_settings.get("context_related_limit"),
+        related_limit if ctx.get_parameter_source("related_limit") is commandline else None,
+    )
+    projection_context_max_sessions = _merge_projection_int(
+        "context_max_sessions",
+        projection_settings.get("context_max_sessions"),
+        max_sessions if ctx.get_parameter_source("max_sessions") is commandline else None,
+    )
+    projection_correlation_since_hours = _merge_projection_int(
+        "correlation_since_hours",
+        projection_settings.get("correlation_since_hours"),
+        since_hours if ctx.get_parameter_source("since_hours") is commandline else None,
+    )
+    projection_correlation_confidence = _merge_projection_float(
+        "correlation_confidence_threshold",
+        projection_settings.get("correlation_confidence_threshold"),
+        confidence_threshold if ctx.get_parameter_source("confidence_threshold") is commandline else None,
+    )
+    projection_correlation_repo = _merge_render_option(
+        "correlation_repo_path",
+        cast(str | None, projection_settings.get("correlation_repo_path")),
+        repo_path if ctx.get_parameter_source("repo_path") is commandline else None,
+    )
+    github_api_flag = github_api if ctx.get_parameter_source("github_api") is commandline else None
+    projection_correlation_github = (
+        _merge_projection_bool(
+            "correlation_github_api", projection_settings.get("correlation_github_api"), github_api_flag, default=True
+        )
+        if projection_settings.get("correlation_github_api") is not None or github_api_flag is not None
+        else None
+    )
     render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
     timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
     output_format = _merge_render_option("format", render_settings.get("format"), output_format)
@@ -1127,9 +1268,16 @@ def read_verb(
         projection_edge_limit,
         projection_body_limit,
         projection_body_offset,
-        projection_neighbor_limit,
+        projection_neighbor_limit_from_limit,
     ) = _read_projection_limits(tuple(view_tokens), limit, offset)
-    projection_neighbor_window_hours = window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    projection_neighbor_limit = (
+        projection_neighbor_limit_alias
+        if projection_neighbor_limit_alias is not None
+        else projection_neighbor_limit_from_limit
+    )
+    projection_neighbor_window_hours = (
+        projection_neighbor_window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    )
     uses_context_image_selector = "context-image" in view_tokens
     context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
     spec_selection_limit = context_image_max_sessions if uses_context_image_selector else selection_limit
@@ -1149,6 +1297,12 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            context_related_limit=projection_context_related_limit,
+            context_max_sessions=projection_context_max_sessions,
+            correlation_repo_path=projection_correlation_repo,
+            correlation_since_hours=projection_correlation_since_hours,
+            correlation_confidence_threshold=projection_correlation_confidence,
+            correlation_github_api=projection_correlation_github,
             redact_paths=not no_redact,
             include_assertions=include_assertions,
         )
@@ -1164,12 +1318,12 @@ def read_verb(
         action="read",
         view=view,
         destination=destination,
-        format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
+        format=_effective_read_output_format(request, view=view, output_format=local_output_format) or "default",
         all=all_matches,
         first=first_only,
     ):
         return
-    if ref is not None:
+    if ref is not None and not _is_direct_session_ref(ref):
         if output_format not in (None, "json"):
             raise click.UsageError("Direct ref reads currently support --format json only.")
         if destination not in ("terminal", "stdout"):
@@ -1177,6 +1331,12 @@ def read_verb(
         payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
+
+    if ref is not None:
+        # Session refs are the exact-selection spelling of the ordinary read
+        # route. Keeping the ref as a query term lets the normal resolver apply
+        # view profiles, projection budgets, and handler-specific options.
+        request = request.with_query_terms((ref,))
 
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead
@@ -1210,6 +1370,12 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            context_related_limit=projection_context_related_limit,
+            context_max_sessions=projection_context_max_sessions,
+            correlation_repo_path=projection_correlation_repo,
+            correlation_since_hours=projection_correlation_since_hours,
+            correlation_confidence_threshold=projection_correlation_confidence,
+            correlation_github_api=projection_correlation_github,
             redact_paths=not no_redact,
             include_assertions=include_assertions,
         )
@@ -1285,6 +1451,12 @@ def read_verb(
         body_offset=projection_body_offset,
         neighbor_limit=projection_neighbor_limit,
         neighbor_window_hours=projection_neighbor_window_hours,
+        context_related_limit=projection_context_related_limit,
+        context_max_sessions=projection_context_max_sessions,
+        correlation_repo_path=projection_correlation_repo,
+        correlation_since_hours=projection_correlation_since_hours,
+        correlation_confidence_threshold=projection_correlation_confidence,
+        correlation_github_api=projection_correlation_github,
     )
     explicit_options = _explicit_read_view_options(ctx)
     if primary_view == "dialogue" and session_id is None:
@@ -2047,6 +2219,152 @@ def analyze_verb(
     _execute_query_verb(ctx, updated)
 
 
+def _query_root_context(ctx: click.Context) -> click.Context:
+    """Return the root query context for a nested analyze projection."""
+    current = ctx
+    while current.parent is not None:
+        current = current.parent
+    return current
+
+
+def _named_analyze_request(ctx: click.Context, **updates: object) -> RootModeRequest:
+    """Apply a named projection to the canonical root query request."""
+    request_type = _get_root_request_class()
+    return request_type.from_context(_query_root_context(ctx)).with_param_updates(**updates)  # type: ignore[no-any-return,attr-defined]
+
+
+def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
+    """Run the shared legacy renderer for a structurally named projection."""
+    parent = ctx.parent
+    if parent is None:
+        raise click.UsageError("Analyze projections must run under the analyze command.")
+    selected = parent.invoked_subcommand
+    parent.invoked_subcommand = None
+    try:
+        callback = cast(Callable[..., object], analyze_verb.callback)
+        callback(parent, **kwargs)
+    finally:
+        parent.invoked_subcommand = selected
+
+
+@analyze_verb.command("count")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.pass_context
+def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> None:
+    """Print the matched-session count."""
+    request = _named_analyze_request(ctx, count_only=True)
+    if output_format:
+        request = request.with_param_updates(output_format=output_format)
+    _execute_query_verb(ctx, request)
+
+
+@analyze_verb.command("by")
+@click.argument(
+    "dimension", type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"])
+)
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_by_command(ctx: click.Context, *, dimension: str, output_format: str | None, limit: int | None) -> None:
+    """Group the matched sessions by DIMENSION."""
+    request = _named_analyze_request(ctx, stats_only=False, stats_by=dimension)
+    if output_format:
+        request = request.with_param_updates(output_format=output_format)
+    if limit is not None:
+        request = request.with_param_updates(limit=limit)
+    _execute_query_verb(ctx, request)
+
+
+@analyze_verb.command("facets")
+@click.option("--no-idf", is_flag=True, help="Omit inverse-document-frequency weights.")
+@click.option("--include-deferred", is_flag=True, help="Compute deferred detail families.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.option("--json", "json_output", is_flag=True, help="Alias for --format json.")
+@click.pass_context
+def analyze_facets_command(
+    ctx: click.Context, *, no_idf: bool, include_deferred: bool, output_format: str, json_output: bool
+) -> None:
+    """Show facet families for the matched query scope."""
+    env: AppEnv = ctx.obj
+    request = _named_analyze_request(ctx)
+    response = run_coroutine_sync(
+        env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
+    )
+    emit_facets_response(response, output_format="json" if json_output else output_format)
+
+
+@analyze_verb.command("cost-outlook")
+@click.option("--plan", "plan_name", required=True, help="Subscription plan name.")
+@click.option("--method", type=click.Choice(["linear", "trailing-7d-mean", "eom-naive"]), default="linear")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default=None)
+@click.pass_context
+def analyze_cost_outlook_command(ctx: click.Context, *, plan_name: str, method: str, output_format: str | None) -> None:
+    """Project the current billing cycle for PLAN."""
+    # Keep the established projection renderer in one place while making the
+    # projection choice structural in the command tree.
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=True,
+        plan_name=plan_name,
+        method=method,
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=None,
+        show_postmortem=False,
+        show_portfolio=False,
+    )
+
+
+@analyze_verb.command("postmortem")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_postmortem_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:
+    """Render a postmortem bundle for the matched scope."""
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=False,
+        plan_name=None,
+        method="linear",
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=limit,
+        show_postmortem=True,
+        show_portfolio=False,
+    )
+
+
+@analyze_verb.command("portfolio")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_portfolio_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:
+    """Render a sanitized portfolio report for the matched scope."""
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=False,
+        plan_name=None,
+        method="linear",
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=limit,
+        show_postmortem=False,
+        show_portfolio=True,
+    )
+
+
 def _attach_analyze_subcommands() -> None:
     from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup
 
@@ -2150,6 +2468,18 @@ def _spec_is_exact_session_ref(spec: object) -> bool:
             )
         )
     )
+
+
+def _is_direct_session_ref(ref: str | None) -> bool:
+    """Return whether a positional ref belongs to the session read route."""
+    if ref is None:
+        return False
+    from polylogue.core.refs import ObjectRef
+
+    try:
+        return ObjectRef.parse(ref).kind == "session"
+    except ValueError:
+        return False
 
 
 def _resolve_target_session_id(request: RootModeRequest) -> str | None:

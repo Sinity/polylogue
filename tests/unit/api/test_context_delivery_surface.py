@@ -21,6 +21,7 @@ import pytest
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -119,6 +120,63 @@ async def test_compile_and_record_context_replay_is_idempotent_and_drift_is_reje
                 query="quoted archival",
                 max_sessions=1,
             )
+
+
+async def test_compile_and_record_context_refuses_assertion_read_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A durable assertion read failure cannot produce a clean incomplete receipt.
+
+    Anti-vacuity: changing the adapter to return ``[]`` or letting the raw
+    ``sqlite3.Error`` escape makes the typed refusal assertion below fail.
+    """
+
+    archive_root = tmp_path / "archive-assertion-read-failure"
+    _seed(archive_root, provider_session_id="delivery-target", text="quoted archival evidence")
+
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+
+        upsert_assertion(
+            conn,
+            assertion_id="must-include-decision",
+            target_ref="session:codex-session:delivery-target",
+            kind=AssertionKind.DECISION,
+            body_text="This decision must be present in delivered context.",
+            author_kind="user",
+            status="active",
+            visibility="private",
+            context_policy={"inject": True},
+            now_ms=1_700_000_000_000,
+        )
+
+    import polylogue.api.archive as archive_api
+
+    # archive_api imports this rather than exporting it, so take the same
+    # object from where it is defined and patch the name archive_api binds.
+    from polylogue.storage.sqlite.connection_profile import (
+        open_readonly_connection as original_open,
+    )
+
+    def fail_user_db_read(path: Path) -> sqlite3.Connection:
+        if path.name == "user.db":
+            raise sqlite3.OperationalError("injected durable user.db read failure")
+        return original_open(path)
+
+    monkeypatch.setattr(archive_api, "open_readonly_connection", fail_user_db_read)
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        with pytest.raises(ArchiveTierUnavailableError, match="injected durable user.db read failure"):
+            await poly.compile_and_record_context(
+                recipient_ref="agent:codex-main",
+                delivered_by_ref="user:local",
+                boundary="explicit-recall",
+                query="quoted archival",
+                max_sessions=1,
+            )
+
+        monkeypatch.undo()
+        assert await poly.list_context_deliveries(recipient_ref="agent:codex-main") == []
 
 
 async def test_list_context_deliveries_never_includes_full_context_image(tmp_path: Path) -> None:

@@ -43,6 +43,13 @@ from devtools.verification_graph import (
     publish_complete_root,
     publish_selected_child,
 )
+from devtools.verification_ledger import (
+    append_failure_ledger,
+    ledger_records,
+    policy_diagnostics,
+    read_failure_ledger,
+    read_verify_history,
+)
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
@@ -132,6 +139,18 @@ def _anchor_verification_paths() -> None:
 def _mypy_cmd() -> list[str]:
     try:
         result = subprocess.run(["dmypy", "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
+        if result.returncode == 0:
+            return ["dmypy", "run", "--", "--no-error-summary"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    try:
+        result = subprocess.run(
+            ["dmypy", "start", "--", "--no-error-summary"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            cwd=ROOT,
+        )
         if result.returncode == 0:
             return ["dmypy", "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -592,9 +611,24 @@ def _finish_and_record_verification(
         workload_receipt=workload_receipt,
     )
     _record_graph_authority(run, payload)
+    existing = read_failure_ledger(ROOT / ".cache/verify/failure-ledger.jsonl")
+    verify_history = read_verify_history(ROOT / ".cache/verify/history.jsonl")
+    records = ledger_records(payload, history=verify_history)
+    if records:
+        append_failure_ledger(records, path=ROOT / ".cache/verify/failure-ledger.jsonl")
+        payload["failure_ledger"] = policy_diagnostics((*existing, *records))
+        run._payload["failure_ledger"] = payload["failure_ledger"]
+        run.write()
     append_verify_history(payload)
     append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
+    if exit_code != 0:
+        try:
+            from polylogue.context.failure_seed import write_failure_seed
+
+            write_failure_seed(root=ROOT)
+        except (FileNotFoundError, ValueError, OSError):
+            pass
     return payload
 
 
