@@ -57,6 +57,10 @@ class SessionViewProfile:
     def to_payload(self) -> JSONDocument:
         """Return a JSON-native representation for CLI/API/MCP surfaces."""
 
+        from polylogue.surfaces.projection_spec import projection_from_view
+
+        projection = projection_from_view(self.view_id)
+
         return {
             "view_id": self.view_id,
             "label": self.label,
@@ -71,6 +75,12 @@ class SessionViewProfile:
             "machine_payload": self.machine_payload,
             "degraded_states": list(self.degraded_states),
             "successor_handoff": self.successor_handoff,
+            "projection_contract": {
+                "families": [family.value for family in projection.projection.families],
+                "body_policy": projection.projection.body_policy.value,
+                "render_layout": projection.render.layout,
+                "timestamp_policy": projection.render.timestamps.value,
+            },
         }
 
 
@@ -177,6 +187,20 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         formats=("json",),
         machine_payload="session event list payload",
         degraded_states=("missing session", "session with no session_events"),
+    ),
+    SessionViewProfile(
+        view_id="effective_context",
+        label="Effective Context",
+        owner="polylogue.storage.sqlite.queries.message_query_reads.get_effective_context",
+        purpose="The context visible to the model after the latest compaction boundary.",
+        input_scope="single session id",
+        included_kinds=("summary", "post-boundary messages"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="renders normalized effective context, not the full composed lineage prefix",
+        formats=("json",),
+        machine_payload="effective context message list",
+        degraded_states=("missing session", "no compaction boundary"),
     ),
     SessionViewProfile(
         view_id="file-edits",
@@ -350,6 +374,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     "correlation": ReadViewHttpCapability(
         "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")
     ),
+    "effective_context": ReadViewHttpCapability("effective_context", ("json",), ("at_position",)),
 }
 
 

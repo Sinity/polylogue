@@ -152,7 +152,7 @@ class PublicationStatus:
     last_receipt_state: ReceiptState | None = None
     last_error_code: str | None = None
 
-    def as_dict(self) -> dict[str, str | int | None]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "mode": self.mode.value,
             "total": self.total,

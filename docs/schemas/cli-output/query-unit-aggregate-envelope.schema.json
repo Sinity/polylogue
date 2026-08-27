@@ -149,6 +149,9 @@
       "items": {
         "additionalProperties": true,
         "properties": {
+          "args": {
+            "type": "object"
+          },
           "field": {
             "type": "string"
           },
@@ -159,7 +162,10 @@
               "limit",
               "offset",
               "group",
-              "count"
+              "count",
+              "agg",
+              "transform",
+              "terminal"
             ],
             "type": "string"
           },
@@ -167,6 +173,9 @@
             "enum": [
               "count"
             ],
+            "type": "string"
+          },
+          "name": {
             "type": "string"
           },
           "predicate": {

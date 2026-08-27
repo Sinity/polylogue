@@ -18,7 +18,8 @@ UPDATES_FILE=$(mktemp)
 trap 'rm -f "$UPDATES_FILE"' EXIT
 cat >"$UPDATES_FILE"
 
-# Pre-flight: ensure checkout-local devtools is importable before attempting verification.
+# A lane gates against its own environment: a missing venv is a failure,
+# not a reason to fall back to another interpreter on PATH.
 if ! "$VENV_PYTHON" -m devtools --help >/dev/null 2>&1; then
     echo "pre-push: incomplete worktree venv: checkout-local devtools is not importable from $VENV_PYTHON" >&2
     exit 2

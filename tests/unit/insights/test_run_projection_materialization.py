@@ -16,6 +16,9 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import pytest
+
+pytestmark = pytest.mark.storage_scale
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message

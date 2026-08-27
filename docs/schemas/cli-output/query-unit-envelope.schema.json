@@ -1120,6 +1120,12 @@
       "title": "ObservedEventQueryRowPayload",
       "type": "object"
     },
+    "QueryUnitProjectedRowPayload": {
+      "additionalProperties": true,
+      "description": "Generic field-name keyed row emitted by an explicit query projection.",
+      "title": "QueryUnitProjectedRowPayload",
+      "type": "object"
+    },
     "RunQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for runtime-transform runs.",
@@ -1397,6 +1403,9 @@
       "items": {
         "additionalProperties": true,
         "properties": {
+          "args": {
+            "type": "object"
+          },
           "field": {
             "type": "string"
           },
@@ -1407,7 +1416,10 @@
               "limit",
               "offset",
               "group",
-              "count"
+              "count",
+              "agg",
+              "transform",
+              "terminal"
             ],
             "type": "string"
           },
@@ -1415,6 +1427,9 @@
             "enum": [
               "count"
             ],
+            "type": "string"
+          },
+          "name": {
             "type": "string"
           },
           "predicate": {
@@ -1433,6 +1448,14 @@
         "type": "object"
       },
       "title": "Pipeline Stages",
+      "type": "array"
+    },
+    "projected_items": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/QueryUnitProjectedRowPayload"
+      },
+      "title": "Projected Items",
       "type": "array"
     },
     "query": {

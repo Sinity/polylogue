@@ -3743,8 +3743,8 @@ def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids:
     cleanup ``prune_attachments`` and ``delete_session_sql`` perform after
     their own ref deletions -- otherwise an acquired ``attachments`` row
     survives with a stale ref_count and no canonical ref, which
-    ``attachment-acquisition-debt`` / ``blob-reference-closure`` report as
-    archive-verification errors.
+    archive verification / ``blob-reference-closure`` report as archive
+    verification errors.
     """
     if not attachment_ids:
         return
@@ -4907,6 +4907,21 @@ def _write_session_events(
         if source_message_id is None and inherited_source_message_ids is not None:
             source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
         if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
+            boundary_message_id = None
+            if event.boundary_message_position is not None:
+                for fallback_position, message in enumerate(messages):
+                    # Parsers may leave ``position`` unset; the ordinal is then
+                    # the message's position, exactly as ``_message_id`` derives it.
+                    effective_position = message.position if message.position is not None else fallback_position
+                    if effective_position == event.boundary_message_position:
+                        boundary_message_id = _message_id(
+                            session_id,
+                            message,
+                            fallback_position,
+                            position_offset=position_offset,
+                            duplicate_native_ids=duplicate_native_ids,
+                        )
+                        break
             session_event_rows.append(
                 (
                     session_id,
@@ -4917,6 +4932,11 @@ def _write_session_events(
                     _sqlite_text(_event_summary(event) or ""),
                     _json_dumps(event.payload),
                     _timestamp_ms(event.timestamp),
+                    event.boundary_start_position + position_offset
+                    if event.boundary_start_position is not None
+                    else None,
+                    event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
+                    boundary_message_id,
                 ),
             )
         if event.event_type == "agent_policy":
@@ -4950,8 +4970,9 @@ def _write_session_events(
             """
             INSERT OR REPLACE INTO session_events (
                 session_id, source_message_id, source_message_provider_id,
-                position, event_type, summary, payload_json, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                position, event_type, summary, payload_json, occurred_at_ms,
+                boundary_start_position, boundary_end_position, boundary_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             session_event_rows,
         )
@@ -5507,8 +5528,17 @@ def _price_provider_usage_tokens(
 
     normalized = _normalize_model(model_name)
     billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-    if normalized not in PRICING or billable <= 0:
+    pricing = PRICING.get(normalized)
+    if pricing is None or billable <= 0:
         return None, None
+    # A zero cache rate is also the catalog's sentinel for an omitted rate.
+    # Do not persist a complete-looking cost for a paid model while silently
+    # assigning its cached lanes a zero price.
+    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
+        if cache_read_tokens and pricing.cache_read_usd_per_1m == 0.0:
+            return None, None
+        if cache_write_tokens and pricing.cache_write_usd_per_1m == 0.0:
+            return None, None
     cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
     return "priced", cost_usd
 
@@ -5929,11 +5959,39 @@ def _write_repo_edges(
 
 def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     active_leaf_count = sum(1 for message in messages if message.is_active_leaf)
-    if active_leaf_count == 1 or not messages:
+    if not messages:
         return messages
+
+    normalized = messages
+    if active_leaf_count != 1:
+        normalized = [
+            message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
+            for position, message in enumerate(messages)
+        ]
+
+    # A provider may identify the active leaf without repeating the active-path
+    # bit on every inherited message. Resolve that evidence while lowering the
+    # parsed session, where the parent ids are still available. Unknown path
+    # values are filled only on the leaf's parent chain. The leaf evidence is
+    # authoritative for that chain; an explicit False sibling remains provider
+    # evidence and is never inferred at read time.
+    active_leaf = next((message for message in normalized if message.is_active_leaf), None)
+    if active_leaf is None or not active_leaf.provider_message_id:
+        return normalized
+    by_provider_id = {message.provider_message_id: message for message in normalized if message.provider_message_id}
+    active_path_ids: set[str] = set()
+    cursor: ParsedMessage | None = active_leaf
+    while cursor is not None and cursor.provider_message_id not in active_path_ids:
+        active_path_ids.add(cursor.provider_message_id)
+        parent_id = cursor.parent_message_provider_id
+        cursor = by_provider_id.get(parent_id) if parent_id is not None else None
+    if not active_path_ids:
+        return normalized
     return [
-        message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
-        for position, message in enumerate(messages)
+        message.model_copy(update={"is_active_path": True})
+        if message.provider_message_id in active_path_ids
+        else message
+        for message in normalized
     ]
 
 

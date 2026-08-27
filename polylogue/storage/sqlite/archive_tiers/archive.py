@@ -101,6 +101,7 @@ from polylogue.insights.archive import (
 )
 from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
 from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
@@ -119,6 +120,7 @@ from polylogue.insights.readiness import (
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.session_label import session_structural_label_for_session
 from polylogue.insights.temporal_source import time_confidence_for_source
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
@@ -1061,6 +1063,57 @@ class ArchiveStore:
         )
         self._consume_index_blob_receipts()
         return session_id
+
+    def append_work_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, object],
+        event_id: str,
+        summary: str,
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Append one agent event through the normal raw and parsed ingest seam."""
+        from polylogue.coordination.work_events import validate_work_event_id, validate_work_event_type
+        from polylogue.core.sources import provider_from_origin
+        from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+        event_id = validate_work_event_id(event_id)
+        event_type = validate_work_event_type(event_type)
+        resolved = self.resolve_session_id(session_id)
+        existing = self.read_session(resolved)
+        provider = provider_from_origin(Origin.from_string(existing.origin))
+        event_payload = {"event_id": event_id, "summary": summary, **payload}
+        event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
+        session = ParsedSession(
+            source_name=provider,
+            provider_session_id=existing.native_id,
+            title=existing.title,
+            messages=[],
+            session_events=[event],
+        )
+        raw_payload = json.dumps(
+            {"event_id": event_id, "event_type": event_type, "payload": event_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        raw_id = "agent-work-event:" + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
+        result = self.write_raw_and_parsed_result(
+            session,
+            payload=raw_payload,
+            source_path=f"agent-work-event:{resolved}",
+            acquired_at_ms=int(time.time() * 1000),
+            source_index=-1,
+            raw_id=raw_id,
+        )
+        return {
+            "event_id": event_id,
+            "session_id": result.session_id,
+            "event_type": event_type,
+            "summary": summary,
+            "content_changed": result.content_changed,
+        }
 
     def write_parsed_result(self, session: ParsedSession, *, content_hash: str | None = None) -> dict[str, int]:
         """Write a parsed session and report whether precedence skipped it."""
@@ -3720,6 +3773,13 @@ class ArchiveStore:
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
         return self._read_insights().list_tool_usage_insights(query)
+
+    def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        return self._read_insights().list_tool_episode_insights(query)
+
+    def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
+        """Report normalized command-shape usage from canonical actions."""
+        return self._read_insights().list_command_shape_usage(query)
 
     def _read_insights(self) -> ArchiveReadInsights:
         """Bind insight SQL to this store's caller-owned read snapshot."""

@@ -46,7 +46,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
@@ -395,6 +395,11 @@ def build_typed_plan(
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
+    if len(targets) > MAX_MUTATION_PLAN_TARGETS:
+        raise ValueError(
+            f"{operation!r} plan has {len(targets)} target(s), exceeding the "
+            f"{MAX_MUTATION_PLAN_TARGETS}-target recovery-adjudication budget"
+        )
     target_digest = compute_target_digest(targets)
     plan_hash = compute_typed_plan_hash(
         operation=operation,
@@ -580,6 +585,8 @@ class RecoveryDisposition:
             raise ValueError("unknown recovery must block an operator")
         if self.kind == "confirmed-partial" and self.action not in {"retry-exact", "rollback", "forward"}:
             raise ValueError("partial recovery requires a declared continuation action")
+        if self.kind == "confirmed-partial" and not self.target_dispositions:
+            raise ValueError("partial recovery requires target outcomes")
         if self.kind in {"confirmed-not-applied", "confirmed-applied"} and self.action == "operator-blocking":
             raise ValueError("confirmed recovery cannot use an operator-blocking action")
         if self.kind == "confirmed-applied" and any(item.state != "applied" for item in self.target_dispositions):
@@ -626,6 +633,13 @@ class RecoveryOperation:
         return (
             f"reconstructed {self.reconstructed_target_count} of {self.expected_target_count} durable recovery targets"
         )
+
+
+class _FailClosedRecovery:
+    """Default recovery contract for actuators without a domain postcondition oracle."""
+
+    def inspect_recovery(self, _operation: RecoveryOperation, _args: Any) -> RecoveryDisposition:
+        return RecoveryDisposition("unknown", "operator-blocking", "actuator has no domain recovery oracle")
 
 
 #: Both ``prepare`` and ``apply`` take the *same* argument shape in every

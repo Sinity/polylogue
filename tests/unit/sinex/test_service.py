@@ -9,7 +9,11 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.sinex.models import PublicationMode, PublicationReceipt, ReceiptState
-from polylogue.sinex.service import PublicationService
+from polylogue.sinex.service import (
+    PublicationService,
+    publication_status,
+    publication_status_payload,
+)
 from polylogue.sinex.transport import LocalReferenceTransport
 from tests.unit.sinex._fixtures import MutableClock, publication_payload
 
@@ -161,6 +165,23 @@ def test_status_redacts_receipt_details_and_off_mode_is_zero_work(
     assert not nonexistent.exists()
 
 
+def test_publication_status_reads_durable_ledger_without_transport(
+    workspace_env: dict[str, Path],
+) -> None:
+    db = workspace_env["archive_root"] / "source.db"
+    clock = MutableClock(41_000)
+    service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport(), clock=clock)
+    service.stage_payload(publication_payload(object_id="claude-code-session:status"))
+
+    status = publication_status(db, PublicationMode.MIRROR, clock=clock)
+
+    assert status.total == 1
+    assert status.pending == 1
+    assert status.active_lag == 1
+    assert status.retry_due == 1
+    assert status.blocking == 0
+
+
 def test_compat_retry_reports_lag_only_for_staged_subjects(workspace_env: dict[str, Path]) -> None:
     db = workspace_env["archive_root"] / "source.db"
     service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())
@@ -177,3 +198,17 @@ def test_compat_retry_reports_lag_only_for_staged_subjects(workspace_env: dict[s
     assert summary.confirmed == 1
     assert summary.remaining_lag == 0
     assert service.lag() == 1
+
+
+def test_status_payload_reads_durable_ledger_without_transport(workspace_env: dict[str, Path]) -> None:
+    db = workspace_env["archive_root"] / "source.db"
+    service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())
+    staged = service.stage_payload(publication_payload(object_id="claude-code-session:status"))
+    assert staged is not None
+
+    payload = publication_status_payload(db, "mirror")
+
+    assert payload["mode"] == "mirror"
+    assert payload["active_lag"] == 1
+    assert payload["pending"] == 1
+    assert payload["retry_due"] == 1

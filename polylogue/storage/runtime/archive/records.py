@@ -451,6 +451,9 @@ class SessionEventRecord(BaseModel):
     source_message_provider_id: str | None = None
     raw_id: str | None = None
     materializer_version: int = 1
+    boundary_start_position: int | None = None
+    boundary_end_position: int | None = None
+    boundary_message_id: MessageId | None = None
 
     @field_validator("event_id", "session_id", "origin", "event_type")
     @classmethod

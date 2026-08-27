@@ -19,6 +19,12 @@ from polylogue.cli.click_command_registration import _LazyCommand, _NestedLazyGr
 
 # (cli name, submodule, attribute, short_help)
 _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "beads-origin-census",
+        "_beads_origin_census",
+        "beads_origin_census_command",
+        "Read-only census and exact plan for retired Beads-origin evidence.",
+    ),
     ("plan", "_plan", "plan_command", "Dry-run summary: show what would be rebuilt without executing."),
     ("archive-plan", "_archive_plan", "archive_plan_command", "Inspect readiness for the archive file set."),
     (
@@ -162,12 +168,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_blob_namespace_quarantine",
         "blob_namespace_quarantine_command",
         "Dry-run-first offline quarantine for invalid blob namespace entries.",
-    ),
-    (
-        "attachment-acquisition-debt",
-        "_blob_integrity",
-        "attachment_acquisition_debt_command",
-        "Classify index-tier attachment acquisition state without mutating the archive.",
     ),
     (
         "blob-reference-recovery-plan",

@@ -73,9 +73,9 @@ def iter_antigravity_language_server_sessions(
     not just an ephemeral export that re-runs unconditionally every pass.
 
     ``only_cascade_ids``, when given, restricts export to that subset of
-    cascade ids (see ``antigravity.iter_language_server_exports``) instead of
+    cascade ids (see ``antigravity.iter_language_server_export_results``) instead of
     the whole ``conversations/`` corpus -- used by the daemon's periodic
-    reconciliation loop to convert only not-yet-acquired cascades.
+    live batch to convert only the manifested cascade cohort.
 
     Brain ``*.md.metadata.json`` files are artifacts, never a fallback
     transcript source. If the exporter or its ``conversations/`` directory is
@@ -102,7 +102,33 @@ def iter_antigravity_language_server_sessions(
         return
 
     try:
-        for session in antigravity.iter_language_server_exports(source.path, only_cascade_ids=only_cascade_ids):
+        handshake_recorded = False
+        for outcome in antigravity.iter_language_server_export_results(
+            source.path,
+            only_cascade_ids=only_cascade_ids,
+        ):
+            if outcome.converter is not None and not handshake_recorded:
+                logger.info(
+                    "antigravity_language_server_handshake",
+                    source_name="antigravity",
+                    source_path=str(source.path),
+                    binary_path=str(outcome.converter.binary_path),
+                    version=outcome.converter.version,
+                    capabilities=outcome.converter.capabilities,
+                )
+                handshake_recorded = True
+            if not outcome.obtained:
+                logger.error(
+                    "antigravity_item_failed",
+                    source_name="antigravity",
+                    source_path=str(outcome.source_path),
+                    cascade_id=outcome.cascade_id,
+                    reason="language_server_conversion_failed",
+                    detail=outcome.error,
+                )
+                continue
+            assert outcome.session is not None
+            session = outcome.session
             raw_data = _antigravity_raw_snapshot(
                 source.path,
                 session,

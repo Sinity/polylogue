@@ -430,6 +430,9 @@ class ParsedSessionEvent(BaseModel):
         default=None,
         validation_alias=AliasChoices("source_message_provider_id", "source_message_id"),
     )
+    boundary_start_position: int | None = None
+    boundary_end_position: int | None = None
+    boundary_message_position: int | None = Field(default=None, exclude=True)
 
 
 class ParsedSession(BaseModel):
@@ -583,6 +586,8 @@ class RawSessionData(BaseModel):
     blob_hash: str | None = None
     blob_size: int | None = None
     blob_publication_receipt_id: str | None = Field(default=None, exclude=True)
+    # Captured during acquisition; never rediscovered from source_path.
+    sidecar_snapshot: dict[str, object] | None = Field(default=None, exclude=True)
 
     @field_validator("provider_hint", mode="before")
     @classmethod

@@ -102,6 +102,7 @@ def test_predicate_ast_roundtrip_is_lossless(predicate: QueryPredicate) -> None:
 _EXPRESSION_CASES: tuple[str, ...] = (
     'repo:polylogue since:7d "json envelope"',
     "sessions where exists block(type:code) AND lineage:id:root",
+    "sessions where logical:codex-session:root AND title:hit",
     'sessions where semantic:"query compiler" AND title:hit',
     "sessions where seq(action:file_edit -> action:shell AND output:failed)",
     "messages where role:assistant AND text:timeout",

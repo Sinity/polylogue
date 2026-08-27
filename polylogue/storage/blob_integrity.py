@@ -30,6 +30,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
@@ -510,11 +511,10 @@ def _blob_hash_text(value: object) -> str | None:
     return text if text else None
 
 
-_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events", "history_sidecars")
+_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events")
 _CURRENT_SOURCE_COLUMNS = {
     "raw_sessions": ("raw_id", "blob_hash"),
     "raw_hook_events": ("hook_event_id", "blob_hash"),
-    "history_sidecars": ("sidecar_id",),
     "blob_refs": ("blob_hash", "ref_id", "ref_type"),
 }
 
@@ -1499,47 +1499,13 @@ def _default_blob_ref_quarantine_path(source_db: Path) -> Path:
 
 
 def _write_blob_ref_quarantine(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd: int | None = None
-    tmp_path: str | None = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = None
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
-                handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    payload = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    atomic_replace(path, payload.encode("utf-8"))
 
 
 def _write_jsonl_rows(path: Path, rows: Iterable[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd: int | None = None
-    tmp_path: str | None = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = None
-            for row in rows:
-                handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")))
-                handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if fd is not None:
-            os.close(fd)
-        if tmp_path is not None and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+    payload = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    atomic_replace(path, payload.encode("utf-8"))
 
 
 def _delete_blob_ref_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
@@ -2231,8 +2197,8 @@ def scan_blob_reference_debt(
 
 
 @dataclass(frozen=True)
-class AttachmentAcquisitionDebtReport:
-    """Index-tier attachment acquisition state (#83u.4).
+class AttachmentCoverageReport:
+    """Index-tier attachment coverage used by archive verification.
 
     Deliberately separate from :class:`BlobReferenceDebtReport`, which
     classifies source-tier backup debt from ``source.db``/``raw_sessions``
@@ -2290,13 +2256,13 @@ class AttachmentAcquisitionDebtReport:
         }
 
 
-def scan_attachment_acquisition_debt(
+def scan_attachment_coverage(
     db_path: str | Path,
     *,
     store: BlobStore | None = None,
     sample_size: int = _MAX_FINDING_SAMPLE,
-) -> AttachmentAcquisitionDebtReport:
-    """Classify index-tier attachment acquisition debt without mutating state.
+) -> AttachmentCoverageReport:
+    """Project index-tier attachment coverage without mutating state.
 
     ``db_path`` is the index-tier database (``index.db``), not ``source.db``.
     """
@@ -2342,7 +2308,7 @@ def scan_attachment_acquisition_debt(
 
     unreachable_sample = tuple(str(row["attachment_id"]) for row in unreachable_rows[:sample_size])
 
-    return AttachmentAcquisitionDebtReport(
+    return AttachmentCoverageReport(
         total_attachments=sum(status_counts.values()),
         acquired_count=status_counts.get("acquired", 0),
         acquired_missing_blob_count=missing_count,
@@ -2462,7 +2428,7 @@ def scan_blob_integrity(
 
 
 __all__ = [
-    "AttachmentAcquisitionDebtReport",
+    "AttachmentCoverageReport",
     "BlobIntegrityFinding",
     "BlobIntegrityKind",
     "BlobIntegrityReport",
@@ -2486,7 +2452,7 @@ __all__ = [
     "referenced_blob_hashes",
     "replace_raw_backed_blob_reference_debt_from_source",
     "restore_direct_blob_reference_debt",
-    "scan_attachment_acquisition_debt",
+    "scan_attachment_coverage",
     "scan_blob_reference_debt",
     "scan_blob_integrity",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -73,8 +74,39 @@ def _updates_match_head(updates: list[PushUpdate], head: str | None) -> bool:
     return head is not None and all(_is_zero_sha(update.local_sha) or update.local_sha == head for update in updates)
 
 
+def _passing_receipt_for(head: str, *, cwd: Path) -> Path | None:
+    """Return a passed quick-tier receipt recorded at exactly this head."""
+    runs = cwd / ".cache" / "verify" / "runs"
+    if not runs.is_dir():
+        return None
+    for run in sorted(runs.iterdir(), reverse=True):
+        record = run / "run.json"
+        if not record.is_file():
+            continue
+        try:
+            data = json.loads(record.read_text())
+        except (OSError, ValueError):
+            continue
+        if data.get("tier") != "quick" or data.get("status") != "passed":
+            continue
+        if head in (data.get("git_head"), data.get("final_git_head")):
+            return record
+    return None
+
+
 def run_gate(updates: list[PushUpdate], *, cwd: Path) -> str:
-    del updates
+    """Verify this exact head, reusing a passing receipt when one exists.
+
+    CI runs the same `verify --quick` on every PR and blocks the merge on it,
+    so re-running it here for a head that already passed buys nothing and
+    serializes every push behind a multi-minute check.
+    """
+    head = _git("rev-parse", "HEAD", cwd=cwd)
+    if _updates_match_head(updates, head):
+        receipt = _passing_receipt_for(head, cwd=cwd)
+        if receipt is not None:
+            print(f"pre-push: reusing quick receipt {receipt.parent.name}", file=sys.stderr)
+            return "reused"
     print("pre-push: running quick verification baseline", file=sys.stderr)
     _run([venv_python(root=cwd), "-m", "devtools", "verify", "--quick"], cwd=cwd)
     return "quick"

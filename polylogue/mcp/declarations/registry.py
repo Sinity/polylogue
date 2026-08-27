@@ -50,6 +50,7 @@ class _ToolRow:
     minimal_arguments: tuple[tuple[str, JSONValue], ...]
     output_kind: str
     operation_owner: str
+    contract_fields: tuple[str, ...] = ()
 
 
 def _compatibility(row: _ToolRow) -> CompatibilityKey:
@@ -74,7 +75,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.query:inspect.signature",
         (("expression", "messages where text:needle"),),
-        "envelope",
+        "envelope:items,total,unit,limit,offset",
         "polylogue.api.Polylogue.query_units",
     ),
     _ToolRow(
@@ -88,7 +89,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.read:inspect.signature",
         (("ref", "session:codex-session:demo"),),
-        "envelope",
+        "single_object",
         "polylogue.api.Polylogue.resolve_ref",
     ),
     _ToolRow(
@@ -165,6 +166,34 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "mutate-write",
     ),
     _ToolRow(
+        "record_work_event",
+        "Record a typed live-agent work event for a session.",
+        "polylogue.mcp.server_cutover",
+        "register_cutover_privileged_tools",
+        "write",
+        MCPVerb.WRITE,
+        ("session", "work-event", "evidence-ref"),
+        MCPResultSemantics.MUTATION,
+        "polylogue.mcp.server_cutover.record_work_event:inspect.signature",
+        (("session_id", "codex-session:demo"), ("event_type", "tool_run"), ("event_id", "evt-1")),
+        "operation_result",
+        "polylogue.api.Polylogue.record_work_event",
+    ),
+    _ToolRow(
+        "emit_decision",
+        "Record a typed decision event with evidence references for a session.",
+        "polylogue.mcp.server_cutover",
+        "register_cutover_privileged_tools",
+        "write",
+        MCPVerb.WRITE,
+        ("session", "decision", "evidence-ref"),
+        MCPResultSemantics.MUTATION,
+        "polylogue.mcp.server_cutover.emit_decision:inspect.signature",
+        (("session_id", "codex-session:demo"), ("decision", "keep"), ("event_id", "evt-2")),
+        "operation_result",
+        "polylogue.api.Polylogue.emit_decision",
+    ),
+    _ToolRow(
         "judge",
         "Accept, reject, defer, or supersede assertion candidates without collapsing candidate state.",
         "polylogue.mcp.server_cutover",
@@ -175,7 +204,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.MUTATION,
         "polylogue.mcp.server_cutover.judge:inspect.signature",
         (("candidate_ref", "assertion:contract-candidate"), ("decision", "accept")),
-        "envelope",
+        "envelope:items,applied_count,failed_count",
         "polylogue.api.Polylogue.judge_assertion_candidates",
     ),
     _ToolRow(
@@ -189,7 +218,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.run:inspect.signature",
         (("ref", "saved-view:contract-view"),),
-        "envelope",
+        "envelope:total",
         "mutate-run",
     ),
     _ToolRow(
@@ -297,7 +326,7 @@ _ALL_CAPABILITIES_ENABLED = MCPCapabilities(write=True, judge=True, maintenance=
 def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLED) -> frozenset[str]:
     """Return the tool names visible under ``capabilities``.
 
-    Default is every capability enabled (the full ten-tool surface), used by
+    Default is every capability enabled (the full twelve-tool surface), used by
     inventory/discovery tooling that wants the complete declared set rather
     than one server's resolved config.
     """

@@ -38,8 +38,10 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
 from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import (
     LogicalSession,
@@ -96,6 +98,15 @@ if TYPE_CHECKING:
             self,
             query: ToolUsageInsightQuery | None = None,
         ) -> list[ToolUsageInsight]: ...
+
+        async def list_tool_episode_insights(
+            self, query: ToolEpisodeQuery | None = None
+        ) -> list[ToolEpisodeInsight]: ...
+
+        async def list_command_shape_usage(
+            self,
+            query: CommandShapeUsageQuery | None = None,
+        ) -> list[CommandShapeUsage]: ...
 
         async def list_session_cost_insights(
             self,
@@ -533,6 +544,34 @@ class PolylogueInsightsMixin:
             stable_order="tool,origin",
         )
 
+    async def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.tool_episodes.list",
+            arguments={"query": query},
+            work=lambda archive: archive.list_tool_episode_insights(query),
+            page_size=getattr(query, "limit", None),
+            offset=getattr(query, "offset", 0),
+            projection="tool-episodes",
+            stable_order="session,message,tool",
+        )
+
+    async def list_command_shape_usage(
+        self,
+        query: CommandShapeUsageQuery | None = None,
+    ) -> list[CommandShapeUsage]:
+        request = query or CommandShapeUsageQuery()
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.command_shapes.list",
+            arguments={"query": request},
+            work=lambda archive: archive.list_command_shape_usage(request),
+            page_size=request.limit,
+            offset=request.offset,
+            projection="command-shapes",
+            stable_order="execution_count,command_shape,origin",
+        )
+
     async def list_session_cost_insights(
         self,
         query: SessionCostInsightQuery | None = None,
@@ -809,7 +848,9 @@ class PolylogueInsightsMixin:
     async def find_abandoned_sessions(
         self,
         *,
+        origin: str | None = None,
         since: str | None = None,
+        until: str | None = None,
         repo_path: str | None = None,
         min_severity: str = "question_left",
         limit: int = 20,
@@ -820,7 +861,9 @@ class PolylogueInsightsMixin:
         """
         from polylogue.insights.archive_rollups import abandoned_session_items
 
-        profiles = await self.list_session_profile_insights(SessionProfileInsightQuery(since=since, limit=None))
+        profiles = await self.list_session_profile_insights(
+            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+        )
         items = abandoned_session_items(profiles, min_severity=min_severity, repo_path=repo_path)
         return {"total": len(items), "items": items[:limit]}
 

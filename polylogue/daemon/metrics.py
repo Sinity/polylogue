@@ -427,7 +427,7 @@ def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, str, 
 
 
 def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
-    from polylogue.daemon.fts_startup import active_fts_triggers_sync
+    from polylogue.storage.fts.derivation import active_fts_triggers_sync
 
     expected = active_fts_triggers_sync(conn)
     if not expected:

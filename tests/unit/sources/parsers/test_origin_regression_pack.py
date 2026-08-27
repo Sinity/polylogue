@@ -61,7 +61,6 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.antigravity import (
-    BRAIN_METADATA_FRAGMENT_FLAG,
     AntigravitySessionSummary,
     markdown_export_payload,
     parse_markdown_export,
@@ -725,7 +724,7 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         has_working_dir=False,
         has_git_branch=False,
         has_git_repo=False,
-        ingest_flags_exclude=[BRAIN_METADATA_FRAGMENT_FLAG],  # whole-transcript, not fragmented
+        ingest_flags_exclude=[],  # whole-transcript, not a metadata fragment
     ),
     # ------------------------------------------------------------------
     # hermes-session
@@ -1129,19 +1128,10 @@ def test_gemini_cli_jsonl_checkpoint_stub_does_not_collide_with_claude_code() ->
 # tests live in test_antigravity.py; this is an additive reference.
 
 
-def test_antigravity_brain_metadata_session_sets_degraded_flag(tmp_path: Path) -> None:
-    """Brain-metadata path sets BRAIN_METADATA_FRAGMENT_FLAG; markdown-export path does not.
-
-    Extends test_antigravity.py without duplicating its assertions.
-    Validates that the degraded flag is absent from the whole-transcript
-    (markdown-export) fixture used in the table above.
-    """
-    from polylogue.sources.parsers.antigravity import parse_brain_metadata
-
+def test_antigravity_brain_metadata_is_not_a_session(tmp_path: Path) -> None:
+    """Brain metadata has no production session parser."""
     session_dir = tmp_path / "brain" / "session-regpack"
     session_dir.mkdir(parents=True)
-    artifact_path = session_dir / "analysis.md"
-    artifact_path.write_text("# Analysis\n\nFindings here.\n", encoding="utf-8")
     metadata_path = session_dir / "analysis.md.metadata.json"
     metadata: JSONDocument = {
         "artifactType": "ARTIFACT_TYPE_OTHER",
@@ -1149,16 +1139,7 @@ def test_antigravity_brain_metadata_session_sets_degraded_flag(tmp_path: Path) -
         "updatedAt": "2026-04-15T14:00:00Z",
     }
 
-    brain_session = parse_brain_metadata(metadata, metadata_path, "fallback")
-    assert BRAIN_METADATA_FRAGMENT_FLAG in brain_session.ingest_flags, (
-        "Brain-metadata session must carry the degraded flag"
-    )
-
-    # Whole-transcript fixture from the table must NOT carry the flag.
-    whole_session = _ag_parse((_AG_MARKDOWN, _AG_SUMMARY), _AG_SUMMARY.cascade_id)
-    assert BRAIN_METADATA_FRAGMENT_FLAG not in whole_session.ingest_flags, (
-        "Markdown-export (whole-transcript) session must NOT carry the degraded flag"
-    )
+    assert parse_payload(Provider.ANTIGRAVITY, metadata, "fallback", source_path=str(metadata_path)) == []
 
 
 # ---------------------------------------------------------------------------

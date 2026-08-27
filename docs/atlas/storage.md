@@ -28,7 +28,7 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 
 - `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:363-382`; `polylogue/storage/sqlite/archive_tiers/write.py:446-451`).
 - It owns its transaction by default; bulk callers may explicitly own a surrounding transaction to amortize commits (`polylogue/storage/sqlite/archive_tiers/write.py:404-408`).
-- This is the parsed-session lowering choke point for normal API writes, batch ingest, revision replay, and reindex paths. It is not the only mutation function in the six-tier substrate (`polylogue/storage/sqlite/archive_tiers/archive.py:1034-1083`; `polylogue/pipeline/services/ingest_batch/_core.py:1077-1131`; `polylogue/storage/revision_governance.py:381-414`).
+- This is the parsed-session lowering choke point for normal API writes, batch ingest, revision replay, and reindex paths. It is not the only mutation function in the six-tier substrate (`polylogue/storage/sqlite/archive_tiers/archive.py:1034-1083`; `polylogue/pipeline/services/ingest_batch/_core.py:1077-1131`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:381-414`).
 
 ## Blob publication, liveness, and GC
 
@@ -65,7 +65,7 @@ Pending generations are restartable; a restart resumes their exact member set in
 ## DISCREPANCIES
 
 - `docs/architecture.md` draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:24-28`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-82`).
-- `CLAUDE.md` omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`CLAUDE.md:36-40`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
-- `CLAUDE.md` and `docs/architecture.md` call embeddings simply rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`CLAUDE.md:63-72`; `docs/architecture.md:54-56`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`).
+- The repository contract omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
+- The repository contract and `docs/architecture.md` call embeddings simply rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:54-56`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`).
 
-verified: 4abb7a80bca2160d27fdc799891305cf02b680ff 2026-08-25
+verified: 24be873c0 2026-08-27

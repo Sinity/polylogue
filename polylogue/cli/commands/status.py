@@ -362,7 +362,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "blob_publication_reservations",
         "raw_artifacts",
         "raw_hook_events",
-        "history_sidecars",
     ),
     "index": (
         "sessions",
@@ -1120,6 +1119,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if isinstance(assertion_candidate_queue, dict):
         _render_assertion_candidate_queue(env, assertion_candidate_queue)
 
+    sinex_publication = status.get("sinex_publication")
+    if isinstance(sinex_publication, dict):
+        _render_sinex_publication(env, sinex_publication)
+
     # Sizes
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
@@ -1219,6 +1222,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if storage:
         payload["storage"] = storage
 
+    sinex_publication = status.get("sinex_publication")
+    if isinstance(sinex_publication, dict):
+        payload["sinex_publication"] = sinex_publication
+
     ingest = _compact_ingest_status(status)
     if ingest:
         payload["ingest"] = ingest
@@ -1230,6 +1237,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     assertion_candidate_queue = status.get("assertion_candidate_queue")
     if isinstance(assertion_candidate_queue, dict):
         payload["assertion_candidate_queue"] = assertion_candidate_queue
+
+    sinex_publication = status.get("sinex_publication")
+    if isinstance(sinex_publication, dict):
+        payload["sinex_publication"] = sinex_publication
 
     raw_materialization = _compact_mapping_without(
         status.get("raw_materialization_readiness"),
@@ -1560,6 +1571,7 @@ def _show_direct_json(
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": archive_tiers,
+        "sinex_publication": _direct_sinex_publication_status(active_root),
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
         "convergence": convergence.model_dump(mode="json"),
@@ -1659,6 +1671,18 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         if state == "missing" and component in required_missing_components:
             return False
     return True
+
+
+def _direct_sinex_publication_status(root: Path) -> dict[str, Any]:
+    """Read durable Sinex publication state without requiring a transport."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import publication_status
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    source_db = ArchiveLocation.resolve(root).configured_tier("source").configured_path
+    return publication_status(source_db, mode).as_dict()
 
 
 def _direct_component_readiness(
@@ -2217,6 +2241,14 @@ def _show_direct_status(
             from polylogue.daemon.status import assertion_candidate_queue_status_summary
 
             _render_assertion_candidate_queue(env, assertion_candidate_queue_status_summary())
+            from polylogue.config import load_polylogue_config
+            from polylogue.paths import source_db_path
+            from polylogue.sinex.service import publication_status_payload
+
+            _render_sinex_publication(
+                env,
+                publication_status_payload(source_db_path(), load_polylogue_config().sinex_mode),
+            )
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         if raw == _UNKNOWN_COUNT:
@@ -2361,6 +2393,23 @@ def _render_assertion_candidate_queue(env: AppEnv, queue: dict[str, Any]) -> Non
         if isinstance(degraded, bool) or isinstance(recovered, bool):
             receipt_details.append(f"persistence_degraded={degraded};persistence_recovered={recovered}")
         env.ui.console.print(f"    judgment scheduler receipt: {', '.join(receipt_details)}")
+
+
+def _render_sinex_publication(env: AppEnv, status: dict[str, Any]) -> None:
+    """Render durable Sinex publication lag without exposing payload details."""
+    mode = str(status.get("mode") or "off")
+    if status.get("state") == "unavailable":
+        env.ui.console.print(f"  Sinex publication: [yellow]unavailable ({status.get('reason', 'unknown')})[/yellow]")
+        return
+    lag = _safe_int(status.get("active_lag"))
+    blocking = _safe_int(status.get("blocking"))
+    color = "green" if lag == 0 and blocking == 0 else "yellow"
+    if blocking:
+        color = "red"
+    env.ui.console.print(
+        f"  Sinex publication: [{color}]{mode}, lag={lag}, blocking={blocking}, "
+        f"retry_due={_safe_int(status.get('retry_due'))}[/{color}]"
+    )
 
 
 def _render_sqlite_maintenance(env: AppEnv, status: dict[str, Any]) -> None:

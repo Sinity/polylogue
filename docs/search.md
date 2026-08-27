@@ -95,7 +95,7 @@ Executable forms projected from the declarations:
 | `scope_form` | `sessions where <predicate> \| <terminal-source> where <predicate>` |
 | `projection_form` | `<session-expression> with <unit>(<columns>)` |
 
-Terminal sources: `action / actions / assertion / assertions / block / blocks / context-snapshot / context-snapshots / delegation / delegations / file / files / message / messages / observed-event / observed-events / run / runs`.
+Terminal sources: `action / actions / assertion / assertions / block / blocks / context-snapshot / context-snapshots / delegation / delegations / file / files / message / messages / observed-event / observed-events / run / runs / tool-episode / tool-episodes`.
 Structural `exists` units: `action / assertion / block / context-snapshot / delegation / file / message / observed-event / run`.
 
 Result coverage and `total` must be read with the declared semantics:
@@ -541,11 +541,12 @@ polylogue ops debt list --kind assertion-candidate --only-actionable --format js
 
 Query/read payloads carry public object and evidence refs so agents and the web
 shell can jump from a row, context image, or assertion back to the exact archive
-object it cites. Resolve refs through the shared resolver rather than turning
-them into broad text search:
+object it cites. A positional session ref uses the selected read view, just like
+an exact session selected by a preceding query. Other ref kinds use the shared
+resolver rather than turning them into broad text search:
 
 ```bash
-polylogue read session:codex-session:abc123 --format json
+polylogue read session:codex-session:abc123 --view messages --format json
 polylogue read message:codex-session:abc123:m1 --format json
 polylogue read block:codex-session:abc123:m1:0 --format json
 polylogue read assertion:assertion-id --format json

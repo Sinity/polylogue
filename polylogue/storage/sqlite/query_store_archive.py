@@ -164,6 +164,10 @@ class SQLiteQueryStoreArchiveMixin:
             _hydrate_message_text_from_blocks(message)
         return messages
 
+    async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[MessageRecord]:
+        async with self._connection_factory() as conn:
+            return await messages_q.get_effective_context(conn, session_id, at_position)
+
     async def get_messages_paginated(
         self,
         session_id: str,

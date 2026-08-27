@@ -19,6 +19,9 @@ def main() -> None:
     environment variables. There is no CLI flag and no role ladder
     (polylogue-800m): each capability is an independent boolean.
     """
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue-mcp")
     try:
         from polylogue.mcp.server import serve_stdio
     except ImportError as exc:

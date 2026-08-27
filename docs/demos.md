@@ -4,6 +4,16 @@ Polylogue demos are evidence packets, not feature montages. A public demo should
 
 ## Run the current private-data-free tour
 
+The shortest path is one command. It creates a throwaway archive and exits
+successfully only after the tour's structural checks pass:
+
+```bash
+uvx polylogue demo tour
+```
+
+The terminal result to look for is `Polylogue demo tour: passed`. The tour
+prints the report, transcript, and recording paths for closer inspection.
+
 ```bash
 nix run github:Sinity/polylogue -- demo tour
 ```
@@ -17,6 +27,8 @@ nix develop -c polylogue demo tour
 ```
 
 The tour creates a throwaway archive, imports synthetic provider-shaped artifacts through the normal parsers, verifies declared constructs, runs canonical query/read/analysis paths, and writes a report, transcript, command outputs, and recording source. It requires no private transcript or provider account.
+
+For a concrete, published example of the evidence boundary, cite [What Happened After a Structured Tool Failure?](findings/claim-vs-evidence.md). It states the claim, structural oracle, sample frame, and limitations together.
 
 The human transcript is deliberately evidence-first rather than audit-first:
 

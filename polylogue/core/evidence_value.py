@@ -326,6 +326,10 @@ class EvidenceObservation(Generic[T_co]):
     def __post_init__(self) -> None:
         _validate_value_state(self.value_state, self.value)
         _validate_authorities(self.measurement_authority)
+        if self.value_state == "known" and not self.measurement_authority:
+            raise EvidenceInvariantError("known value requires measurement_authority")
+        if self.value_state == "known" and not self.evidence_refs:
+            raise EvidenceInvariantError("known value requires evidence_refs")
         if self.enumeration not in _ENUMERATIONS:
             raise EvidenceInvariantError(f"unsupported enumeration: {self.enumeration!r}")
         object.__setattr__(self, "measurement_authority", _normalize_authorities(self.measurement_authority))
@@ -534,6 +538,12 @@ class FactFamilySpec:
                 diagnostics.append("missing required temporal observed_at")
             elif axis == "coverage" and not value.coverage.intended_frame:
                 diagnostics.append("missing required coverage")
+            elif axis == "evidence_refs" and value.value_state == "known" and not value.evidence_refs:
+                diagnostics.append("missing required evidence_refs")
+            elif axis == "measurement_authority" and value.value_state == "known" and not value.measurement_authority:
+                diagnostics.append("missing required measurement_authority")
+            elif axis == "freshness" and value.freshness is None:
+                diagnostics.append("missing required freshness")
             elif axis == "calibrated_confidence" and value.calibrated_confidence is None:
                 diagnostics.append("missing required calibrated_confidence")
         if value.coverage.grain != self.grain:

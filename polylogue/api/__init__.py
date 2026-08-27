@@ -13,6 +13,7 @@ from polylogue.api.ingest import PolylogueIngestMixin
 from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.config import Config, ResolvedRuntimeConfig, resolve_runtime_config
 from polylogue.operations import ArchiveStats
+from polylogue.product.workflows import TopicPackRequest, TopicPackResult, build_topic_pack
 from polylogue.services import build_runtime_services
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -44,6 +45,10 @@ def select_pending_embedding_session_window(
 
 class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
     """High-level async facade for the Polylogue library."""
+
+    async def topic_pack(self, request: TopicPackRequest) -> TopicPackResult:
+        """Run the bounded staged topic-lineage read workflow."""
+        return await build_topic_pack(self.repository, request)
 
     def __init__(
         self,

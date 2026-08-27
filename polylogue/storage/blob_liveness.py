@@ -44,6 +44,8 @@ class BlobOwner:
 BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "raw_sessions", blob_column="blob_hash"),
     BlobOwner("source", "raw_hook_events", blob_column="blob_hash"),
+    # Linked materials retain their bytes independently of session parsing.
+    BlobOwner("source", "material_observations", blob_column="blob_hash"),
     BlobOwner("index", "attachments", blob_column="blob_hash"),
     BlobOwner("source", "raw_sessions", ref_type="raw_payload", referent_column="raw_id"),
     BlobOwner("source", "raw_sessions", ref_type="attachment", referent_column="raw_id"),
@@ -58,8 +60,11 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
         referent_column="hook_event_id",
         rekeyable_legacy_ref=True,
     ),
-    BlobOwner("source", "history_sidecars", ref_type="sidecar", referent_column="sidecar_id"),
 )
+
+# A source owner introduced by an additive migration must not make older
+# archives unreadable to backup/GC before that migration is applied.
+_OPTIONAL_OWNER_TABLES = frozenset({"material_observations"})
 
 
 def validated_blob_ref_liveness_joins() -> tuple[tuple[str, str, str], ...]:
@@ -179,6 +184,8 @@ def _schema_blockers(conn: sqlite3.Connection, *, tier: str, required: bool) -> 
     for owner in _owners(tier=tier, ledger=False):
         assert owner.blob_column is not None
         if not _table_exists(conn, owner.table):
+            if owner.table in _OPTIONAL_OWNER_TABLES:
+                continue
             blockers.append(f"{tier}.{owner.table} is missing")
         elif not _column_exists(conn, owner.table, owner.blob_column):
             blockers.append(f"{tier}.{owner.table} is missing columns: {owner.blob_column}")
