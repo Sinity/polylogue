@@ -427,7 +427,8 @@ def _admit_non_session_origin_artifacts(
 
     admitted = 0
     for source in sources:
-        if Provider.from_string(source.name) is not Provider.CLAUDE_CODE:
+        provider = Provider.from_string(source.name)
+        if provider not in {Provider.CLAUDE_CODE, Provider.ANTIGRAVITY}:
             continue
         walk = _setup_source_walk(
             source,
@@ -438,7 +439,6 @@ def _admit_non_session_origin_artifacts(
         )
         if walk is None:
             continue
-        provider = Provider.from_string(source.name)
         for candidate, _mtime in walk.paths_to_process:
             if candidate.suffix.lower() == ".zip":
                 admitted += _admit_non_session_zip_artifacts(
@@ -463,7 +463,7 @@ def _admit_non_session_origin_artifacts(
                 # only a bare raw_sessions row waiting on the next offline
                 # materialize_artifact_observations sweep.
                 archive.admit_raw_artifact_payload(
-                    provider=Provider.CLAUDE_CODE,
+                    provider=provider,
                     payload=Path(candidate).read_bytes(),
                     source_path=str(candidate),
                     source_index=0,
@@ -473,7 +473,7 @@ def _admit_non_session_origin_artifacts(
                 )
                 admitted += 1
             except Exception:
-                logger.error("Failed to admit configured Claude fact artifact %s", candidate, exc_info=True)
+                logger.error("Failed to admit configured source artifact %s", candidate, exc_info=True)
     return admitted
 
 

@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
+from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
 from tests.infra.mcp import ALL_CAPABILITIES, EXPECTED_TOOL_NAMES, MCPServerUnderTest
 
 # ---------------------------------------------------------------------------
@@ -46,40 +47,27 @@ EnvelopeSpec = tuple[str, frozenset[str]]
 ToolKind = EnvelopeSpec | str
 
 TOOL_CONTRACT: dict[str, ToolKind] = {
-    # ------- six-tool cutover surface (t46.8.2) -------
-    # ``query`` always returns the terminal QueryUnitEnvelope shape.
-    "query": ("envelope", frozenset({"items", "total", "unit", "limit", "offset"})),
-    # ``read``/``get``/``explain``/``context``/``status`` are each declared
-    # MCPResultSemantics.SINGLE_OBJECT (or BOUNDED_CONTEXT/AGGREGATE, which
-    # this matrix has historically folded into "single_object" — see
-    # compile_context/stats/provider_usage prior to the cutover). Some views
-    # (e.g. ``read(view="topology")``) return a richer nested shape, but the
-    # tool's primary/declared contract is one object, not a list envelope.
-    "read": "single_object",
-    "get": "single_object",
-    "explain": "single_object",
-    "context": "single_object",
-    "status": "single_object",
-    # ------- privileged transactions (t46.8.3) -------
-    # write/maintenance are declared MCPResultSemantics.MUTATION/MAINTENANCE;
-    # their primary shape is one structured mutation/operation result (some
-    # maintenance operations, e.g. "list", return an items/total envelope
-    # instead -- see "primary/declared contract" note above for read/get).
-    "write": "operation_result",
-    "record_work_event": "operation_result",
-    "emit_decision": "operation_result",
-    "maintenance": "operation_result",
-    # judge always returns the bulk-judgment envelope (single candidate_ref
-    # judgments are lowered into a one-item bulk call internally).
-    "judge": ("envelope", frozenset({"items", "applied_count", "failed_count"})),
-    # run executes a saved-query ref through the same session-search path as
-    # query(projection="sessions"), so its shape is either the ranked "hits"
-    # envelope or the exhaustive "items" envelope depending on whether the
-    # saved query carries free text -- "total" is the one field common to both.
-    "run": ("envelope", frozenset({"total"})),
+    declaration.name: declaration.contract_kind for declaration in MCP_TOOL_DECLARATIONS
 }
 
 
+# ``query`` always returns the terminal QueryUnitEnvelope shape.
+# ``read``/``get``/``explain``/``context``/``status`` are each declared
+# MCPResultSemantics.SINGLE_OBJECT (or BOUNDED_CONTEXT/AGGREGATE, which
+# this matrix has historically folded into "single_object" — see
+# compile_context/stats/provider_usage prior to the cutover). Some views
+# (e.g. ``read(view="topology")``) return a richer nested shape, but the
+# tool's primary/declared contract is one object, not a list envelope.
+# write/maintenance are declared MCPResultSemantics.MUTATION/MAINTENANCE;
+# their primary shape is one structured mutation/operation result (some
+# maintenance operations, e.g. "list", return an items/total envelope
+# instead -- see "primary/declared contract" note above for read/get).
+# judge always returns the bulk-judgment envelope (single candidate_ref
+# judgments are lowered into a one-item bulk call internally).
+# run executes a saved-query ref through the same session-search path as
+# query(projection="sessions"), so its shape is either the ranked "hits"
+# envelope or the exhaustive "items" envelope depending on whether the
+# saved query carries free text -- "total" is the one field common to both.
 @pytest.fixture
 def admin_server() -> MCPServerUnderTest:
     """Build a server with the admin role so all tools are visible."""

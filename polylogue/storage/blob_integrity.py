@@ -511,11 +511,10 @@ def _blob_hash_text(value: object) -> str | None:
     return text if text else None
 
 
-_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events", "history_sidecars")
+_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events")
 _CURRENT_SOURCE_COLUMNS = {
     "raw_sessions": ("raw_id", "blob_hash"),
     "raw_hook_events": ("hook_event_id", "blob_hash"),
-    "history_sidecars": ("sidecar_id",),
     "blob_refs": ("blob_hash", "ref_id", "ref_type"),
 }
 

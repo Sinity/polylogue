@@ -62,7 +62,13 @@ def _codex_runtime_root(tmp_path: Path, session_id: str, content: bytes) -> Path
     return rollout
 
 
-def _record(store: BlobStore, content: bytes, *, source_path: str) -> RawSessionRecord:
+def _record(
+    store: BlobStore,
+    content: bytes,
+    *,
+    source_path: str,
+    sidecar_snapshot: dict[str, object] | None = None,
+) -> RawSessionRecord:
     raw_id, blob_size = store.write_from_bytes(content)
     return RawSessionRecord(
         raw_id=raw_id,
@@ -73,6 +79,7 @@ def _record(store: BlobStore, content: bytes, *, source_path: str) -> RawSession
         blob_size=blob_size,
         acquired_at="2026-01-01T00:00:00+00:00",
         file_mtime=None,
+        sidecar_snapshot=sidecar_snapshot,
     )
 
 
@@ -95,7 +102,12 @@ def test_canonical_ingest_applies_thread_name(blob_store: BlobStore, tmp_path: P
         encoding="utf-8",
     )
 
-    record = _record(blob_store, content, source_path=str(rollout))
+    record = _record(
+        blob_store,
+        content,
+        source_path=str(rollout),
+        sidecar_snapshot={"thread_names": {session_id: "Ingest bug hunt"}},
+    )
     title, title_source = _ingest_title(record, tmp_path, blob_store)
 
     assert title == "Ingest bug hunt"
@@ -112,7 +124,12 @@ def test_canonical_ingest_uses_history_title(blob_store: BlobStore, tmp_path: Pa
         encoding="utf-8",
     )
 
-    record = _record(blob_store, content, source_path=str(rollout))
+    record = _record(
+        blob_store,
+        content,
+        source_path=str(rollout),
+        sidecar_snapshot={"history_titles": {session_id: "Wire the Hermes bridge"}},
+    )
     title, title_source = _ingest_title(record, tmp_path, blob_store)
 
     assert title == "Wire the Hermes bridge"
@@ -135,19 +152,10 @@ def test_canonical_ingest_message_fallback_without_sidecars(blob_store: BlobStor
     assert title_source == TitleSource.HEURISTIC.value
 
 
-def test_on_demand_enrichment_failure_is_counted_not_only_logged(
+def test_missing_snapshot_does_not_attempt_on_demand_enrichment(
     blob_store: BlobStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sibling of polylogue-azf7's frozen-snapshot bug (ingest_worker.py path).
-
-    When ``_resolve_codex_sidecar_snapshots`` hasn't run for a record (e.g. a
-    direct ``ingest_record`` call bypassing the batch orchestrator, as here),
-    ``_enrich_parsed_sessions`` discovers sidecars on demand. A raised
-    exception there used to be swallowed into a log line with sessions
-    silently kept unenriched and no trace in the returned result. The record
-    still reports ``error is None`` (it succeeds), but must now flag
-    ``sessions_unenriched=True`` so a batch summary can count it.
-    """
+    """A direct worker call treats absent acquisition evidence as ordinary absence."""
     from polylogue.sources import assembly_codex
 
     session_id = "eeee1111-2222-3333-4444-555566667777"
@@ -167,11 +175,9 @@ def test_on_demand_enrichment_failure_is_counted_not_only_logged(
     result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
 
     assert result.error is None
-    assert result.sessions, "expected the record to still materialize, just unenriched"
-    assert result.sessions_unenriched is True
-    # Unenriched: falls back to the parsed-content heuristic, not the
-    # sidecar thread name that discovery would otherwise have supplied.
-    assert result.sessions[0].parsed_session.title != "Ingest bug hunt"
+    assert result.sessions, "expected the record to materialize without optional evidence"
+    assert result.sessions_unenriched is False
+    assert result.sessions[0].parsed_session.title == "please fix the ingest bug"
 
 
 def test_runtime_schema_registry_singleton_is_race_safe_under_concurrent_first_access(

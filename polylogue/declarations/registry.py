@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from polylogue.declarations.models import DeclarationSpec, FamilySpec
+
+
+@runtime_checkable
+class DeclarationRegistryProtocol(Protocol):
+    """Read-only registry contract consumed by generic derivation code."""
+
+    def declarations(self) -> tuple[DeclarationSpec, ...]: ...
+
+    def families(self) -> tuple[FamilySpec, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,4 +112,4 @@ class DeclarationRegistry:
         return len(self._by_id)
 
 
-__all__ = ["DeclarationConflictError", "DeclarationRegistry"]
+__all__ = ["DeclarationConflictError", "DeclarationRegistry", "DeclarationRegistryProtocol"]

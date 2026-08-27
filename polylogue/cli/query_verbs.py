@@ -231,6 +231,14 @@ _READ_PROJECTION_EXPRESSION_KEYS = (
     "include-assertions",
     "include_assertions",
     "assertions",
+    "neighbor-limit",
+    "neighbor-window-hours",
+    "context-related-limit",
+    "context-max-sessions",
+    "correlation-repo-path",
+    "correlation-since-hours",
+    "correlation-confidence-threshold",
+    "correlation-github-api",
 )
 
 
@@ -306,12 +314,12 @@ def _parse_projection_bool(field: str, value: str) -> bool:
     raise click.UsageError(f"Invalid --projection {field} value {value!r}; expected true/false.")
 
 
-def _parse_read_projection_expression(expression: str | None) -> dict[str, int | bool]:
+def _parse_read_projection_expression(expression: str | None) -> dict[str, int | float | bool | str]:
     """Parse a compact projection expression into ProjectionSpec field aliases."""
 
     if expression is None:
         return {}
-    result: dict[str, int | bool] = {}
+    result: dict[str, int | float | bool | str] = {}
     try:
         tokens = shlex.split(expression.replace(",", " "))
     except ValueError as exc:
@@ -334,7 +342,20 @@ def _parse_read_projection_expression(expression: str | None) -> dict[str, int |
             key = "redact_paths"
         elif key == "assertions":
             key = "include_assertions"
-        if key not in {"max_tokens", "redact_paths", "include_assertions"}:
+        valid_keys = {
+            "max_tokens",
+            "redact_paths",
+            "include_assertions",
+            "neighbor_limit",
+            "neighbor_window_hours",
+            "context_related_limit",
+            "context_max_sessions",
+            "correlation_repo_path",
+            "correlation_since_hours",
+            "correlation_confidence_threshold",
+            "correlation_github_api",
+        }
+        if key not in valid_keys:
             raise click.UsageError(
                 f"Unknown --projection key {key!r}. Known keys: {', '.join(_READ_PROJECTION_EXPRESSION_KEYS)}."
             )
@@ -342,14 +363,31 @@ def _parse_read_projection_expression(expression: str | None) -> dict[str, int |
             raise click.UsageError(f"Empty --projection value for {key!r}.")
         if key in result:
             raise click.UsageError(f"Duplicate --projection key {key!r}.")
-        if key == "max_tokens":
+        if key in {
+            "max_tokens",
+            "neighbor_limit",
+            "neighbor_window_hours",
+            "context_related_limit",
+            "context_max_sessions",
+            "correlation_since_hours",
+        }:
             try:
                 parsed_int = int(value)
             except ValueError as exc:
                 raise click.UsageError(f"Invalid --projection max-tokens value {value!r}; expected integer.") from exc
             if parsed_int < 1:
-                raise click.UsageError("Invalid --projection max-tokens value; expected integer >= 1.")
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected integer >= 1.")
             result[key] = parsed_int
+        elif key == "correlation_confidence_threshold":
+            try:
+                parsed_float = float(value)
+            except ValueError as exc:
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected number.") from exc
+            if not 0 <= parsed_float <= 1:
+                raise click.UsageError(f"Invalid --projection {key.replace('_', '-')} value; expected 0..1.")
+            result[key] = parsed_float
+        elif key == "correlation_repo_path":
+            result[key] = value
         else:
             result[key] = _parse_projection_bool(key, value)
     return result
@@ -374,6 +412,19 @@ def _merge_projection_int(field: str, expression_value: object | None, flag_valu
         raise click.UsageError(f"Invalid --projection {field}; expected integer.")
     if flag_value is None or flag_value == expression_value:
         return expression_value
+    raise click.UsageError(
+        f"Conflicting projection {field}: --projection sets {expression_value!r} "
+        f"but the dedicated flag sets {flag_value!r}."
+    )
+
+
+def _merge_projection_float(field: str, expression_value: object | None, flag_value: float | None) -> float | None:
+    if expression_value is None:
+        return flag_value
+    if not isinstance(expression_value, (int, float)) or isinstance(expression_value, bool):
+        raise click.UsageError(f"Invalid --projection {field}; expected number.")
+    if flag_value is None or flag_value == expression_value:
+        return float(expression_value)
     raise click.UsageError(
         f"Conflicting projection {field}: --projection sets {expression_value!r} "
         f"but the dedicated flag sets {flag_value!r}."
@@ -669,6 +720,12 @@ def _build_read_projection_spec(
     body_offset: int | None = None,
     neighbor_limit: int | None = None,
     neighbor_window_hours: int | None = None,
+    context_related_limit: int | None = None,
+    context_max_sessions: int | None = None,
+    correlation_repo_path: str | None = None,
+    correlation_since_hours: int | None = None,
+    correlation_confidence_threshold: float | None = None,
+    correlation_github_api: bool | None = None,
     redact_paths: bool = True,
     include_assertions: bool = False,
 ) -> QueryProjectionSpec:
@@ -711,6 +768,12 @@ def _build_read_projection_spec(
         body_offset=body_offset,
         neighbor_limit=neighbor_limit,
         neighbor_window_hours=neighbor_window_hours,
+        context_related_limit=context_related_limit,
+        context_max_sessions=context_max_sessions,
+        correlation_repo_path=correlation_repo_path,
+        correlation_since_hours=correlation_since_hours,
+        correlation_confidence_threshold=correlation_confidence_threshold,
+        correlation_github_api=correlation_github_api,
         redact_paths=redact_paths,
         include_assertions=include_assertions,
     )
@@ -1100,6 +1163,10 @@ def read_verb(
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    # Rendering inherits the root format, but the explained stage reports what
+    # the read verb itself was given: the stage describes this verb's options,
+    # not the invocation's output encoding.
+    local_output_format = output_format
     if output_format is None:
         inherited_format = request.params.get("output_format")
         if isinstance(inherited_format, str):
@@ -1132,6 +1199,50 @@ def read_verb(
         default=True,
     )
     no_redact = not redact_paths
+    commandline = click.core.ParameterSource.COMMANDLINE
+    projection_neighbor_limit_alias = _merge_projection_int(
+        "neighbor_limit",
+        projection_settings.get("neighbor_limit"),
+        limit if ctx.get_parameter_source("limit") is commandline else None,
+    )
+    projection_neighbor_window_hours = _merge_projection_int(
+        "neighbor_window_hours",
+        projection_settings.get("neighbor_window_hours"),
+        window_hours if ctx.get_parameter_source("window_hours") is commandline else None,
+    )
+    projection_context_related_limit = _merge_projection_int(
+        "context_related_limit",
+        projection_settings.get("context_related_limit"),
+        related_limit if ctx.get_parameter_source("related_limit") is commandline else None,
+    )
+    projection_context_max_sessions = _merge_projection_int(
+        "context_max_sessions",
+        projection_settings.get("context_max_sessions"),
+        max_sessions if ctx.get_parameter_source("max_sessions") is commandline else None,
+    )
+    projection_correlation_since_hours = _merge_projection_int(
+        "correlation_since_hours",
+        projection_settings.get("correlation_since_hours"),
+        since_hours if ctx.get_parameter_source("since_hours") is commandline else None,
+    )
+    projection_correlation_confidence = _merge_projection_float(
+        "correlation_confidence_threshold",
+        projection_settings.get("correlation_confidence_threshold"),
+        confidence_threshold if ctx.get_parameter_source("confidence_threshold") is commandline else None,
+    )
+    projection_correlation_repo = _merge_render_option(
+        "correlation_repo_path",
+        cast(str | None, projection_settings.get("correlation_repo_path")),
+        repo_path if ctx.get_parameter_source("repo_path") is commandline else None,
+    )
+    github_api_flag = github_api if ctx.get_parameter_source("github_api") is commandline else None
+    projection_correlation_github = (
+        _merge_projection_bool(
+            "correlation_github_api", projection_settings.get("correlation_github_api"), github_api_flag, default=True
+        )
+        if projection_settings.get("correlation_github_api") is not None or github_api_flag is not None
+        else None
+    )
     render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
     timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
     output_format = _merge_render_option("format", render_settings.get("format"), output_format)
@@ -1157,9 +1268,16 @@ def read_verb(
         projection_edge_limit,
         projection_body_limit,
         projection_body_offset,
-        projection_neighbor_limit,
+        projection_neighbor_limit_from_limit,
     ) = _read_projection_limits(tuple(view_tokens), limit, offset)
-    projection_neighbor_window_hours = window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    projection_neighbor_limit = (
+        projection_neighbor_limit_alias
+        if projection_neighbor_limit_alias is not None
+        else projection_neighbor_limit_from_limit
+    )
+    projection_neighbor_window_hours = (
+        projection_neighbor_window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
+    )
     uses_context_image_selector = "context-image" in view_tokens
     context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
     spec_selection_limit = context_image_max_sessions if uses_context_image_selector else selection_limit
@@ -1179,6 +1297,12 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            context_related_limit=projection_context_related_limit,
+            context_max_sessions=projection_context_max_sessions,
+            correlation_repo_path=projection_correlation_repo,
+            correlation_since_hours=projection_correlation_since_hours,
+            correlation_confidence_threshold=projection_correlation_confidence,
+            correlation_github_api=projection_correlation_github,
             redact_paths=not no_redact,
             include_assertions=include_assertions,
         )
@@ -1194,7 +1318,7 @@ def read_verb(
         action="read",
         view=view,
         destination=destination,
-        format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
+        format=_effective_read_output_format(request, view=view, output_format=local_output_format) or "default",
         all=all_matches,
         first=first_only,
     ):
@@ -1246,6 +1370,12 @@ def read_verb(
             body_offset=projection_body_offset,
             neighbor_limit=projection_neighbor_limit,
             neighbor_window_hours=projection_neighbor_window_hours,
+            context_related_limit=projection_context_related_limit,
+            context_max_sessions=projection_context_max_sessions,
+            correlation_repo_path=projection_correlation_repo,
+            correlation_since_hours=projection_correlation_since_hours,
+            correlation_confidence_threshold=projection_correlation_confidence,
+            correlation_github_api=projection_correlation_github,
             redact_paths=not no_redact,
             include_assertions=include_assertions,
         )
@@ -1321,6 +1451,12 @@ def read_verb(
         body_offset=projection_body_offset,
         neighbor_limit=projection_neighbor_limit,
         neighbor_window_hours=projection_neighbor_window_hours,
+        context_related_limit=projection_context_related_limit,
+        context_max_sessions=projection_context_max_sessions,
+        correlation_repo_path=projection_correlation_repo,
+        correlation_since_hours=projection_correlation_since_hours,
+        correlation_confidence_threshold=projection_correlation_confidence,
+        correlation_github_api=projection_correlation_github,
     )
     explicit_options = _explicit_read_view_options(ctx)
     if primary_view == "dialogue" and session_id is None:

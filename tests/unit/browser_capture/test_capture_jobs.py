@@ -434,6 +434,43 @@ def test_state_update_renews_lease_is_idempotent_and_exposes_receipts(tmp_path: 
         assert detail["receipts"] == [updated["receipt"], no_op_result["receipt"]]
 
 
+def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> None:
+    """Anti-vacuity: removing event CAS or request-id replay protection makes this red."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        event_body = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "request_id": "first-seen-1",
+            "expected_revision": adopted["job"]["revision"],
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+            "kind": "first-seen",
+            "refs": {"conversation_ref": "conversation:1", "message_ref": "message:1"},
+            "payload": {"source": "profile-a"},
+        }
+        status, first = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", event_body)
+        assert status == 200
+        assert first["event"]["event_revision"] == 1
+        status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", event_body)
+        assert status == 200 and replay["event"] == first["event"]
+        stale = {**event_body, "request_id": "stale", "expected_revision": adopted["job"]["revision"] - 1}
+        status, rejected = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", stale)
+        assert status == 409 and rejected["error"]["code"] == "cas_mismatch"
+        status, page = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}&client_protocol=1&limit=10",
+            {},
+        )
+        assert status == 200
+        assert [event["kind"] for event in page["events"]] == ["created", "first-seen"]
+        assert page["events"][1]["refs"]["conversation_ref"] == "conversation:1"
+
+
 def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: Path) -> None:
     root = tmp_path / "backfill-checkpoints"
     root.mkdir(parents=True)

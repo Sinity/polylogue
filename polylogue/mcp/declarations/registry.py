@@ -50,6 +50,7 @@ class _ToolRow:
     minimal_arguments: tuple[tuple[str, JSONValue], ...]
     output_kind: str
     operation_owner: str
+    contract_fields: tuple[str, ...] = ()
 
 
 def _compatibility(row: _ToolRow) -> CompatibilityKey:
@@ -74,7 +75,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.query:inspect.signature",
         (("expression", "messages where text:needle"),),
-        "envelope",
+        "envelope:items,total,unit,limit,offset",
         "polylogue.api.Polylogue.query_units",
     ),
     _ToolRow(
@@ -88,7 +89,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.read:inspect.signature",
         (("ref", "session:codex-session:demo"),),
-        "envelope",
+        "single_object",
         "polylogue.api.Polylogue.resolve_ref",
     ),
     _ToolRow(
@@ -203,7 +204,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.MUTATION,
         "polylogue.mcp.server_cutover.judge:inspect.signature",
         (("candidate_ref", "assertion:contract-candidate"), ("decision", "accept")),
-        "envelope",
+        "envelope:items,applied_count,failed_count",
         "polylogue.api.Polylogue.judge_assertion_candidates",
     ),
     _ToolRow(
@@ -217,7 +218,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         MCPResultSemantics.EXHAUSTIVE_PAGE,
         "polylogue.mcp.server_cutover.run:inspect.signature",
         (("ref", "saved-view:contract-view"),),
-        "envelope",
+        "envelope:total",
         "mutate-run",
     ),
     _ToolRow(

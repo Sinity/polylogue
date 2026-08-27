@@ -47,6 +47,7 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     claude = by_origin[Origin.CLAUDE_CODE_SESSION]
     chatgpt = by_origin[Origin.CHATGPT_EXPORT]
     grok = by_origin[Origin.GROK_EXPORT]
+    antigravity = by_origin[Origin.ANTIGRAVITY_SESSION]
 
     assert claude.stream_parser_path is not None
     assert {rule.kind for rule in claude.artifact_rules} == {
@@ -66,6 +67,12 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert grok.lifecycle == "executable"
     assert grok.parser_paths == ("polylogue/sources/parsers/grok.py",)
     assert grok.detector_tightness == 85
+    assert {rule.coverage_role for rule in antigravity.artifact_rules} == {
+        "conversation_protobuf",
+        "brain_metadata_sidecar",
+        "brain_document",
+    }
+    assert artifact_suffixes_for_provider(Provider.ANTIGRAVITY) == (".pb", ".metadata.json", ".md")
     assert set(by_origin) == set(Origin)
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)

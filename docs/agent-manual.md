@@ -24,7 +24,7 @@ The authoritative `Origin` enum currently contains 12 tokens. Older plans that s
 | `codex-session` | Codex CLI local sessions (lab: OpenAI) |
 | `gemini-cli-session` | Gemini CLI local sessions (lab: Google) |
 | `hermes-session` | Hermes agent sessions |
-| `antigravity-session` | Antigravity brain artifacts |
+| `antigravity-session` | Antigravity language-server conversations |
 | `beads-issue` | Beads issue exports (non-chat work artifacts) |
 | `grok-export` | Grok account-data exports (lab: xAI) |
 | `chatgpt-export` | ChatGPT web exports (lab: OpenAI) |

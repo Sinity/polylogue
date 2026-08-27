@@ -2,24 +2,13 @@
 # Deny test invocations that bypass the managed harness.
 #
 # `devtools test` and `devtools verify` are the only supported way to run this
-# repository's tests. Going around them silently opts out of the checkout guard,
-# project selection semantics, structured pytest outcomes, and the receipts the
+# repository's tests. Going around them opts out of the checkout guard, project
+# selection semantics, structured pytest outcomes, and the receipts the
 # execution host captures.
 #
-# This exists because knowing the rule was demonstrably not enough: bare pytest
-# was reached for dozens of times in one session, every time for a real local
-# reason. A rule that loses to friction every time it is tested is not a rule.
-#
-# ONLY EXECUTABLE TEXT IS INSPECTED, and that took two corrections to get right.
-# The first version matched the whole command string, so writing a file whose
-# CONTENT mentioned pytest was refused. The second stripped heredocs but still
-# matched quoted arguments, so a `git commit -m` message mentioning pytest was
-# refused. Both times the guard blocked authoring the fix for the thing it
-# guards, which is worse than no guard. Heredoc bodies AND quoted strings are
-# data, not commands, and are removed before matching.
-#
-# It matches argv, a structured carrier -- not prose, so this is not the
-# natural-language pattern-matching this repo forbids elsewhere.
+# Applies only to commands running inside this checkout, and only to argv --
+# heredoc bodies and quoted strings are data, so a commit message or a file
+# being written may say "pytest" freely.
 #
 # Escape hatch: POLYLOGUE_ALLOW_BARE_PYTEST=1 <command>
 # Needing it twice means the harness is missing something; fix devtools instead.
@@ -29,12 +18,29 @@ payload="$(cat)"
 
 verdict="$(printf '%s' "$payload" | python3 -c '
 import json
+import os
 import re
 import sys
+from pathlib import Path
 
 try:
-    command = (json.load(sys.stdin).get("tool_input") or {}).get("command", "")
+    payload = json.load(sys.stdin)
+    command = (payload.get("tool_input") or {}).get("command", "")
 except Exception:
+    print("allow")
+    raise SystemExit(0)
+
+# The harness this guards is this checkout\x27s. A command run elsewhere is not
+# its business, and denying there blocks work in repositories that have no
+# devtools at all.
+root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
+cwd = Path(payload.get("cwd") or os.getcwd())
+try:
+    cwd = cwd.resolve()
+except OSError:
+    print("allow")
+    raise SystemExit(0)
+if root != cwd and root not in cwd.parents:
     print("allow")
     raise SystemExit(0)
 
@@ -70,11 +76,9 @@ if re.search(r"(^|[;&|(]|\s)devtools(\s|$)", text):
     print("allow")
     raise SystemExit(0)
 
-# pytest must sit at a COMMAND POSITION -- start of a line, or after a
+# pytest must sit at a command position -- start of a line, or after a
 # separator -- optionally behind env assignments or an interpreter. Matching it
-# after any whitespace flagged ordinary prose such as "directory pytest created"
-# inside a commit message, which is the third false positive this guard produced
-# by treating text as if it were a command.
+# after any whitespace would flag prose that merely contains the word.
 command_position = r"(?:^|[\n;&|(]|&&|\|\|)\s*(?:\w+=\S+\s+)*"
 if re.search(command_position + r"(?:\S*/)?pytest(?:\s|$)", text) or re.search(
     command_position + r"\S*python\S*\s+(?:-\S+\s+)*-m\s+pytest(?:\s|$)", text
