@@ -2214,6 +2214,56 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
     if capabilities.write:
 
+        async def record_work_event(
+            session_id: str,
+            event_id: str,
+            event_type: Literal["tool_run", "subagent_spawn", "decision", "artifact_change"],
+            summary: str,
+            payload: dict[str, object] | None = None,
+            timestamp: str | None = None,
+        ) -> str:
+            """Record one typed event through the facade's archive ingest seam."""
+            from polylogue.coordination.work_events import validate_work_event_type
+
+            try:
+                validate_work_event_type(event_type)
+                result = await hooks.get_polylogue().record_work_event(
+                    session_id,
+                    event_id=event_id,
+                    event_type=event_type,
+                    summary=summary,
+                    payload=payload,
+                    timestamp=timestamp,
+                )
+            except (KeyError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
+            return hooks.json_payload(MCPRootPayload(root=result))
+
+        async def emit_decision(
+            session_id: str,
+            event_id: str,
+            decision: str,
+            summary: str,
+            evidence_refs: list[str] | None = None,
+            timestamp: str | None = None,
+        ) -> str:
+            """Record a decision using the shared work-event vocabulary."""
+            try:
+                result = await hooks.get_polylogue().emit_decision(
+                    session_id,
+                    event_id=event_id,
+                    decision=decision,
+                    summary=summary,
+                    evidence_refs=tuple(evidence_refs or ()),
+                    timestamp=timestamp,
+                )
+            except (KeyError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
+            return hooks.json_payload(MCPRootPayload(root=result))
+
+        register_declared_handler(mcp, record_work_event, name="record_work_event")
+        register_declared_handler(mcp, emit_decision, name="emit_decision")
+
         async def write(
             operation: Literal[
                 "add_tag",

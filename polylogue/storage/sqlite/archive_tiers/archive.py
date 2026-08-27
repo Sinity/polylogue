@@ -1063,6 +1063,57 @@ class ArchiveStore:
         self._consume_index_blob_receipts()
         return session_id
 
+    def append_work_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, object],
+        event_id: str,
+        summary: str,
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Append one agent event through the normal raw and parsed ingest seam."""
+        from polylogue.coordination.work_events import validate_work_event_id, validate_work_event_type
+        from polylogue.core.sources import provider_from_origin
+        from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+        event_id = validate_work_event_id(event_id)
+        event_type = validate_work_event_type(event_type)
+        resolved = self.resolve_session_id(session_id)
+        existing = self.read_session(resolved)
+        provider = provider_from_origin(Origin.from_string(existing.origin))
+        event_payload = {"event_id": event_id, "summary": summary, **payload}
+        event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
+        session = ParsedSession(
+            source_name=provider,
+            provider_session_id=existing.native_id,
+            title=existing.title,
+            messages=[],
+            session_events=[event],
+        )
+        raw_payload = json.dumps(
+            {"event_id": event_id, "event_type": event_type, "payload": event_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        raw_id = "agent-work-event:" + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
+        result = self.write_raw_and_parsed_result(
+            session,
+            payload=raw_payload,
+            source_path=f"agent-work-event:{resolved}",
+            acquired_at_ms=int(time.time() * 1000),
+            source_index=-1,
+            raw_id=raw_id,
+        )
+        return {
+            "event_id": event_id,
+            "session_id": result.session_id,
+            "event_type": event_type,
+            "summary": summary,
+            "content_changed": result.content_changed,
+        }
+
     def write_parsed_result(self, session: ParsedSession, *, content_hash: str | None = None) -> dict[str, int]:
         """Write a parsed session and report whether precedence skipped it."""
         self._require_writable("write index.db")
