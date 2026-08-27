@@ -101,6 +101,7 @@ from polylogue.insights.archive import (
 )
 from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
 from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.confidence import from_score as confidence_from_score
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
@@ -3720,6 +3721,10 @@ class ArchiveStore:
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
         return self._read_insights().list_tool_usage_insights(query)
+
+    def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
+        """Report normalized command-shape usage from canonical actions."""
+        return self._read_insights().list_command_shape_usage(query)
 
     def _read_insights(self) -> ArchiveReadInsights:
         """Bind insight SQL to this store's caller-owned read snapshot."""
