@@ -235,6 +235,10 @@ describe("ambient capture status surface", () => {
       text: "A supported message selection",
       truncated: false,
       persistence: "not_supported",
+      // Set by the mounted surface once identity is resolved; both stay null
+      // while the receiver has accepted no native identity for this message.
+      message_ref: null,
+      evidence_ref: null,
     });
     expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(insideSelection)?.text)
       .toBe("A supported message selection");
