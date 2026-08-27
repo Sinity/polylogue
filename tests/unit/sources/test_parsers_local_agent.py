@@ -808,7 +808,14 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
     assert raw.blob_size and raw.blob_size > 0
 
 
-def test_hermes_configured_directory_discovers_only_its_state_database(tmp_path: Path) -> None:
+def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Path) -> None:
+    """Enumeration is broad; admission is structural.
+
+    Anti-vacuity: dropping the recognizer from admission would make
+    ``unrelated.sqlite`` produce sessions (or a parse failure) instead of a
+    typed non-session observation.
+    """
+
     source_root = tmp_path / "hermes"
     source_root.mkdir()
     db_path = source_root / "state.db"
@@ -828,18 +835,29 @@ def test_hermes_configured_directory_discovers_only_its_state_database(tmp_path:
         )
     )
 
-    assert _resolve_source_paths(hermes_source) == [db_path]
+    assert _resolve_source_paths(hermes_source) == [db_path, unrelated_path]
     assert [session.provider_session_id.split("@", 1)[0] for _raw, session in rows] == [
         "hermes-root",
         "hermes-child",
     ]
 
 
-def test_unrelated_configured_source_does_not_discover_hermes_sqlite(tmp_path: Path) -> None:
-    db_path = tmp_path / "state.db"
-    _write_hermes_state_db(db_path)
+def test_unrelated_configured_hermes_sqlite_is_enumerated_but_not_admitted(tmp_path: Path) -> None:
+    db_path = tmp_path / "unrelated.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 
-    assert _resolve_source_paths(Source(name="codex", path=tmp_path)) == []
+    assert _resolve_source_paths(Source(name="hermes", path=tmp_path)) == [db_path]
+    assert (
+        list(
+            iter_source_sessions_with_raw(
+                Source(name="hermes", path=tmp_path),
+                capture_raw=False,
+                blob_root=tmp_path / "blob",
+            )
+        )
+        == []
+    )
 
 
 def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: Path) -> None:
