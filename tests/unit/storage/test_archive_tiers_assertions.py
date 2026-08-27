@@ -14,7 +14,12 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONValue
 from polylogue.core.types import SessionId
-from polylogue.insights.transforms import compile_session_digest
+from polylogue.insights.transforms import (
+    DecisionCandidate,
+    SessionDigest,
+    TransformRawRef,
+    compile_session_digest,
+)
 from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -127,6 +132,17 @@ def _recovery_candidate_session() -> Session:
             ]
         ),
     )
+
+
+def _recovery_candidate_digest() -> SessionDigest:
+    digest = compile_session_digest(_recovery_candidate_session())
+    candidate = DecisionCandidate(
+        kind="decision",
+        text="transform candidates require evidence refs",
+        raw_refs=(TransformRawRef(session_id=str(digest.session_id), message_id="m2"),),
+        candidate_ref="candidate:recovery",
+    )
+    return digest.model_copy(update={"decision_candidates": (candidate,)})
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1045,7 +1061,7 @@ def test_assertion_targets_various_ref_shapes(tmp_path: Path) -> None:
 def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         assert digest.decision_candidates
 
         written = upsert_transform_candidate_assertions(
@@ -1135,7 +1151,7 @@ def test_session_digest_candidates_write_transform_candidate_assertions(tmp_path
 def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1173,7 +1189,7 @@ def test_candidate_assertion_acceptance_creates_active_assertion_with_lineage(tm
 def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1204,7 +1220,7 @@ def test_candidate_assertion_rejection_preserves_reason_and_filtering(tmp_path: 
 def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1243,7 +1259,7 @@ def test_candidate_assertion_defer_records_reason_without_promoting(tmp_path: Pa
 def test_candidate_assertion_supersede_records_replacement_and_lineage(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         result = judge_assertion_candidate(
@@ -1308,7 +1324,7 @@ def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -
 
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidate = upsert_transform_candidate_assertions(conn, digest, now_ms=1_700_000_000_000)[0]
 
         with pytest.raises(ValueError, match="only valid for a supersede"):
@@ -1331,7 +1347,7 @@ def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlle
 
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidates = upsert_transform_candidate_assertions(
             conn,
             digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 2}),
@@ -1408,7 +1424,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
 
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         candidates = upsert_transform_candidate_assertions(
             conn,
             digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 2}),
@@ -1482,7 +1498,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
 def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_path: Path) -> None:
     conn = connect_user_tier(tmp_path / "user.db")
     try:
-        digest = compile_session_digest(_recovery_candidate_session())
+        digest = _recovery_candidate_digest()
         duplicate_digest = digest.model_copy(update={"decision_candidates": (digest.decision_candidates[0],) * 3})
         candidates = upsert_transform_candidate_assertions(
             conn,

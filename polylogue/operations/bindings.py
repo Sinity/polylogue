@@ -35,6 +35,8 @@ class OperationBinding(Generic[ArgsT, ResultT]):
             )
         if not self.spec.target_authority:
             raise BindingValidationError(f"operation {self.spec.name!r} has no target authority policy rows")
+        if not callable(getattr(self.actuator, "inspect_recovery", None)):
+            raise BindingValidationError(f"operation {self.spec.name!r} has no recovery inspector")
         actuator_operation = getattr(self.actuator, "operation", None)
         if actuator_operation != self.spec.name:
             raise BindingValidationError(

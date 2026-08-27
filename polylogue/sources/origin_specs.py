@@ -1039,6 +1039,7 @@ def _executable_spec(
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
     assembly_spec_path: str | None = None,
+    artifact_rules: tuple[OriginArtifactRule, ...] = (),
 ) -> OriginSpec:
     return OriginSpec(
         origin=origin,
@@ -1056,6 +1057,7 @@ def _executable_spec(
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
+        artifact_rules=artifact_rules,
         display_description=display_description,
         public_filter=public_filter,
     )
@@ -1203,7 +1205,36 @@ def _antigravity_spec() -> OriginSpec:
             "tests/unit/sources/test_antigravity_language_server.py",
             "tests/unit/sources/parsers/test_antigravity.py",
         ),
-        display_description="Antigravity brain artifacts",
+        display_description="Antigravity language-server conversations",
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="session_document",
+                path_pattern=r"(?:^|/)conversations/[^/]+\.pb$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/antigravity.py:iter_language_server_exports",
+                coverage_role="conversation_protobuf",
+                fidelity_note="Opaque conversation protobufs are converted only by Antigravity's language server.",
+                path_suffixes=(".pb",),
+            ),
+            OriginArtifactRule(
+                kind="agent_sidecar_meta",
+                path_pattern=r"(?:^|/)brain/(?:[^/]+/)*[^/]+\.metadata\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="brain_metadata_sidecar",
+                fidelity_note="Brain metadata is retained as typed artifact evidence and never creates a session.",
+                path_suffixes=(".metadata.json",),
+            ),
+            OriginArtifactRule(
+                kind="metadata_document",
+                path_pattern=r"(?:^|/)brain/(?:[^/]+/)*[^/]+\.md$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="brain_document",
+                fidelity_note="Brain documents are retained as typed artifacts and never create a session.",
+                path_suffixes=(".md",),
+            ),
+        ),
     )
 
 
@@ -1725,14 +1756,6 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "polylogue.sources.dispatch:_looks_like_antigravity_markdown_record",
             0,
             "antigravity.looks_like_markdown_export",
-            fixed_provider=Provider.ANTIGRAVITY,
-        ),
-        DetectorBinding(
-            "antigravity-brain-record",
-            DetectionMode.RECORD,
-            "polylogue.sources.dispatch:_looks_like_antigravity_brain_record",
-            1,
-            "antigravity.looks_like_brain_metadata",
             fixed_provider=Provider.ANTIGRAVITY,
         ),
     ),

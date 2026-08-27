@@ -551,7 +551,15 @@ def _index_generation_evidence(
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
             generation_metadata = os.fstat(directory_fd)
-            encoded, metadata = _read_pinned_generation_metadata(directory_fd)
+            try:
+                encoded, metadata = _read_pinned_generation_metadata(directory_fd)
+            except ArchiveRootRelocationError as exc:
+                if isinstance(exc.__cause__, FileNotFoundError):
+                    raise ArchiveRootRelocationError(
+                        f"archive-root relocation found orphan index generation directory without generation.json: "
+                        f"{generation_root}"
+                    ) from exc
+                raise
             try:
                 raw = json.loads(encoded)
             except json.JSONDecodeError as exc:

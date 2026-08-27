@@ -10,7 +10,9 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL, OPS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
+    assert_complete_schema_dispositions,
     audit_column_dispositions,
+    schema_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -37,6 +39,9 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.AUDIT: AUDIT_SCHEMA_VERSION,
 }
 
+SCHEMA_DISPOSITIONS = schema_dispositions()
+assert_complete_schema_dispositions(SCHEMA_DISPOSITIONS)
+
 
 def archive_ddl_for_tier(tier: ArchiveTier) -> str:
     """Return the fresh-create DDL script for one archive durability tier."""
@@ -48,4 +53,5 @@ __all__ = [
     "ARCHIVE_DDL_BY_TIER",
     "ARCHIVE_VERSION_BY_TIER",
     "archive_ddl_for_tier",
+    "SCHEMA_DISPOSITIONS",
 ]

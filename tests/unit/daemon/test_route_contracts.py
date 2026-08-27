@@ -11,7 +11,9 @@ import pytest
 
 from polylogue.daemon.http import _parameterized_get_routes, _static_get_routes, implemented_daemon_route_patterns
 from polylogue.daemon.route_contracts import (
+    DAEMON_ROUTE_REGISTRY,
     ROUTE_CONTRACTS,
+    daemon_route_declaration,
     route_contract_for,
     route_contract_for_pattern,
     stable_route_contracts,
@@ -63,6 +65,36 @@ def test_get_dispatch_tables_are_bound_to_route_contracts() -> None:
     for parameterized_route in _parameterized_get_routes():
         assert parameterized_route.contract is route_contract_for_pattern("GET", parameterized_route.pattern)
         assert parameterized_route.pattern == parameterized_route.contract.pattern
+
+
+def test_find_route_is_registered_once_in_the_shared_declaration_kernel() -> None:
+    """The production adapter and metadata must consume one route declaration."""
+
+    declaration = daemon_route_declaration("GET", "/api/sessions")
+    binding = declaration.kernel.handlers[0]
+    route = next(route for route in _static_get_routes() if route.pattern == "/api/sessions")
+
+    assert DAEMON_ROUTE_REGISTRY.get("daemon.find.sessions") is declaration.kernel
+    assert (declaration.method, declaration.path) == ("GET", route.pattern)
+    assert route.handler_name == binding.symbol
+    assert route.passes_params
+    assert declaration.request_contract == "SessionSearchQuery"
+    assert declaration.response_contract == "SearchEnvelope | SessionListResponse"
+
+
+def test_find_openapi_operation_carries_declaration_contract() -> None:
+    """OpenAPI exposes the same typed route metadata used by dispatch."""
+
+    from devtools.render_openapi import _build_openapi_document
+
+    operation = _build_openapi_document()["paths"]["/api/sessions"]["get"]
+    assert operation["x-polylogue-declaration"] == {
+        "declaration_id": "daemon.find.sessions",
+        "request_contract": "SessionSearchQuery",
+        "response_contract": "SearchEnvelope | SessionListResponse",
+        "auth_policy": "credential_if_configured",
+        "owner_path": "polylogue/daemon/http.py",
+    }
 
 
 def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_bridge() -> None:
@@ -294,13 +326,14 @@ def test_unknown_route_has_no_contract() -> None:
 
 
 @pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
-def test_shell_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
-    """Local shell bootstrap remains frictionless on loopback."""
+def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
+    """Local browser bootstrap remains frictionless on loopback."""
 
     handler = _make_handler("GET", path)
     send_error, _ = capture_responses(handler)
     handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
+    handler._serve_webui_session_read = lambda session_id: None  # type: ignore[method-assign]
     handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
     handler._serve_attachment_library_page = lambda: None  # type: ignore[method-assign]
 
@@ -326,3 +359,37 @@ def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     handler.do_GET()
 
     send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/", "archive"),
+        ("/app", "archive"),
+        ("/sessions", "list"),
+        ("/sessions/codex-session:abc", "read"),
+        ("/s/codex-session:abc", "read"),
+        ("/search?q=term", "search"),
+    ],
+)
+def test_canonical_browser_routes_enter_typed_webui_handlers(path: str, expected: str) -> None:
+    """Canonical and deep-link routes must not fall back to the legacy shell."""
+
+    handler = _make_handler("GET", path)
+    handler._check_shell_bootstrap_access = lambda: True  # type: ignore[method-assign]
+    handler._serve_web_shell = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_session_read = MagicMock()  # type: ignore[method-assign]
+    handler._serve_webui_search = MagicMock()  # type: ignore[method-assign]
+
+    handler.do_GET()
+
+    typed = {
+        "archive": handler._serve_webui_archive_overview,
+        "list": handler._serve_webui_session_list,
+        "read": handler._serve_webui_session_read,
+        "search": handler._serve_webui_search,
+    }[expected]
+    typed.assert_called_once()
+    handler._serve_web_shell.assert_not_called()

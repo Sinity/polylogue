@@ -8,6 +8,7 @@ profiles`` works without re-specifying the filter on the subcommand.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
@@ -411,6 +412,54 @@ def insights_export_command(
         emit_success(cast(dict[str, object], result.model_dump(mode="json")))
         return
     _render_export_plain(result)
+
+
+@ops_insights_command.command("fable-packet")
+@click.option("--seed", required=True, help="Deterministic cohort seed.")
+@click.option("--requested-size", type=click.IntRange(min=0), required=True, help="Maximum sampled attempts.")
+@click.option("--schema-id", default="delegation.discourse", show_default=True)
+@click.option("--schema-version", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--exact-template-cap", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--format", "output_format", type=click.Choice(["json"]), default=None)
+@click.pass_context
+def insights_fable_packet_command(
+    ctx: click.Context,
+    seed: str,
+    requested_size: int,
+    schema_id: str,
+    schema_version: int,
+    exact_template_cap: int,
+    output_format: str | None,
+) -> None:
+    """Cold-regenerate the private, descriptive Fable delegation packet."""
+    env: AppEnv = ctx.obj
+    try:
+        packet = run_coroutine_sync(
+            env.polylogue.regenerate_private_fable_packet(
+                seed=seed,
+                requested_size=requested_size,
+                schema_id=schema_id,
+                schema_version=schema_version,
+                exact_template_cap=exact_template_cap,
+            )
+        )
+    except ValueError as exc:
+        fail("insights fable-packet", str(exc))
+    payload = asdict(packet)
+    if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
+        emit_success(cast(dict[str, object], payload))
+        return
+    click.echo(f"Fable packet: {packet.status}")
+    click.echo(
+        f"Population: {packet.population_count} "
+        f"(action={packet.action_observed_count}, edge_only={packet.edge_only_count}, unresolved={packet.unresolved_count})"
+    )
+    click.echo(f"Selected: {len(packet.selected_refs)}; manifest={packet.manifest_id}")
+    if packet.not_supported_reasons:
+        click.echo(f"Not supported: {', '.join(packet.not_supported_reasons)}")
+    else:
+        click.echo(f"Distributions: {len(packet.distributions)}; disagreements={packet.disagreement_count}")
+    click.echo("Limits: " + ", ".join(packet.limits))
 
 
 def _format_pct(count: int, sample: int) -> str:

@@ -61,7 +61,7 @@ def compute_session_cost(
     should pass it explicitly.
     """
     estimate = session_estimate or (estimate_session_cost(session) if estimate_if_missing else None)
-    if estimate is not None and estimate.status == "exact":
+    if estimate is not None and estimate.status == "exact" and not model_usage:
         return SessionCostSummary(
             total_input_tokens=estimate.usage.input_tokens,
             total_output_tokens=estimate.usage.output_tokens,
@@ -210,6 +210,15 @@ def compute_session_cost(
         cost_provenance = "unknown"
     else:
         cost_provenance = "mixed"
+
+    # Provider money is authoritative for the monetary lane, but canonical
+    # model usage remains authoritative for token accounting.  Do not return
+    # from the exact-cost branch above when model_usage is available: the
+    # message-derived estimate can be tokenless or stale (polylogue-t2ugv).
+    if estimate is not None and estimate.status == "exact" and model_usage:
+        total_api = float(estimate.total_usd or 0.0)
+        cost_provenance = "provider_reported"
+        agg_confidence = "reported"
 
     return SessionCostSummary(
         total_input_tokens=sum(b.input_tokens for b in breakdowns),

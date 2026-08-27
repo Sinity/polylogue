@@ -144,7 +144,7 @@ from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseS
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path, recognize_source_class
-from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
@@ -1881,7 +1881,72 @@ class LiveBatchProcessor:
                 force=True,
             )
 
-        for path in paths:
+        # Antigravity protobufs have no local parser. Convert the complete
+        # manifested cohort through the vendor language server once, then feed
+        # the resulting sessions into this same ordinary archive-write route.
+        # Brain documents and metadata stay in the regular artifact branch.
+        antigravity_pairs: dict[Path, tuple[Any, ParsedSession]] = {}
+        antigravity_pb_paths = [
+            path
+            for path in paths
+            if fallback_provider is Provider.ANTIGRAVITY
+            and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+        ]
+        if antigravity_pb_paths:
+            from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+
+            source = Source(name="antigravity", path=antigravity_pb_paths[0].parent.parent)
+            try:
+                for raw_data, session in iter_antigravity_language_server_sessions(
+                    source,
+                    capture_raw=True,
+                    blob_root=blob_root,
+                    blob_store=blob_store,
+                    only_cascade_ids=frozenset(path.stem for path in antigravity_pb_paths),
+                ):
+                    if raw_data is not None:
+                        antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
+            except Exception:
+                logger.exception("antigravity: language-server cohort conversion failed")
+            for path in antigravity_pb_paths:
+                pair = antigravity_pairs.get(path)
+                if pair is None:
+                    failed.append(path)
+                    continue
+                raw_data, session = pair
+                if raw_data.blob_hash is None or raw_data.blob_size is None:
+                    failed.append(path)
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    failed.append(path)
+                    continue
+                raw_id = raw_data.blob_hash
+                captured_file_observations[path] = _file_observation(stat)
+                parsed_sessions_by_raw_id[raw_id] = [session]
+                raw_byte_sizes[path] = raw_data.blob_size
+                raw_source_names[path] = Provider.ANTIGRAVITY.value
+                captured_content_hashes[path] = raw_id
+                raw_records.append(
+                    RawSessionRecord(
+                        raw_id=raw_id,
+                        payload_provider=Provider.ANTIGRAVITY,
+                        capture_mode=Provider.ANTIGRAVITY,
+                        source_name=Provider.ANTIGRAVITY.value,
+                        source_path=str(path),
+                        source_index=0,
+                        blob_size=raw_data.blob_size,
+                        blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
+                        acquired_at=datetime.now(UTC).isoformat(),
+                        file_mtime=raw_data.file_mtime,
+                        captured_source_revision=raw_id,
+                        captured_file_observation=captured_file_observations[path],
+                    )
+                )
+                ingested.append(path)
+
+        for path in (path for path in paths if path not in antigravity_pb_paths):
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
             try:

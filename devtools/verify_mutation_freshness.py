@@ -37,11 +37,10 @@ from devtools.required_gate import evidence_gate_result
 ROOT = _get_root()
 DEFAULT_FRESHNESS_DAYS = 60
 DEFAULT_ARTIFACT_GLOB = ".local/mutation-campaigns/{name}/*.json"
-# Conservative kill-rate floor (#1733 AC2/AC3). Mutation kill rates for
-# well-tested modules sit well above this; 0.5 flags a genuinely under-killed
-# module without false-alarming on a healthy campaign. Only enforced under --enforce-kill-rate
-# and only against fresh campaigns (those that actually have a recent artifact).
-DEFAULT_MIN_KILL_RATE = 0.5
+# Campaigns with a consequence-shaped policy provide their own floor.  A
+# command-line default remains available for operators selecting an ad hoc
+# slice, but the catalog does not assign one aggregate score to all domains.
+DEFAULT_MIN_KILL_RATE = None
 
 
 @dataclass(frozen=True)
@@ -211,9 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     entries = catalog_entries()
-    default_min_kill_rate = (
-        args.default_min_kill_rate if args.default_min_kill_rate is not None else DEFAULT_MIN_KILL_RATE
-    )
+    default_min_kill_rate = args.default_min_kill_rate
 
     now = datetime.now(UTC)
     assessments = [
@@ -222,7 +219,11 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=ROOT,
             now=now,
             freshness_days=args.default_freshness_days,
-            min_kill_rate=default_min_kill_rate,
+            min_kill_rate=(
+                default_min_kill_rate
+                if default_min_kill_rate is not None
+                else getattr(MUTATION_CAMPAIGNS[name], "min_kill_rate", None)
+            ),
         )
         for name in entries
     ]

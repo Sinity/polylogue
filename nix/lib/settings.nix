@@ -34,16 +34,6 @@ let
     };
 
     daemon = {
-      host = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "Legacy daemon listen host alias (polylogue default: 127.0.0.1).";
-      };
-      port = mkOption {
-        type = types.nullOr types.port;
-        default = null;
-        description = "Legacy daemon HTTP API port alias (polylogue default: 8766).";
-      };
       watch = mkOption {
         type = types.nullOr (types.listOf types.str);
         default = null;
@@ -315,13 +305,9 @@ let
       );
 
       daemon = maybe "daemon" (
-        dropNulls {
-          host = settings.daemon.host;
-          port = settings.daemon.port;
-        }
-        // lib.optionalAttrs (settings.daemon.debounce-s != null) {
+        (if settings.daemon.debounce-s != null then {
           watch = { debounce_s = settings.daemon.debounce-s; };
-        }
+        } else { })
         // lib.optionalAttrs (
           settings.daemon-api.host != null
           || settings.daemon-api.port != null

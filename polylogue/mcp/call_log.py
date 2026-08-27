@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from polylogue.core.durable_fs import atomic_replace, sync_directory
 from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
@@ -73,11 +74,7 @@ def _outbox_root(config: PolylogueConfig) -> Path:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    sync_directory(path)
 
 
 def _persist_delivery(config: PolylogueConfig, event: McpCallLogEvent) -> Path:
@@ -89,20 +86,11 @@ def _persist_delivery(config: PolylogueConfig, event: McpCallLogEvent) -> Path:
     except OSError:
         logger.debug("Could not tighten MCP call outbox permissions", exc_info=True)
     target = root / f"{event.call_id}.json"
-    temporary = root / f".{event.call_id}.{uuid.uuid4().hex}.tmp"
     payload = {
         "version": _OUTBOX_VERSION,
         "event": asdict(event),
     }
-    try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-        _fsync_directory(root)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_replace(target, json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     return target
 
 
@@ -314,6 +302,7 @@ class _McpCallLogDispatcher:
     def _quarantine_conflict(self, path: Path) -> None:
         quarantine = path.parent.parent / "quarantine"
         quarantine.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _fsync_directory(quarantine.parent)
         target = quarantine / path.name
         try:
             os.replace(path, target)

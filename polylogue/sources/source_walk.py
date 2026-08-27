@@ -35,6 +35,12 @@ def _has_supported_extension(path: Path) -> bool:
 def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     if _has_supported_extension(path):
         return True
+    if (
+        provider is Provider.ANTIGRAVITY
+        and "brain" in {part.lower() for part in path.parts[:-1]}
+        and path.suffix.lower() == ".md"
+    ):
+        return True
     # A broad Hermes root must enumerate every SQLite candidate so the
     # OriginSpec recognizer can publish a typed unsupported/non-session
     # observation.  Structural inspection belongs to admission, not the walk;
