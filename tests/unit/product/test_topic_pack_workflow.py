@@ -66,6 +66,23 @@ async def test_topic_pack_vector_lane_is_provider_general_and_bounded() -> None:
     assert {item.reason for item in result.evidence} == {"fts"}
 
 
+@pytest.mark.asyncio
+async def test_topic_pack_citation_tracks_content_hash_drift() -> None:
+    store = FakeStore()
+    first = await build_topic_pack(cast(Any, store), TopicPackRequest("bounded evidence", max_messages=1))
+    store.session.messages[0].blocks[0]["content_hash"] = bytes.fromhex("cd" * 32)
+    second = await build_topic_pack(cast(Any, store), TopicPackRequest("bounded evidence", max_messages=1))
+
+    assert first.context_pack[0]["citation"] != second.context_pack[0]["citation"]
+    assert str(second.context_pack[0]["citation"]).endswith("sha256:" + "cd" * 32)
+    assert second.metadata["quality_baseline"] == {
+        "kind": "no-vector-fts",
+        "session_count": 1,
+        "session_ids": ["claude-code-session:s1"],
+        "product_claims": False,
+    }
+
+
 def test_topic_pack_rejects_unbounded_or_empty_requests() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         TopicPackRequest(" ")

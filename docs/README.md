@@ -68,6 +68,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Daemon Concurrency Profile](daemon-concurrency-profile.md) | Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger. |
+| [Runtime and Concurrency Contract](runtime-concurrency.md) | Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
@@ -86,7 +87,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
-| [Artifact Publication Contract](artifact-publication.md) | Shared filesystem contract for cache and reusable-fixture publication. |
 
 ## Demos, Evidence, and Product
 
@@ -125,6 +125,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
 | [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
 | [CLI Interaction Oracle Deletion Ledger](plans/cli-interaction-deletion-ledger.md) | Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles. |
+| [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
 | [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
 | [Whole Product](design/whole-product.md) | Product vision and system relationships. |

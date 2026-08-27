@@ -47,10 +47,16 @@ def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadView
     del request
     assert invocation.session_id is not None
     options = cast(ReadViewContextOptions, invocation.options or ReadViewContextOptions())
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    related_limit = (
+        projection.context_related_limit
+        if projection and projection.context_related_limit is not None
+        else options.related_limit
+    )
     preamble = compose_context_preamble(
         env,
         session_id=invocation.session_id,
-        related_limit=max(1, options.related_limit),
+        related_limit=max(1, related_limit),
     )
     deliver_content(env, preamble + "\n", destination=invocation.destination, out_path=invocation.out_path)
 
@@ -67,6 +73,13 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
     """
 
     options = cast(ReadViewContextImageOptions, invocation.options or ReadViewContextImageOptions())
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    max_sessions = (
+        projection.context_max_sessions
+        if projection and projection.context_max_sessions is not None
+        else options.max_sessions
+    )
+    redact_paths = projection.redact_paths if projection is not None else not options.no_redact
     image = run_coroutine_sync(
         env.polylogue.context_image_payload(
             seed_session_id=invocation.session_id,
@@ -76,8 +89,8 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
             until=options.until,
             origin=options.origin,
             query=options.query,
-            max_sessions=options.max_sessions,
-            redact_paths=not options.no_redact,
+            max_sessions=max_sessions,
+            redact_paths=redact_paths,
         )
     )
     deliver_content(

@@ -218,6 +218,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify webui",
+        "verification",
+        "Run the declared typed WebUI generation, contract, unit, and build checks.",
+        "devtools.verify_webui",
+        use_when=(
+            "Validate the typed WebUI through its package-owned checks after changing browser components, "
+            "generated contracts, design tokens, or Vite packaging."
+        ),
+        examples=("devtools verify webui", "devtools verify webui --json"),
+    ),
+    CommandSpec(
         "verify ci-commands",
         "verification",
         "Validate devtools invocations in structured CI run fields.",
@@ -287,6 +298,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools verify semantic-fidelity --json",
             "devtools verify semantic-fidelity --json --report .agent/reports/semantic-fidelity-v1.json",
+        ),
+    ),
+    CommandSpec(
+        "verify falsification",
+        "verification",
+        "Run the bounded four-slice falsification gate after explicit rebuild-safety consent.",
+        "devtools.falsification_program",
+        use_when="Run the four independent evidence slices together and write a comparable machine-readable result; this runs the rebuild safety scenario.",
+        examples=(
+            "devtools verify falsification --execute-safety --json",
+            "devtools verify falsification --execute-safety --json --report .agent/reports/independent-falsification-v1.json",
         ),
     ),
     CommandSpec(
@@ -507,7 +529,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_slos",
         use_when=(
             "Run directly to confirm read-surface "
-            "(query / reader / facets / context / cost) latencies stay within their declared SLOs. "
+            "and interactive (daemon query / completion / cold CLI / ingest-to-searchable) latencies "
+            "stay within their declared SLOs. "
             "Exits non-zero when any measured surface exceeds its budget."
         ),
         examples=(
@@ -528,6 +551,33 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "rows/bytes, and cancellation evidence where the route exposes it."
         ),
         examples=("devtools bench daemon-operation",),
+    ),
+    CommandSpec(
+        "bench concurrency",
+        "benchmarking",
+        "Run the managed bounded-compute scaling profile across representative workloads.",
+        "devtools.concurrency_profile",
+        use_when=(
+            "Compare bounded worker and admission configurations for tiny-file, ordinary, whale, mixed-ingest, "
+            "derivation, and interactive-read workloads on the selected free-threaded runtime."
+        ),
+        examples=("devtools bench concurrency", "devtools bench concurrency --json"),
+    ),
+    CommandSpec(
+        "verify runtime",
+        "verification",
+        "Verify the CPython 3.14 free-threaded runtime and required native extensions.",
+        "devtools.runtime_contract",
+        use_when="Prove runtime identity and extension imports before running concurrency-sensitive work.",
+        examples=("devtools verify runtime", "devtools verify runtime --json"),
+    ),
+    CommandSpec(
+        "verify runtime-census",
+        "verification",
+        "Census production concurrency boundaries and classify every discovered item.",
+        "devtools.runtime_census",
+        use_when="Audit executors, SQLite connections, synchronization, caches, registries, and mutable globals.",
+        examples=("devtools verify runtime-census", "devtools verify runtime-census --json"),
     ),
     CommandSpec(
         "bench cli-interaction",

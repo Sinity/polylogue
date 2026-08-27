@@ -30,6 +30,9 @@ reintroducing special recovery/export/read silos.
 - `SelectionSpec` carries refs, query text, origin, time bounds, and limit.
 - `ProjectionSpec` carries evidence families, field selection, body policy,
   role/block filters, token budget, assertion inclusion, and redaction policy.
+  Neighbor, context, and correlation view parameters are projection fields too:
+  `neighbor_limit`, `neighbor_window_hours`, `context_related_limit`,
+  `context_max_sessions`, and the `correlation_*` fields.
 - `RenderSpec` carries format, destination, layout, timestamp policy, and file
   output path.
 - `QueryProjectionSpec` composes all three.
@@ -60,12 +63,16 @@ means timestamp-bearing renderers preserve source timestamps where the selected
 evidence carries them; it is not a claim that every selected row has timestamp
 coverage.
 
+The CLI `--projection` expression accepts these fields in kebab-case. The
+view-specific flags remain ergonomic aliases and are checked against the same
+spec values; handlers consume the spec so profiles and exports have one source
+of truth.
+
 ## Next Wiring
 
 The next implementation steps should route existing `read --view` behavior
 through this spec incrementally:
 
 1. pass the spec to existing handlers without changing their output;
-2. move view-specific option clusters into projection/render fields;
-3. express export as query + projection + render rather than as a separate
+2. express export as query + projection + render rather than as a separate
    command family.

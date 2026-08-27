@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shutil
 import socket
 import subprocess
 import time
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from glob import glob
 from pathlib import Path
 from types import TracebackType
+from typing import Protocol
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -32,7 +38,6 @@ from .base import (
     synthetic_message_id,
 )
 
-_METADATA_SUFFIX = ".metadata.json"
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
 _SECTION_RE = re.compile(r"^### (?P<title>User Input|Planner Response)\s*$", re.MULTILINE)
@@ -45,9 +50,8 @@ class AntigravityExportError(RuntimeError):
 class AntigravityBinaryUnavailableError(AntigravityExportError):
     """Raised when the Antigravity language-server binary is not installed.
 
-    This is the benign case — Antigravity is simply not present — and callers
-    should fall back to the brain-artifact walk at INFO level without treating
-    it as data loss.
+    This is a source coverage blocker for manifested conversation protobufs.
+    Brain artifacts remain independently admitted as raw-only evidence.
     """
 
 
@@ -64,6 +68,75 @@ class AntigravityPartialExportError(AntigravityExportError):
         self.obtained = obtained
         self.expected = expected
         super().__init__(f"{message} (obtained {obtained} of {expected} sessions)")
+
+
+class AntigravitySourceRole(StrEnum):
+    """The admission role of one item below Antigravity's source root."""
+
+    CONVERSATION_PROTOBUF = "conversation_protobuf"
+    BRAIN_DOCUMENT = "brain_document"
+    METADATA_SIDECAR = "metadata_sidecar"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravitySourceClassification:
+    """Positive source-role evidence shared by batch and resident routes."""
+
+    role: AntigravitySourceRole
+    parse_as_session: bool
+    artifact_kind: ArtifactKind
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravityLanguageServerInfo:
+    """Identity and capabilities established by the vendor adapter handshake."""
+
+    binary_path: Path
+    version: str
+    capabilities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravityExportOutcome:
+    """One conservation-bearing result for one manifested conversation."""
+
+    source_path: Path
+    cascade_id: str
+    session: ParsedSession | None = None
+    error: str | None = None
+    converter: AntigravityLanguageServerInfo | None = None
+
+    @property
+    def obtained(self) -> bool:
+        return self.session is not None and self.error is None
+
+
+def classify_source_path(source_path: str | Path) -> AntigravitySourceClassification:
+    """Classify every Antigravity path into a session, artifact, or unknown role."""
+    path = Path(source_path)
+    from polylogue.sources.origin_specs import artifact_rule_for_path
+
+    rule = artifact_rule_for_path(Provider.ANTIGRAVITY, str(path))
+    role_by_coverage = {
+        "conversation_protobuf": AntigravitySourceRole.CONVERSATION_PROTOBUF,
+        "brain_metadata_sidecar": AntigravitySourceRole.METADATA_SIDECAR,
+        "brain_document": AntigravitySourceRole.BRAIN_DOCUMENT,
+    }
+    if rule is not None and rule.coverage_role in role_by_coverage:
+        return AntigravitySourceClassification(
+            role_by_coverage[rule.coverage_role],
+            rule.parse_policy == "session",
+            ArtifactKind(rule.kind),
+            rule.fidelity_note,
+        )
+    return AntigravitySourceClassification(
+        AntigravitySourceRole.UNKNOWN,
+        False,
+        ArtifactKind.UNKNOWN,
+        "unrecognized Antigravity source item",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +161,16 @@ class AntigravitySessionSummary:
         )
 
 
+class _AntigravityLanguageServerExportClient(Protocol):
+    def start(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]: ...
+
+    def export_markdown(self, cascade_id: str) -> str: ...
+
+
 class AntigravityLanguageServerClient:
     """Small client for Antigravity's own local language-server export API."""
 
@@ -103,6 +186,7 @@ class AntigravityLanguageServerClient:
         self.startup_timeout_s = startup_timeout_s
         self.port = _free_local_port()
         self._process: subprocess.Popen[bytes] | None = None
+        self.server_info: AntigravityLanguageServerInfo | None = None
 
     def __enter__(self) -> AntigravityLanguageServerClient:
         self.start()
@@ -123,6 +207,7 @@ class AntigravityLanguageServerClient:
         binary = self.language_server_path or discover_language_server()
         if binary is None:
             raise AntigravityBinaryUnavailableError("Antigravity language_server_linux_x64 was not found")
+        version = _discover_language_server_version(binary)
 
         cmd = [
             str(binary),
@@ -141,6 +226,11 @@ class AntigravityLanguageServerClient:
             start_new_session=True,
         )
         self._wait_until_ready()
+        self.server_info = AntigravityLanguageServerInfo(
+            binary_path=binary,
+            version=version,
+            capabilities=("SearchConversations", "ConvertTrajectoryToMarkdown"),
+        )
 
     def close(self) -> None:
         process = self._process
@@ -205,15 +295,6 @@ class AntigravityLanguageServerClient:
         return {str(key): value for key, value in loaded.items()}
 
 
-def looks_like_brain_metadata(payload: JSONDocument, source_path: str | Path | None) -> bool:
-    name = Path(source_path).name.lower() if source_path is not None else ""
-    return (
-        (not name or name.endswith((".json", ".md.metadata.json")))
-        and isinstance(payload.get("artifactType"), str)
-        and ("summary" in payload or "updatedAt" in payload)
-    )
-
-
 def looks_like_markdown_export(payload: JSONDocument) -> bool:
     return (
         payload.get("source") == "antigravity_language_server"
@@ -251,55 +332,6 @@ def parse_markdown_export_payload(payload: JSONDocument, fallback_id: str) -> Pa
     return parse_markdown_export(_string(payload.get("markdown")) or "", summary)
 
 
-BRAIN_METADATA_FRAGMENT_FLAG = "degraded:brain-metadata-fragment"
-
-
-def parse_brain_metadata(payload: JSONDocument, source_path: Path, fallback_id: str) -> ParsedSession:
-    """Parse a single Antigravity brain-artifact metadata file into a session.
-
-    Each ``*.metadata.json`` file becomes its own session whose
-    ``provider_session_id`` is ``{parent_dir}:{artifact_name}``.  Because one
-    logical work session typically produces many artifacts, this path fragments
-    a single conversation into N single-message sessions — one per artifact.
-
-    The session is flagged ``degraded:brain-metadata-fragment`` (written as an
-    auto-tag at ingest time) so it can be excluded from primary session counts
-    and insight rollups.  The underlying cause and the viable fix paths
-    (aggregate by parent-dir key, or prefer the language-server export) are
-    tracked in GitHub issue #1764.
-    """
-    artifact_path = _artifact_path_for_metadata(source_path)
-    session_id = artifact_path.parent.name if artifact_path.parent.name else fallback_id
-    artifact_name = artifact_path.name if artifact_path.name else fallback_id
-    composed_session_id = f"{session_id}:{artifact_name}"
-    body = _read_text(artifact_path) or _string(payload.get("summary")) or ""
-    title = _title_for_artifact(artifact_path, payload, fallback_id)
-    updated_at = _string(payload.get("updatedAt"))
-
-    return ParsedSession(
-        source_name=Provider.ANTIGRAVITY,
-        provider_session_id=composed_session_id,
-        title=title,
-        created_at=None,
-        updated_at=updated_at,
-        messages=[
-            ParsedMessage(
-                provider_message_id=f"{composed_session_id}:artifact",
-                role=Role.ASSISTANT,
-                text=body,
-                timestamp=updated_at,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=body)] if body else [],
-                position=0,
-                variant_index=0,
-                is_active_path=True,
-                is_active_leaf=True,
-            )
-        ],
-        active_leaf_message_provider_id=f"{composed_session_id}:artifact",
-        ingest_flags=[BRAIN_METADATA_FRAGMENT_FLAG],
-    )
-
-
 def parse_markdown_export(
     markdown: str,
     summary: AntigravitySessionSummary,
@@ -321,28 +353,36 @@ def parse_markdown_export(
 def iter_language_server_exports(
     root: Path,
     *,
-    client: AntigravityLanguageServerClient | None = None,
+    client: _AntigravityLanguageServerExportClient | None = None,
     only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[ParsedSession]:
-    """Export real conversation trajectories under ``conversations/``.
+    """Yield successful conversions, preserving the historical strict API."""
+    outcomes = iter_language_server_export_results(root, client=client, only_cascade_ids=only_cascade_ids)
+    expected = len(_conversation_pb_paths(root))
+    if only_cascade_ids is not None:
+        expected = sum(1 for path in _conversation_pb_paths(root) if path.stem in only_cascade_ids)
+    for obtained, outcome in enumerate(outcomes):
+        if not outcome.obtained:
+            raise AntigravityPartialExportError(
+                f"Antigravity export failed for cascade {outcome.cascade_id}: {outcome.error}",
+                obtained=obtained,
+                expected=expected,
+            )
+        assert outcome.session is not None
+        yield outcome.session
 
-    Ground truth for *which* cascades exist is the ``conversations/*.pb``
-    file listing, not ``SearchConversations`` -- the search/list RPCs only
-    surface a small recently-tracked subset (10 of 44 real conversations on
-    the reference archive, verified empirically), while
-    ``ConvertTrajectoryToMarkdown`` and ``GetCascadeTrajectory`` happily
-    serve any cascade id whose ``.pb`` file is still on disk regardless of
-    whether the language server's live index currently tracks it
-    (polylogue-eo81). Search results are still consulted to enrich title /
-    workspace / snippet metadata for the cascades that *are* indexed.
 
-    ``only_cascade_ids``, when given, restricts export to that subset of
-    cascade ids (matched against each ``.pb`` file's stem). Used by the
-    daemon's periodic reconciliation loop (``polylogue-3m3de``) to convert
-    only cascades not yet acquired into ``raw_sessions``, instead of paying
-    the language-server subprocess + markdown-conversion cost for the whole
-    corpus on every tick. ``None`` (the default) exports every cascade,
-    preserving the original behavior for the one-shot batch importer.
+def iter_language_server_export_results(
+    root: Path,
+    *,
+    client: _AntigravityLanguageServerExportClient | None = None,
+    only_cascade_ids: frozenset[str] | None = None,
+) -> Iterable[AntigravityExportOutcome]:
+    """Yield one typed outcome for every manifested conversation protobuf.
+
+    Conversion failures are isolated to their item so a poison trajectory
+    cannot suppress unrelated progress. Startup and handshake failures remain
+    raised because they invalidate the complete source route.
     """
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
@@ -354,33 +394,48 @@ def iter_language_server_exports(
             pb_paths = [pb_path for pb_path in pb_paths if pb_path.stem in only_cascade_ids]
         if not pb_paths:
             return
-        try:
+        summaries_by_id = {}
+        with suppress(AntigravityExportError):
             summaries_by_id = {summary.cascade_id: summary for summary in runtime_client.search_sessions()}
-        except AntigravityExportError:
-            summaries_by_id = {}
-        expected = len(pb_paths)
-        for obtained, pb_path in enumerate(pb_paths):
+        seen_ids: set[str] = set()
+        for pb_path in pb_paths:
             cascade_id = pb_path.stem
-            summary = summaries_by_id.get(cascade_id) or AntigravitySessionSummary(
-                cascade_id=cascade_id,
-                last_modified_time=_iso_mtime(pb_path),
-            )
+            if cascade_id in seen_ids:
+                yield AntigravityExportOutcome(
+                    pb_path,
+                    cascade_id,
+                    error="duplicate conversation identity",
+                    converter=getattr(runtime_client, "server_info", None),
+                )
+                continue
+            seen_ids.add(cascade_id)
             try:
+                before = _file_digest(pb_path)
+                summary = summaries_by_id.get(cascade_id) or AntigravitySessionSummary(
+                    cascade_id=cascade_id,
+                    last_modified_time=_iso_mtime(pb_path),
+                )
                 markdown = runtime_client.export_markdown(cascade_id)
-            except AntigravityExportError as exc:
-                # A mid-iteration export failure would otherwise abort the
-                # generator after yielding only the sessions seen so far,
-                # silently dropping the remainder. Surface obtained-vs-expected
-                # so the caller can distinguish partial loss from a benign
-                # binary-absent fallback. ``obtained`` is the number already
-                # yielded (the index of the failing cascade).
-                raise AntigravityPartialExportError(
-                    f"Antigravity export aborted on cascade {cascade_id}: {exc}",
-                    obtained=obtained,
-                    expected=expected,
-                ) from exc
+                session = parse_markdown_export_payload(markdown_export_payload(summary, markdown), cascade_id)
+                if not session.messages or not any((message.text or "").strip() for message in session.messages):
+                    raise AntigravityExportError("language server returned an empty or partial conversation export")
+                after = _file_digest(pb_path)
+                if before != after:
+                    raise AntigravityExportError("conversation protobuf changed during conversion")
+            except Exception as exc:
+                yield AntigravityExportOutcome(
+                    pb_path,
+                    cascade_id,
+                    error=str(exc),
+                    converter=getattr(runtime_client, "server_info", None),
+                )
             else:
-                yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), cascade_id)
+                yield AntigravityExportOutcome(
+                    pb_path,
+                    cascade_id,
+                    session=session,
+                    converter=getattr(runtime_client, "server_info", None),
+                )
     finally:
         if owned_client:
             runtime_client.close()
@@ -392,6 +447,14 @@ def _conversation_pb_paths(root: Path) -> list[Path]:
     if not conversations_dir.is_dir():
         return []
     return sorted(conversations_dir.glob("*.pb"))
+
+
+def _file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def _iso_mtime(path: Path) -> str | None:
@@ -421,6 +484,42 @@ def discover_language_server() -> Path | None:
         )
     )
     return candidates[-1] if candidates else None
+
+
+def _discover_language_server_version(binary: Path) -> str:
+    """Read the vendor binary version before using its HTTP conversion API."""
+
+    def compatible(version: str) -> str:
+        if version.split(".", 1)[0] not in {"1", "2"}:
+            raise AntigravityExportError(
+                f"incompatible Antigravity language server version {version}; expected vendor 1.x or 2.x"
+            )
+        return version
+
+    configured = os.environ.get("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER_VERSION")
+    if configured and configured.strip():
+        return compatible(configured.strip())
+    for flag in ("--version", "-version"):
+        try:
+            completed = subprocess.run(
+                [str(binary), flag],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=3.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AntigravityExportError(f"could not handshake with language server {binary}: {exc}") from exc
+        output = completed.stdout.decode("utf-8", errors="replace").strip()
+        match = re.search(r"\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b", output)
+        if match:
+            return compatible(match.group(0))
+    for candidate in (binary, binary.resolve()):
+        package_match = re.search(r"antigravity-(\d+\.\d+\.\d+)", str(candidate))
+        if package_match:
+            return compatible(package_match.group(1))
+    raise AntigravityExportError(f"language server {binary} did not report a compatible version")
 
 
 def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessage]:
@@ -512,27 +611,6 @@ def _free_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _artifact_path_for_metadata(source_path: Path) -> Path:
-    raw = str(source_path)
-    if raw.endswith(_METADATA_SUFFIX):
-        return Path(raw[: -len(_METADATA_SUFFIX)])
-    return source_path
-
-
-def _title_for_artifact(artifact_path: Path, payload: JSONDocument, fallback_id: str) -> str:
-    if summary := _string(payload.get("summary")):
-        return summary[:120]
-    return artifact_path.stem.replace("_", " ").replace("-", " ").strip().title() or fallback_id
-
-
-def _read_text(path: Path) -> str | None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    return text if text else None
-
-
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -543,14 +621,17 @@ __all__ = [
     "AntigravityExportError",
     "AntigravityLanguageServerClient",
     "AntigravityPartialExportError",
-    "BRAIN_METADATA_FRAGMENT_FLAG",
+    "AntigravityExportOutcome",
+    "AntigravityLanguageServerInfo",
+    "AntigravitySourceClassification",
+    "AntigravitySourceRole",
+    "classify_source_path",
     "conversation_pb_paths",
     "discover_language_server",
     "iter_language_server_exports",
-    "looks_like_brain_metadata",
     "looks_like_markdown_export",
     "markdown_export_payload",
-    "parse_brain_metadata",
+    "iter_language_server_export_results",
     "parse_markdown_export",
     "parse_markdown_export_payload",
 ]

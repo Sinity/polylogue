@@ -3170,9 +3170,6 @@ async def _run_daemon_services_under_active_writer_lease(
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
         if not watcher_blocked:
-            from polylogue.daemon.antigravity_conversation_acquisition import (
-                periodic_antigravity_conversation_acquisition_check,
-            )
             from polylogue.daemon.blob_gc_periodic import (
                 periodic_blob_gc_check,
                 periodic_blob_publication_reconciliation_check,
@@ -3226,7 +3223,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_publication_reconciliation_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
-                periodic_antigravity_conversation_acquisition_check(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
@@ -3602,6 +3598,9 @@ def _start_server_task(
 @click.group(help="Run long-lived Polylogue local services.")
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
 def main() -> None:
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogued")
     pass
 
 
@@ -3891,11 +3890,8 @@ def run_command(
         roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
     if parameter_is_default("debounce_s"):
         debounce_s = cfg.watch_debounce_s
-    if parameter_is_default("host"):
-        if cfg.layer_of("browser_capture_host") != "default":
-            host = cfg.browser_capture_host
-        elif cfg.layer_of("daemon_host") != "default":
-            host = cfg.daemon_host
+    if parameter_is_default("host") and cfg.layer_of("browser_capture_host") != "default":
+        host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
         port = cfg.browser_capture_port
     if parameter_is_default("spool_path") and cfg.browser_capture_spool_path:
@@ -3910,16 +3906,10 @@ def run_command(
         browser_capture_origins = tuple(
             origin.strip() for origin in cfg.browser_capture_allowed_origins.split(",") if origin.strip()
         )
-    if parameter_is_default("api_host"):
-        if cfg.layer_of("api_host") != "default":
-            api_host = cfg.api_host
-        elif cfg.layer_of("daemon_host") != "default":
-            api_host = cfg.daemon_host
-    if parameter_is_default("api_port"):
-        if cfg.layer_of("api_port") != "default":
-            api_port = cfg.api_port
-        elif cfg.layer_of("daemon_port") != "default":
-            api_port = cfg.daemon_port
+    if parameter_is_default("api_host") and cfg.layer_of("api_host") != "default":
+        api_host = cfg.api_host
+    if parameter_is_default("api_port") and cfg.layer_of("api_port") != "default":
+        api_port = cfg.api_port
     if parameter_is_default("api_auth_token") and cfg.api_auth_token:
         api_auth_token = cfg.api_auth_token
     if parameter_is_default("api_allow_no_auth"):
