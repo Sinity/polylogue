@@ -47,7 +47,7 @@ def test_unavailable_language_server_never_promotes_brain_sidecars_to_sessions(
         raise AntigravityBinaryUnavailableError("test language server unavailable")
 
     monkeypatch.setattr(
-        "polylogue.sources.source_parsing.antigravity.iter_language_server_exports",
+        "polylogue.sources.source_parsing.antigravity.iter_language_server_export_results",
         unavailable_export,
     )
     caplog.set_level(logging.WARNING, logger="polylogue.sources.source_parsing")

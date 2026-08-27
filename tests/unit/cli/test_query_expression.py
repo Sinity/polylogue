@@ -5408,6 +5408,14 @@ class TestBooleanQueryExpression:
 
         assert ast.boolean_predicate == QueryLineagePredicate(seed_session_id="chatgpt-export:ext-root")
 
+    def test_logical_predicate_has_terminal_priority_and_composes_in_boolean_trees(self) -> None:
+        ast = parse_expression_ast("sessions where title:hit AND logical:chatgpt-export:ext-root")
+
+        assert isinstance(ast.boolean_predicate, QueryBoolPredicate)
+        logical = ast.boolean_predicate.children[1]
+        assert logical == QueryLineagePredicate(seed_session_id="chatgpt-export:ext-root", logical=True)
+        assert logical.to_payload()["kind"] == "logical"
+
     def test_lineage_predicate_executes_against_archive(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from tests.infra.storage_records import SessionBuilder

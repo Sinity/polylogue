@@ -218,6 +218,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify webui",
+        "verification",
+        "Run the declared typed WebUI generation, contract, unit, and build checks.",
+        "devtools.verify_webui",
+        use_when=(
+            "Validate the typed WebUI through its package-owned checks after changing browser components, "
+            "generated contracts, design tokens, or Vite packaging."
+        ),
+        examples=("devtools verify webui", "devtools verify webui --json"),
+    ),
+    CommandSpec(
         "verify ci-commands",
         "verification",
         "Validate devtools invocations in structured CI run fields.",

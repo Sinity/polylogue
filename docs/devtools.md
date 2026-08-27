@@ -117,6 +117,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools verify semantic-fidelity` | Run the bounded production-route semantic contradiction and construct-flow census. |
 | `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
+| `devtools verify webui` | Run the declared typed WebUI generation, contract, unit, and build checks. |
 | `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools workspace schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools workspace schema explain` | Explain a committed package element schema with evidence and annotations. |
