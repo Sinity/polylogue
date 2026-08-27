@@ -7,20 +7,22 @@
 
 set -euo pipefail
 
+WORKTREE_ROOT=$(git rev-parse --show-toplevel)
+VENV_PYTHON="$WORKTREE_ROOT/.venv/bin/python"
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "pre-push: incomplete worktree venv: missing executable $VENV_PYTHON" >&2
+    exit 2
+fi
+
 UPDATES_FILE=$(mktemp)
 trap 'rm -f "$UPDATES_FILE"' EXIT
 cat >"$UPDATES_FILE"
 
-# Use the interpreter belonging to the worktree being pushed. A bare `python`
-# resolves through PATH, which in a linked worktree is either another
-# checkout's virtualenv or one without this project's dependencies.
-ROOT=$(git rev-parse --show-toplevel)
-PYTHON="$ROOT/.venv/bin/python"
-[ -x "$PYTHON" ] || PYTHON=python
-
-if ! "$PYTHON" -m devtools --help >/dev/null 2>&1; then
-    echo "pre-push: checkout-local devtools is not importable via $PYTHON; enter the project devshell (nix develop) first." >&2
+# A lane gates against its own environment: a missing venv is a failure,
+# not a reason to fall back to another interpreter on PATH.
+if ! "$VENV_PYTHON" -m devtools --help >/dev/null 2>&1; then
+    echo "pre-push: incomplete worktree venv: checkout-local devtools is not importable from $VENV_PYTHON" >&2
     exit 2
 fi
 
-"$PYTHON" -m devtools.pre_push_gate "$UPDATES_FILE"
+"$VENV_PYTHON" -m devtools.pre_push_gate "$UPDATES_FILE"

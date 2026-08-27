@@ -31,8 +31,47 @@ def test_quick_steps_are_static_gates() -> None:
     assert not any(label.startswith("pytest") for label in labels)
 
 
+def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
+    steps = verify.build_verify_steps(quick=True)
+    commands = dict(steps)
+
+    assert commands["ruff format"][0] == str(verify.ROOT / ".venv/bin/ruff")
+    assert commands["ruff check"][0] == str(verify.ROOT / ".venv/bin/ruff")
+    assert commands["mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
+    assert commands["render all"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["schema privacy registry"][0] == str(verify.ROOT / ".venv/bin/python")
+
+
+def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(
+        verify, "build_verify_steps", lambda **_kwargs: [("ruff check", [str(tmp_path / ".venv/bin/ruff")])]
+    )
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    assert verify._main(["--quick"]) == 127
+    assert history["diagnosis"] == "gate_missing_executable"
+    assert history["steps"][0]["required_gate"]["executable"] == str(tmp_path / ".venv/bin/ruff")
+
+
+def test_broken_venv_script_shebang_is_typed_as_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    script = tmp_path / ".venv/bin/mypy"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/missing/interpreter\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    result = required_gate.executable_gate_result([str(script)], gate="mypy")
+
+    assert result.diagnosis == "gate_missing_executable"
+
+
 def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
+    dmypy = str(verify.ROOT / ".venv/bin/dmypy")
 
     def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
         calls.append(command)
@@ -40,10 +79,10 @@ def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytes
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert verify._mypy_cmd() == ["dmypy", "run", "--", "--no-error-summary"]
+    assert verify._mypy_cmd() == [dmypy, "run", "--", "--no-error-summary"]
     assert calls == [
-        ["dmypy", "status"],
-        ["dmypy", "start", "--", "--no-error-summary"],
+        [dmypy, "status"],
+        [dmypy, "start", f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
     ]
 
 

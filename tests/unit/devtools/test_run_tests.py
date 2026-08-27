@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,7 +42,7 @@ def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
     assert cmd[:5] == [
-        sys.executable,
+        str(run_tests.ROOT / ".venv/bin/python"),
         "-m",
         "pytest",
         "-p",
