@@ -32,6 +32,7 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from types import TracebackType
 from typing import Any
 from unittest.mock import patch
 
@@ -96,14 +97,19 @@ class _ConnectionProxy:
         self._connection.__enter__()
         return self
 
-    def __exit__(self, *args: object) -> Any:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Any:
         # ``with sqlite3.connect(...)`` commits inside the native connection's
         # ``__exit__`` rather than calling its public ``commit`` method.
         # Count that boundary too, or context-managed writes would create a
         # silent hole in the harness.
-        if args[0] is None:
+        if exc_type is None:
             self._registry._hit(DurabilityFaultPoint.COMMIT)
-        return self._connection.__exit__(*args)
+        return self._connection.__exit__(exc_type, exc, traceback)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
@@ -177,27 +183,22 @@ class DurabilityFaultRegistry:
         def connect(*args: Any, **kwargs: Any) -> _ConnectionProxy:
             return _ConnectionProxy(original_connect(*args, **kwargs), self)
 
+        def fsync(fd: int) -> None:
+            self._hit(DurabilityFaultPoint.FSYNC)
+            return _real_fsync(fd)
+
+        def replace(src: Any, dst: Any) -> None:
+            self._hit(DurabilityFaultPoint.REPLACE)
+            return _real_replace(src, dst)
+
+        def unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+            self._hit(DurabilityFaultPoint.UNLINK)
+            return _real_unlink(path, *args, **kwargs)
+
         with ExitStack() as stack:
-            stack.enter_context(
-                patch.object(os, "fsync", lambda fd: (self._hit(DurabilityFaultPoint.FSYNC), _real_fsync(fd))[1])
-            )
-            stack.enter_context(
-                patch.object(
-                    os,
-                    "replace",
-                    lambda src, dst: (self._hit(DurabilityFaultPoint.REPLACE), _real_replace(src, dst))[1],
-                )
-            )
-            stack.enter_context(
-                patch.object(
-                    os,
-                    "unlink",
-                    lambda path, *args, **kwargs: (
-                        self._hit(DurabilityFaultPoint.UNLINK),
-                        _real_unlink(path, *args, **kwargs),
-                    )[1],
-                )
-            )
+            stack.enter_context(patch.object(os, "fsync", fsync))
+            stack.enter_context(patch.object(os, "replace", replace))
+            stack.enter_context(patch.object(os, "unlink", unlink))
             stack.enter_context(patch.object(sqlite3, "connect", connect))
             yield self
 

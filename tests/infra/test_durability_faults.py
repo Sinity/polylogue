@@ -9,11 +9,14 @@ import pytest
 
 from tests.infra.durability_faults import (
     DurabilityFaultPoint,
+    DurabilityFaultRegistry,
     InjectedCrash,
 )
 
 
-def test_registry_reaches_direct_and_pathlib_filesystem_boundaries(tmp_path: Path, durability_faults) -> None:
+def test_registry_reaches_direct_and_pathlib_filesystem_boundaries(
+    tmp_path: Path, durability_faults: DurabilityFaultRegistry
+) -> None:
     """The fixture observes the calls users actually make, including Path.unlink."""
     target = tmp_path / "payload"
     target.write_bytes(b"payload")
@@ -27,7 +30,9 @@ def test_registry_reaches_direct_and_pathlib_filesystem_boundaries(tmp_path: Pat
     assert target.exists()
 
 
-def test_registry_wraps_sqlite_commit_without_replacing_connection_semantics(tmp_path: Path, durability_faults) -> None:
+def test_registry_wraps_sqlite_commit_without_replacing_connection_semantics(
+    tmp_path: Path, durability_faults: DurabilityFaultRegistry
+) -> None:
     """A commit fault is injected at the connection method, not SQL text."""
     database = tmp_path / "tier.db"
     durability_faults.arm(DurabilityFaultPoint.COMMIT)
@@ -40,7 +45,7 @@ def test_registry_wraps_sqlite_commit_without_replacing_connection_semantics(tmp
     assert durability_faults.count(DurabilityFaultPoint.COMMIT) == 1
 
 
-def test_run_requires_reaching_the_selected_point_and_runs_recovery(durability_faults) -> None:
+def test_run_requires_reaching_the_selected_point_and_runs_recovery(durability_faults: DurabilityFaultRegistry) -> None:
     recovered: list[str] = []
     checked: list[str] = []
 
@@ -57,7 +62,7 @@ def test_run_requires_reaching_the_selected_point_and_runs_recovery(durability_f
     assert result.events == (result.events[0],)
 
 
-def test_run_rejects_a_vacuous_operation(durability_faults) -> None:
+def test_run_rejects_a_vacuous_operation(durability_faults: DurabilityFaultRegistry) -> None:
     with pytest.raises(AssertionError, match="was not reached"):
         durability_faults.run(
             DurabilityFaultPoint.REPLACE,
