@@ -328,21 +328,6 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
 
-def test_revision_reparse_preserves_beads_workspace_identity(tmp_path: Path) -> None:
-    """Replay must retain the same workspace-scoped native ID as ingest."""
-    source_path = tmp_path / "workspace" / ".beads" / "interactions.jsonl"
-    payload = (
-        b'{"id":"event-1","kind":"closed","created_at":"2026-07-12T00:00:00Z",'
-        b'"issue_id":"polylogue-7fj","actor":"agent","extra":{}}\n'
-    )
-
-    sessions = _parse_one(Provider.BEADS, payload, str(source_path))
-
-    assert len(sessions) == 1
-    assert sessions[0].provider_session_id.startswith("polylogue-7fj@workspace-")
-    assert sessions[0].working_directories == [str(source_path.parent.parent.resolve())]
-
-
 def _single_session_state_db_bytes(tmp_path: Path) -> bytes:
     db_path = tmp_path / "state-source.db"
     with sqlite3.connect(db_path) as conn:
@@ -2876,45 +2861,6 @@ def test_parse_retained_raws_dedupes_identical_blob_across_paths_for_safe_provid
     assert dup3_kind == RawRevisionKind.FULL
     _sessions, other_path_size, other_path_kind = results["other-path"]  # type: ignore[misc]
     assert (other_path_size, other_path_kind) == (10, RawRevisionKind.FULL)
-
-
-def test_parse_retained_raws_preserves_path_scoped_dedup_for_path_dependent_providers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """polylogue-869u: Beads derives workspace-scoped native ids from
-    ``source_path`` (``sources/parsers/beads.py:_repository_root``), so
-    byte-identical Beads rows at DIFFERENT paths must keep parsing
-    separately -- unlike the path-independent providers, cross-path
-    identity is not provably safe here."""
-    descriptors = {
-        "same-path-a": (Provider.BEADS, "hash-A", "workspace-one/issues.jsonl", RawRevisionKind.FULL, 10),
-        "same-path-b": (Provider.BEADS, "hash-A", "workspace-one/issues.jsonl", RawRevisionKind.FULL, 10),
-        "other-path": (Provider.BEADS, "hash-A", "workspace-two/issues.jsonl", RawRevisionKind.FULL, 10),
-    }
-
-    class FakeArchive:
-        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
-            return descriptors[raw_id]
-
-    parsed: list[str] = []
-
-    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
-        parsed.append(raw_id)
-        descriptor = descriptors[raw_id]
-        return [], descriptor[4], descriptor[3]
-
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
-
-    results = revision_backfill._parse_retained_raws(
-        FakeArchive(),  # type: ignore[arg-type]
-        list(descriptors),
-        ingest_workers=1,
-    )
-
-    # same-path-b reuses same-path-a's outcome; other-path (different
-    # source_path, same bytes) still pays its own parse.
-    assert parsed == ["same-path-a", "other-path"]
-    assert set(results) == set(descriptors)
 
 
 def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: pytest.MonkeyPatch) -> None:

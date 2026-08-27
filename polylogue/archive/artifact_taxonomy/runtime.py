@@ -432,14 +432,14 @@ def _classify_list(
             reason="hook event stream",
         )
 
-    if provider is Provider.BEADS and dict_items and all(looks_like_beads_interaction(item) for item in dict_items):
+    if dict_items and all(looks_like_beads_interaction(item) for item in dict_items):
         return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.SESSION_RECORD_STREAM,
-            parse_as_session=True,
+            provider=Provider.UNKNOWN,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
             schema_eligible=False,
-            default_priority=120,
-            reason="Beads interaction-history stream",
+            default_priority=0,
+            reason="Beads interaction-history artifact, not a session stream",
         )
 
     if provider is Provider.CODEX:
@@ -596,14 +596,14 @@ def _classify_dict(
                 reason="ChatGPT export codex.json Codex Cloud task",
             )
 
-    if provider is Provider.BEADS and looks_like_beads_interaction(payload):
+    if looks_like_beads_interaction(payload):
         return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.SESSION_RECORD_STREAM,
-            parse_as_session=True,
+            provider=Provider.UNKNOWN,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
             schema_eligible=False,
-            default_priority=120,
-            reason="Beads interaction-history record",
+            default_priority=0,
+            reason="Beads interaction-history artifact, not a session record",
         )
 
     if provider is Provider.GROK and looks_like_grok_export(payload):

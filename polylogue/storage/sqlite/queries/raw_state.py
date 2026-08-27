@@ -36,7 +36,6 @@ CASE {detected}
     WHEN 'gemini-cli' THEN 'gemini-cli-session'
     WHEN 'hermes' THEN 'hermes-session'
     WHEN 'antigravity' THEN 'antigravity-session'
-    WHEN 'beads' THEN 'beads-issue'
     WHEN 'grok' THEN 'grok-export'
     WHEN 'unknown' THEN 'unknown-export'
     ELSE {origin}

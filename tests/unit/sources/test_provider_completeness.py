@@ -109,9 +109,6 @@ def test_schema_subject_declaration_reaches_every_package_and_origin() -> None:
     )
     assert all(canonical_schema_provider(item.token) == item.token for item in SCHEMA_SUBJECTS)
     assert set(CORE_SCHEMA_ORIGINS) == {origin for item in SCHEMA_SUBJECTS for origin in item.origins}
-    beads = next(item for item in SCHEMA_SUBJECTS if item.token == "beads")
-    assert not beads.requires_package
-    assert beads.package_not_required_reason
     assert schema_subject_diagnostics() == ()
 
 

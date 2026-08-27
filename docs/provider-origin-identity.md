@@ -66,7 +66,7 @@ replace archive object identity.
 
 `polylogue/sources/origin_specs.py` is the one typed admission declaration for
 every current `Origin` token (`claude-code-session`, `codex-session`,
-`gemini-cli-session`, `hermes-session`, `antigravity-session`, `beads-issue`,
+`gemini-cli-session`, `hermes-session`, `antigravity-session`,
 `grok-export`, `chatgpt-export`, `claude-ai-export`, `claude-design-session`,
 `aistudio-drive`, `unknown-export`): lifecycle (`executable` / `reserved` / `unsupported` /
 `compatibility-only`), acquisition modes, detector tightness, parser/stream-

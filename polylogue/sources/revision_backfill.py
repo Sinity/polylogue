@@ -2815,9 +2815,8 @@ def census_parse_worker(
 
 #: Providers whose parsed session identity is derived purely from payload
 #: bytes, never from ``source_path`` -- safe to dedup census parse ACROSS
-#: source paths sharing a ``blob_hash`` (polylogue-869u). Excluded
-#: deliberately: ``Provider.BEADS`` derives workspace-scoped native ids from
-#: ``source_path`` (``sources/parsers/beads.py:_repository_root``);
+#: source paths sharing a ``blob_hash`` (polylogue-869u). The
+#: ``source_path``-dependent providers remain excluded below.
 #: ``Provider.ANTIGRAVITY``'s brain-metadata mode derives its
 #: ``profile_root``/artifact path from ``source_path``
 #: (the retired Antigravity brain-metadata session route);

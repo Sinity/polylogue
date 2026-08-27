@@ -34,7 +34,6 @@ def test_origin_values_match_archive_issue_contract() -> None:
         "gemini-cli-session",
         "hermes-session",
         "antigravity-session",
-        "beads-issue",
         "grok-export",
         "chatgpt-export",
         "claude-ai-export",

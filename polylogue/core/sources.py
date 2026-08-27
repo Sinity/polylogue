@@ -136,11 +136,6 @@ _SOURCE_ANTIGRAVITY: Final[Source] = Source(
     runtime_root="~/.gemini/antigravity",
     originating_lab="google",
 )
-_SOURCE_BEADS: Final[Source] = Source(
-    family="beads-issue",
-    runtime_root=None,  # repository-local .beads workspaces, not one user-global root
-    originating_lab="beads",
-)
 _SOURCE_GROK: Final[Source] = Source(
     family="grok-export",
     runtime_root=None,
@@ -169,7 +164,6 @@ _PROVIDER_TO_SOURCE: Final[dict[Provider, Source]] = {
     Provider.GEMINI_CLI: _SOURCE_GEMINI_CLI,
     Provider.HERMES: _SOURCE_HERMES,
     Provider.ANTIGRAVITY: _SOURCE_ANTIGRAVITY,
-    Provider.BEADS: _SOURCE_BEADS,
     Provider.GROK: _SOURCE_GROK,
     Provider.DRIVE: _SOURCE_DRIVE,
     Provider.UNKNOWN: _SOURCE_UNKNOWN,
@@ -248,7 +242,6 @@ _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
     Provider.GEMINI_CLI: Origin.GEMINI_CLI_SESSION,
     Provider.HERMES: Origin.HERMES_SESSION,
     Provider.ANTIGRAVITY: Origin.ANTIGRAVITY_SESSION,
-    Provider.BEADS: Origin.BEADS_ISSUE,
     Provider.GROK: Origin.GROK_EXPORT,
     Provider.DRIVE: Origin.AISTUDIO_DRIVE,
     Provider.UNKNOWN: Origin.UNKNOWN_EXPORT,
@@ -267,7 +260,6 @@ _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
     Origin.GEMINI_CLI_SESSION: "google",
     Origin.AISTUDIO_DRIVE: "google",
     Origin.ANTIGRAVITY_SESSION: "google",
-    Origin.BEADS_ISSUE: "beads",
     Origin.HERMES_SESSION: "nous",
     Origin.GROK_EXPORT: "xai",
     Origin.UNKNOWN_EXPORT: "unknown",
@@ -313,7 +305,6 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
     Origin.GEMINI_CLI_SESSION: Provider.GEMINI_CLI,
     Origin.HERMES_SESSION: Provider.HERMES,
     Origin.ANTIGRAVITY_SESSION: Provider.ANTIGRAVITY,
-    Origin.BEADS_ISSUE: Provider.BEADS,
     Origin.GROK_EXPORT: Provider.GROK,
     Origin.CHATGPT_EXPORT: Provider.CHATGPT,
     Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
