@@ -103,6 +103,44 @@ def test_tier_init_counts_separate_page_copy_from_fresh_ddl(tmp_path: Path) -> N
     assert counts["index.prototype_hit"] == 1
 
 
+def test_all_six_tiers_reuse_immutable_prototypes(tmp_path: Path) -> None:
+    """Every cache-safe tier pays fresh DDL once, including OPS and embeddings."""
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    bootstrap.reset_archive_tier_init_counts()
+    bootstrap._TIER_PROTOTYPES.clear()
+    tiers = tuple(ArchiveTier)
+    try:
+        for index, tier in enumerate(tiers):
+            first = sqlite3.connect(tmp_path / f"first-{index}.db")
+            try:
+                if tier is ArchiveTier.EMBEDDINGS:
+                    loaded, error = try_load_sqlite_vec(first)
+                    if not loaded:
+                        pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+                bootstrap.initialize_archive_tier(first, tier)
+            finally:
+                first.close()
+
+            second = sqlite3.connect(tmp_path / f"second-{index}.db")
+            try:
+                if tier is ArchiveTier.EMBEDDINGS:
+                    loaded, error = try_load_sqlite_vec(second)
+                    if not loaded:
+                        pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+                bootstrap.initialize_archive_tier(second, tier)
+            finally:
+                second.close()
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
+
+    counts = bootstrap.archive_tier_init_counts()
+    for tier in tiers:
+        assert counts[f"{tier.value}.ddl_fresh"] == 1
+        assert counts[f"{tier.value}.prototype_hit"] == 1
+
+
 def test_tier_prototype_key_includes_rendered_ddl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A same-version DDL variant must not receive a prototype from older DDL.
 
