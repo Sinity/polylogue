@@ -304,6 +304,13 @@ def _pipeline_workload_receipt(
         "backpressure_ms",
         "cleanup_reclaimed_bytes",
     ]
+    metrics = _json_object_or_empty(_json_object_or_empty(summary.get("run_payload")).get("metrics"))
+    observed_self_mb = _json_float_or_none(metrics.get("peak_rss_self_mb"))
+    observed_children_mb = _json_float_or_none(metrics.get("peak_rss_children_mb"))
+    components_available = observed_self_mb is not None and observed_children_mb is not None
+    if not components_available:
+        unavailable.append("peak_rss_self_bytes")
+        unavailable.append("peak_rss_children_bytes")
     if observed_total_ms is None:
         unavailable.append("wall_ms")
     if observed_peak_rss_mb is None:
@@ -327,6 +334,16 @@ def _pipeline_workload_receipt(
                 wall_ms=observed_total_ms,
                 peak_rss_bytes=(
                     round(observed_peak_rss_mb * 1024 * 1024) if observed_peak_rss_mb is not None else None
+                ),
+                peak_rss_self_bytes=(
+                    round((observed_self_mb if observed_self_mb is not None else 0.0) * 1024 * 1024)
+                    if components_available
+                    else None
+                ),
+                peak_rss_children_bytes=(
+                    round((observed_children_mb if observed_children_mb is not None else 0.0) * 1024 * 1024)
+                    if components_available
+                    else None
                 ),
                 unavailable=tuple(unavailable),
             ),
