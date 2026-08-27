@@ -1066,7 +1066,7 @@ class SessionBuilder:
             created_at=now,
             updated_at=now,
             sort_key=_timestamp_sort_key(now),
-            content_hash=_content_hash(uuid4().hex),
+            content_hash=_content_hash(f"session-builder:{session_id}"),
         )
         self.messages: list[MessageRecord] = []
         self.attachments: list[AttachmentRecord] = []

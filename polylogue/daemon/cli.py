@@ -3598,6 +3598,9 @@ def _start_server_task(
 @click.group(help="Run long-lived Polylogue local services.")
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
 def main() -> None:
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogued")
     pass
 
 

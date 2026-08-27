@@ -110,6 +110,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
 | `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
 | `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
+| `devtools verify runtime` | Verify the CPython 3.14 free-threaded runtime and required native extensions. |
+| `devtools verify runtime-census` | Census production concurrency boundaries and classify every discovered item. |
 | `devtools verify scenario` | Run a named archive verification scenario. |
 | `devtools verify schema-audit` | Run committed provider schema package quality checks. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
@@ -131,6 +133,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
+| `devtools bench concurrency` | Run the managed bounded-compute scaling profile across representative workloads. |
 | `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
