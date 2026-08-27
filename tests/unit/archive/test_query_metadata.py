@@ -57,6 +57,31 @@ def test_terminal_query_completion_payloads_are_lightweight() -> None:
     assert field_candidate["source"] == "QUERY_UNIT_DESCRIPTORS"
 
 
+def test_terminal_fields_stage_is_a_validated_select_transform() -> None:
+    from polylogue.archive.query.expression import ExpressionCompileError, parse_unit_source_expression
+
+    source = parse_unit_source_expression(
+        "messages where session.repo:polylogue AND text:timeout | fields text, occurred_at, session.title, session.repo"
+    )
+    assert source is not None
+    assert source.selected_fields == ("text", "occurred_at", "session.title", "session.repo")
+    assert source.pipeline_stages[-1].to_payload() == {
+        "kind": "transform",
+        "name": "select",
+        "args": {"fields": "text,occurred_at,session.title,session.repo"},
+    }
+
+    with pytest.raises(ExpressionCompileError, match="supported fields"):
+        parse_unit_source_expression("messages where text:timeout | select text, unknown")
+
+
+def test_projected_row_is_dict_shaped_and_typed_default_remains_additive() -> None:
+    from polylogue.surfaces.payloads import QueryUnitProjectedRowPayload
+
+    row = QueryUnitProjectedRowPayload(root={"text": "timeout", "session.repo": "polylogue"})
+    assert row.model_dump() == {"text": "timeout", "session.repo": "polylogue"}
+
+
 def test_projection_unit_completion_payloads_are_lightweight() -> None:
     from polylogue.archive.query.completions import query_completion_payload
 

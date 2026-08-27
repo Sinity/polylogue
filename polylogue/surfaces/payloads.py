@@ -11,7 +11,16 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Literal, NotRequired, TypeAlias, TypeVar, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    RootModel,
+    create_model,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self, TypedDict
 
 from polylogue.archive.models import Message, Session, SessionSummary
@@ -3329,12 +3338,19 @@ QueryUnitRowPayload: TypeAlias = (
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
 
+class QueryUnitProjectedRowPayload(RootModel[dict[str, Any]]):
+    """Generic field-name keyed row emitted by an explicit query projection."""
+
+
+QueryUnitProjectedRows: TypeAlias = tuple[QueryUnitProjectedRowPayload, ...]
+
+
 _QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
     "items": {
         "additionalProperties": True,
         "properties": {
             "kind": {
-                "enum": ["session_scope", "sort", "limit", "offset", "group", "count"],
+                "enum": ["session_scope", "sort", "limit", "offset", "group", "count", "agg", "transform", "terminal"],
                 "type": "string",
             },
             "predicate": {"type": "object"},
@@ -3342,6 +3358,8 @@ _QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
             "value": {"type": "integer"},
             "field": {"type": "string"},
             "metric": {"enum": ["count"], "type": "string"},
+            "name": {"type": "string"},
+            "args": {"type": "object"},
         },
         "required": ["kind"],
         "type": "object",
@@ -3376,6 +3394,8 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitRowPayload, ...]
+    projected_items: QueryUnitProjectedRows = ()
+    """Requested field projections, kept additive to the typed ``items``."""
     pipeline: dict[str, object] | None = None
     """Typed source-to-result pipeline that shaped this terminal-unit page."""
     pipeline_stages: tuple[dict[str, object], ...] = Field(
@@ -3495,6 +3515,7 @@ def build_query_unit_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    projected_items: Sequence[QueryUnitProjectedRowPayload] = (),
     query_ref: str | None = None,
     result_ref: str | None = None,
     continuation: str | None = None,
@@ -3506,6 +3527,7 @@ def build_query_unit_envelope(
         unit=unit,
         query=query,
         items=items_tuple,
+        projected_items=tuple(projected_items),
         pipeline=dict(pipeline) if pipeline is not None else None,
         pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
         total=len(items_tuple),
@@ -4425,6 +4447,7 @@ __all__ = [
     "QueryUnitKind",
     "QueryUnitResultEnvelope",
     "QueryUnitRowPayload",
+    "QueryUnitProjectedRowPayload",
     "RunQueryRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",
