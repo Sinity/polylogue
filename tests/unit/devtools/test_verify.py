@@ -75,7 +75,7 @@ def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytes
 
     def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
         calls.append(command)
-        return SimpleNamespace(returncode=0, stdout="/realm/project/polylogue/.git\n")
+        return SimpleNamespace(returncode=1 if command[-1] == "status" else 0)
 
     monkeypatch.setattr(subprocess, "run", run)
 
@@ -335,7 +335,6 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     monkeypatch.setattr(
         "devtools.verify.subprocess.run", lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0)
     )
-    monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: b"")
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
     exit_code, _elapsed, metadata = verify._run("pytest native serial (affected)", ["pytest"], run=run)
