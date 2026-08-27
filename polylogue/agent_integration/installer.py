@@ -1333,12 +1333,20 @@ class AgentIntegrationManager:
         return payload
 
 
-def claude_session_start_payload() -> dict[str, object]:
+def claude_session_start_payload(*, reboot_from: str | None = None) -> dict[str, object]:
     """Return the supported Claude Code SessionStart JSON output."""
+    reboot = reboot_from or os.environ.get("POLYLOGUE_REBOOT_FROM")
+    context = read_agent_asset("standing-manual.md")
+    if reboot:
+        context += (
+            "\n\n## Reboot handoff\n"
+            f"Compile the ref-bearing continuation context for `{reboot}` before proceeding. "
+            "Expand any `<ref:action:...>` marker with `resolve_ref`; markers are evidence pointers, not transcript text.\n"
+        )
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": read_agent_asset("standing-manual.md"),
+            "additionalContext": context,
         }
     }
 
