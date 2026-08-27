@@ -12,6 +12,7 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
@@ -89,6 +90,70 @@ logger = get_logger(__name__)
 
 MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
 _SAFE_MEDIA_TYPE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+
+
+class _MissionControlArchivePayload(TypedDict):
+    status: str
+    session_id: str | None
+    ref: str | None
+
+
+class _MissionControlCostPayload(TypedDict):
+    status: str
+    total_usd: float | None
+    provenance: list[str]
+
+
+class _MissionControlAssertionsPayload(TypedDict):
+    status: str
+    items: list[dict[str, object]]
+
+
+class _MissionControlPayload(TypedDict):
+    status: str
+    archive: _MissionControlArchivePayload
+    cost: _MissionControlCostPayload
+    assertions: _MissionControlAssertionsPayload
+    reason: NotRequired[str]
+
+
+def mission_control_archive_facts(
+    archive_root: Path,
+    indexed_session_id: str,
+) -> tuple[_MissionControlCostPayload, _MissionControlAssertionsPayload] | None:
+    """Read cost and judged assertions for one canonical session.
+
+    Returns ``None`` when the archive cannot answer, so the caller degrades to
+    an explicit unknown instead of reporting a fabricated zero-cost success.
+    """
+    try:
+        from polylogue import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue.insights.archive import SessionCostInsightQuery
+
+        poly = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+        cost: _MissionControlCostPayload = {"status": "unknown", "total_usd": None, "provenance": []}
+        costs = run_coroutine_sync(
+            poly.list_session_cost_insights(SessionCostInsightQuery(session_id=indexed_session_id))
+        )
+        if costs:
+            estimate = costs[0].estimate
+            cost = {
+                "status": estimate.status if estimate.status != "unavailable" else "unknown",
+                "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
+                "provenance": list(estimate.provenance),
+            }
+        claims = run_coroutine_sync(
+            poly.list_assertion_claim_payloads(target_ref=f"session:{indexed_session_id}", limit=5)
+        )
+        assertions: _MissionControlAssertionsPayload = {
+            "status": "available",
+            "items": [claim.model_dump(mode="json") for claim in claims],
+        }
+    except Exception as exc:  # a read projection must degrade, never become success
+        logger.warning("browser_capture.mission_control_degraded", error=repr(exc))
+        return None
+    return cost, assertions
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -300,6 +365,15 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     archive_root=self.server.config.archive_root,
                 ),
             )
+            return
+        if parsed.path == "/v1/mission-control":
+            params = parse_qs(parsed.query)
+            provider = params.get("provider", [""])[0]
+            session_id = params.get("provider_session_id", [""])[0]
+            if not provider or not session_id:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "missing_provider_or_session")
+                return
+            self._mission_control(provider, session_id)
             return
         if parsed.path == "/v1/capture-health":
             self._capture_health_list()
@@ -891,6 +965,43 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 receiver_id=receiver_identity(self.server.config),
             ).model_dump(mode="json"),
         )
+
+    def _mission_control(self, provider: str, provider_session_id: str) -> None:
+        """Return the receiver-authoritative, read-only Layer 2 projection."""
+        state = existing_capture_state(
+            provider,
+            provider_session_id,
+            spool_path=self.server.config.spool_path,
+            archive_root=self.server.config.archive_root,
+        )
+        indexed_value = state.get("indexed_session_id")
+        indexed = indexed_value if isinstance(indexed_value, str) else None
+        archive_root = self.server.config.archive_root
+        projection: _MissionControlPayload = {
+            "status": "available" if indexed else "uncaptured",
+            "archive": {
+                "status": "available" if indexed else "uncaptured",
+                "session_id": indexed,
+                "ref": f"session:{indexed}" if indexed else None,
+            },
+            "cost": {"status": "unknown", "total_usd": None, "provenance": []},
+            "assertions": {"status": "unknown", "items": []},
+        }
+        if indexed and archive_root is None:
+            logger.warning(
+                "browser_capture.mission_control_degraded",
+                error="archive root is not configured",
+            )
+            projection["status"] = "unknown"
+            projection["reason"] = "archive_projection_unavailable"
+        elif indexed and archive_root is not None:
+            facts = mission_control_archive_facts(archive_root, indexed)
+            if facts is None:
+                projection["status"] = "unknown"
+                projection["reason"] = "archive_projection_unavailable"
+            else:
+                projection["cost"], projection["assertions"] = facts
+        self._send_json(HTTPStatus.OK, projection)
 
     def _capture_health_report(self) -> None:
         payload = self._read_json_body()
