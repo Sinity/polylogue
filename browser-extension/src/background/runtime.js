@@ -44,6 +44,7 @@ const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
 const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
+const ACCEPTED_MESSAGE_IDENTITIES_KEY = "polylogueAcceptedMessageIdentities";
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
 const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -2978,6 +2979,10 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const settings = await receiverSettings();
+  const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
+  const acceptedIdentity = state.provider && state.provider_session_id
+    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || null
+    : null;
 
   return {
     ok: true,
@@ -3008,8 +3013,9 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ambient,
     assertions: {
       selection_candidate_supported: true,
-      persistence_supported: false,
-      reason: "receiver_assertion_route_not_advertised",
+      persistence_supported: true,
+      accepted_identity: acceptedIdentity,
+      reason: "candidate_assertion_route",
     },
   };
 }
@@ -3129,6 +3135,35 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, ambient: settings });
       return;
     }
+    if (message.type === "polylogue.assertion.capture") {
+      const candidate = message.candidate;
+      if (!candidate || candidate.context_policy?.inject !== false) {
+        sendResponse({ ok: false, error: "assertion_candidate_policy_required" });
+        return;
+      }
+      if (!candidate.evidence_ref || !candidate.message_ref || !candidate.source_observation) {
+        sendResponse({ ok: false, error: "exact_message_evidence_required" });
+        return;
+      }
+      try {
+        await requirePairedTrustedReceiver();
+        const result = await postJson("/v1/assertion-candidates", {
+          body_text: candidate.body,
+          kind: candidate.kind,
+          evidence_refs: [candidate.evidence_ref],
+          target_ref: candidate.message_ref,
+          source_observation: candidate.source_observation,
+          author_ref: "user:browser-extension",
+          author_kind: "user",
+          idempotency_key: candidate.idempotency_key,
+          context_policy: { inject: false },
+        });
+        sendResponse({ ok: true, idempotent: result.status === "already_satisfied", candidate: result });
+      } catch (error) {
+        sendResponse({ ok: false, error: String(error?.message || error) });
+      }
+      return;
+    }
     if (message.type === "polylogue.configureReceiver") {
       const settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
@@ -3175,6 +3210,14 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // receiver into unauthenticated receiver traffic.
         if (sender.tab) await requirePairedTrustedReceiver();
         result = await postJson("/v1/browser-captures", envelope);
+        if (Array.isArray(result?.accepted_identities)) {
+          const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
+          const key = sessionKey(summary.provider, summary.providerSessionId);
+          const native = result.accepted_identities.find((item) => item?.fidelity === "native") || null;
+          await runtimeChrome.storage.local.set({
+            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: native },
+          });
+        }
       } catch (error) {
         if (isRetryableCaptureError(error)) {
           const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
