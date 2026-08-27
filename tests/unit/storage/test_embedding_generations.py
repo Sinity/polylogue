@@ -48,6 +48,33 @@ def test_three_replacements_retain_active_and_one_predecessor(tmp_path: Path) ->
     assert receipt.reclaimed_generation_ids
 
 
+def test_reclamation_resume_removes_only_planned_renamed_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = EmbeddingGenerationStore(tmp_path)
+    for number in range(2):
+        candidate = tmp_path / f"candidate-{number}.db"
+        _sqlite(candidate, str(number))
+        store.replace(candidate, owner_id=f"owner-{number}")
+
+    original_rmtree = __import__("shutil").rmtree
+
+    def fail_once(path: Path, *args: object, **kwargs: object) -> None:
+        monkeypatch.setattr("shutil.rmtree", original_rmtree)
+        raise OSError("simulated crash after rename-to-trash")
+
+    monkeypatch.setattr("polylogue.storage.embeddings.generations.shutil.rmtree", fail_once)
+    candidate = tmp_path / "candidate-2.db"
+    _sqlite(candidate, "2")
+    with pytest.raises(OSError, match="simulated crash"):
+        store.replace(candidate, owner_id="owner-2")
+    retired = list((tmp_path / ".embeddings-generations").glob("retired-gen-*"))
+    assert len(retired) == 1
+
+    ensure_embedding_lifecycle(tmp_path)
+    assert not list((tmp_path / ".embeddings-generations").glob("retired-gen-*"))
+
+
 def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path: Path) -> None:
     _sqlite(tmp_path / "embeddings.db", "legacy")
     candidate = tmp_path / "candidate.db"

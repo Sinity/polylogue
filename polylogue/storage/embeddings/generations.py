@@ -112,6 +112,7 @@ _GENERATIONS = ".embeddings-generations"
 _RECEIPTS = "retention-receipts"
 _MAX_RETAINED = 1
 _ID = re.compile(r"^gen-[0-9]+-[0-9a-f]{10}$")
+_RETIRED = re.compile(r"^retired-(gen-[0-9]+-[0-9a-f]{10})-[0-9a-f]{32}$")
 _OWNER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _REQUIRED_TABLES = {
     "message_embeddings",
@@ -550,6 +551,22 @@ class EmbeddingGenerationStore:
     def recover_interrupted(self) -> None:
         with self._lock():
             generations = self._generations()
+            receipts = self._validate_receipts(generations)
+            planned_reclaims: set[str] = set()
+            for _, path in receipts:
+                receipt = self._validate_receipt(path, generations)
+                planned_reclaims.update(receipt.eligible_generation_ids)
+                planned_reclaims.update(receipt.reclaimed_generation_ids)
+            for child in self.root.iterdir():
+                match = _RETIRED.fullmatch(child.name)
+                if not match:
+                    continue
+                if child.is_symlink() or not child.is_dir() or match.group(1) not in planned_reclaims:
+                    raise EmbeddingGenerationError(f"unbound retired embedding generation: {child}")
+                shutil.rmtree(child)
+            if planned_reclaims:
+                _fsync_dir(self.root)
+            generations = self._generations()
             active = self._active_generation(generations)
             for generation in generations:
                 if generation.state != EmbeddingGenerationState.PROMOTING.value:
@@ -782,13 +799,8 @@ class EmbeddingGenerationStore:
             current_inventory = tuple(sorted((g.generation_id, g.owner_id, g.state) for g in self._generations()))
             if current_inventory != planned_inventory:
                 raise EmbeddingGenerationError("embedding reclamation inventory changed; retry")
-            directory = self._metadata_path(generation.generation_id).parent
-            if directory.is_symlink() or not directory.is_dir() or not _under(self.root, directory):
-                raise EmbeddingGenerationError("embedding reclaim directory is unsafe")
-            shutil.rmtree(directory)
+            self._reclaim_generation(generation)
             reclaimed.append(generation.generation_id)
-        if reclaimed:
-            _fsync_dir(self.root)
         completed = EmbeddingPromotionReceipt(
             receipt.archive_root,
             receipt.archive_root_identity,
@@ -810,6 +822,18 @@ class EmbeddingGenerationStore:
 
     def _write_receipt(self, receipt: EmbeddingPromotionReceipt) -> None:
         _atomic_json(self.receipts / f"{receipt.promoted_generation_id}.json", asdict(receipt))
+
+    def _reclaim_generation(self, generation: EmbeddingGeneration) -> None:
+        """Move a planned generation out of the live namespace before unlinking."""
+        directory = self._metadata_path(generation.generation_id).parent
+        if directory.is_symlink() or not directory.is_dir() or not _under(self.root, directory):
+            raise EmbeddingGenerationError("embedding reclaim directory is unsafe")
+        trash = self.root / f"retired-{generation.generation_id}-{uuid.uuid4().hex}"
+        os.replace(directory, trash)
+        _fsync_dir(trash.parent)
+        _fsync_dir(self.root)
+        shutil.rmtree(trash)
+        _fsync_dir(self.root)
 
     def load_receipt(self, generation_id: str) -> EmbeddingPromotionReceipt:
         if not _ID.fullmatch(generation_id):
