@@ -1157,6 +1157,12 @@ def test_recovery_disposition_rejects_internally_inconsistent_target_outcomes() 
             "inconsistent",
             (RecoveryTargetDisposition("session:one", "applied", "retry-exact"),),
         )
+    with pytest.raises(ValueError, match="target outcomes"):
+        RecoveryDisposition(
+            "confirmed-partial",
+            "retry-exact",
+            "no target evidence",
+        )
     with pytest.raises(ValueError, match="unknown recovery must block an operator"):
         RecoveryDisposition("unknown", "retry-exact", "unknown cannot continue")
 
