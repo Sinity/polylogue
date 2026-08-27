@@ -1,15 +1,10 @@
-"""Member-level source continuity laws.
-
-This module deliberately contains no campaign state and no repair action.  It
-is a small value-oriented validator used by a coordinator to bind a source
-population, then classify the next observation without treating aggregate
-statistics as evidence of survival.
-"""
+"""Member-level source continuity checks used by source-authority coordinators."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -18,7 +13,7 @@ from pathlib import Path
 
 
 class SourceContinuityError(ValueError):
-    """A source declaration, manifest, or recheck is unsafe."""
+    """A source declaration, manifest, or continuity receipt is unsafe."""
 
 
 class SourceRole(StrEnum):
@@ -51,17 +46,14 @@ class SourceDeclaration:
     def __post_init__(self) -> None:
         if not self.source_id.strip():
             raise SourceContinuityError("source_id must be non-empty")
-        if (
-            self.role
-            in {
-                SourceRole.APPEND_JSONL,
-                SourceRole.REWRITE_JSONL,
-                SourceRole.MUTABLE_SQLITE,
-                SourceRole.SPOOL,
-                SourceRole.QUEUE,
-            }
-            and not self.mutable
-        ):
+        mutable_roles = {
+            SourceRole.APPEND_JSONL,
+            SourceRole.REWRITE_JSONL,
+            SourceRole.MUTABLE_SQLITE,
+            SourceRole.SPOOL,
+            SourceRole.QUEUE,
+        }
+        if self.role in mutable_roles and not self.mutable:
             raise SourceContinuityError(f"mutable source {self.source_id} must be marked mutable")
 
 
@@ -73,8 +65,13 @@ class MemberEvidence:
     content_sha256: str
     size: int
     logical_sha256: str | None = None
-    prefix_sha256: str | None = None
-    append_offset: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumptionReceipt:
+    content_sha256: str
+    sealed_generation: str
+    authenticated: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,13 +94,27 @@ class SourceManifest:
                     "content_sha256": m.content_sha256,
                     "size": m.size,
                     "logical_sha256": m.logical_sha256,
-                    "prefix_sha256": m.prefix_sha256,
-                    "append_offset": m.append_offset,
                 }
                 for m in self.members
             ],
             "manifest_sha256": self.manifest_sha256,
         }
+
+    def verify_integrity(self) -> None:
+        """Reject a changed baseline instead of accepting its replacement hash."""
+        payload = json.dumps(
+            {
+                "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in self.declarations],
+                "members": [
+                    (m.source_id, m.relative_path, m.identity, m.content_sha256, m.size, m.logical_sha256)
+                    for m in self.members
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        if hashlib.sha256(payload).hexdigest() != self.manifest_sha256:
+            raise SourceContinuityError("source manifest integrity check failed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,21 +138,23 @@ def canonical_source_declarations(
     exports: Iterable[Path] = (),
     live_sources: Iterable[Path] = (),
 ) -> tuple[SourceDeclaration, ...]:
-    """Build the sole typed source list; duplicate roots/IDs are rejected."""
+    """Assemble the single typed declaration for all source families."""
     rows = list(configured)
     if hook_primary is not None:
         rows.append(SourceDeclaration("hooks-primary", SourceRole.SPOOL, hook_primary, True))
-    rows.extend(SourceDeclaration(f"hooks-legacy-{n}", SourceRole.SPOOL, p, True) for n, p in enumerate(hook_legacy))
     rows.extend(
-        SourceDeclaration(f"restored-spool-{n}", SourceRole.SPOOL, p, True) for n, p in enumerate(restored_spools)
+        SourceDeclaration(f"hooks-legacy-{n}", SourceRole.SPOOL, path, True) for n, path in enumerate(hook_legacy)
+    )
+    rows.extend(
+        SourceDeclaration(f"restored-spool-{n}", SourceRole.SPOOL, path, True) for n, path in enumerate(restored_spools)
     )
     if browser_queue is not None:
         rows.append(SourceDeclaration("browser-queue", SourceRole.QUEUE, browser_queue, True))
     if attachments is not None:
         rows.append(SourceDeclaration("attachments", SourceRole.ATTACHMENT, attachments))
-    rows.extend(SourceDeclaration(f"export-{n}", SourceRole.IMMUTABLE_EXPORT, p) for n, p in enumerate(exports))
+    rows.extend(SourceDeclaration(f"export-{n}", SourceRole.IMMUTABLE_EXPORT, path) for n, path in enumerate(exports))
     rows.extend(
-        SourceDeclaration(f"live-source-{n}", SourceRole.DIRECTORY, p, True) for n, p in enumerate(live_sources)
+        SourceDeclaration(f"live-source-{n}", SourceRole.DIRECTORY, path, True) for n, path in enumerate(live_sources)
     )
     ids = [row.source_id for row in rows]
     roots = [Path(row.root).absolute() for row in rows]
@@ -159,46 +172,81 @@ def _real_root(root: Path) -> Path:
         info = root.lstat()
     except OSError as exc:
         raise SourceContinuityError(f"source root is unreadable: {root}") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise SourceContinuityError(f"source root is not a real directory: {root}")
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+        or not os.access(root, os.R_OK)
+    ):
+        raise SourceContinuityError(f"source root is unreadable or not a real directory: {root}")
     return root
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, *, limit: int | None = None) -> str:
     digest = hashlib.sha256()
+    remaining = limit
     try:
         with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            while remaining is None or remaining:
+                chunk = handle.read(1024 * 1024 if remaining is None else min(1024 * 1024, remaining))
+                if not chunk:
+                    break
                 digest.update(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
     except OSError as exc:
         raise SourceContinuityError(f"source member is unreadable: {path}") from exc
+    if remaining:
+        raise SourceContinuityError(f"source member was truncated while reading: {path}")
     return digest.hexdigest()
 
 
-def _members(declaration: SourceDeclaration) -> list[MemberEvidence]:
+def _members(declaration: SourceDeclaration, logical: Mapping[str, str] | None = None) -> list[MemberEvidence]:
     root = _real_root(Path(declaration.root))
+    if root.is_file():
+        paths = [root]
+        relative_paths = {root: root.name}
+    else:
+        try:
+            paths = sorted(root.rglob("*"))
+        except OSError as exc:
+            raise SourceContinuityError(f"source root is unreadable: {root}") from exc
+        relative_paths = {path: path.relative_to(root).as_posix() for path in paths}
     result: list[MemberEvidence] = []
-    try:
-        paths = sorted(path for path in root.rglob("*") if path.is_file())
-    except OSError as exc:
-        raise SourceContinuityError(f"source root is unreadable: {root}") from exc
+    identities: set[str] = set()
     for path in paths:
         try:
             info = path.lstat()
         except OSError as exc:
             raise SourceContinuityError(f"source member disappeared: {path}") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise SourceContinuityError(f"source member is a symlink: {path}")
-        relative = path.relative_to(root).as_posix()
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise SourceContinuityError(f"source member is not a regular file: {path}")
+        relative = relative_paths[path]
+        identity = f"dev:{info.st_dev}:ino:{info.st_ino}"
+        if identity in identities:
+            raise SourceContinuityError(f"source member identity collision: {declaration.source_id}:{relative}")
+        identities.add(identity)
         result.append(
             MemberEvidence(
-                declaration.source_id, relative, f"dev:{info.st_dev}:ino:{info.st_ino}", _sha256(path), info.st_size
+                declaration.source_id,
+                relative,
+                identity,
+                _sha256(path),
+                info.st_size,
+                None if logical is None else logical.get(relative),
             )
         )
+    if logical is not None and set(logical) != {member.relative_path for member in result}:
+        raise SourceContinuityError(f"logical snapshot does not match source members: {declaration.source_id}")
     return result
 
 
-def build_source_manifest(declarations: Iterable[SourceDeclaration]) -> SourceManifest:
+def build_source_manifest(
+    declarations: Iterable[SourceDeclaration],
+    *,
+    logical_snapshot: Callable[[SourceDeclaration], Mapping[str, str]] | None = None,
+) -> SourceManifest:
     declarations = tuple(declarations)
     if not declarations:
         raise SourceContinuityError("source declaration is empty")
@@ -206,24 +254,22 @@ def build_source_manifest(declarations: Iterable[SourceDeclaration]) -> SourceMa
         {Path(d.root).absolute() for d in declarations}
     ) != len(declarations):
         raise SourceContinuityError("source declaration contains duplicate IDs or roots")
-    members = tuple(member for declaration in declarations for member in _members(declaration))
-    member_rows = [
-        (
-            m.source_id,
-            m.relative_path,
-            m.identity,
-            m.content_sha256,
-            m.size,
-            m.logical_sha256,
-            m.prefix_sha256,
-            m.append_offset,
+    members = tuple(
+        member
+        for declaration in declarations
+        for member in _members(
+            declaration,
+            logical_snapshot(declaration)
+            if declaration.role is SourceRole.MUTABLE_SQLITE and logical_snapshot
+            else None,
         )
-        for m in members
-    ]
+    )
     payload = json.dumps(
         {
             "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in declarations],
-            "members": member_rows,
+            "members": [
+                (m.source_id, m.relative_path, m.identity, m.content_sha256, m.size, m.logical_sha256) for m in members
+            ],
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -234,60 +280,82 @@ def build_source_manifest(declarations: Iterable[SourceDeclaration]) -> SourceMa
 def recheck_source_manifest(
     baseline: SourceManifest,
     *,
-    consumed: Mapping[str, str] = {},
-    rotation: Mapping[str, str] = {},
+    consumed: Mapping[str, str] | None = None,
+    consumption_receipts: Mapping[str, ConsumptionReceipt] | None = None,
+    rotation: Mapping[str, str] | None = None,
     logical_snapshot: Callable[[SourceDeclaration], Mapping[str, str]] | None = None,
 ) -> ContinuityResult:
-    """Classify every baseline member; any unrecognised loss blocks."""
-    current = {m.source_id + ":" + m.relative_path: m for d in baseline.declarations for m in _members(d)}
+    """Classify every baseline member. Unrecognised loss blocks the result."""
+    baseline.verify_integrity()
+    consumed = consumed or {}
+    consumption_receipts = consumption_receipts or {}
+    rotation = rotation or {}
+    declarations = {d.source_id: d for d in baseline.declarations}
+    current: dict[str, MemberEvidence] = {}
+    for declaration in baseline.declarations:
+        logical = (
+            logical_snapshot(declaration)
+            if declaration.role is SourceRole.MUTABLE_SQLITE and logical_snapshot
+            else None
+        )
+        for member in _members(declaration, logical):
+            key = f"{member.source_id}:{member.relative_path}"
+            if key in current:
+                raise SourceContinuityError(f"duplicate current source member: {key}")
+            current[key] = member
     states: dict[str, MemberState] = {}
     blocked: list[str] = []
     for member in baseline.members:
-        key = member.source_id + ":" + member.relative_path
+        key = f"{member.source_id}:{member.relative_path}"
+        declaration = declarations[member.source_id]
         observed = current.get(key)
         if observed is None:
-            if key in consumed and consumed[key] == member.content_sha256:
+            receipt = consumption_receipts.get(key)
+            if (
+                receipt
+                and receipt.authenticated
+                and receipt.sealed_generation
+                and receipt.content_sha256 == member.content_sha256
+            ):
                 states[key] = MemberState.CONSUMED_AND_ACQUIRED
-            elif member.source_id in rotation and rotation[member.source_id] == member.identity:
+            elif consumed.get(key) == member.content_sha256:
+                states[key] = MemberState.BLOCKED
+                blocked.append(f"unauthenticated-consumption:{key}")
+            elif rotation.get(key, rotation.get(member.source_id)) == member.identity:
                 states[key] = MemberState.AUTHENTICATED_ROTATION
             else:
                 states[key] = MemberState.BLOCKED
                 blocked.append(f"missing:{key}")
-            continue
-        if observed.content_sha256 == member.content_sha256:
+        elif declaration.role is SourceRole.MUTABLE_SQLITE:
+            if member.logical_sha256 and observed.logical_sha256 == member.logical_sha256:
+                states[key] = MemberState.UNCHANGED
+            else:
+                states[key] = MemberState.BLOCKED
+                blocked.append(f"sqlite-logical-change:{key}")
+        elif observed.identity == member.identity and observed.content_sha256 == member.content_sha256:
             states[key] = MemberState.UNCHANGED
         elif (
-            observed.size >= member.size
-            and baseline.declarations[
-                next(i for i, d in enumerate(baseline.declarations) if d.source_id == member.source_id)
-            ].role
-            is SourceRole.APPEND_JSONL
+            declaration.role is SourceRole.APPEND_JSONL
+            and observed.size >= member.size
+            and _sha256(Path(declaration.root) / member.relative_path, limit=member.size) == member.content_sha256
         ):
             states[key] = MemberState.DECLARED_APPEND
-        elif (
-            baseline.declarations[
-                next(i for i, d in enumerate(baseline.declarations) if d.source_id == member.source_id)
-            ].role
-            is SourceRole.REWRITE_JSONL
-        ):
+        elif declaration.role is SourceRole.REWRITE_JSONL:
             states[key] = MemberState.DECLARED_REWRITE
         else:
             states[key] = MemberState.BLOCKED
             blocked.append(f"replacement:{key}")
-    if logical_snapshot is not None:
-        for declaration in baseline.declarations:
-            if declaration.role is SourceRole.MUTABLE_SQLITE:
-                try:
-                    logical_snapshot(declaration)
-                except Exception as exc:
-                    blocked.append(f"sqlite:{declaration.source_id}:{exc}")
     return ContinuityResult(states, tuple(blocked))
 
 
 def validate_backup_evidence(reference: Mapping[str, object], *, now_ms: int, max_age_ms: int) -> None:
-    """Require an authenticated, fresh external backup/runtime reference."""
-    if reference.get("authenticated") is not True or not isinstance(reference.get("reference"), str):
+    """Require a fresh external authentication reference; do not create one."""
+    if (
+        reference.get("authenticated") is not True
+        or not isinstance(reference.get("reference"), str)
+        or not reference["reference"]
+    ):
         raise SourceContinuityError("authenticated external backup evidence is required")
     observed = reference.get("observed_at_ms")
-    if not isinstance(observed, int) or observed < 0 or now_ms - observed > max_age_ms:
+    if not isinstance(observed, int) or observed < 0 or now_ms < observed or now_ms - observed > max_age_ms:
         raise SourceContinuityError("external backup evidence is stale")
