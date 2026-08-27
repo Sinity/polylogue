@@ -191,9 +191,9 @@ def _ddl_lifecycle_report() -> list[DDLLifecycleViolation]:
     versions: dict[str, tuple[int | None, int | None]] = {}
     ddl_lines: dict[str, tuple[set[int], set[int]]] = {}
     for filename, tier in _TIER_FILES.items():
-        path = ROOT / "polylogue" / "storage" / "sqlite" / "archive_tiers" / filename
+        tier_path = ROOT / "polylogue" / "storage" / "sqlite" / "archive_tiers" / filename
         try:
-            current = path.read_text(encoding="utf-8")
+            current = tier_path.read_text(encoding="utf-8")
             previous = _git_text("show", f"{base}:polylogue/storage/sqlite/archive_tiers/{filename}")
         except (OSError, subprocess.CalledProcessError):
             continue
@@ -240,25 +240,27 @@ def _ddl_lifecycle_report() -> list[DDLLifecycleViolation]:
     violations: list[DDLLifecycleViolation] = []
     for path, lines in changed.items():
         filename = path.rsplit("/", 1)[-1]
-        tier = _TIER_FILES.get(filename)
-        if tier is None:
+        changed_tier = _TIER_FILES.get(filename)
+        if changed_tier is None:
             continue
-        old_version, new_version = versions.get(tier, (None, None))
+        old_version, new_version = versions.get(changed_tier, (None, None))
         if old_version != new_version and new_version is not None:
-            if tier == "index" and not any(d.version == new_version and d.classes for d in INDEX_DELTA_DECLARATIONS):
+            if changed_tier == "index" and not any(
+                d.version == new_version and d.classes for d in INDEX_DELTA_DECLARATIONS
+            ):
                 violations.append(
-                    DDLLifecycleViolation(tier, path, f"v{new_version} has no DerivedDeltaClass declaration")
+                    DDLLifecycleViolation(changed_tier, path, f"v{new_version} has no DerivedDeltaClass declaration")
                 )
             continue
-        if path.startswith(f"polylogue/storage/sqlite/migrations/{tier}/") and path in added_migrations:
+        if path.startswith(f"polylogue/storage/sqlite/migrations/{changed_tier}/") and path in added_migrations:
             continue
-        if tier == "index" and any(_registry_covers_changed_line(line) for line in lines):
+        if changed_tier == "index" and any(_registry_covers_changed_line(line) for line in lines):
             continue
         if any(line.lstrip().startswith("#") and _WAIVER_RE.search(line) for line in lines):
             continue
         violations.append(
             DDLLifecycleViolation(
-                tier,
+                changed_tier,
                 path,
                 "DDL changed without a schema-version bump, added durable migration, "
                 "DerivedDeltaClass declaration, benign-DDL registry entry, or "
@@ -484,8 +486,8 @@ def _format_report(
     if benign_ddl_violations:
         lines.append("")
         lines.append("Invalid index benign-DDL registry entries:")
-        for violation in benign_ddl_violations:
-            lines.append(f"  {violation.entry_name}: {violation.reason}")
+        for benign_violation in benign_ddl_violations:
+            lines.append(f"  {benign_violation.entry_name}: {benign_violation.reason}")
         lines.append("")
         lines.append(
             "Policy violation: index-tier same-version convergence entries must be idempotent, "
@@ -495,8 +497,8 @@ def _format_report(
     if ddl_lifecycle_violations:
         lines.append("")
         lines.append("Undeclared tier DDL lifecycle changes:")
-        for violation in ddl_lifecycle_violations:
-            lines.append(f"  {violation.tier} ({violation.path}): {violation.reason}")
+        for lifecycle_violation in ddl_lifecycle_violations:
+            lines.append(f"  {lifecycle_violation.tier} ({lifecycle_violation.path}): {lifecycle_violation.reason}")
     if durable_reservations:
         lines.append("")
         lines.append("Durable change-train reservations:")
