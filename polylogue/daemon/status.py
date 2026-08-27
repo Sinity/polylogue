@@ -2327,7 +2327,7 @@ def _sinex_publication_status_info() -> dict[str, object]:
 
     mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
     source_db = ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path
-    return cast(dict[str, object], publication_status(source_db, mode).as_dict())
+    return publication_status(source_db, mode).as_dict()
 
 
 def _daemon_status_component_specs(
