@@ -1063,6 +1063,7 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
             checked_at=now,
             consecutive_failures=_record_failure("repeated_stage_failures", False),
         )
+
     try:
         conn = sqlite3.connect(str(dbf))
         try:
@@ -1107,6 +1108,57 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
             message=f"stage failure check failed: {exc}",
             checked_at=now,
             consecutive_failures=_record_failure("repeated_stage_failures", False),
+        )
+
+
+def _check_secret_scan_sweep_medium() -> HealthAlert:
+    """Report the latest archive-wide secret-scan sweep outcome."""
+    now = datetime.now(UTC).isoformat()
+    ops_db = archive_root() / "ops.db"
+    if not ops_db.exists():
+        return HealthAlert(
+            check_name="secret_scan_sweep",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.OK,
+            message="secret scan sweep has not run",
+            checked_at=now,
+            consecutive_failures=_record_failure("secret_scan_sweep", True),
+        )
+    try:
+        from polylogue.daemon.secret_scan_sweep import SECRET_SCAN_SWEEP_STAGE
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with open_readonly_connection(ops_db) as conn:
+            row = conn.execute(
+                "SELECT status FROM daemon_stage_events "
+                "WHERE stage = ? ORDER BY observed_at_ms DESC, rowid DESC LIMIT 1",
+                (SECRET_SCAN_SWEEP_STAGE,),
+            ).fetchone()
+        if row is None:
+            severity = HealthSeverity.OK
+            message = "secret scan sweep has not run"
+        elif str(row[0]) == "failed":
+            severity = HealthSeverity.ERROR
+            message = "secret scan sweep failed; retry is scheduled"
+        else:
+            severity = HealthSeverity.OK
+            message = "secret scan sweep completed"
+        return HealthAlert(
+            check_name="secret_scan_sweep",
+            tier=HealthTier.MEDIUM,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("secret_scan_sweep", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="secret_scan_sweep",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message=f"secret scan sweep status unavailable: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("secret_scan_sweep", False),
         )
 
 
@@ -1459,6 +1511,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
+        _check_secret_scan_sweep_medium(),
         *_check_archive_verification_domain_medium(),
         _check_schema_drift_medium(),
         *_check_convergence_debt_medium(),

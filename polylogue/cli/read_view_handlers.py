@@ -12,6 +12,7 @@ from polylogue.cli.read_view_registry import (
     CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
     CONTEXT_READ_VIEW_OPTION_NAMES,
     CORRELATION_READ_VIEW_OPTION_NAMES,
+    EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
     EVENTS_READ_VIEW_OPTION_NAMES,
     MESSAGE_READ_VIEW_OPTION_NAMES,
     NEIGHBOR_READ_VIEW_OPTION_NAMES,
@@ -37,6 +38,7 @@ from polylogue.cli.read_views.context import (
     run_read_context_image,
 )
 from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
+from polylogue.cli.read_views.effective_context import build_effective_context_options, run_read_effective_context
 from polylogue.cli.read_views.events import build_events_options, run_read_events
 from polylogue.cli.read_views.file_edits import run_read_agent_policies, run_read_file_edits
 from polylogue.cli.read_views.messages import (
@@ -106,6 +108,14 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="json",
         accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
         option_builder=build_events_options,
+    ),
+    "effective_context": ReadViewHandler(
+        "effective_context",
+        "required",
+        run_read_effective_context,
+        default_format="json",
+        accepted_options=EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
+        option_builder=build_effective_context_options,
     ),
     "file-edits": ReadViewHandler(
         "file-edits",

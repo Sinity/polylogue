@@ -1313,6 +1313,7 @@ class _SessionAccumulator:
     first_duplicate_index: int | None = None
     session_id: str | None = None
     session_events: list[ParsedSessionEvent] = field(default_factory=list)
+    previous_boundary_end: int = -1
     total_cost: float = 0.0
     total_duration: int = 0
     saw_cost_field: bool = False
@@ -1390,14 +1391,19 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             raw_timestamp if isinstance(raw_timestamp, str | int | float) else None
         )
         context_compaction = dict(compaction)
+        summary_text = str(context_compaction.get("summary") or "")
+        boundary_start = acc.previous_boundary_end + 1
+        boundary_end = acc.message_position - 1
         acc.session_events.append(
             ParsedSessionEvent(
                 event_type="compaction",
                 timestamp=compaction_timestamp,
                 payload=context_compaction,
+                boundary_start_position=boundary_start,
+                boundary_end_position=boundary_end,
+                boundary_message_position=acc.message_position if summary_text else None,
             )
         )
-        summary_text = str(context_compaction.get("summary") or "")
         acc.messages.append(
             ParsedMessage(
                 # polylogue-slshy: no positional fallback -- empty id lets
@@ -1414,6 +1420,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             )
         )
         acc.message_position += 1
+        acc.previous_boundary_end = boundary_end
         return
 
     micro_compaction = detect_micro_compaction(item)

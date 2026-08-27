@@ -825,6 +825,9 @@ SESSION_EVENTS_SPEC = _make_table_spec(
             f"""payload_json               TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")})""",
         ),
         _raw_column("occurred_at_ms", """occurred_at_ms             INTEGER"""),
+        _raw_column("boundary_start_position", """boundary_start_position  INTEGER"""),
+        _raw_column("boundary_end_position", """boundary_end_position    INTEGER"""),
+        _raw_column("boundary_message_id", """boundary_message_id      TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )

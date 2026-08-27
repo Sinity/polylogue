@@ -95,7 +95,7 @@ Executable forms projected from the declarations:
 | `scope_form` | `sessions where <predicate> \| <terminal-source> where <predicate>` |
 | `projection_form` | `<session-expression> with <unit>(<columns>)` |
 
-Terminal sources: `action / actions / assertion / assertions / block / blocks / context-snapshot / context-snapshots / delegation / delegations / file / files / message / messages / observed-event / observed-events / run / runs`.
+Terminal sources: `action / actions / assertion / assertions / block / blocks / context-snapshot / context-snapshots / delegation / delegations / file / files / message / messages / observed-event / observed-events / run / runs / tool-episode / tool-episodes`.
 Structural `exists` units: `action / assertion / block / context-snapshot / delegation / file / message / observed-event / run`.
 
 Result coverage and `total` must be read with the declared semantics:

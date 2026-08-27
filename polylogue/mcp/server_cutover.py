@@ -316,7 +316,7 @@ _PERSONAL_STATE_PROJECTIONS = frozenset(
 
 #: ``query(projection=..., ...)`` values that compile a distilled insight
 #: report over a matched session scope, rather than listing content units.
-_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions"})
+_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions", "tool-episodes"})
 
 
 def _saved_view_payload(row: dict[str, str]) -> Any:
@@ -573,6 +573,18 @@ async def _query_insight_projection(
     ``build_spec`` page-size default (10) would silently cap the matched scope
     to 10 sessions and defeat the facade's own 200-session analysis cap.
     """
+    if projection == "tool-episodes":
+        from polylogue.insights.tool_episodes import ToolEpisodeQuery
+
+        episodes = await hooks.get_polylogue().list_tool_episode_insights(
+            ToolEpisodeQuery(origin=origin, limit=hooks.clamp_limit(limit), offset=0)
+        )
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={"tool_episodes": [item.model_dump(mode="json") for item in episodes], "total": len(episodes)}
+            ),
+            exclude_none=True,
+        )
     from dataclasses import replace
 
     from polylogue.mcp.query_contracts import build_session_query_request
@@ -2224,6 +2236,56 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
     capabilities = mcp.capabilities  # type: ignore[attr-defined]
 
     if capabilities.write:
+
+        async def record_work_event(
+            session_id: str,
+            event_id: str,
+            event_type: Literal["tool_run", "subagent_spawn", "decision", "artifact_change"],
+            summary: str,
+            payload: dict[str, object] | None = None,
+            timestamp: str | None = None,
+        ) -> str:
+            """Record one typed event through the facade's archive ingest seam."""
+            from polylogue.coordination.work_events import validate_work_event_type
+
+            try:
+                validate_work_event_type(event_type)
+                result = await hooks.get_polylogue().record_work_event(
+                    session_id,
+                    event_id=event_id,
+                    event_type=event_type,
+                    summary=summary,
+                    payload=payload,
+                    timestamp=timestamp,
+                )
+            except (KeyError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
+            return hooks.json_payload(MCPRootPayload(root=result))
+
+        async def emit_decision(
+            session_id: str,
+            event_id: str,
+            decision: str,
+            summary: str,
+            evidence_refs: list[str] | None = None,
+            timestamp: str | None = None,
+        ) -> str:
+            """Record a decision using the shared work-event vocabulary."""
+            try:
+                result = await hooks.get_polylogue().emit_decision(
+                    session_id,
+                    event_id=event_id,
+                    decision=decision,
+                    summary=summary,
+                    evidence_refs=tuple(evidence_refs or ()),
+                    timestamp=timestamp,
+                )
+            except (KeyError, ValueError) as exc:
+                return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
+            return hooks.json_payload(MCPRootPayload(root=result))
+
+        register_declared_handler(mcp, record_work_event, name="record_work_event")
+        register_declared_handler(mcp, emit_decision, name="emit_decision")
 
         async def write(
             operation: Literal[

@@ -6317,6 +6317,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             stable_order="session_id",
         )
 
+    async def get_effective_context(
+        self,
+        session_id: str,
+        *,
+        at_position: int | None = None,
+    ) -> list[dict[str, object]] | None:
+        """Return the provider-effective context at a message position."""
+        resolved = await self.repository.resolve_id(session_id)
+        target = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(target)
+        if session is None:
+            return None
+        messages = await self.repository.get_effective_context(target, at_position)
+        return [message.model_dump(mode="json", exclude_none=True) for message in messages]
+
     async def get_session_events(
         self,
         session_id: str,
@@ -6367,6 +6382,49 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             }
             for event in events
         ]
+
+    async def record_work_event(
+        self,
+        session_id: str,
+        *,
+        event_id: str,
+        event_type: str,
+        summary: str,
+        payload: dict[str, object] | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Record one typed live-agent event through the archive writer."""
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
+            return archive.append_work_event(
+                session_id=session_id,
+                event_type=event_type,
+                payload=dict(payload or {}),
+                event_id=event_id,
+                summary=summary,
+                timestamp=timestamp,
+            )
+
+    async def emit_decision(
+        self,
+        session_id: str,
+        *,
+        event_id: str,
+        decision: str,
+        summary: str,
+        evidence_refs: tuple[str, ...] = (),
+        timestamp: str | None = None,
+    ) -> dict[str, object]:
+        """Record a decision as the shared typed work-event kind."""
+        return await self.record_work_event(
+            session_id,
+            event_id=event_id,
+            event_type="decision",
+            summary=summary,
+            payload={"decision": decision, "evidence_refs": list(evidence_refs)},
+            timestamp=timestamp,
+        )
 
     async def get_file_edits(self, session_id: str) -> list[dict[str, object]] | None:
         """Return file-edit tool-call evidence (structuredPatch/originalFile/...) for one session.

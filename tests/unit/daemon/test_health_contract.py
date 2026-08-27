@@ -79,6 +79,7 @@ EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(
         "stale_ingest_attempts",
         "insight_freshness",
         "repeated_stage_failures",
+        "secret_scan_sweep",
         "archive_verification_blob_refs_liveness",
         "archive_verification_embeddings_refs_liveness",
         "archive_verification_planner_stats",

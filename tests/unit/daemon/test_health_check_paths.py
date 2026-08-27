@@ -46,6 +46,7 @@ from polylogue.daemon.health import (
     _check_raw_failures_medium,
     _check_repeated_stage_failures_medium,
     _check_schema_version_fast,
+    _check_secret_scan_sweep_medium,
     _check_source_availability_fast,
     _check_stale_ingest_attempts_medium,
     _check_wal_size_fast,
@@ -687,6 +688,30 @@ def test_repeated_stage_failures_ok(
     _init_live_ingest_attempt(dbf, total=5, failed=0)
     alert = _check_repeated_stage_failures_medium()
     assert alert.severity == HealthSeverity.OK
+
+
+def test_secret_scan_sweep_reports_recorded_failure(
+    workspace_env: dict[str, Path],
+) -> None:
+    ops_db = archive_root() / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    from polylogue.daemon.secret_scan_sweep import SECRET_SCAN_SWEEP_STAGE
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
+
+    with sqlite3.connect(ops_db) as conn:
+        record_daemon_stage_event(
+            conn,
+            stage=SECRET_SCAN_SWEEP_STAGE,
+            status="failed",
+            observed_at_ms=1_770_000_000_000,
+            payload={"retryable": True, "error_type": "OperationalError"},
+        )
+
+    alert = _check_secret_scan_sweep_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.check_name == "secret_scan_sweep"
+    assert "retry" in alert.message
 
 
 def test_repeated_stage_failures_error_when_many_recent_failures(

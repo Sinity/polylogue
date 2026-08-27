@@ -827,6 +827,7 @@ export type QueryPage = Page<MessageQueryRowPayload | ActionQueryRowPayload | Bl
 
 export type ReadSessionViewParameters = {
   readonly session_id: string;
+  readonly at_position?: string;
   readonly confidence_threshold?: number;
   readonly format?: "json";
   readonly include_messages?: boolean;
@@ -837,7 +838,7 @@ export type ReadSessionViewParameters = {
   readonly related_limit?: number;
   readonly repo_path?: string;
   readonly since_hours?: number;
-  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation";
+  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context";
   readonly window_hours?: number;
 };
 export type ReadSessionViewResponse = SessionReadViewEnvelope;
@@ -1054,6 +1055,7 @@ export class PolylogueClient {
         method: "GET",
         path: `/api/sessions/${encodeURIComponent(String(parameters.session_id))}/read`,
         query: {
+          at_position: parameters.at_position,
           confidence_threshold: parameters.confidence_threshold,
           format: parameters.format,
           include_messages: parameters.include_messages,

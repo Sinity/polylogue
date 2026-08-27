@@ -83,6 +83,9 @@ class SQLiteArchiveMixin:
         """Get all messages for a session, with content_blocks attached."""
         return await self.queries.get_messages(session_id)
 
+    async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[MessageRecord]:
+        return await self.queries.get_effective_context(session_id, at_position)
+
     async def get_messages_paginated(
         self,
         session_id: str,
