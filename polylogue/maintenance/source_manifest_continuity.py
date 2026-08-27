@@ -207,7 +207,7 @@ def _members(declaration: SourceDeclaration, logical: Mapping[str, str] | None =
         relative_paths = {root: root.name}
     else:
         try:
-            paths = sorted(path for path in root.rglob("*") if path.is_file())
+            paths = sorted(root.rglob("*"))
         except OSError as exc:
             raise SourceContinuityError(f"source root is unreadable: {root}") from exc
         relative_paths = {path: path.relative_to(root).as_posix() for path in paths}
@@ -218,6 +218,8 @@ def _members(declaration: SourceDeclaration, logical: Mapping[str, str] | None =
             info = path.lstat()
         except OSError as exc:
             raise SourceContinuityError(f"source member disappeared: {path}") from exc
+        if stat.S_ISDIR(info.st_mode):
+            continue
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise SourceContinuityError(f"source member is not a regular file: {path}")
         relative = relative_paths[path]

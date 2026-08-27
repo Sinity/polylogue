@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,21 @@ def test_duplicate_roots_and_symlinks_fail_closed(tmp_path: Path) -> None:
     link.symlink_to(root, target_is_directory=True)
     with pytest.raises(SourceContinuityError, match="real directory|unreadable"):
         build_source_manifest([SourceDeclaration("link", SourceRole.DIRECTORY, link, True)])
+
+
+def test_non_regular_members_fail_closed(tmp_path: Path) -> None:
+    root = _source(tmp_path)
+    fifo = root / "unreadable-pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(SourceContinuityError, match="not a regular file"):
+        build_source_manifest([SourceDeclaration("live", SourceRole.DIRECTORY, root, True)])
+
+
+def test_file_backed_source_is_manifested(tmp_path: Path) -> None:
+    source = tmp_path / "export.json"
+    source.write_text('{"export": true}', encoding="utf-8")
+    manifest = build_source_manifest([SourceDeclaration("export", SourceRole.IMMUTABLE_EXPORT, source)])
+    assert [(member.relative_path, member.size) for member in manifest.members] == [("export.json", 16)]
 
 
 def test_member_loss_is_not_hidden_by_equal_aggregate_replacement(tmp_path: Path) -> None:
