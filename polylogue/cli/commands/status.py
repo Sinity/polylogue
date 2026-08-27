@@ -1222,6 +1222,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if storage:
         payload["storage"] = storage
 
+    sinex_publication = status.get("sinex_publication")
+    if isinstance(sinex_publication, dict):
+        payload["sinex_publication"] = sinex_publication
+
     ingest = _compact_ingest_status(status)
     if ingest:
         payload["ingest"] = ingest
@@ -1522,8 +1526,7 @@ def _show_direct_json(
     raw_failure_status = _direct_raw_failure_status(root)
     from polylogue.config import Config, resolve_runtime_config
     from polylogue.daemon.status import assertion_candidate_queue_status_summary
-    from polylogue.paths import render_root, source_db_path
-    from polylogue.sinex.service import publication_status_payload
+    from polylogue.paths import render_root
 
     try:
         resolved_runtime_config = resolve_runtime_config().as_config()
@@ -1557,9 +1560,6 @@ def _show_direct_json(
         ops_db=active_root / "ops.db",
     )
     schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
-    from polylogue.config import load_polylogue_config
-
-    sinex_publication = publication_status_payload(source_db_path(), load_polylogue_config().sinex_mode)
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness) and _raw_failure_lifecycle_is_healthy(raw_failure_status),
         "daemon_liveness": False,
@@ -1571,6 +1571,7 @@ def _show_direct_json(
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": archive_tiers,
+        "sinex_publication": _direct_sinex_publication_status(active_root),
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
         "convergence": convergence.model_dump(mode="json"),
@@ -1578,7 +1579,6 @@ def _show_direct_json(
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
         "assertion_candidate_queue": assertion_candidate_queue,
-        "sinex_publication": sinex_publication,
         "raw_materialization_readiness": raw_materialization_readiness,
         "raw_frontier_integrity": raw_frontier_integrity,
         "component_readiness": component_readiness,
@@ -1671,6 +1671,18 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         if state == "missing" and component in required_missing_components:
             return False
     return True
+
+
+def _direct_sinex_publication_status(root: Path) -> dict[str, Any]:
+    """Read durable Sinex publication state without requiring a transport."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import publication_status
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    source_db = ArchiveLocation.resolve(root).configured_tier("source").configured_path
+    return publication_status(source_db, mode).as_dict()
 
 
 def _direct_component_readiness(
