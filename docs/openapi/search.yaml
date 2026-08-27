@@ -3243,6 +3243,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3293,6 +3294,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3343,6 +3345,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3524,8 +3527,10 @@ components:
       description: Session-topology predicate selecting the seed's logical lineage.
       properties:
         kind:
-          const: lineage
           default: lineage
+          enum:
+          - lineage
+          - logical
           title: Kind
           type: string
         unit:
@@ -3629,6 +3634,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3712,6 +3718,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3869,6 +3876,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3954,6 +3962,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -3990,6 +3999,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4070,6 +4080,7 @@ components:
               field: '#/components/schemas/QueryFieldPredicateAst'
               fts: '#/components/schemas/QueryTextPredicateAst'
               lineage: '#/components/schemas/QueryLineagePredicateAst'
+              logical: '#/components/schemas/QueryLineagePredicateAst'
               not: '#/components/schemas/QueryNotPredicateAst'
               or: '#/components/schemas/QueryBoolPredicateAst'
               semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4094,6 +4105,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'
@@ -4307,6 +4319,7 @@ components:
                 field: '#/components/schemas/QueryFieldPredicateAst'
                 fts: '#/components/schemas/QueryTextPredicateAst'
                 lineage: '#/components/schemas/QueryLineagePredicateAst'
+                logical: '#/components/schemas/QueryLineagePredicateAst'
                 not: '#/components/schemas/QueryNotPredicateAst'
                 or: '#/components/schemas/QueryBoolPredicateAst'
                 semantic: '#/components/schemas/QuerySemanticPredicateAst'

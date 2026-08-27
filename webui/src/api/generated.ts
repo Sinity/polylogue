@@ -307,7 +307,7 @@ export type QueryFieldRefAst = {
 };
 
 export type QueryLineagePredicateAst = {
-  readonly kind?: "lineage";
+  readonly kind?: "lineage" | "logical";
   readonly seed_session_id: string;
   readonly unit?: "session";
 };

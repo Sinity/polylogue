@@ -880,6 +880,7 @@ _QUERY_GRAMMAR = rf"""
         | DATE_FIELD DATE_COMP_OP DATE_VALUE -> date_compare_leaf
         | TIME_FIELD BETWEEN DATE_VALUE AND DATE_VALUE -> time_between_leaf
         | TIME_FIELD DATE_COMP_OP DATE_VALUE -> time_compare_leaf
+        | LOGICAL_CLAUSE                  -> logical_leaf
         | FIELD_CLAUSE                     -> field_leaf
         | "(" expr ")"
     sequence_step: sequence_atom (AND sequence_atom)*
@@ -907,6 +908,7 @@ _QUERY_GRAMMAR = rf"""
     SEMANTIC_BARE_TEXT.6: /(?:semantic|near:text):[^\s"()]+/i
     FTS_QUOTED_TEXT.6: /~"(\\.|[^"\\])*"/
     FTS_BARE_TEXT.5: /~[^\s"()]+/
+    LOGICAL_CLAUSE.9: /logical:(?:"(\\.|[^"\\])*"|[^\s"()\[\]{{}}]+)/i
     COUNT_CLAUSE.8: /({_COUNT_FIELD_REGEX}):(>=|<=|=|>|<)\d+(?!\S)/
     FIELD_CLAUSE.4: /-?[a-zA-Z_][a-zA-Z0-9_.]*:(?:"(\\.|[^"\\])*"|\([^)]*\)|[^\s"()\[\]{{}}]+)/
     NEG_QUOTED_TEXT.3: /-"(\\.|[^"\\])*"/
@@ -1642,6 +1644,15 @@ class _BooleanQueryTransformer(Transformer[Token, QueryPredicate]):
     def field_leaf(self, token: Token) -> QueryPredicate:
         return _field_token_to_predicate(_QUERY_TRANSFORMER.field_clause(token))
 
+    def logical_leaf(self, token: Token) -> QueryPredicate:
+        raw = str(token)[len("logical:") :]
+        if raw.startswith('"'):
+            raw = _decode_escaped_string(Token("ESCAPED_STRING", raw))
+        seed = raw.strip()
+        if not seed:
+            raise ExpressionCompileError("logical: requires a session id", field="logical")
+        return QueryLineagePredicate(seed_session_id=seed, logical=True)
+
     def fts_quoted_leaf(self, token: Token) -> QueryPredicate:
         return QueryTextPredicate(text=_decode_escaped_string(Token("ESCAPED_STRING", str(token)[1:])))
 
@@ -1717,6 +1728,7 @@ def _is_boolean_expression(expression: str) -> bool:
         or lower.startswith("seq(")
         or lower.startswith("seq (")
         or lower.startswith("lineage:")
+        or lower.startswith("logical:")
     ):
         return True
     for source, _unit in terminal_query_source_pairs():
