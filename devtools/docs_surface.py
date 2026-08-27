@@ -361,6 +361,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
     ),
     _entry(
+        "Analyze Projections",
+        "design/analyze-projections.md",
+        "Named aggregate projections and their shared query execution contract.",
+        "design",
+    ),
+    _entry(
         "Session Lineage Model",
         "design/session-lineage-model.md",
         "Fork, resume, compaction, and composition semantics.",
