@@ -920,6 +920,41 @@ def test_applied_adjudication_retains_the_recovered_effect_barrier(tmp_path: Pat
         ).fetchone() == ("completed", "recovered_applied")
 
 
+def test_partial_recovery_continuation_remains_an_overlap_barrier(tmp_path: Path) -> None:
+    """A declared forward or rollback continuation cannot disappear at terminalization."""
+
+    actuator = _Actuator(
+        recovery_disposition=RecoveryDisposition(
+            "confirmed-partial",
+            "forward",
+            "one target needs the declared forward continuation",
+            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
+        )
+    )
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    audit.record_recovery_disposition(operation_id, actuator.recovery_disposition)
+
+    retry = OperationExecutor(audit=audit, token_factory=lambda: "partial-continuation-retry")
+    binding = _binding(actuator)
+    preview = retry.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:recovery",
+        archive_identity_digest="identity:recovery",
+        parameter_digest="params:recovery",
+    )
+    authorization = retry.authorize_bound(binding, preview, _principal())
+
+    with pytest.raises(RecoveryBlockedError, match="requires declared 'forward' continuation"):
+        retry.execute_bound(binding, preview, authorization, object())
+
+    assert actuator.calls == 0
+    assert actuator.inspections == 1
+    listed = cast(dict[str, object], audit.list_recovery_operations()[0]["operation"])
+    assert listed["operation_id"] == operation_id
+
+
 @dataclass
 class _DestructiveClassActuator(_Actuator):
     """Like ``_Actuator``, but ``prepare()`` honors ``self.destructive_class``.
