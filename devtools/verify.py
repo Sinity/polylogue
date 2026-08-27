@@ -55,7 +55,9 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
     VerifyRun,
+    append_verification_evidence,
     append_verify_history,
+    canonical_verification_receipt,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
@@ -504,6 +506,11 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
+    if operation:
+        # The operation result carries the same bounded receipt as the
+        # evidence lane.  AgentCTL lifecycle fields remain outside this
+        # projection and cannot turn process completion into semantic success.
+        result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
@@ -613,6 +620,7 @@ def _finish_and_record_verification(
         run._payload["failure_ledger"] = payload["failure_ledger"]
         run.write()
     append_verify_history(payload)
+    append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
     if exit_code != 0:
         try:
@@ -759,6 +767,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         git_head=head,
         root=ROOT,
         mirror_current=agentctl_operation is None,
+        agentctl_operation=agentctl_operation,
     )
     try:
         preparation = None

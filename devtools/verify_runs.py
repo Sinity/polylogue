@@ -16,6 +16,7 @@ import re
 import shutil
 import stat
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Mapping, Sequence
@@ -29,6 +30,8 @@ from devtools.pytest_evidence import evaluate_pytest_evidence
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
 VERIFY_HISTORY_PATH = VERIFY_CACHE / "history.jsonl"
+VERIFY_EVIDENCE_PATH = VERIFY_CACHE / "evidence.jsonl"
+VERIFY_EVIDENCE_PATH_ENV = "POLYLOGUE_VERIFICATION_EVIDENCE_PATH"
 CURRENT_RUN_PATH = VERIFY_CACHE / "current-run.json"
 CURRENT_STATISTICS_PATH = VERIFY_CACHE / "current-pytest-statistics.json"
 CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
@@ -41,6 +44,7 @@ _RETENTION_LOCK_NAME = ".retention.lock"
 _DETAIL_NODE_BUDGET = 100_000
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_APPEND_LOCK = threading.Lock()
 
 
 @dataclass
@@ -211,6 +215,7 @@ class VerifyRun:
         git_head: str | None,
         root: Path | None = None,
         mirror_current: bool = True,
+        agentctl_operation: str | None = None,
     ) -> None:
         self.root = root or Path.cwd()
         self.mirror_current = mirror_current
@@ -227,6 +232,16 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        # These are opaque execution identities.  They are provenance only;
+        # semantic status is still decided by this verifier.
+        if agentctl_operation is not None:
+            for field, variable in (
+                ("agentctl_job_id", "SINNIXD_JOB_ID"),
+                ("agentctl_correlation_id", "SINNIXD_CORRELATION_ID"),
+            ):
+                value = os.environ.get(variable)
+                if value:
+                    self._payload[field] = value
         # Kept on every receipt so later classification does not depend on a
         # live interpreter or a reconstructed shell environment.
         from devtools.verification_ledger import environment_fingerprint
@@ -639,6 +654,19 @@ def _history_path_for_root(root: Path, history_path: Path | None) -> tuple[Path,
 
 
 def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTORY_PATH) -> None:
+    """Append a compact semantic row, never the private run invocation."""
+    _append_jsonl(_semantic_history_row(entry), path=path)
+
+
+def _append_jsonl(entry: Mapping[str, Any], *, path: Path) -> None:
+    # flock is process-scoped on some Unix implementations and is therefore
+    # insufficient to serialize threads in one verifier process.  Keep the
+    # OS lock for cross-process writers and add this small in-process guard.
+    with _APPEND_LOCK:
+        _append_jsonl_locked(entry, path=path)
+
+
+def _append_jsonl_locked(entry: Mapping[str, Any], *, path: Path) -> None:
     path = _absolute_path(path)
     _mkdir_pinned(path.parent)
     lock_fd = _open_retention_lock(path.parent, nonblocking=False)
@@ -662,6 +690,131 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path = VERIFY_HISTO
     finally:
         os.close(parent_fd)
         _close_retention_lock(lock_fd)
+
+
+def _terminal_status(entry: Mapping[str, Any]) -> str:
+    aggregate = entry.get("pytest_aggregate")
+    aggregate = aggregate if isinstance(aggregate, Mapping) else {}
+    reason = str(entry.get("termination_reason") or aggregate.get("termination_reason") or "")
+    if entry.get("diagnosis") == "verification_interrupted" or reason:
+        return "cancelled" if "cancel" in reason else "interrupted"
+    if entry.get("status") == "running":
+        return "unknown"
+    return "passed" if entry.get("exit_code") == 0 else "failed"
+
+
+def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the bounded, cross-source contract for one verifier run.
+
+    This deliberately contains no argv, prompts, environment, log contents,
+    or machine-local paths.  ``artifact_ref`` is an opaque local evidence
+    handle; consumers must not interpret it as AgentCTL lifecycle state.
+    """
+    steps: list[dict[str, Any]] = []
+    raw_steps = entry.get("steps")
+    if isinstance(raw_steps, list):
+        for raw in raw_steps:
+            if not isinstance(raw, Mapping):
+                continue
+            step: dict[str, Any] = {
+                "step_id": raw.get("step_id"),
+                "name": raw.get("name"),
+                "status": "running"
+                if raw.get("status") == "running"
+                else "passed"
+                if raw.get("exit") == 0
+                else "failed",
+                "exit_code": raw.get("exit"),
+                "duration_s": raw.get("duration_s"),
+                "diagnosis": raw.get("diagnosis"),
+                "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
+                if raw.get("step_id") is not None
+                else None,
+            }
+            steps.append({key: value for key, value in step.items() if value is not None})
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "polylogue.verification-receipt",
+        "run_id": entry.get("run_id"),
+        "source_revision": entry.get("final_git_head") or entry.get("git_head"),
+        "status": _terminal_status(entry),
+        "started_at": entry.get("started_at"),
+        "finished_at": entry.get("finished_at"),
+        "duration_s": entry.get("duration_s"),
+        "steps": steps,
+        "artifact_ref": f"polylogue://verification/{entry.get('run_id')}",
+        "semantic_status": entry.get("status"),
+    }
+    refs = {
+        public_key: entry[internal_key]
+        for public_key, internal_key in (
+            ("job_id", "agentctl_job_id"),
+            ("correlation_id", "agentctl_correlation_id"),
+        )
+        if isinstance(entry.get(internal_key), str) and entry[internal_key]
+    }
+    if refs:
+        result["agentctl"] = refs
+    aggregate = entry.get("pytest_aggregate")
+    if isinstance(aggregate, Mapping):
+        result["pytest"] = {
+            key: aggregate[key]
+            for key in (
+                "selection_mode",
+                "selected_union_count",
+                "terminal_union_count",
+                "terminal_green",
+                "complete_corpus_covered",
+                "outcomes",
+            )
+            if key in aggregate
+        }
+    diagnosis = entry.get("diagnosis")
+    if isinstance(diagnosis, str):
+        result["diagnosis"] = diagnosis
+    return result
+
+
+def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
+    receipt = canonical_verification_receipt(entry)
+    # Keep the small legacy columns used by `why` and retention readers.  The
+    # canonical receipt is the cross-source join contract.
+    row: dict[str, Any] = {
+        key: entry[key]
+        for key in (
+            "run_id",
+            "tier",
+            "started_at",
+            "finished_at",
+            "duration_s",
+            "status",
+            "exit_code",
+            "diagnosis",
+            "artifact_dir",
+            "testmon_selection",
+            "pytest_aggregate",
+        )
+        if key in entry
+    }
+    row["semantic_receipt"] = receipt
+    row["receipt_schema_version"] = 1
+    return row
+
+
+def append_verification_evidence(entry: Mapping[str, Any], *, path: Path | None = None) -> None:
+    """Publish the same canonical receipt to the configured evidence lane."""
+    configured = os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
+    target = path or (Path(configured) if configured else VERIFY_EVIDENCE_PATH)
+    _append_jsonl(canonical_verification_receipt(entry), path=target)
+
+
+def read_verification_evidence(path: Path) -> list[dict[str, Any]]:
+    """Read only valid canonical rows for a Lynchpin-style projection."""
+    return [
+        row
+        for row in _read_history_pinned(_absolute_path(path))
+        if row.get("kind") == "polylogue.verification-receipt" and row.get("schema_version") == 1
+    ]
 
 
 def prune_successful_verify_runs(
