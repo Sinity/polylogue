@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -2045,6 +2045,152 @@ def analyze_verb(
     if output_format:
         updated = updated.with_param_updates(output_format=output_format)
     _execute_query_verb(ctx, updated)
+
+
+def _query_root_context(ctx: click.Context) -> click.Context:
+    """Return the root query context for a nested analyze projection."""
+    current = ctx
+    while current.parent is not None:
+        current = current.parent
+    return current
+
+
+def _named_analyze_request(ctx: click.Context, **updates: object) -> RootModeRequest:
+    """Apply a named projection to the canonical root query request."""
+    request_type = _get_root_request_class()
+    return request_type.from_context(_query_root_context(ctx)).with_param_updates(**updates)  # type: ignore[no-any-return,attr-defined]
+
+
+def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
+    """Run the shared legacy renderer for a structurally named projection."""
+    parent = ctx.parent
+    if parent is None:
+        raise click.UsageError("Analyze projections must run under the analyze command.")
+    selected = parent.invoked_subcommand
+    parent.invoked_subcommand = None
+    try:
+        callback = cast(Callable[..., object], analyze_verb.callback)
+        callback(parent, **kwargs)
+    finally:
+        parent.invoked_subcommand = selected
+
+
+@analyze_verb.command("count")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.pass_context
+def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> None:
+    """Print the matched-session count."""
+    request = _named_analyze_request(ctx, count_only=True)
+    if output_format:
+        request = request.with_param_updates(output_format=output_format)
+    _execute_query_verb(ctx, request)
+
+
+@analyze_verb.command("by")
+@click.argument(
+    "dimension", type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"])
+)
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_by_command(ctx: click.Context, *, dimension: str, output_format: str | None, limit: int | None) -> None:
+    """Group the matched sessions by DIMENSION."""
+    request = _named_analyze_request(ctx, stats_only=False, stats_by=dimension)
+    if output_format:
+        request = request.with_param_updates(output_format=output_format)
+    if limit is not None:
+        request = request.with_param_updates(limit=limit)
+    _execute_query_verb(ctx, request)
+
+
+@analyze_verb.command("facets")
+@click.option("--no-idf", is_flag=True, help="Omit inverse-document-frequency weights.")
+@click.option("--include-deferred", is_flag=True, help="Compute deferred detail families.")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default="text")
+@click.option("--json", "json_output", is_flag=True, help="Alias for --format json.")
+@click.pass_context
+def analyze_facets_command(
+    ctx: click.Context, *, no_idf: bool, include_deferred: bool, output_format: str, json_output: bool
+) -> None:
+    """Show facet families for the matched query scope."""
+    env: AppEnv = ctx.obj
+    request = _named_analyze_request(ctx)
+    response = run_coroutine_sync(
+        env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
+    )
+    emit_facets_response(response, output_format="json" if json_output else output_format)
+
+
+@analyze_verb.command("cost-outlook")
+@click.option("--plan", "plan_name", required=True, help="Subscription plan name.")
+@click.option("--method", type=click.Choice(["linear", "trailing-7d-mean", "eom-naive"]), default="linear")
+@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default=None)
+@click.pass_context
+def analyze_cost_outlook_command(ctx: click.Context, *, plan_name: str, method: str, output_format: str | None) -> None:
+    """Project the current billing cycle for PLAN."""
+    # Keep the established projection renderer in one place while making the
+    # projection choice structural in the command tree.
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=True,
+        plan_name=plan_name,
+        method=method,
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=None,
+        show_postmortem=False,
+        show_portfolio=False,
+    )
+
+
+@analyze_verb.command("postmortem")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_postmortem_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:
+    """Render a postmortem bundle for the matched scope."""
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=False,
+        plan_name=None,
+        method="linear",
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=limit,
+        show_postmortem=True,
+        show_portfolio=False,
+    )
+
+
+@analyze_verb.command("portfolio")
+@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option("--limit", "-l", "-n", type=int, default=None)
+@click.pass_context
+def analyze_portfolio_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:
+    """Render a sanitized portfolio report for the matched scope."""
+    _invoke_analyze_projection(
+        ctx,
+        count_only=False,
+        stats_by=None,
+        show_facets=False,
+        cost_outlook=False,
+        plan_name=None,
+        method="linear",
+        no_idf=False,
+        include_deferred=False,
+        output_format=output_format,
+        limit=limit,
+        show_postmortem=False,
+        show_portfolio=True,
+    )
 
 
 def _attach_analyze_subcommands() -> None:

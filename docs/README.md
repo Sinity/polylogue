@@ -108,6 +108,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
+| [Analyze Projections](design/analyze-projections.md) | Named aggregate projections and their shared query execution contract. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
 | [Physical Session Identity](design/physical-session-identity.md) | Durable identity proposal beneath lossy public origin projection. |
 | [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |
