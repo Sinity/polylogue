@@ -119,6 +119,7 @@ from polylogue.insights.readiness import (
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.session_label import session_structural_label_for_session
 from polylogue.insights.temporal_source import time_confidence_for_source
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
@@ -3720,6 +3721,9 @@ class ArchiveStore:
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
         return self._read_insights().list_tool_usage_insights(query)
+
+    def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        return self._read_insights().list_tool_episode_insights(query)
 
     def _read_insights(self) -> ArchiveReadInsights:
         """Bind insight SQL to this store's caller-owned read snapshot."""

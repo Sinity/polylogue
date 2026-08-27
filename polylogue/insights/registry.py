@@ -46,6 +46,7 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
@@ -571,6 +572,35 @@ register(
             InsightField("total_calls", _attr("total_call_count", "0"), group=0),
             InsightField("distinct_tools", _attr("total_distinct_tools", "0"), group=0),
             InsightField("coverage_gaps", _attr("has_coverage_gaps"), group=0),
+        ),
+    )
+)
+
+register(
+    InsightType(
+        name="tool_episodes",
+        display_name="Tool Episodes",
+        json_key="tool_episodes",
+        item_model=ToolEpisodeInsight,
+        query_model=ToolEpisodeQuery,
+        operations_method_name="list_tool_episode_insights",
+        cli_command_name="tool-episodes",
+        cli_help="List call/result episodes with structural outcomes and context.",
+        readiness_exempt=True,
+        cli_options=(
+            CliOption("session_id", ("--session-id",), help="Only episodes from one session"),
+            CliOption("tool", ("--tool",), help="Only episodes for this tool"),
+            CliOption("result_state", ("--result-state",), help="Only this result state"),
+        ),
+        mcp_default_limit=100,
+        fields=(
+            InsightField("", _attr("episode_id")),
+            InsightField("tool", _attr("tool_name")),
+            InsightField("state", _attr("result_state")),
+            InsightField("error", _attr("is_error")),
+            InsightField("exit", _attr("exit_code")),
+            InsightField("next", _attr("next_action")),
+            InsightField("caveat", _attr("caveat"), group=1),
         ),
     )
 )

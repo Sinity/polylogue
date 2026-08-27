@@ -316,7 +316,7 @@ _PERSONAL_STATE_PROJECTIONS = frozenset(
 
 #: ``query(projection=..., ...)`` values that compile a distilled insight
 #: report over a matched session scope, rather than listing content units.
-_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions"})
+_INSIGHT_PROJECTIONS = frozenset({"postmortem", "pathologies", "abandoned_sessions", "stuck_sessions", "tool-episodes"})
 
 
 def _saved_view_payload(row: dict[str, str]) -> Any:
@@ -573,6 +573,18 @@ async def _query_insight_projection(
     ``build_spec`` page-size default (10) would silently cap the matched scope
     to 10 sessions and defeat the facade's own 200-session analysis cap.
     """
+    if projection == "tool-episodes":
+        from polylogue.insights.tool_episodes import ToolEpisodeQuery
+
+        episodes = await hooks.get_polylogue().list_tool_episode_insights(
+            ToolEpisodeQuery(origin=origin, limit=hooks.clamp_limit(limit), offset=0)
+        )
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={"tool_episodes": [item.model_dump(mode="json") for item in episodes], "total": len(episodes)}
+            ),
+            exclude_none=True,
+        )
     from dataclasses import replace
 
     from polylogue.mcp.query_contracts import build_session_query_request
