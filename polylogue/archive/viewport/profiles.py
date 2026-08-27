@@ -189,6 +189,20 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "session with no session_events"),
     ),
     SessionViewProfile(
+        view_id="effective_context",
+        label="Effective Context",
+        owner="polylogue.storage.sqlite.queries.message_query_reads.get_effective_context",
+        purpose="The context visible to the model after the latest compaction boundary.",
+        input_scope="single session id",
+        included_kinds=("summary", "post-boundary messages"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="renders normalized effective context, not the full composed lineage prefix",
+        formats=("json",),
+        machine_payload="effective context message list",
+        degraded_states=("missing session", "no compaction boundary"),
+    ),
+    SessionViewProfile(
         view_id="file-edits",
         label="File Edits",
         owner="polylogue.cli.read_views.file_edits.run_read_file_edits",
@@ -360,6 +374,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     "correlation": ReadViewHttpCapability(
         "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")
     ),
+    "effective_context": ReadViewHttpCapability("effective_context", ("json",), ("at_position",)),
 }
 
 

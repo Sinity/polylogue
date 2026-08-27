@@ -134,6 +134,46 @@ async def get_messages(
     return messages
 
 
+async def get_effective_context(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    at_position: int | None = None,
+) -> list[MessageRecord]:
+    """Return the messages visible to the model at a session position.
+
+    A compaction boundary replaces its recorded range with the materialized
+    summary. This intentionally reads the session's own rows, rather than the
+    full lineage-composed prefix used by ordinary transcript reads.
+    """
+    resolved = await _resolve_session_id(conn, session_id)
+    messages = await _own_messages(conn, resolved, position_order=True)
+    if at_position is None:
+        at_position = max((message.position for message in messages), default=-1)
+    boundary = await (
+        await conn.execute(
+            """
+            SELECT boundary_start_position, boundary_end_position, boundary_message_id
+            FROM session_events
+            WHERE session_id = ? AND event_type = 'compaction'
+              AND boundary_end_position < ?
+            ORDER BY boundary_end_position DESC, position DESC
+            LIMIT 1
+            """,
+            (resolved, at_position),
+        )
+    ).fetchone()
+    if boundary is None:
+        return [message for message in messages if message.position <= at_position]
+    summary_id = boundary["boundary_message_id"]
+    summary = next((message for message in messages if str(message.message_id) == str(summary_id)), None)
+    if summary is None:
+        return [message for message in messages if message.position <= at_position]
+    end_position = int(boundary["boundary_end_position"])
+    return [summary] + [
+        message for message in messages if end_position < message.position <= at_position and message is not summary
+    ]
+
+
 async def get_messages_with_lineage_completeness(
     conn: aiosqlite.Connection,
     session_id: str,

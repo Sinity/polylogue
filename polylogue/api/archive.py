@@ -6317,6 +6317,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             stable_order="session_id",
         )
 
+    async def get_effective_context(
+        self,
+        session_id: str,
+        *,
+        at_position: int | None = None,
+    ) -> list[dict[str, object]] | None:
+        """Return the provider-effective context at a message position."""
+        resolved = await self.repository.resolve_id(session_id)
+        target = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(target)
+        if session is None:
+            return None
+        messages = await self.repository.get_effective_context(target, at_position)
+        return [message.model_dump(mode="json", exclude_none=True) for message in messages]
+
     async def get_session_events(
         self,
         session_id: str,

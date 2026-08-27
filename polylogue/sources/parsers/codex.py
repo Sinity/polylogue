@@ -2459,6 +2459,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     current_model_name: str | None = None
     current_model_effort: str | None = None
     message_position = 0
+    previous_boundary_end = -1
     # Subagent/session identity facts that recur on every session_meta or
     # turn_context record for a given session (same value repeated per turn).
     # Captured once at first occurrence -- like session_instructions/session_git
@@ -2518,11 +2519,18 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 event_payload["replacement_history_ghost_commit_count"] = ghost_commit_count
             if image_count:
                 event_payload["replacement_history_image_count"] = image_count
+            boundary_start = previous_boundary_end + 1
+            boundary_end = message_position - 1
+            summary_text = str(event_payload["summary"])
+            summary_position = message_position if summary_text else None
             session_events.append(
                 ParsedSessionEvent(
                     event_type="compaction",
                     timestamp=timestamp,
                     payload=event_payload,
+                    boundary_start_position=boundary_start,
+                    boundary_end_position=boundary_end,
+                    boundary_message_position=summary_position,
                 )
             )
             # Materialize the compaction summary as a real message at the
@@ -2530,7 +2538,6 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             # summary message that replaces the prior context (#2467). The
             # pre-compaction messages stay stored once; the boundary marks where
             # context discontinues.
-            summary_text = str(event_payload["summary"])
             if summary_text:
                 messages.append(
                     ParsedMessage(
@@ -2546,6 +2553,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     )
                 )
                 message_position += 1
+            previous_boundary_end = boundary_end
             continue
 
         # Handle turn-context events
