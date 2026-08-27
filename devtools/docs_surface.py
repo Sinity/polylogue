@@ -223,6 +223,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "internals",
     ),
     _entry(
+        "Runtime and Concurrency Contract",
+        "runtime-concurrency.md",
+        "Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger.",
+        "internals",
+    ),
+    _entry(
         "Daemon Threat Model",
         "daemon-threat-model.md",
         "Local API assets, threats, mitigations, and roles.",

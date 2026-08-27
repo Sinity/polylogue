@@ -478,6 +478,13 @@
           # interpreter identity moves (version + free-threaded flag).
           devshell_python="$(command -v python3)"
           devshell_python_id="$("$devshell_python" -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())')"
+          case "$devshell_python_id" in
+            3.14.*\ False) ;;
+            *)
+              echo "devshell: refusing non-free-threaded CPython 3.14 ($devshell_python_id)" >&2
+              return 1
+              ;;
+          esac
           create_devshell_venv() {
             uv venv --python "$devshell_python"
           }
@@ -496,6 +503,7 @@
 
           # Activate venv
           source .venv/bin/activate
+          .venv/bin/python -c 'import sys; assert sys.implementation.name == "cpython" and sys.version_info[:2] >= (3, 14) and not sys._is_gil_enabled(), "Polylogue requires CPython 3.14 free-threading"'
 
           # Sync dependencies when pyproject.toml, uv.lock, or Python version
           # change. The interpreter component is the devShell's identity

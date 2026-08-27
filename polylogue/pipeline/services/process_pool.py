@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import multiprocessing
 import os
-import sys
 import time
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -107,10 +106,9 @@ def parallel_threads_effective() -> bool:
     either has the attribute or it doesn't, independent of which stub set
     mypy resolves against.
     """
-    is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
-    if is_gil_enabled is None:
-        return False
-    return not is_gil_enabled()
+    from polylogue.runtime import runtime_identity
+
+    return runtime_identity().free_threaded
 
 
 class PoolKind(StrEnum):

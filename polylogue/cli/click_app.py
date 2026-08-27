@@ -621,6 +621,9 @@ def main() -> None:
     """
     import sys
 
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue CLI")
     _guard_checkout_or_exit()
     run_machine_entry(cli, sys.argv[1:])
 

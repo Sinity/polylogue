@@ -86,4 +86,4 @@ Open pointer: `polylogue-uuf2g`.
 - The repository contract compresses convergence to FTS, embeddings, and insights. The current default converger also includes raw parse recovery, raw-authority caching, Claude workflow, standing queries, and optional Sinex publication (`polylogue/daemon/convergence_stages.py:1097-1136`).
 - Operationally, the daemon is runtime-masked and inactive, so the documented live-owner posture is not the machine’s current state. This discrepancy is external runtime state, not represented in repository files.
 
-verified: bb20b20d4266c47a0cb9cc8d63a39250c61810d6 2026-08-26
+verified: 24be873c0 2026-08-27
