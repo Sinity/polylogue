@@ -34,6 +34,12 @@ CATALOG_PATH = REPO_ROOT / "docs" / "plans" / "slo-catalog.yaml"
 BENCH_FIXTURE_DIR = REPO_ROOT / "tests" / "data" / "pytest-benchmark"
 
 REQUIRED_SURFACES = ("query", "reader", "facets", "context", "cost")
+INTERACTIVE_SURFACES = (
+    "daemon_cli_query",
+    "daemon_live_completion",
+    "cli_status_cold",
+    "ingest_to_searchable",
+)
 
 
 def test_benchmark_runner_uses_private_basetemp_despite_inherited_tmpfs(
@@ -89,6 +95,22 @@ def test_catalog_exists_and_covers_required_surfaces() -> None:
         assert isinstance(p50, int), f"surface {name!r} must declare an integer p50_ms budget"
         assert isinstance(p95, int), f"surface {name!r} must declare an integer p95_ms budget"
         assert p50 > 0
+        assert p95 >= p50
+
+
+def test_catalog_names_the_interactive_budget_contract() -> None:
+    """The 20d.14 contract must retain all four end-to-end budget families."""
+    surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
+
+    for name in INTERACTIVE_SURFACES:
+        config = surfaces[name]
+        assert isinstance(config.get("description"), str)
+        assert isinstance(config.get("benchmark_test"), str)
+        assert isinstance(config.get("p50_ms"), int)
+        p50 = config.get("p50_ms")
+        p95 = config.get("p95_ms")
+        assert isinstance(p50, int)
+        assert isinstance(p95, int)
         assert p95 >= p50
 
 
