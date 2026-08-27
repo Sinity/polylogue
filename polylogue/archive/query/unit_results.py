@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import (
     QueryUnitAggregateRowPayload,
+    QueryUnitProjectedRowPayload,
     QueryUnitResultEnvelope,
     build_query_unit_aggregate_envelope,
     build_query_unit_envelope,
@@ -88,6 +89,21 @@ def _row_payload_model(descriptor: QueryUnitDescriptor) -> _RowPayloadModel | No
     if model is None or not hasattr(model, "from_row"):
         return None
     return cast(_RowPayloadModel, model)
+
+
+def _projected_rows(
+    rows: Sequence[Any], descriptor: QueryUnitDescriptor, selected_fields: Sequence[str]
+) -> tuple[QueryUnitProjectedRowPayload, ...]:
+    """Shape selected fields while retaining the normal typed row payloads."""
+
+    if not selected_fields:
+        return ()
+    return tuple(
+        QueryUnitProjectedRowPayload(
+            root={field: getattr(row, descriptor.projectable_fields[field], None) for field in selected_fields}
+        )
+        for row in rows
+    )
 
 
 def _bool_param(value: object) -> bool:
@@ -408,10 +424,11 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
             sort_direction=sort_direction,
         ),
     )
+    typed_rows = tuple(payload_model.from_row(row) for row in rows[: ctx.limit])
     return _record_result_page(
         ctx,
         build_query_unit_envelope(
-            tuple(payload_model.from_row(row) for row in rows[: ctx.limit]),
+            typed_rows,
             unit=ctx.source.unit,
             query=ctx.query,
             limit=ctx.limit,
@@ -419,6 +436,7 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
             has_next=len(rows) > ctx.limit,
             pipeline=pipeline.to_payload(),
             pipeline_stages=_pipeline_stage_payloads(pipeline),
+            projected_items=_projected_rows(rows[: ctx.limit], ctx.descriptor, pipeline.selected_fields),
         ),
     )
 

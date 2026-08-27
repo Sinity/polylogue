@@ -14,6 +14,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 HORIZONS = frozenset({"frontier", "mid", "vision"})
@@ -29,6 +30,13 @@ class ActivePolicy:
     warning: int = 50
     stale_claim_days: int = 7
     focus_limit: int = 4
+    resource_policy: Mapping[str, Any] | None = None
+
+    def validate(self) -> None:
+        if self.target < 0 or self.warning < self.target or self.focus_limit < 0:
+            raise PortfolioPolicyError("invalid active policy bands or focus limit")
+        if self.stale_claim_days < 0:
+            raise PortfolioPolicyError("stale claim age must not be negative")
 
 
 def _labels(row: Mapping[str, Any]) -> tuple[str, ...]:
@@ -81,6 +89,38 @@ def _keys(value: object) -> frozenset[str]:
     return frozenset()
 
 
+def _priority(row: Mapping[str, Any]) -> int:
+    value = row.get("priority", 4)
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        raise PortfolioPolicyError(f"{row.get('id', '<unknown>')}: priority must be an integer") from None
+    if priority < 0:
+        raise PortfolioPolicyError(f"{row.get('id', '<unknown>')}: priority must not be negative")
+    return priority
+
+
+def _claim(row: Mapping[str, Any]) -> tuple[str | None, datetime | None]:
+    claim = row.get("claim")
+    metadata = row.get("metadata")
+    source: Mapping[str, Any] = (
+        claim if isinstance(claim, Mapping) else metadata if isinstance(metadata, Mapping) else row
+    )
+    owner = source.get("owner") or source.get("assignee") or row.get("assignee") or row.get("owner")
+    claimed_at = source.get("claimed_at") or row.get("claimed_at")
+    if claimed_at is None:
+        return (str(owner) if owner else None), None
+    if not isinstance(claimed_at, str):
+        raise PortfolioPolicyError(f"{row.get('id', '<unknown>')}: claim timestamp must be an ISO string")
+    try:
+        parsed = datetime.fromisoformat(claimed_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise PortfolioPolicyError(f"{row.get('id', '<unknown>')}: claim timestamp is invalid") from None
+    if parsed.tzinfo is None:
+        raise PortfolioPolicyError(f"{row.get('id', '<unknown>')}: claim timestamp must include a timezone")
+    return (str(owner) if owner else None), parsed.astimezone(UTC)
+
+
 def enumerate_complete(
     pages: Callable[[str | None, int], tuple[Sequence[Mapping[str, Any]], str | None]],
     *,
@@ -126,10 +166,17 @@ def build_views(
     *,
     policy: ActivePolicy = ActivePolicy(),
     receipt: Mapping[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build full ambition, active admission, and derived execution focus."""
+    policy.validate()
     _validate_receipt(receipt)
     records = [dict(row) for row in rows]
+    if receipt is not None and receipt["rows"] != len(records):
+        raise PortfolioPolicyError(
+            f"planning-surface-corrupt: receipt says {receipt['rows']} rows but export contains {len(records)}"
+        )
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
     by_id: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
     for row in records:
@@ -151,11 +198,21 @@ def build_views(
         for dep in _blocked_by(row):
             if dep not in by_id:
                 errors.append(f"{bead_id}: missing dependency {dep}")
+        dependencies = row.get("dependencies", ())
+        if not isinstance(dependencies, Sequence) or isinstance(dependencies, str):
+            errors.append(f"{bead_id}: dependencies must be a list")
+        elif any(
+            not isinstance(dep, Mapping) or not dep.get("type") or not dep.get("depends_on_id") for dep in dependencies
+        ):
+            errors.append(f"{bead_id}: dependencies contain an invalid relation")
+        _priority(row)
 
     programs = {
         bead_id
         for bead_id, row in by_id.items()
-        if row.get("issue_type") == "epic" and _meta(row).get("frontier_program") == "active"
+        if row.get("status") != "closed"
+        and row.get("issue_type") == "epic"
+        and _meta(row).get("frontier_program") == "active"
     }
     active: list[dict[str, Any]] = []
     for row in records:
@@ -176,20 +233,34 @@ def build_views(
         ]
         if missing:
             errors.append(f"{bead_id}: missing execution contract: {', '.join(missing)}")
-        assignee = (
-            row.get("assignee") or row.get("owner") if row.get("status") == "in_progress" else row.get("assignee")
+        assignee, claimed_at = _claim(row)
+        stale_claim = bool(
+            assignee and claimed_at is not None and observed_at - claimed_at > timedelta(days=policy.stale_claim_days)
         )
         if row.get("status") == "open" and assignee:
             errors.append(f"{bead_id}: stale ownership on open issue")
+        if stale_claim:
+            errors.append(f"{bead_id}: stale claim older than {policy.stale_claim_days} days")
+        blocked_by = list(_blocked_by(row))
+        readiness = (
+            "in_progress" if row.get("status") == "in_progress" else ("blocked-near-next" if blocked_by else "ready")
+        )
+        critical_path = bool(meta.get("critical_path", False))
         active.append(
             {
                 "id": bead_id,
                 "program": program,
                 "status": row.get("status"),
                 "horizon": _horizon(row),
-                "priority": row.get("priority", 4),
-                "blocked_by": list(_blocked_by(row)),
-                "claims": bool(assignee),
+                "priority": _priority(row),
+                "blocked_by": blocked_by,
+                "readiness": readiness,
+                "claims": {
+                    "owner": assignee,
+                    "claimed_at": claimed_at.isoformat() if claimed_at else None,
+                    "stale": stale_claim,
+                },
+                "critical_path": critical_path,
                 "conflict_keys": sorted(_keys(meta.get("conflict_keys", ()))),
             }
         )
@@ -202,8 +273,9 @@ def build_views(
     focus_candidates = [item for item in active if item["status"] == "in_progress" or not item["blocked_by"]]
     focus_candidates.sort(
         key=lambda item: (
-            not item["claims"],
-            int(item["priority"] or 4),
+            not item["claims"]["owner"],
+            not item["critical_path"],
+            item["priority"],
             -len(unlocks.get(item["id"], [])),
             item["id"],
         )
@@ -212,10 +284,14 @@ def build_views(
     used_conflicts: set[str] = set()
     for item in focus_candidates:
         conflicts = set(item["conflict_keys"])
+        resources = set(_keys((policy.resource_policy or {}).get(item["id"], ())))
+        if resources & used_conflicts:
+            continue
         if conflicts & used_conflicts:
             continue
         focus.append(item)
         used_conflicts.update(conflicts)
+        used_conflicts.update(resources)
         if len(focus) >= policy.focus_limit:
             break
     diagnostics = []
@@ -229,10 +305,13 @@ def build_views(
         raise PortfolioPolicyError("portfolio policy failed: " + "; ".join(errors))
     return {
         "ambition": {
-            horizon: sorted(
-                item["id"] for item in records if item.get("status") != "closed" and _horizon(item) == horizon
+            horizon: sorted(item["id"] for item in records if _horizon(item) == horizon) for horizon in sorted(HORIZONS)
+        },
+        "priority": {
+            str(priority): sorted(
+                item["id"] for item in records if item.get("status") != "closed" and _priority(item) == priority
             )
-            for horizon in sorted(HORIZONS)
+            for priority in sorted({_priority(item) for item in records if item.get("status") != "closed"})
         },
         "active": {
             "count": len(active),
@@ -245,6 +324,14 @@ def build_views(
             },
             "blockers": blockers,
             "unlocks": dict(unlocks),
+            "readiness": {
+                state: sorted(item["id"] for item in active if item["readiness"] == state)
+                for state in ("ready", "blocked-near-next", "in_progress")
+            },
+            "claims": {
+                "claimed": sorted(item["id"] for item in active if item["claims"]["owner"]),
+                "unclaimed": sorted(item["id"] for item in active if not item["claims"]["owner"]),
+            },
         },
         "execution_focus": focus,
         "diagnostics": diagnostics,
@@ -262,12 +349,20 @@ def main(argv: list[str] | None = None, *, stdout: Any = None) -> int:
     output = stdout or sys.stdout
     try:
         with open(args.export, encoding="utf-8") as handle:
-            rows = (
+            payload = (
                 json.load(handle)
                 if args.export.endswith(".json")
                 else [json.loads(line) for line in handle if line.strip()]
             )
-        report = build_views(rows, policy=ActivePolicy(target=args.target, warning=args.warning))
+        receipt = None
+        if isinstance(payload, Mapping):
+            rows = payload.get("rows")
+            receipt = payload.get("receipt")
+            if not isinstance(rows, Sequence) or isinstance(rows, str):
+                raise PortfolioPolicyError("planning-surface-corrupt: export rows must be a list")
+        else:
+            rows = payload
+        report = build_views(rows, policy=ActivePolicy(target=args.target, warning=args.warning), receipt=receipt)
     except (OSError, json.JSONDecodeError, PortfolioPolicyError) as exc:
         print(f"portfolio-frontier: {exc}", file=output)
         return 2

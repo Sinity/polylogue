@@ -9,9 +9,18 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast, get_args
+from typing import TYPE_CHECKING, Any, Generic, Literal, NotRequired, TypeAlias, TypeVar, cast, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    RootModel,
+    create_model,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self, TypedDict
 
 from polylogue.archive.models import Message, Session, SessionSummary
@@ -158,6 +167,43 @@ class SurfacePayloadModel(BaseModel):
         # Apply overrides
         payload_fields.update(field_overrides)
         return cls(**payload_fields)
+
+
+PageItemT = TypeVar("PageItemT")
+
+
+class Page(BaseModel, Generic[PageItemT]):
+    """Bounded results with an explicit, non-page-derived denominator."""
+
+    items: tuple[PageItemT, ...]
+    matched: int | None
+    returned: int
+    truncated: bool
+    continuation: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def _validate_page(self) -> Self:
+        if self.returned != len(self.items):
+            raise ValueError("returned must equal the number of items")
+        if self.matched is not None and self.matched < self.returned:
+            raise ValueError("matched cannot be smaller than returned")
+        if self.truncated != (self.matched is None or self.matched > self.returned):
+            raise ValueError("truncated must reflect matched and returned")
+        return self
+
+
+def make_page(items: Sequence[PageItemT], *, matched: int | None, continuation: str | None = None) -> Page[PageItemT]:
+    """Construct a page; callers must supply the authoritative denominator."""
+    page_items = tuple(items)
+    return Page(
+        items=page_items,
+        matched=matched,
+        returned=len(page_items),
+        truncated=matched is None or matched > len(page_items),
+        continuation=continuation,
+    )
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -2248,6 +2294,7 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
         candidate_statuses: Sequence[str | AssertionStatus] | None = None,
         evidence_previews: Mapping[str, Sequence[AssertionEvidencePreviewPayload]] | None = None,
         now_ms: int | None = None,
+        matched: int | None = None,
     ) -> AssertionCandidateReviewListPayload:
         preview_map = evidence_previews or {}
         items = tuple(
@@ -2260,7 +2307,7 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
         )
         return cls(
             items=items,
-            total=len(items),
+            total=len(items) if matched is None else matched,
             limit=limit,
             target_ref=target_ref,
             candidate_statuses=None
@@ -3291,12 +3338,19 @@ QueryUnitRowPayload: TypeAlias = (
 """Union of terminal row payloads returned by explicit unit-source queries."""
 
 
+class QueryUnitProjectedRowPayload(RootModel[dict[str, Any]]):
+    """Generic field-name keyed row emitted by an explicit query projection."""
+
+
+QueryUnitProjectedRows: TypeAlias = tuple[QueryUnitProjectedRowPayload, ...]
+
+
 _QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
     "items": {
         "additionalProperties": True,
         "properties": {
             "kind": {
-                "enum": ["session_scope", "sort", "limit", "offset", "group", "count"],
+                "enum": ["session_scope", "sort", "limit", "offset", "group", "count", "agg", "transform", "terminal"],
                 "type": "string",
             },
             "predicate": {"type": "object"},
@@ -3304,6 +3358,8 @@ _QUERY_UNIT_PIPELINE_STAGE_SCHEMA: Any = {
             "value": {"type": "integer"},
             "field": {"type": "string"},
             "metric": {"enum": ["count"], "type": "string"},
+            "name": {"type": "string"},
+            "args": {"type": "object"},
         },
         "required": ["kind"],
         "type": "object",
@@ -3338,6 +3394,8 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitRowPayload, ...]
+    projected_items: QueryUnitProjectedRows = ()
+    """Requested field projections, kept additive to the typed ``items``."""
     pipeline: dict[str, object] | None = None
     """Typed source-to-result pipeline that shaped this terminal-unit page."""
     pipeline_stages: tuple[dict[str, object], ...] = Field(
@@ -3457,6 +3515,7 @@ def build_query_unit_envelope(
     has_next: bool,
     pipeline: Mapping[str, object] | None = None,
     pipeline_stages: Sequence[Mapping[str, object]] = (),
+    projected_items: Sequence[QueryUnitProjectedRowPayload] = (),
     query_ref: str | None = None,
     result_ref: str | None = None,
     continuation: str | None = None,
@@ -3468,6 +3527,7 @@ def build_query_unit_envelope(
         unit=unit,
         query=query,
         items=items_tuple,
+        projected_items=tuple(projected_items),
         pipeline=dict(pipeline) if pipeline is not None else None,
         pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
         total=len(items_tuple),
@@ -4387,6 +4447,7 @@ __all__ = [
     "QueryUnitKind",
     "QueryUnitResultEnvelope",
     "QueryUnitRowPayload",
+    "QueryUnitProjectedRowPayload",
     "RunQueryRowPayload",
     "QueryMissDiagnosticsPayload",
     "QueryMissReasonPayload",

@@ -43,17 +43,18 @@ def _seed_archive_with_orphan_fts(db_path: Path) -> None:
         conn.close()
 
 
-def test_fts_stage_detects_orphan_docsize_overcount(tmp_path: Path) -> None:
+def test_fts_stage_reports_trigger_loss_without_runtime_repair(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.sqlite"
     _seed_archive_with_orphan_fts(db_path)
 
     stage = make_fts_stage(db_path)
 
     assert stage.check(tmp_path / "unknown-source.jsonl") is True
-    assert stage.execute(tmp_path / "unknown-source.jsonl") is True
+    assert stage.execute(tmp_path / "unknown-source.jsonl") is False
 
     conn = sqlite3.connect(db_path)
     try:
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts_ad'").fetchone() is None
     finally:
         conn.close()

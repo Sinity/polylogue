@@ -84,6 +84,13 @@ def _read_process_tree_rss_kb(pid: int) -> int:
     return sum(_read_vm_rss_kb(tree_pid) for tree_pid in _process_tree_pids(pid))
 
 
+def _read_process_tree_components_kb(pid: int) -> tuple[int, int]:
+    """Return ``(root, descendants)`` RSS without losing process scope."""
+    pids = _process_tree_pids(pid)
+    root = _read_vm_rss_kb(pid)
+    return root, sum(_read_vm_rss_kb(child) for child in pids if child != pid)
+
+
 def _command_input_id(command: list[str]) -> str:
     encoded = json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return f"command:sha256:{hashlib.sha256(encoded).hexdigest()}"
@@ -94,16 +101,21 @@ def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: f
     started = time.perf_counter()
     proc = subprocess.Popen(command)
     peak_parent_rss_kb = 0
+    peak_children_rss_kb = 0
+    peak_tree_rss_kb = 0
     peak_rss_kb = 0
 
     while proc.poll() is None:
         peak_parent_rss_kb = max(peak_parent_rss_kb, _read_vm_rss_kb(proc.pid))
-        peak_rss_kb = max(peak_rss_kb, _read_process_tree_rss_kb(proc.pid))
+        parent_rss_kb, children_rss_kb = _read_process_tree_components_kb(proc.pid)
+        combined_rss_kb = parent_rss_kb + children_rss_kb
+        if combined_rss_kb > peak_tree_rss_kb:
+            peak_tree_rss_kb = combined_rss_kb
+            peak_parent_rss_kb = parent_rss_kb
+            peak_children_rss_kb = children_rss_kb
         time.sleep(poll_interval_s)
 
-    peak_parent_rss_kb = max(peak_parent_rss_kb, _read_vm_rss_kb(proc.pid))
-    peak_rss_kb = max(peak_rss_kb, _read_process_tree_rss_kb(proc.pid))
-    peak_rss_kb = max(peak_rss_kb, peak_parent_rss_kb)
+    peak_rss_kb = peak_tree_rss_kb or peak_parent_rss_kb
     exit_code = int(proc.returncode or 0)
     peak_parent_rss_mb = round(peak_parent_rss_kb / 1024, 1)
     peak_rss_mb = round(peak_rss_kb / 1024, 1)
@@ -136,6 +148,8 @@ def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: f
                 name="execute",
                 wall_ms=duration_ms,
                 peak_rss_bytes=peak_rss_kb * 1024,
+                peak_rss_self_bytes=peak_parent_rss_kb * 1024,
+                peak_rss_children_bytes=peak_children_rss_kb * 1024,
                 unavailable=(
                     "cpu_ms",
                     "current_rss_bytes",

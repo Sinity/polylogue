@@ -274,7 +274,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # NOT executed by this declaration.
 
 # polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, an immutable
-# per-row audit record for `polylogue.maintenance.agent_meta_sidecar_purge_apply`
+# per-row audit record for the retired one-shot sidecar purge actuator
 # -- the targeted actuator that deletes the ~4,945 pre-2026-07-28
 # `agent-<hash>.meta.json` subagent-sidecar phantom sessions found by the
 # polylogue-b508 audit (a fixed producer bug materialized a per-subagent

@@ -216,9 +216,14 @@ class QueryLineagePredicate:
     """Session-topology predicate selecting the seed's logical lineage."""
 
     seed_session_id: str
+    logical: bool = False
 
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "lineage", "unit": "session", "seed_session_id": self.seed_session_id}
+        return {
+            "kind": "logical" if self.logical else "lineage",
+            "unit": "session",
+            "seed_session_id": self.seed_session_id,
+        }
 
 
 QueryPredicate: TypeAlias = (
@@ -360,11 +365,11 @@ def predicate_from_payload(payload: Mapping[str, object]) -> QueryPredicate:
         if not isinstance(text, str) or not text:
             raise ValueError("semantic predicate requires non-empty 'text'")
         return QuerySemanticPredicate(text=text)
-    if kind == "lineage":
+    if kind in ("lineage", "logical"):
         seed = payload.get("seed_session_id")
         if not isinstance(seed, str) or not seed:
             raise ValueError("lineage predicate requires non-empty 'seed_session_id'")
-        return QueryLineagePredicate(seed_session_id=seed)
+        return QueryLineagePredicate(seed_session_id=seed, logical=kind == "logical")
     raise ValueError(f"unsupported predicate payload kind: {kind!r}")
 
 

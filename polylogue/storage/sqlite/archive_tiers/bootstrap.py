@@ -8,6 +8,7 @@ import hashlib
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -179,7 +180,9 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
             loaded, _error = try_load_sqlite_vec(conn)
             if not loaded:
                 return False
-        with contextlib.closing(sqlite3.connect(prototype)) as source:
+        with contextlib.closing(
+            sqlite3.connect(f"{prototype.resolve(strict=True).as_uri()}?mode=ro", uri=True)
+        ) as source:
             source.backup(conn)
         stored = int(conn.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.Error:
@@ -199,12 +202,31 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
     with _TIER_PROTOTYPE_LOCK:
         if key in _TIER_PROTOTYPES:
             return
+    staging: Path | None = None
     try:
         destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}.db"
-        with contextlib.closing(sqlite3.connect(destination)) as target:
+        staging_fd, staging_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+        )
+        os.close(staging_fd)
+        staging = Path(staging_name)
+        with contextlib.closing(sqlite3.connect(staging)) as target:
             conn.backup(target)
+        staging.chmod(staging.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        os.replace(staging, destination)
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except (OSError, sqlite3.Error):
         return
+    finally:
+        if staging is not None:
+            with contextlib.suppress(OSError):
+                staging.unlink(missing_ok=True)
     with _TIER_PROTOTYPE_LOCK:
         _TIER_PROTOTYPES.setdefault(key, destination)
 
@@ -230,6 +252,23 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
+    if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
+        digest = _tier_prototype_key(tier, spec.version)[2]
+        state = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'polylogue_ops_schema_state'"
+        ).fetchone()
+        current = (
+            state is not None
+            and conn.execute(
+                "SELECT 1 FROM polylogue_ops_schema_state WHERE schema_digest = ?",
+                (digest,),
+            ).fetchone()
+            is not None
+        )
+        if current:
+            _apply_archive_tier_convergence(conn, tier, spec)
+            _record_tier_init(tier, "schema_convergence")
+            return
     if tier in _PROTOTYPE_CACHEABLE_TIERS:
         object_count = int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0])
         if object_count == 0:
@@ -296,6 +335,16 @@ def _apply_archive_tier_convergence(
         apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
+    if tier is ArchiveTier.OPS:
+        # OPS is the one schema that intentionally has additive same-version
+        # convergence.  Remember which DDL was applied so an already-current
+        # database can take the cheap convergence-only route on its next open.
+        # The table is internal bootstrap state; it is included in the
+        # prototype snapshot and therefore does not make prototypes writable
+        # or share state between archive roots.
+        from polylogue.storage.sqlite.archive_tiers.ops_write import _record_ops_schema_state
+
+        _record_ops_schema_state(conn, _tier_prototype_key(tier, spec.version)[2])
     # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
     # rewrites the database header even when N is already the stored value, so an
     # unconditional write dirties a page on every same-version reapply and turns a

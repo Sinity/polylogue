@@ -269,6 +269,39 @@ def test_durable_tier_identity_change_during_linking_is_rejected(
         store.create(owner_id="operator", source_snapshot="snapshot-a")
 
 
+@pytest.mark.parametrize(
+    "failure_target",
+    ("initialize", "write"),
+)
+def test_create_removes_generation_root_when_materialization_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_target: str
+) -> None:
+    """A failed candidate build cannot leave an unenumerable generation directory.
+
+    Anti-vacuity: each failure is injected after ``root.mkdir``. Removing the
+    cleanup around the production create path leaves a ``gen-*`` directory
+    without ``generation.json``, which later blocks archive-root relocation.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    if failure_target == "initialize":
+        monkeypatch.setattr(
+            "polylogue.storage.index_generation.initialize_archive_database",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("index unavailable")),
+        )
+    else:
+        monkeypatch.setattr(
+            store,
+            "_write",
+            lambda generation: (_ for _ in ()).throw(OSError("metadata unavailable")),
+        )
+
+    with pytest.raises(OSError):
+        store.create(owner_id="operator", source_snapshot="snapshot-a")
+
+    assert tuple(store.generations_root.glob("gen-*")) == ()
+
+
 def test_capture_blob_directory_identity_is_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _archive(tmp_path)
     blob = tmp_path / "blob"

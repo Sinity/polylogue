@@ -432,6 +432,11 @@ class _SessionEmitter:
             source_index=source_index,
             file_mtime=self._ctx.file_mtime,
             provider_hint=provider_override or self._ctx.provider_hint,
+            sidecar_snapshot=(
+                dict(self._ctx.sidecar_data)
+                if (provider_override or self._ctx.provider_hint) is Provider.CODEX
+                else None
+            ),
         )
 
     def _maybe_enrich(

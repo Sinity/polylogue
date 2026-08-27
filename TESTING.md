@@ -32,6 +32,22 @@ nix flake check
 AgentCTL owns scratch placement and cleanup for declared verification jobs.
 Foreground commands use pytest's ordinary temporary-directory behavior.
 
+### Typed WebUI package checks
+
+Run the package-owned generated-contract, lint, type, unit, client-contract,
+and build checks through the project-level route:
+
+```bash
+devtools verify webui
+```
+
+For the managed deployed-reader browser smoke, use the declared AgentCTL
+operation:
+
+```bash
+agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
+```
+
 ### First-party browser credential journey
 
 The browser security journey launches the production daemon against a fresh,

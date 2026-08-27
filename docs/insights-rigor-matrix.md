@@ -56,36 +56,12 @@ API.
 - Consumer-facing fields: `session_id`, `provider_name`, `title`,
   `semantic_tier`, `evidence`, `inference`, `enrichment`,
   `provenance`, `inference_provenance`, `enrichment_provenance`.
-- Notes (heuristic-tier inventory, polylogue-b0b): `inference.terminal_state`
-  (`archive/session/runtime.py::_terminal_state`) now prefers a structural,
-  session-wide `tool_id -> outcome` map (`_session_tool_results`)
-  sourced from the keystone `blocks.tool_result_is_error`/
-  `tool_result_exit_code` columns (index schema v16) over the prior prose
-  `_ERROR_MARKERS` keyword scan for the mid-session error-action signal. The
-  lookup is session-wide (mirroring `_pending_tool_blocks` and
-  `insights/transforms.py::_extract_events`) rather than routed through the
-  per-message `Action`/`ToolCall` pairing, because Claude/Codex-style
-  transcripts near-always place a `tool_use` in one message and its
-  `tool_result` in a later message — per-message pairing alone would miss
-  the common case. That structural signal is origin-gated, not universal
-  (polylogue-9e5.3 audit): `tool_result_is_error`
-  is well-populated only for claude-code-session (44.8%) and claude-ai-export
-  (100% of a small volume), 0% for chatgpt-export/hermes-session/
-  aistudio-drive; `tool_result_exit_code` is populated only for
-  codex-session, and just 14.2% of even that. For origins/results with no
-  structural coverage the code falls back to the tagged text scan rather
-  than reporting a false negative. Every branch of `_terminal_state` now
-  returns an `evidence_class` key in `inference.terminal_state_evidence` —
-  `raw_evidence` (tool-pairing counts, the structural action signal, the
-  provider-emitted session-event status field, or message role) or
-  `text_derived` (the last-message `_ERROR_MARKERS` scan and its
-  `clean_finish` complement, and the structural-fallback text scan above).
-  Consumers needing only grounded rows should filter on
-  `inference.terminal_state_evidence.evidence_class == 'raw_evidence'`.
-  `session_work_events`' sibling classifier's 50.5% (coin-flip) accuracy
-  finding (9e5.9, below) is the reason this scan was not simply deleted: not
-  measured as reliable, but not proven unreliable enough to remove entirely
-  while the last-resort fallback path still has explicit provenance.
+- Notes: `inference.terminal_state` is structural. It uses tool pairing,
+  provider-reported result fields, typed session-event status, and message
+  role. Missing structural evidence remains `unknown`. The deterministic
+  session digest does not extract run state or decision candidates from
+  message prose. Those judgments belong to a model-authored product or an
+  explicit typed annotation.
 
 ### `session_work_events` — Work Events
 
@@ -99,32 +75,11 @@ API.
   rows with `inference.fallback_inference == True` were emitted by the
   heuristic fallback and should be treated as low-rigor.
 - Boundary: `inference.heuristic_label` is a coarse event label inferred from
-  local file/tool/text signals. It is not the session-level workflow taxonomy;
+  local file/tool signals. It is not the session-level workflow taxonomy;
   consumers that need whole-session semantics should use
   `session_profiles.workflow_shape` and `session_profiles.terminal_state`.
-- Notes (heuristic-tier inventory, #b0b.1): the activity-type classifier
-  (`inference.heuristic_label` — planning/debugging/testing/review/
-  refactoring/documentation/configuration/data_analysis,
-  `archive/session/extraction.py` `_TEXT_SIGNAL_TABLE`) has no structural
-  signal to convert to — unlike outcome/pathology fields
-  (`tool_result_is_error`, `tool_result_exit_code`), there is no structural
-  proxy for "what category of work is this"; keyword text matching against
-  user messages is the only available signal, and it is a fallback checked
-  only after action-category (tool-use) evidence, per `_classify_range`. As
-  of #b0b.1 the keyword match is word-boundary-anchored (previously a naive
-  substring check that false-positived on unrelated words, e.g. `fix`
-  inside `prefix`, `test` inside `latest`, `config` inside `reconfigured`)
-  — a correctness fix to the matching mechanism, not a claim about its
-  predictive value.
-  **Unverified accuracy (9e5.9):** this field's real-world precision has
-  never been measured against ground truth — 9e5.9's closing evidence found
-  the sibling keyword heuristic in the same file (`runtime.py`
-  `_terminal_state`'s `_ERROR_MARKERS` fallback) scores only 50.5% agreement
-  (coin-flip level) against structural ground truth
-  (`tool_result_is_error`/`exit_code`) on 14,377 real runs. Do not treat
-  `heuristic_label` as a reliable signal until this classifier gets its own
-  accuracy measurement; consumers should treat it as a weak, unverified
-  prior, not a trustworthy label.
+- Notes: activity labels use action-category evidence only. The deterministic
+  digest does not turn message prose into run-state or decision claims.
 - Consumer-facing fields: `event_id`, `session_id`,
   `provider_name`, `event_index`, `evidence`, `inference`.
 

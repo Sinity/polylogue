@@ -41,3 +41,26 @@ def test_refuses_to_guess_for_unsupported_origin() -> None:
     assert route.status == "unsupported"
     assert route.command is None
     assert route.detail is not None
+
+
+def test_open_detection_is_optional_and_pluggable() -> None:
+    class Detector:
+        def is_open(self, session: Session) -> bool:
+            return session.id == "codex-session:open-native"
+
+    open_route = route_resume(_session(Origin.CODEX_SESSION, "open-native"), open_detector=Detector())
+    closed_route = route_resume(_session(Origin.CODEX_SESSION, "closed-native"), open_detector=Detector())
+
+    assert open_route.open_state == "open"
+    assert closed_route.open_state == "closed"
+
+
+def test_failed_open_detection_degrades_to_unknown() -> None:
+    class BrokenDetector:
+        def is_open(self, session: Session) -> bool:
+            raise RuntimeError("desktop control plane unavailable")
+
+    route = route_resume(_session(Origin.CLAUDE_CODE_SESSION), open_detector=BrokenDetector())
+
+    assert route.status == "supported"
+    assert route.open_state == "unknown"

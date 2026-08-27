@@ -37,6 +37,7 @@ from typing import Any, cast, get_type_hints
 import pytest
 
 from polylogue import Polylogue
+from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
 from polylogue.api.archive import SessionNotFoundError
@@ -242,6 +243,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "delete_annotation",
         "list_annotations",
         "neighbor_candidates",
+        "topic_pack",
         "context_image_payload",
         "context_preamble_payload",
         "compile_context",
@@ -2061,6 +2063,25 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
                 status=AssertionStatus.ACTIVE,
                 author_kind="user",
                 now_ms=1,
+            )
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            archive_db.save_annotation_batch(
+                AnnotationBatch(
+                    batch_id="fable-facade-batch-v1",
+                    schema_id="delegation.discourse",
+                    schema_version=1,
+                    target_ref=f"delegation:{instruction_block_id}",
+                    source_result_ref="result-set:fable-facade-source-v1",
+                    actor_ref="user:fable-fixture",
+                    model_ref="agent:fable-fixture",
+                    prompt_ref="agent:fable-prompt-fixture",
+                    total_count=1,
+                    valid_count=1,
+                    invalid_count=0,
+                    abstained_count=0,
+                    assertion_refs=("assertion:fable-facade-label-v1",),
+                    created_at_ms=1,
+                )
             )
 
         packet = await archive.regenerate_private_fable_packet(seed="facade-test", requested_size=1)

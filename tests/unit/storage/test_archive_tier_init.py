@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -103,6 +106,86 @@ def test_tier_init_counts_separate_page_copy_from_fresh_ddl(tmp_path: Path) -> N
     assert counts["index.prototype_hit"] == 1
 
 
+def test_all_six_tiers_reuse_immutable_prototypes(tmp_path: Path) -> None:
+    """Every cache-safe tier pays fresh DDL once, including OPS and embeddings."""
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    bootstrap.reset_archive_tier_init_counts()
+    bootstrap._TIER_PROTOTYPES.clear()
+    tiers = tuple(ArchiveTier)
+    try:
+        for index, tier in enumerate(tiers):
+            first = sqlite3.connect(tmp_path / f"first-{index}.db")
+            try:
+                if tier is ArchiveTier.EMBEDDINGS:
+                    loaded, error = try_load_sqlite_vec(first)
+                    if not loaded:
+                        pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+                bootstrap.initialize_archive_tier(first, tier)
+            finally:
+                first.close()
+
+            second = sqlite3.connect(tmp_path / f"second-{index}.db")
+            try:
+                if tier is ArchiveTier.EMBEDDINGS:
+                    loaded, error = try_load_sqlite_vec(second)
+                    if not loaded:
+                        pytest.skip(f"sqlite-vec extension is unavailable: {error}")
+                bootstrap.initialize_archive_tier(second, tier)
+            finally:
+                second.close()
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
+
+    counts = bootstrap.archive_tier_init_counts()
+    for tier in tiers:
+        assert counts[f"{tier.value}.ddl_fresh"] == 1
+        assert counts[f"{tier.value}.prototype_hit"] == 1
+
+
+def test_tier_prototype_is_atomically_published_and_restored_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prototype publication never exposes a writable cache file.
+
+    Anti-vacuity: direct prototype copies or a normal SQLite open make this
+    fail by omitting the same-directory replacement or the read-only URI.
+    """
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    bootstrap._TIER_PROTOTYPES.clear()
+    try:
+        replacements: list[tuple[Path, Path]] = []
+        real_replace = os.replace
+
+        def record_replace(source: str | Path, destination: str | Path) -> None:
+            source_path = Path(source)
+            destination_path = Path(destination)
+            replacements.append((source_path, destination_path))
+            real_replace(source_path, destination_path)
+
+        monkeypatch.setattr(os, "replace", record_replace)
+        bootstrap.initialize_archive_database(tmp_path / "first.db", ArchiveTier.INDEX)
+
+        prototype = next(iter(bootstrap._TIER_PROTOTYPES.values()))
+        assert prototype.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) == 0
+        assert len(replacements) == 1
+        staging, published = replacements[0]
+        assert published == prototype
+        assert staging.parent == prototype.parent
+        assert not staging.exists()
+
+        connect_spy = Mock(wraps=sqlite3.connect)
+        monkeypatch.setattr(sqlite3, "connect", connect_spy)
+        bootstrap.initialize_archive_database(tmp_path / "second.db", ArchiveTier.INDEX)
+
+        connect_spy.assert_any_call(prototype.resolve().as_uri() + "?mode=ro", uri=True)
+    finally:
+        bootstrap._TIER_PROTOTYPES.clear()
+
+
 def test_tier_prototype_key_includes_rendered_ddl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A same-version DDL variant must not receive a prototype from older DDL.
 
@@ -176,17 +259,15 @@ def test_cached_index_prototype_replays_same_version_convergence(
     assert counts["index.prototype_hit"] == 1
 
 
-def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Path) -> None:
-    """Only ops.db re-executes its WHOLE schema on a same-version open.
+def test_tier_init_counts_use_ops_convergence_after_schema_is_known(tmp_path: Path) -> None:
+    """OPS performs one compatibility reapply, then uses cheap convergence.
 
-    ``initialize_archive_database`` treats an existing same-version tier three
-    different ways: INDEX gets its targeted benign-DDL convergence, USER gets
-    its annotation-schema ensure, and OPS alone routes back through
-    ``initialize_archive_tier`` -- which, finding a non-empty database, runs
-    the entire tier DDL again for its ``IF NOT EXISTS`` idempotence. Every one
-    of those is a redundant executescript plus its commit fsync, and this
-    counter is what makes the asymmetry measurable rather than a code-reading
-    exercise.
+    A database created before the sentinel exists still gets one full,
+    idempotent DDL pass so additive same-version tables are not lost.  That
+    pass records the applied DDL digest; later opens run only the existing
+    convergence repairs. Anti-vacuity: removing the fallback would make a
+    legacy OPS database silently miss additive tables, while removing the
+    sentinel check would return to one whole DDL pass per open.
     """
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
@@ -198,8 +279,11 @@ def test_tier_init_counts_expose_the_ops_only_whole_schema_reapply(tmp_path: Pat
 
     counts = bootstrap.archive_tier_init_counts()
 
-    # First call creates each tier; the two that follow are same-version opens.
-    assert counts["ops.ddl_reapply"] == 2
+    # The first call creates and fingerprints the tier; both subsequent opens
+    # are convergence-only. Legacy files without the sentinel still use the
+    # guarded fallback described above.
+    assert "ops.ddl_reapply" not in counts
+    assert counts["ops.schema_convergence"] == 2
     assert "index.ddl_reapply" not in counts
 
 
@@ -239,6 +323,32 @@ def test_embeddings_prototype_restore_keeps_sqlite_vec_ready(tmp_path: Path) -> 
     counts = bootstrap.archive_tier_init_counts()
     assert counts["embeddings.ddl_fresh"] == 1
     assert counts["embeddings.prototype_hit"] == 1
+
+
+def test_embeddings_init_fails_before_vec_ddl_when_extension_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing sqlite-vec must not be masked by vec0 DDL parsing.
+
+    Anti-vacuity: removing the guard in ``_initialize_archive_tier_ddl`` makes
+    initialization execute the ``+model`` vec0 declaration without the
+    extension and raises SQLite's misleading ``near \"+\"`` syntax error.
+    """
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    bootstrap._TIER_PROTOTYPES.clear()
+
+    def _fail_vec_load(conn: sqlite3.Connection) -> tuple[bool, Exception | None]:
+        del conn
+        return False, RuntimeError("simulated sqlite-vec load failure")
+
+    monkeypatch.setattr(bootstrap, "try_load_sqlite_vec", _fail_vec_load)
+
+    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+        with pytest.raises(RuntimeError, match="archive embeddings initialization requires sqlite-vec"):
+            bootstrap.initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone() == (0,)
 
 
 # ---------------------------------------------------------------------------

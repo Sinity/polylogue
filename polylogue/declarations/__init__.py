@@ -41,7 +41,7 @@ from polylogue.declarations.models import (
     JSONValue,
     OutputSpec,
 )
-from polylogue.declarations.registry import DeclarationConflictError, DeclarationRegistry
+from polylogue.declarations.registry import DeclarationConflictError, DeclarationRegistry, DeclarationRegistryProtocol
 from polylogue.declarations.validation import Diagnostic, validate_declaration, validate_registry
 
 __all__ = [
@@ -54,6 +54,7 @@ __all__ = [
     "DeclarationConflictError",
     "DeclarationDeriver",
     "DeclarationRegistry",
+    "DeclarationRegistryProtocol",
     "DeclarationSpec",
     "DerivationInput",
     "Diagnostic",

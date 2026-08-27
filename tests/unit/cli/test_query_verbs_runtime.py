@@ -148,15 +148,15 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
         wrapped_analyze(child, True, None, False, False, None, "linear", False, False, None, 5)
 
 
-def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
+def test_read_direct_non_session_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
     _, child = _context_pair()
     child.obj = SimpleNamespace(polylogue=SimpleNamespace(resolve_ref=lambda ref: f"resolve:{ref}"))
     wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped_read)
     payload = PublicRefResolutionPayload(
-        ref="session:abc",
-        normalized_ref="session:abc",
-        kind="session",
+        ref="message:abc",
+        normalized_ref="message:abc",
+        kind="message",
         resolved=True,
         payload_kind="session-summary",
         payload={"id": "abc", "title": "Resolved"},
@@ -165,14 +165,32 @@ def test_read_direct_ref_emits_shared_resolution_payload(capsys: pytest.CaptureF
     with patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=payload) as run_sync:
         wrapped_read(
             ctx=child,
-            **_read_verb_kwargs(view="summary", output_format="json", ref="session:abc"),
+            **_read_verb_kwargs(view="summary", output_format="json", ref="message:abc"),
         )
 
     run_sync.assert_called_once()
     emitted = json.loads(capsys.readouterr().out)
     assert emitted["mode"] == "ref-resolution"
-    assert emitted["normalized_ref"] == "session:abc"
+    assert emitted["normalized_ref"] == "message:abc"
     assert emitted["payload"]["id"] == "abc"
+
+
+def test_read_direct_session_ref_uses_selected_read_view() -> None:
+    """A positional session ref follows the same profile path as find-then-read."""
+    _, child = _context_pair()
+    wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped_read)
+
+    with patch("polylogue.cli.query_verbs.run_read_view") as run_read_view:
+        wrapped_read(
+            child,
+            **_read_verb_kwargs(view="messages", output_format="json", limit=3, ref="session:codex:abc"),
+        )
+
+    invocation = run_read_view.call_args.args[2]
+    assert invocation.view == "messages"
+    assert invocation.session_id == "codex:abc"
+    assert invocation.options.limit == 3
 
 
 def test_analyze_verb_toggles_stats_only_and_updates_grouping() -> None:

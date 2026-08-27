@@ -153,8 +153,8 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",
-        "text/html web shell",
-        "HTML bootstrap only; shell JavaScript obtains an HttpOnly first-party credential before /api calls.",
+        "semantic archive overview HTML",
+        "Canonical typed WebUI overview; browser data access remains behind the authenticated /api boundary.",
     ),
     RouteContract(
         "GET",
@@ -225,8 +225,8 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",
-        "text/html web shell",
-        "Session deep-link bootstrap.",
+        "semantic session read HTML",
+        "Typed WebUI session deep-link; equivalent to /sessions/:session_id.",
     ),
     RouteContract(
         "GET",

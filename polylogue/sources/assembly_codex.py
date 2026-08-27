@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.core.enums import MaterialOrigin, TitleSource
@@ -18,27 +18,6 @@ from .parsers.base import ParsedSession
 logger = get_logger(__name__)
 
 _TITLE_PREVIEW_LIMIT = 80
-
-# Per-process sidecar parse cache keyed by absolute path, validated by
-# (mtime_ns, size). Canonical raw-record ingest discovers sidecars once per
-# raw record; without this cache a catch-up batch re-reads the same
-# append-only sidecar files thousands of times.
-_SIDECAR_CACHE: dict[str, tuple[tuple[int, int], dict[str, str]]] = {}
-
-
-def _cached_parse(path: Path, parse: Callable[[Path], dict[str, str]]) -> dict[str, str]:
-    try:
-        stat = path.stat()
-    except OSError:
-        return {}
-    key = str(path)
-    fingerprint = (stat.st_mtime_ns, stat.st_size)
-    cached = _SIDECAR_CACHE.get(key)
-    if cached is not None and cached[0] == fingerprint:
-        return cached[1]
-    data = parse(path)
-    _SIDECAR_CACHE[key] = (fingerprint, data)
-    return data
 
 
 def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
@@ -54,7 +33,7 @@ def _parse_codex_session_index(sessions_root: Path) -> dict[str, str]:
     index_path = sessions_root.parent / "session_index.jsonl"
     if not index_path.exists():
         return {}
-    return _cached_parse(index_path, _parse_session_index_file)
+    return _parse_session_index_file(index_path)
 
 
 def _parse_session_index_file(index_path: Path) -> dict[str, str]:
@@ -92,7 +71,7 @@ def _parse_codex_history(sessions_root: Path) -> dict[str, str]:
     history_path = sessions_root.parent / "history.jsonl"
     if not history_path.exists():
         return {}
-    return _cached_parse(history_path, _parse_history_file)
+    return _parse_history_file(history_path)
 
 
 def _parse_history_file(history_path: Path) -> dict[str, str]:
@@ -138,7 +117,7 @@ def _parse_codex_state_titles(sessions_root: Path) -> dict[str, str]:
     state_path = sessions_root.parent / "state_5.sqlite"
     if not state_path.exists():
         return {}
-    return _cached_parse(state_path, _parse_state_db_file)
+    return _parse_state_db_file(state_path)
 
 
 def _parse_state_db_file(state_path: Path) -> dict[str, str]:

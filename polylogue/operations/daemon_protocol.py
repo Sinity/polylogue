@@ -52,19 +52,56 @@ class DaemonOperationSpec:
     cancellable: bool = True
     progress: bool = False
     accepted_reference: bool = False
+    request_contract: str = "object"
+    result_contract: str = "object"
+    error_contract: str = "polylogue.daemon-error/v1"
+    authority_metadata: tuple[str, ...] = (
+        "archive",
+        "generation",
+        "served_by",
+        "elapsed_ms",
+        "queue_ms",
+        "degraded_components",
+    )
 
     @property
     def direct_allowed(self) -> bool:
         return self.fallback is DaemonFallback.DIRECT_READ
 
+    def to_dict(self) -> dict[str, object]:
+        """Serialize the declaration for discovery and conformance checks."""
+        return {
+            "name": self.name,
+            "authority": self.authority.value,
+            "fallback": self.fallback.value,
+            "capability": self.capability,
+            "deadline_s": self.deadline_s,
+            "cancellable": self.cancellable,
+            "progress": self.progress,
+            "accepted_reference": self.accepted_reference,
+            "request_contract": self.request_contract,
+            "result_contract": self.result_contract,
+            "error_contract": self.error_contract,
+            "authority_metadata": list(self.authority_metadata),
+        }
+
 
 DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
-    DaemonOperationSpec("cli.query", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
-    DaemonOperationSpec("query.units", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
-    DaemonOperationSpec("status", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
-    DaemonOperationSpec("completion", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
-    DaemonOperationSpec("facets", DaemonAuthority.READ, DaemonFallback.DIRECT_READ),
+    DaemonOperationSpec(
+        "cli.query", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="cli.query.result/v1"
+    ),
+    DaemonOperationSpec(
+        "query.units", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="query.units.result/v1"
+    ),
+    DaemonOperationSpec("status", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="status.result/v1"),
+    DaemonOperationSpec(
+        "completion", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="completion.result/v1"
+    ),
+    DaemonOperationSpec("facets", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="facets.result/v1"),
 )
+
+if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
+    raise RuntimeError("daemon operation names must be unique")
 
 
 def daemon_operation_spec(name: str) -> DaemonOperationSpec | None:
@@ -84,14 +121,14 @@ class DaemonOperationRequest:
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> DaemonOperationRequest:
         protocol = raw.get("protocol")
-        if protocol is not None and protocol != DAEMON_OPERATION_PROTOCOL:
-            raise ValueError("unsupported daemon operation protocol")
         operation = raw.get("operation")
         payload = raw.get("payload", {})
         if not isinstance(operation, str) or not operation.strip():
             raise ValueError("operation must be a non-empty string")
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
+        if protocol != DAEMON_OPERATION_PROTOCOL:
+            raise ValueError("unsupported daemon operation protocol")
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
@@ -130,6 +167,11 @@ class DaemonOperationEnvelope:
     readiness: dict[str, object]
     authority: dict[str, object]
     progress: dict[str, object]
+    outcome: DaemonOutcome | str = DaemonOutcome.COMPLETE
+    served_by: dict[str, object] | None = None
+    timing: dict[str, object] | None = None
+    degraded_components: tuple[str, ...] = ()
+    schema_versions: dict[str, int] | None = None
     result: object = None
     error: dict[str, object] | None = None
     request_id: str | None = None
@@ -143,6 +185,11 @@ class DaemonOperationEnvelope:
             "readiness": self.readiness,
             "authority": self.authority,
             "progress": self.progress,
+            "outcome": self.outcome.value if isinstance(self.outcome, DaemonOutcome) else self.outcome,
+            "served_by": self.served_by or {},
+            "timing": self.timing or {},
+            "degraded_components": list(self.degraded_components),
+            "schema_versions": self.schema_versions or {},
             "result": self.result,
             "error": self.error,
             "request_id": self.request_id,
