@@ -8,6 +8,7 @@ import hashlib
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -179,7 +180,9 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
             loaded, _error = try_load_sqlite_vec(conn)
             if not loaded:
                 return False
-        with contextlib.closing(sqlite3.connect(prototype)) as source:
+        with contextlib.closing(
+            sqlite3.connect(f"{prototype.resolve(strict=True).as_uri()}?mode=ro", uri=True)
+        ) as source:
             source.backup(conn)
         stored = int(conn.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.Error:
@@ -199,12 +202,31 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
     with _TIER_PROTOTYPE_LOCK:
         if key in _TIER_PROTOTYPES:
             return
+    staging: Path | None = None
     try:
         destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}.db"
-        with contextlib.closing(sqlite3.connect(destination)) as target:
+        staging_fd, staging_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+        )
+        os.close(staging_fd)
+        staging = Path(staging_name)
+        with contextlib.closing(sqlite3.connect(staging)) as target:
             conn.backup(target)
+        staging.chmod(staging.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
+        os.replace(staging, destination)
+        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except (OSError, sqlite3.Error):
         return
+    finally:
+        if staging is not None:
+            with contextlib.suppress(OSError):
+                staging.unlink(missing_ok=True)
     with _TIER_PROTOTYPE_LOCK:
         _TIER_PROTOTYPES.setdefault(key, destination)
 
