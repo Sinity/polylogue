@@ -234,13 +234,15 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
     assert artifact.parse_as_session is False
     assert artifact.schema_eligible is False
     assert _parse_path_as_session_artifact(metadata_path, provider=Provider.ANTIGRAVITY) is False
+    # The payload shape cannot override the source-role contract. A renamed
+    # sidecar remains metadata-shaped evidence, never a session fallback.
     assert (
         classify_artifact(
             real_metadata,
             provider=Provider.ANTIGRAVITY,
             source_path=metadata_path.with_name("comprehensive_audit.json"),
         ).parse_as_session
-        is True
+        is False
     )
 
     archive_root = workspace_env["archive_root"]
@@ -279,8 +281,7 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
         (
             raw_id,
             "intentionally_excluded",
-            "artifact_taxonomy:Antigravity brain-artifact metadata sidecar "
-            "(superseded by language-server conversation export; polylogue-eo81)",
+            "artifact_taxonomy:OriginSpec antigravity artifact rule: brain_metadata_sidecar",
             ArtifactKind.AGENT_SIDECAR_META.value,
         )
     ]

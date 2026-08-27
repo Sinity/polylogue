@@ -63,6 +63,25 @@ def test_neighbors_view_maps_to_neighbor_projection_policy() -> None:
     assert spec.projection.neighbor_window_hours == 12
 
 
+def test_context_and_correlation_options_are_projection_policy() -> None:
+    spec = projection_from_views(
+        ("context", "correlation"),
+        context_related_limit=3,
+        context_max_sessions=4,
+        correlation_repo_path="/workspace/repo",
+        correlation_since_hours=6,
+        correlation_confidence_threshold=0.8,
+        correlation_github_api=False,
+    )
+
+    assert spec.projection.context_related_limit == 3
+    assert spec.projection.context_max_sessions == 4
+    assert spec.projection.correlation_repo_path == "/workspace/repo"
+    assert spec.projection.correlation_since_hours == 6
+    assert spec.projection.correlation_confidence_threshold == 0.8
+    assert spec.projection.correlation_github_api is False
+
+
 def test_context_image_view_maps_to_authored_dialogue_projection() -> None:
     spec = projection_from_views(("context-image",), max_tokens=1200, redact_paths=False)
 
