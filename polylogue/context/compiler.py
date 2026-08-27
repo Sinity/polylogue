@@ -27,6 +27,7 @@ from polylogue.surfaces.temporal_evidence import TemporalEvidenceWindow
 
 ContextPurpose = Literal["continue", "review", "handoff", "debug", "export"]
 ContextSegmentKind = Literal["read_view", "query_unit", "assertion", "caveat"]
+ContextSegmentProfile = Literal["default", "prose_with_refs"]
 ContextOmissionReason = Literal["budget", "unsupported", "not_found", "policy", "redacted", "missing_evidence"]
 DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION = 24
 DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE = 1_800
@@ -89,6 +90,7 @@ class ContextSpec(ArchiveInsightModel):
     include_assertions: bool = True
     include_candidates: bool = False
     redaction_policy: Literal["default", "raw-opt-in"] = "default"
+    segment_profile: ContextSegmentProfile = "default"
 
     @model_validator(mode="after")
     def _requires_seed(self) -> ContextSpec:
@@ -193,6 +195,86 @@ def compile_messages_context_segment(
         token_estimate=_estimate_tokens(markdown),
         lossiness="bounded_message_window" if caveats else "normalized_message_text",
     )
+
+
+def compile_prose_with_refs_context_segment(
+    *,
+    session_id: str,
+    title: str | None,
+    messages: Sequence[object],
+    max_tokens: int | None = None,
+    keep_last_messages: int = 4,
+    evidence_refs: Sequence[EvidenceRef] = (),
+) -> tuple[ContextSegment, bool]:
+    """Render authored prose verbatim and tools as independently resolvable refs.
+
+    The boolean reports whether prose was recapped to satisfy the budget. Tool
+    markers are never expanded into command arguments or result bodies.
+    """
+    rows: list[tuple[str, str, bool, str | None]] = []
+    for message in messages:
+        role = str(getattr(getattr(message, "role", None), "value", getattr(message, "role", "unknown")))
+        blocks = list(getattr(message, "blocks", ()) or ())
+        if not blocks:
+            text = getattr(message, "text", None)
+            if text:
+                rows.append((role, str(text), True, None))
+            continue
+        for index, raw_block in enumerate(blocks):
+            block = raw_block if isinstance(raw_block, dict) else {}
+            block_type = str(block.get("type") or "text")
+            if block_type in {"tool_use", "tool_result", "function_call", "function_call_output"}:
+                message_id = str(getattr(message, "id", ""))
+                tool_name = str(block.get("name") or block.get("tool_name") or block_type)
+                action_ref = f"action:{message_id}:{index}"
+                rows.append((role, f"<ref:{action_ref}> {tool_name}", False, action_ref))
+            else:
+                text = block.get("text", block.get("content"))
+                if text is not None:
+                    rows.append((role, str(text), True, None))
+
+    first_user = next((index for index, row in enumerate(rows) if row[0] == "user"), 0)
+    protected = {first_user}
+    protected.update(range(max(0, len(rows) - keep_last_messages), len(rows)))
+    recapped = False
+
+    def render(current: Sequence[tuple[str, str, bool, str | None]]) -> str:
+        lines = [
+            f"# Messages: {title or session_id}",
+            "",
+            "Expand action markers with resolve_ref before relying on them.",
+            "",
+        ]
+        lines.extend(f"{role}: {text}" for role, text, _prose, _ref in current)
+        return "\n".join(lines).rstrip() + "\n"
+
+    rendered = render(rows)
+    prose_budget = None if max_tokens is None else max(1, int(max_tokens * 0.6))
+    if prose_budget is not None and _estimate_tokens(rendered) > prose_budget:
+        mutable = list(rows)
+        for index, (role, text, is_prose, ref) in enumerate(rows):
+            if index in protected or not is_prose:
+                continue
+            words = text.split()
+            mutable[index] = (role, "[recap] " + " ".join(words[: min(12, len(words))]), is_prose, ref)
+            recapped = True
+            rendered = render(mutable)
+            if _estimate_tokens(rendered) <= prose_budget:
+                break
+
+    segment = ContextSegment(
+        segment_id=f"read-view:{session_id}:prose-with-refs",
+        kind="read_view",
+        title="Messages (prose with refs)",
+        markdown=rendered,
+        payload_kind="prose_with_refs",
+        object_refs=(ObjectRef(kind="session", object_id=session_id),),
+        evidence_refs=tuple(evidence_refs) or (EvidenceRef(session_id=session_id),),
+        token_estimate=_estimate_tokens(rendered),
+        lossiness="budget_recapped_prose" if recapped else "tool_content_as_refs",
+        caveats=("oldest unprotected prose collapsed to one-line recaps",) if recapped else (),
+    )
+    return segment, recapped
 
 
 def compile_query_unit_context_segment(envelope: object) -> ContextSegment:
@@ -571,11 +653,13 @@ __all__ = [
     "ContextPurpose",
     "ContextSegment",
     "ContextSegmentKind",
+    "ContextSegmentProfile",
     "ContextSnapshotRecord",
     "ContextSpec",
     "DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE",
     "DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION",
     "compile_messages_context_segment",
+    "compile_prose_with_refs_context_segment",
     "compile_query_unit_context_segment",
     "canonical_context_image_json",
     "context_image_sha256",

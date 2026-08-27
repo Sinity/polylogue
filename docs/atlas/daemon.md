@@ -82,8 +82,8 @@ Open pointer: `polylogue-uuf2g`.
 
 ## DISCREPANCIES
 
-- `CLAUDE.md` says the daemon owns all writes and the main process is the sole SQLite writer. Code enforces that policy inside daemon routes, but writable `ArchiveStore` entry points remain directly callable outside the coordinator (`CLAUDE.md:101-109`; `polylogue/storage/sqlite/archive_tiers/archive.py:1034-1083`; `polylogue/daemon/write_coordinator.py:1-6`).
-- `CLAUDE.md` compresses convergence to FTS, embeddings, and insights. The current default converger also includes raw parse recovery, raw-authority caching, Claude workflow, standing queries, and optional Sinex publication (`CLAUDE.md:103-107`; `polylogue/daemon/convergence_stages.py:1097-1136`).
+- The daemon contract says it owns all writes and the main process is the sole SQLite writer. Code enforces that policy inside daemon routes, but writable `ArchiveStore` entry points remain directly callable outside the coordinator (`polylogue/storage/sqlite/archive_tiers/archive.py:1034-1083`; `polylogue/daemon/write_coordinator.py:1-6`).
+- The repository contract compresses convergence to FTS, embeddings, and insights. The current default converger also includes raw parse recovery, raw-authority caching, Claude workflow, standing queries, and optional Sinex publication (`polylogue/daemon/convergence_stages.py:1097-1136`).
 - Operationally, the daemon is runtime-masked and inactive, so the documented live-owner posture is not the machine’s current state. This discrepancy is external runtime state, not represented in repository files.
 
-verified: 4abb7a80bca2160d27fdc799891305cf02b680ff 2026-08-25
+verified: 24be873c0 2026-08-27

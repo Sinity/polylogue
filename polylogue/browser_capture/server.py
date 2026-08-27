@@ -369,7 +369,37 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, BrowserActionPayload(action=action).model_dump(mode="json"))
             return
         if parsed.path.startswith("/v1/capture-jobs/"):
-            job_id = parsed.path.removeprefix("/v1/capture-jobs/")
+            suffix = parsed.path.removeprefix("/v1/capture-jobs/")
+            if suffix.endswith("/events"):
+                job_id = suffix.removesuffix("/events")
+                params = parse_qs(parsed.query)
+                try:
+                    protocol = int(params.get("client_protocol", ["-1"])[0])
+                    limit = min(max(int(params.get("limit", ["100"])[0]), 1), 500)
+                except ValueError:
+                    self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job_events_query")
+                    return
+                try:
+                    capture_job_events_payload = registry_for_receiver(
+                        self.server.config.spool_path, receiver_identity(self.server.config)
+                    ).events(
+                        job_id,
+                        {
+                            "provider": params.get("provider", [""])[0],
+                            "account_scope": params.get("account_scope", [""])[0],
+                            "client_protocol": protocol,
+                            "limit": limit,
+                        },
+                    )
+                except CaptureJobError as exc:
+                    self._capture_job_error(exc)
+                    return
+                except (sqlite3.Error, OSError) as exc:
+                    self._capture_job_storage_error(exc)
+                    return
+                self._send_json(HTTPStatus.OK, capture_job_events_payload)
+                return
+            job_id = suffix
             if not job_id or "/" in job_id:
                 self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
                 return
@@ -482,7 +512,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._browser_action_approval(action_id)
             return
         if path in {"/v1/capture-jobs", "/v1/capture-jobs/discover"} or (
-            path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update"))
+            path.startswith("/v1/capture-jobs/") and path.endswith(("/adopt", "/update", "/events"))
         ):
             self._capture_job_post(path)
             return
@@ -602,6 +632,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             elif path.endswith("/update"):
                 job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/update")
                 status, result = HTTPStatus.OK, registry.update(job_id, payload)
+            elif path.endswith("/events"):
+                job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/events")
+                status, result = HTTPStatus.OK, registry.event(job_id, payload)
             else:
                 job_id = path.removeprefix("/v1/capture-jobs/").removesuffix("/adopt")
                 status, result = HTTPStatus.OK, registry.adopt(job_id, payload)

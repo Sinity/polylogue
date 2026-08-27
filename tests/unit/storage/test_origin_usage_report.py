@@ -266,6 +266,54 @@ def test_origin_usage_report_labels_physical_and_logical_model_rollups(tmp_path:
     assert report_payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
 
 
+def test_logical_rollup_adds_normalized_prefix_tail_deltas(tmp_path: Path) -> None:
+    """Logical accounting combines a cumulative parent with a normalized child tail."""
+    conn = _connect(tmp_path / "index.db")
+    conn.executemany(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind, created_at_ms, updated_at_ms,
+            message_count, word_count, content_hash
+        ) VALUES ('codex-session', ?, ?, 'standard', 1, 1, 1, 1, zeroblob(32))
+        """,
+        [("rollup-parent", "parent"), ("rollup-child", "child")],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_profiles (session_id, logical_session_id, materialized_at, source_name)
+        VALUES (?, 'codex-session:rollup-parent', 'now', 'codex-session')
+        """,
+        [("codex-session:rollup-parent",), ("codex-session:rollup-child",)],
+    )
+    conn.executemany(
+        """
+        INSERT INTO session_model_usage (session_id, model_name, input_tokens, output_tokens,
+                                         cache_read_tokens, cache_write_tokens)
+        VALUES (?, 'gpt-5-codex', ?, ?, ?, ?)
+        """,
+        [("codex-session:rollup-parent", 80, 10, 20, 1), ("codex-session:rollup-child", 50, 15, 10, 2)],
+    )
+    conn.execute(
+        """
+        INSERT INTO session_links (
+            src_session_id, dst_origin, dst_native_id, resolved_dst_session_id,
+            link_type, branch_point_message_id, inheritance, observed_at_ms
+        ) VALUES ('codex-session:rollup-child', 'codex-session', 'rollup-parent',
+                  'codex-session:rollup-parent', 'fork', 'parent:message', 'prefix-sharing', 1)
+        """
+    )
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+    logical = next(row for row in report.origins if row.origin == "codex-session").logical_model_rollup_usage
+    assert logical.to_dict() == {
+        "input_tokens": 130,
+        "output_tokens": 25,
+        "cached_input_tokens": 30,
+        "cache_write_tokens": 3,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 188,
+    }
+
+
 def test_origin_usage_report_separates_priced_and_unpriced_repricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     conn.execute(

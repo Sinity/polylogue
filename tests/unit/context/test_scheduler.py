@@ -69,6 +69,51 @@ def test_unadopted_policy_is_dropped_but_quoted_evidence_is_admitted() -> None:
     assert policy_row.authority_verdict == "rejected"
 
 
+def test_only_adopted_operator_policy_enters_executable_partition() -> None:
+    source = _Source(
+        (
+            ContextItem(
+                ref="policy:approved",
+                content="use the configured formatter",
+                token_cost=1,
+                source="memory",
+                material_class="policy",
+                kind="policy",
+                trust_class="operator",
+                author_kind="user",
+                author_ref="user:operator",
+                status="active",
+                policy_refs=("policy:approved",),
+                authority_reason="adopted:operator",
+            ),
+        )
+    )
+    result = schedule_context(
+        (source,), moment="session_start", target_session="s1", execution_context=_context(), token_budget=1, now_ms=10
+    )
+    assert [item.ref for item in result.executable_policy] == ["policy:approved"]
+
+
+def test_build_ref_changes_when_admitted_content_changes() -> None:
+    first = schedule_context(
+        (_Source((ContextItem(ref="same", content="one", token_cost=1, source="memory"),)),),
+        moment="session_start",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+    second = schedule_context(
+        (_Source((ContextItem(ref="same", content="two", token_cost=1, source="memory"),)),),
+        moment="session_start",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+    assert first.build_ref != second.build_ref
+
+
 def test_ledger_is_idempotent_for_one_assembly() -> None:
     source = _Source((ContextItem(ref="e", content="e", token_cost=1, source="memory"),))
     result = schedule_context(

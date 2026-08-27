@@ -13,12 +13,23 @@ from datetime import UTC, datetime
 
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
 from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 
 OriginNormalizer = Callable[[str | None], str | None]
 IsoFromMilliseconds = Callable[[object], str | None]
+
+
+def _query_window_ms(value: str | None, *, upper: bool) -> int | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    milliseconds = int(parsed.timestamp() * 1000)
+    if upper and len(value) == 10:
+        milliseconds += 86_400_000 - 1
+    return milliseconds
 
 
 class ArchiveReadInsights:
@@ -114,6 +125,48 @@ class ArchiveReadInsights:
                 )
             )
         return result
+
+    def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
+        """Report normalized executed-command shapes from the actions view."""
+        request = query or CommandShapeUsageQuery()
+        where: list[str] = ["a.tool_command IS NOT NULL", "a.tool_command != ''"]
+        params: list[object] = []
+        if request.origin:
+            where.append("s.origin = ?")
+            params.append(self._normalize_origin(request.origin))
+        if request.session_id:
+            where.append("a.session_id = ?")
+            params.append(request.session_id)
+        if request.repository:
+            where.append(
+                "EXISTS (SELECT 1 FROM session_repos sr JOIN repos r ON r.repo_id = sr.repo_id "
+                "WHERE sr.session_id = a.session_id AND r.repo_name = ?)"
+            )
+            params.append(request.repository)
+        since_ms = _query_window_ms(request.since, upper=False)
+        until_ms = _query_window_ms(request.until, upper=True)
+        event_ms = "COALESCE(m.occurred_at_ms, s.sort_key_ms)"
+        if since_ms is not None:
+            where.append(f"{event_ms} >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append(f"{event_ms} <= ?")
+            params.append(until_ms)
+        rows = self._conn.execute(
+            f"""
+            SELECT a.tool_command, a.session_id, s.origin,
+                   (SELECT r.repo_name FROM session_repos sr JOIN repos r ON r.repo_id = sr.repo_id
+                    WHERE sr.session_id = a.session_id ORDER BY r.repo_name LIMIT 1) AS repository,
+                   {event_ms} AS occurred_at_ms
+            FROM actions a
+            JOIN sessions s ON s.session_id = a.session_id
+            JOIN messages m ON m.message_id = a.message_id
+            WHERE {" AND ".join(where)}
+            """,
+            tuple(params),
+        ).fetchall()
+        raw_rows = [dict(row) for row in rows]
+        return build_command_shape_usage(raw_rows, request, materialized_at=datetime.now(UTC).isoformat())
 
     def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
         request = query or ToolUsageInsightQuery()

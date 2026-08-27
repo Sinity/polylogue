@@ -28,3 +28,14 @@ wires up -- each such module says so explicitly in its docstring.
 """
 
 from __future__ import annotations
+
+from polylogue.insights.measurement.registry import (
+    MeasurePlan,
+    MeasureRegistry,
+    MeasureResult,
+    MeasureSpec,
+    MeasureValidityError,
+    compose_measure,
+)
+
+__all__ = ["MeasurePlan", "MeasureRegistry", "MeasureResult", "MeasureSpec", "MeasureValidityError", "compose_measure"]

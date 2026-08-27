@@ -60,7 +60,7 @@ class TestConfig:
             sources=[],
         )
         assert config.db_path.name == "index.db"
-        assert "polylogue" in str(config.db_path)
+        assert config.db_path.parent == Path(workspace_env["archive_root"])
 
     def test_config_db_path_is_captured_at_construction(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Config's db_path is derived only from archive_root and never re-reads the environment.
@@ -343,12 +343,21 @@ class TestXDGPaths:
 
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
-    def test_db_path_under_data_home(self, workspace_env: dict[str, Path]) -> None:
-        """DB_PATH is under XDG_DATA_HOME/polylogue/."""
+    def test_db_path_under_data_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """With no archive root configured, DB_PATH derives from XDG_DATA_HOME.
+
+        The explicit unset is the point: an ambient POLYLOGUE_ARCHIVE_ROOT
+        overrides the derivation, so a test that leaves it set asserts the
+        environment rather than the default.
+        """
         import polylogue.paths
 
-        assert "polylogue" in str(polylogue.paths.db_path())
-        assert polylogue.paths.db_path().name == "index.db"
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+        db_path = polylogue.paths.db_path()
+        assert db_path.name == "index.db"
+        assert db_path.is_relative_to(tmp_path / "data" / "polylogue")
 
 
 class TestConfiguredSources:

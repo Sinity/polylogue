@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from polylogue.archive.models import Session
 from polylogue.core.enums import Provider
 from polylogue.mcp.declarations.models import MCPCapabilities
-from polylogue.mcp.declarations.registry import TARGET_PROMPTS, declared_tool_names
+from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS, TARGET_PROMPTS, declared_tool_names
 from tests.infra.builders import make_conv, make_msg
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
@@ -28,6 +28,14 @@ ALL_CAPABILITIES = MCPCapabilities(write=True, judge=True, maintenance=True)
 # remains an independent compatibility oracle so deleting a handler and its
 # declaration in the same change cannot make the test surface self-authorize.
 EXPECTED_TOOL_NAMES = set(declared_tool_names(ALL_CAPABILITIES))
+
+# The executable example belongs to the declaration.  Keeping this projection
+# here makes the smoke suite automatically cover additions and removals.
+EXPECTED_MINIMAL_ARGUMENTS = {
+    declaration.name: declaration.minimal_arguments
+    for declaration in MCP_TOOL_DECLARATIONS
+    if declaration.required_capability is None
+}
 
 # Prompt discovery, like tool discovery above, is declaration-derived rather
 # than a hand-copied literal set -- a prompt registered in

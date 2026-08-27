@@ -216,6 +216,9 @@ def test_demo_tour_writes_report_transcript_and_recording(
     assert payload["total_duration_s"] <= 420
     assert payload["seed"]["session_count"] == len(DEMO_SESSION_IDS)
     assert payload["verify"]["ok"] is True
+    # Public-tour smoke guard: a successful process exit is not enough if the
+    # tour records a problem and continues producing artifacts.
+    assert payload["problems"] == []
     assert [step["name"] for step in payload["steps"]] == [
         "claim versus receipt",
         "failed actions aggregate",
