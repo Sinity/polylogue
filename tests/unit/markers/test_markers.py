@@ -7,6 +7,7 @@ import pytest
 
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.markers import (
+    MARKER_REGISTRY,
     MarkerKindSpec,
     MarkerRegistry,
     MarkerStreamParser,
@@ -30,6 +31,23 @@ def test_line_inline_escape_markdown_and_malformed_are_observable() -> None:
         ("malformed", "still evidence"),
     ]
     assert found[-1].malformed
+
+
+def test_registry_covers_declared_authoring_kinds_and_unknown_inline_is_evidence() -> None:
+    expected = {"note", "claim", "lesson", "decision", "predict", "handoff", "anchor", "bead", "eval"}
+    assert expected <= {spec.kind for spec in MARKER_REGISTRY}
+    found = parse_markers("[[future-kind: retain this evidence]]\n[[note: keep this]]\n")
+    assert [(item.kind, item.body, item.malformed) for item in found] == [
+        ("malformed", "retain this evidence", True),
+        ("note", "keep this", False),
+    ]
+
+
+def test_unterminated_inline_marker_is_malformed_evidence() -> None:
+    found = parse_markers("before [[note: split at end\n")
+    assert len(found) == 1
+    assert found[0].kind == "malformed"
+    assert found[0].raw_text == "[[note: split at end"
 
 
 def test_streaming_split_marker_is_parsed_after_newline() -> None:
