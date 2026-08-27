@@ -17,7 +17,7 @@ EMBEDDINGS_DDL = f"""
 CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
     vector_derivation_hash TEXT PRIMARY KEY,
     embedding float[{EMBEDDING_DIMENSION}],
-    +model TEXT
+    model TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_embeddings_meta (
