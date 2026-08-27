@@ -5146,6 +5146,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # A request id is the exchange identity. Reusing it is ambiguous for
+        # a client that lost a response, so reject it before invoking any
+        # operation implementation.
+        seen_ids = getattr(self.server, "operation_ids_seen", None)
+        ids_lock = getattr(self.server, "operation_ids_lock", None)
+        if request.request_id is not None and seen_ids is not None and ids_lock is not None:
+            with ids_lock:
+                if request.request_id in seen_ids:
+                    self._send_operation_error(
+                        HTTPStatus.CONFLICT,
+                        request,
+                        archive,
+                        generation,
+                        readiness,
+                        "duplicate_request_id",
+                        "request_id was already used",
+                    )
+                    return
+                seen_ids.add(request.request_id)
+                ids_order = getattr(self.server, "operation_ids_order", None)
+                if ids_order is not None:
+                    if len(ids_order) == ids_order.maxlen:
+                        seen_ids.discard(ids_order[0])
+                    ids_order.append(request.request_id)
+
         captured: list[tuple[HTTPStatus, object]] = []
         original_send_json = self._send_json
 
@@ -5241,6 +5266,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "writes": "daemon-owned",
                 },
                 progress={"state": "failed"},
+                outcome="failed",
+                served_by={"daemon_version": POLYLOGUE_VERSION},
+                timing={"elapsed_ms": 0, "queue_ms": 0},
+                schema_versions={"index": INDEX_SCHEMA_VERSION},
                 error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
                 request_id=request.request_id,
             )
@@ -5258,6 +5287,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "writes": "daemon-owned",
             },
             progress={"state": "complete"},
+            outcome="complete",
+            served_by={"daemon_version": POLYLOGUE_VERSION},
+            timing={"elapsed_ms": 0, "queue_ms": 0},
+            schema_versions={"index": INDEX_SCHEMA_VERSION},
             result=result,
             request_id=request.request_id,
         )
@@ -5283,6 +5316,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             readiness=readiness,
             authority={"mode": "daemon", "writes": "daemon-owned"},
             progress={"state": "failed"},
+            outcome="failed",
             error={"code": code, "detail": detail},
         )
         self._send_json(status, envelope.to_dict())
