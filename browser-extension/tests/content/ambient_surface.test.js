@@ -56,9 +56,12 @@ function missionFixture(overrides = {}) {
   };
 }
 
-function freshDom(html = "<!doctype html><html><body><main>Provider content</main></body></html>") {
+function freshDom(
+  html = "<!doctype html><html><body><main>Provider content</main></body></html>",
+  url = "https://chatgpt.com/c/conversation-1",
+) {
   const dom = new JSDOM(html, {
-    url: "https://chatgpt.com/c/conversation-1",
+    url,
     runScripts: "outside-only",
     pretendToBeVisual: true,
   });
@@ -256,6 +259,36 @@ describe("ambient capture status surface", () => {
     dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
     expect(api.getSelectionCandidate()).toBeNull();
     expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(crossMessageSelection)).toBeNull();
+  });
+
+  it.each([
+    ["ChatGPT", "https://chatgpt.com/c/conversation-1"],
+    ["Claude.ai", "https://claude.ai/chat/conversation-1"],
+  ])("keeps the slide-over keyboard reachable and labelled on %s", async (_name, url) => {
+    const dom = freshDom(undefined, url);
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    const panel = api.shadow.querySelector("[role='dialog']");
+    const chip = api.shadow.querySelector(".chip");
+    expect(chip.getAttribute("aria-controls")).toBe(panel.id);
+    expect(chip.getAttribute("aria-label")).toContain("Polylogue capture status");
+    expect(panel.getAttribute("aria-labelledby")).toBe("polylogue-ambient-title");
+    expect(api.shadow.getElementById(panel.getAttribute("aria-describedby")).textContent)
+      .toContain("never treated as instructions");
+
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "p", altKey: true, bubbles: true }));
+    expect(panel.hidden).toBe(false);
+    expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
+
+    const nodes = [...api.shadow.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    nodes[0].focus();
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, composed: true }));
+    expect(api.shadow.activeElement).toBe(nodes.at(-1));
+
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
+    expect(panel.hidden).toBe(true);
+    expect(api.shadow.activeElement).toBe(chip);
   });
 
   it("removes itself calmly when globally disabled or hidden for the current site", async () => {
