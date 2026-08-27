@@ -301,6 +301,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify falsification",
+        "verification",
+        "Run the bounded safety, semantic, query-law, and interaction falsification gate.",
+        "devtools.falsification_program",
+        use_when="Run the four independent evidence slices together and write a comparable machine-readable result.",
+        examples=(
+            "devtools verify falsification --json",
+            "devtools verify falsification --json --report .agent/reports/independent-falsification-v1.json",
+        ),
+    ),
+    CommandSpec(
         "verify schema-inference-gate",
         "verification",
         "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",

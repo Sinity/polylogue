@@ -101,6 +101,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify definition-closure` | Evaluate representative definition-to-production closure policies as a bounded JSON matrix. |
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
+| `devtools verify falsification` | Run the bounded safety, semantic, query-law, and interaction falsification gate. |
 | `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
