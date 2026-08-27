@@ -531,6 +531,7 @@ class DaemonStatus(BaseModel):
     raw_failure_lifecycle_reason: str | None = None
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
+    sinex_publication: dict[str, object] = Field(default_factory=dict)
     health: DaemonHealth = Field(default_factory=DaemonHealth)
     health_tiers: set[HealthTier] = Field(default_factory=set)
     # Whether the running interpreter has the GIL enabled; False means a
@@ -2319,6 +2320,18 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         }
 
 
+def _sinex_publication_status_info() -> dict[str, object]:
+    """Read durable Sinex publication state without requiring a transport."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import publication_status
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    source_db = ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path
+    return cast(dict[str, object], publication_status(source_db, mode).as_dict())
+
+
 def _daemon_status_component_specs(
     *,
     checked_health: Callable[[], DaemonHealth],
@@ -2335,6 +2348,13 @@ def _daemon_status_component_specs(
     change the same way a fresh ephemeral registry would.
     """
     return [
+        StatusComponentSpec(
+            name="sinex_publication",
+            scope="archive",
+            collector=_sinex_publication_status_info,
+            deadline_s=0.5,
+            fingerprint=fingerprint,
+        ),
         StatusComponentSpec(
             name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5, fingerprint=fingerprint
         ),
@@ -2628,6 +2648,7 @@ def build_daemon_status(
     raw_materialization_readiness = _v("raw_materialization", RawMaterializationReadiness())
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {})
+    sinex_publication: dict[str, object] = _v("sinex_publication", {})
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -2758,6 +2779,7 @@ def build_daemon_status(
         raw_failure_lifecycle_reason=str(raw_lifecycle_reason) if raw_lifecycle_reason is not None else None,
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
+        sinex_publication=sinex_publication,
         daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
         daemon_lifecycle=daemon_lifecycle,
         component_state=component_state,
@@ -2930,6 +2952,7 @@ def daemon_status_payload(
             "blob_dir_size_bytes": status.blob_dir_size_bytes,
             "disk_free_bytes": status.disk_free_bytes,
             "archive_storage": status.archive_storage.model_dump(),
+            "sinex_publication": status.sinex_publication,
             "archive_debt": archive_debt,
             "assertion_candidate_queue": assertion_candidate_queue,
             "quick_check_result": "unknown",
@@ -3075,6 +3098,14 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         if storage.get("archive_root_matches_configured") is False:
             line += f"; active root {storage.get('archive_root', 'unknown')}"
         lines.append(line)
+    publication = payload.get("sinex_publication")
+    if isinstance(publication, dict):
+        lines.append(
+            "Sinex publication: "
+            f"{publication.get('mode', 'off')}, "
+            f"{publication.get('active_lag', 0)} lag, "
+            f"{publication.get('blocking', 0)} blocking"
+        )
     queue = payload.get("assertion_candidate_queue")
     if isinstance(queue, dict):
         lines.append(

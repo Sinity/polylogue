@@ -1216,6 +1216,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 root["archive"] = MCPArchiveStatsPayload.from_archive_stats(
                     stats, include_embedded=False, include_db_size=False
                 ).model_dump(mode="json")
+            if scope == "archive":
+                from polylogue.config import load_polylogue_config
+                from polylogue.sinex.models import PublicationMode
+                from polylogue.sinex.service import publication_status
+
+                config = hooks.get_config()
+                source_db = mcp_archive_root(config) / "source.db"
+                root["sinex_publication"] = publication_status(
+                    source_db,
+                    PublicationMode.from_string(load_polylogue_config().sinex_mode),
+                ).as_dict()
             if "provider_usage" in include:
                 report_usage = await hooks.get_polylogue().origin_usage_report(
                     origin=ref,

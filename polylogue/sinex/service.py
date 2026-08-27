@@ -597,76 +597,89 @@ class PublicationService:
 
     def status(self) -> PublicationStatus:
         """Return bounded, secret-safe status without payload or raw detail."""
-        if self.mode is PublicationMode.OFF:
-            return PublicationStatus(mode=self.mode)
-        now_ms = self.clock()
-        conn = self._connect(readonly=True)
-        try:
-            rows = conn.execute("SELECT status, COUNT(*) FROM sinex_publication_obligations GROUP BY status").fetchall()
-            counts = {str(row[0]): int(row[1]) for row in rows}
-            due_row = conn.execute(
-                """
-                SELECT COUNT(*) FROM sinex_publication_obligations
-                WHERE status IN ('pending', 'publishing', 'durable_debt')
-                  AND COALESCE(next_attempt_at_ms, created_at_ms) <= ?
-                """,
-                (now_ms,),
-            ).fetchone()
-            blocking_row = conn.execute(
-                """
-                WITH ranked AS (
-                    SELECT last_receipt_state,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY object_id
-                               ORDER BY created_at_ms DESC, rowid DESC
-                           ) AS revision_rank
-                    FROM sinex_publication_obligations
-                )
-                SELECT COUNT(*) FROM ranked
-                WHERE revision_rank = 1
-                  AND (last_receipt_state IS NULL
-                       OR last_receipt_state NOT IN (
-                           'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
-                       ))
-                """
-            ).fetchone()
-            oldest_row = conn.execute(
-                """
-                SELECT MIN(created_at_ms) FROM sinex_publication_obligations
-                WHERE status != 'confirmed'
-                """
-            ).fetchone()
-            recent = conn.execute(
-                """
-                SELECT receipt_state, error_code
-                FROM sinex_publication_receipts
-                ORDER BY received_at_ms DESC, attempt_number DESC LIMIT 1
-                """
-            ).fetchone()
-            oldest = int(oldest_row[0]) if oldest_row is not None and oldest_row[0] is not None else None
-            receipt_state = ReceiptState(str(recent[0])) if recent is not None and recent[0] is not None else None
-            error_code = str(recent[1]) if recent is not None and recent[1] is not None else None
-            total = sum(counts.values())
-            active_lag = total - counts.get("confirmed", 0)
-            return PublicationStatus(
-                mode=self.mode,
-                total=total,
-                pending=counts.get("pending", 0),
-                publishing=counts.get("publishing", 0),
-                confirmed=counts.get("confirmed", 0),
-                durable_debt=counts.get("durable_debt", 0),
-                rejected=counts.get("rejected", 0),
-                retry_due=int(due_row[0]) if due_row is not None else 0,
-                blocking=(
-                    int(blocking_row[0]) if self.mode is PublicationMode.PRIMARY and blocking_row is not None else 0
-                ),
-                active_lag=active_lag,
-                oldest_active_age_ms=max(0, now_ms - oldest) if oldest is not None else None,
-                last_receipt_state=receipt_state,
-                last_error_code=error_code,
+        return publication_status(self.source_db_path, self.mode, clock=self.clock)
+
+
+def publication_status(
+    source_db_path: Path,
+    mode: PublicationMode,
+    *,
+    clock: Callable[[], int] = _DEFAULT_CLOCK,
+) -> PublicationStatus:
+    """Read publication status without constructing or invoking a transport.
+
+    Status surfaces must remain available when deployment composition has not
+    installed a transport. The durable source ledger is the authority for
+    lag, receipt, retry, and primary blocking facts.
+    """
+    mode = PublicationMode.from_string(mode)
+    if mode is PublicationMode.OFF:
+        return PublicationStatus(mode=mode)
+    now_ms = clock()
+    conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True, timeout=30.0)
+    try:
+        rows = conn.execute("SELECT status, COUNT(*) FROM sinex_publication_obligations GROUP BY status").fetchall()
+        counts = {str(row[0]): int(row[1]) for row in rows}
+        due_row = conn.execute(
+            """
+            SELECT COUNT(*) FROM sinex_publication_obligations
+            WHERE status IN ('pending', 'publishing', 'durable_debt')
+              AND COALESCE(next_attempt_at_ms, created_at_ms) <= ?
+            """,
+            (now_ms,),
+        ).fetchone()
+        blocking_row = conn.execute(
+            """
+            WITH ranked AS (
+                SELECT last_receipt_state,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY object_id
+                           ORDER BY created_at_ms DESC, rowid DESC
+                       ) AS revision_rank
+                FROM sinex_publication_obligations
             )
-        finally:
-            conn.close()
+            SELECT COUNT(*) FROM ranked
+            WHERE revision_rank = 1
+              AND (last_receipt_state IS NULL
+                   OR last_receipt_state NOT IN (
+                       'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
+                   ))
+            """
+        ).fetchone()
+        oldest_row = conn.execute(
+            """
+            SELECT MIN(created_at_ms) FROM sinex_publication_obligations
+            WHERE status != 'confirmed'
+            """
+        ).fetchone()
+        recent = conn.execute(
+            """
+            SELECT receipt_state, error_code
+            FROM sinex_publication_receipts
+            ORDER BY received_at_ms DESC, attempt_number DESC LIMIT 1
+            """
+        ).fetchone()
+        oldest = int(oldest_row[0]) if oldest_row is not None and oldest_row[0] is not None else None
+        receipt_state = ReceiptState(str(recent[0])) if recent is not None and recent[0] is not None else None
+        error_code = str(recent[1]) if recent is not None and recent[1] is not None else None
+        total = sum(counts.values())
+        return PublicationStatus(
+            mode=mode,
+            total=total,
+            pending=counts.get("pending", 0),
+            publishing=counts.get("publishing", 0),
+            confirmed=counts.get("confirmed", 0),
+            durable_debt=counts.get("durable_debt", 0),
+            rejected=counts.get("rejected", 0),
+            retry_due=int(due_row[0]) if due_row is not None else 0,
+            blocking=int(blocking_row[0]) if mode is PublicationMode.PRIMARY and blocking_row is not None else 0,
+            active_lag=total - counts.get("confirmed", 0),
+            oldest_active_age_ms=max(0, now_ms - oldest) if oldest is not None else None,
+            last_receipt_state=receipt_state,
+            last_error_code=error_code,
+        )
+    finally:
+        conn.close()
 
 
-__all__ = ["DrainSummary", "PublicationService"]
+__all__ = ["DrainSummary", "PublicationService", "publication_status"]

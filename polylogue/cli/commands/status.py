@@ -1219,6 +1219,10 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
     if storage:
         payload["storage"] = storage
 
+    sinex_publication = status.get("sinex_publication")
+    if isinstance(sinex_publication, dict):
+        payload["sinex_publication"] = sinex_publication
+
     ingest = _compact_ingest_status(status)
     if ingest:
         payload["ingest"] = ingest
@@ -1560,6 +1564,7 @@ def _show_direct_json(
         "config_exists": config_path.exists(),
         "config_path": str(config_path),
         "archive_tiers": archive_tiers,
+        "sinex_publication": _direct_sinex_publication_status(active_root),
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
         "convergence": convergence.model_dump(mode="json"),
@@ -1659,6 +1664,18 @@ def _direct_status_ok(component_readiness: dict[str, Any]) -> bool:
         if state == "missing" and component in required_missing_components:
             return False
     return True
+
+
+def _direct_sinex_publication_status(root: Path) -> dict[str, Any]:
+    """Read durable Sinex publication state without requiring a transport."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import publication_status
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    source_db = ArchiveLocation.resolve(root).configured_tier("source").configured_path
+    return publication_status(source_db, mode).as_dict()
 
 
 def _direct_component_readiness(
