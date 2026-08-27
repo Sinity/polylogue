@@ -259,6 +259,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Full-Archive Dogfooding",
+        "operator-dogfooding.md",
+        "Versioned question queue, cycle packet, comparison method, and priority review rules.",
+        "evidence",
+    ),
+    _entry(
         "Structured Failure Follow-Up",
         "findings/claim-vs-evidence.md",
         "Bounded finding with a structural oracle, sample frame, calibration, and caveats.",
