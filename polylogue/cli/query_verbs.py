@@ -1169,7 +1169,7 @@ def read_verb(
         first=first_only,
     ):
         return
-    if ref is not None:
+    if ref is not None and not _is_direct_session_ref(ref):
         if output_format not in (None, "json"):
             raise click.UsageError("Direct ref reads currently support --format json only.")
         if destination not in ("terminal", "stdout"):
@@ -1177,6 +1177,12 @@ def read_verb(
         payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
+
+    if ref is not None:
+        # Session refs are the exact-selection spelling of the ordinary read
+        # route. Keeping the ref as a query term lets the normal resolver apply
+        # view profiles, projection budgets, and handler-specific options.
+        request = request.with_query_terms((ref,))
 
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead
@@ -2150,6 +2156,18 @@ def _spec_is_exact_session_ref(spec: object) -> bool:
             )
         )
     )
+
+
+def _is_direct_session_ref(ref: str | None) -> bool:
+    """Return whether a positional ref belongs to the session read route."""
+    if ref is None:
+        return False
+    from polylogue.core.refs import ObjectRef
+
+    try:
+        return ObjectRef.parse(ref).kind == "session"
+    except ValueError:
+        return False
 
 
 def _resolve_target_session_id(request: RootModeRequest) -> str | None:
