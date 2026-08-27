@@ -176,7 +176,9 @@ grep the diff and check both paths.
 ## Documentation map
 
 `docs/atlas/` — agent-orientation sheets with code-verified anchors: read
-your area's sheet before exploring (storage, daemon, mcp so far).
+`00-core.md` and your area's sheet before exploring (storage, daemon, mcp,
+sources/parsers, query/read-path). Run `devtools verify atlas` when changing
+anchored code; stale sections are re-verified or deleted.
 `docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
 `CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,
