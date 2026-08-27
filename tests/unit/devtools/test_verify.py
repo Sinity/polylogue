@@ -31,20 +31,17 @@ def test_quick_steps_are_static_gates() -> None:
     assert not any(label.startswith("pytest") for label in labels)
 
 
-def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mypy_uses_ephemeral_mypy_in_a_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
         calls.append(command)
-        return SimpleNamespace(returncode=1 if command[-1] == "status" else 0)
+        return SimpleNamespace(returncode=0, stdout="/realm/project/polylogue/.git\n")
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert verify._mypy_cmd() == ["dmypy", "run", "--", "--no-error-summary"]
-    assert calls == [
-        ["dmypy", "status"],
-        ["dmypy", "start", "--", "--no-error-summary"],
-    ]
+    assert verify._mypy_cmd() == ["mypy"]
+    assert calls == [["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]]
 
 
 def test_removed_lab_mode_is_not_accepted() -> None:
@@ -296,6 +293,7 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     monkeypatch.setattr(
         "devtools.verify.subprocess.run", lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0)
     )
+    monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: b"")
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
     exit_code, _elapsed, metadata = verify._run("pytest native serial (affected)", ["pytest"], run=run)

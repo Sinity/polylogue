@@ -20,6 +20,7 @@ from polylogue.scenarios.workload import (
     exact_session_actions_canary_spec,
     raw_authority_fixed_point_spec,
 )
+from polylogue.scenarios.workload_adapters import workload_adapter_declarations
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
 
@@ -57,6 +58,22 @@ def _spec() -> WorkloadEnvelopeSpec:
             ),
         ),
     )
+
+
+def test_named_measurement_paths_have_receipt_or_explicit_adapter() -> None:
+    declarations = workload_adapter_declarations()
+    names = {declaration.name for declaration in declarations}
+
+    assert names == {
+        "query-memory",
+        "pipeline-probe",
+        "scenario-execution",
+        "ingest/source-observation",
+        "verify-run",
+        "slo-catalog",
+    }
+    assert all(declaration.evidence for declaration in declarations)
+    assert {declaration.disposition for declaration in declarations} == {"shared-receipt", "explicit-adapter"}
 
 
 def test_workload_receipt_distinguishes_zero_from_unavailable_and_is_stable() -> None:

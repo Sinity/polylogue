@@ -95,11 +95,13 @@ from .runtime import (
 from .sources import NamedScenarioSource
 from .specs import ScenarioSpec
 from .workload import (
+    WORKLOAD_ADAPTER_DECLARATIONS,
     BudgetAggregation,
     BudgetMeasure,
     BudgetSemantics,
     BudgetVerdict,
     MeasurementScope,
+    WorkloadAdapterDeclaration,
     WorkloadBudget,
     WorkloadBudgetResult,
     WorkloadEnvelopeSpec,
@@ -113,6 +115,7 @@ from .workload import (
     partial_convergence_canary_spec,
     tool_pairing_canary_spec,
     watcher_append_cohort_canary_spec,
+    workload_adapter_declarations,
 )
 
 __all__ = [
@@ -214,4 +217,7 @@ __all__ = [
     "partial_convergence_canary_spec",
     "tool_pairing_canary_spec",
     "watcher_append_cohort_canary_spec",
+    "WORKLOAD_ADAPTER_DECLARATIONS",
+    "WorkloadAdapterDeclaration",
+    "workload_adapter_declarations",
 ]
