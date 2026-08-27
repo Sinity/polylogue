@@ -249,6 +249,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("limit", "integer", False, "Requested page size, subject to server and transport bounds."),
             _arg("projection", "string", False, "Declared result projection such as session-summary or cost-rollup."),
             _arg("continuation", "string", False, "Opaque token from the preceding response; send alone."),
+            _arg("offset", "integer", False, "Offset for projections that use decimal offset pagination."),
             _arg("origin", "string", False, "Public origin filter."),
             _arg("tag", "string", False, "Tag filter."),
             _arg("repo", "string", False, "Repository filter."),
