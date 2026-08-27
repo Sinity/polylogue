@@ -136,6 +136,13 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
+#: The daemon holds a type cache worth well over a gigabyte and is reparented to
+#: the user manager, so without this it outlives every gate that starts one and
+#: one accumulates per checkout. The idle clock resets on each connection, so a
+#: checkout under active gating keeps its warm daemon.
+DMYPY_IDLE_TIMEOUT_SECONDS = 900
+
+
 def _mypy_cmd() -> list[str]:
     try:
         result = subprocess.run(["dmypy", "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
@@ -145,7 +152,7 @@ def _mypy_cmd() -> list[str]:
         pass
     try:
         result = subprocess.run(
-            ["dmypy", "start", "--", "--no-error-summary"],
+            ["dmypy", "start", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
             capture_output=True,
             text=True,
             timeout=15,
