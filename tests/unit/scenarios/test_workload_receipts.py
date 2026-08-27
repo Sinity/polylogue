@@ -19,8 +19,8 @@ from polylogue.scenarios.workload import (
     evaluate_budgets,
     exact_session_actions_canary_spec,
     raw_authority_fixed_point_spec,
+    workload_adapter_declarations,
 )
-from polylogue.scenarios.workload_adapters import workload_adapter_declarations
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
 
