@@ -367,6 +367,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Derived-artifact freshness",
+        "design/derived-artifact-freshness.md",
+        "Source-digest and verify-or-refuse law for derived state.",
+        "design",
+    ),
+    _entry(
         "Convergence Simplification Inventory",
         "design/convergence-simplification-inventory.md",
         "Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp).",
