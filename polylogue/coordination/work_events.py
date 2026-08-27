@@ -13,3 +13,10 @@ def validate_work_event_type(value: str) -> str:
         choices = ", ".join(sorted(WORK_EVENT_TYPES))
         raise ValueError(f"work event type must be one of: {choices}")
     return normalized
+
+
+def validate_work_event_id(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("work event id must not be empty")
+    return normalized

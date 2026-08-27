@@ -1074,9 +1074,12 @@ class ArchiveStore:
         timestamp: str | None = None,
     ) -> dict[str, object]:
         """Append one agent event through the normal raw and parsed ingest seam."""
+        from polylogue.coordination.work_events import validate_work_event_id, validate_work_event_type
         from polylogue.core.sources import provider_from_origin
         from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 
+        event_id = validate_work_event_id(event_id)
+        event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
         existing = self.read_session(resolved)
         provider = provider_from_origin(Origin.from_string(existing.origin))
@@ -1094,13 +1097,14 @@ class ArchiveStore:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+        raw_id = "agent-work-event:" + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
         result = self.write_raw_and_parsed_result(
             session,
             payload=raw_payload,
             source_path=f"agent-work-event:{resolved}",
             acquired_at_ms=int(time.time() * 1000),
             source_index=-1,
-            raw_id=f"agent-work-event:{event_id}",
+            raw_id=raw_id,
         )
         return {
             "event_id": event_id,

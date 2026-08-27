@@ -325,7 +325,7 @@ _ALL_CAPABILITIES_ENABLED = MCPCapabilities(write=True, judge=True, maintenance=
 def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLED) -> frozenset[str]:
     """Return the tool names visible under ``capabilities``.
 
-    Default is every capability enabled (the full ten-tool surface), used by
+    Default is every capability enabled (the full twelve-tool surface), used by
     inventory/discovery tooling that wants the complete declared set rather
     than one server's resolved config.
     """
