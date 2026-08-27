@@ -53,9 +53,26 @@ def validate_declaration(declaration: DeclarationSpec) -> tuple[Diagnostic, ...]
 
 
 def validate_registry(registry: DeclarationRegistry) -> tuple[Diagnostic, ...]:
-    """Return deterministic diagnostics for every declaration in the registry."""
+    """Return deterministic diagnostics, including broken producer edges.
 
-    diagnostics = [diagnostic for item in registry.declarations() for diagnostic in validate_declaration(item)]
+    Completeness edges are references, not merely documentation.  A consumer
+    cannot claim coverage for a producer that the registry cannot resolve.
+    """
+
+    declarations = registry.declarations()
+    known_ids = {item.declaration_id for item in declarations}
+    known_producers = {item.producer for item in declarations if item.producer}
+    diagnostics = [diagnostic for item in declarations for diagnostic in validate_declaration(item)]
+    for declaration in declarations:
+        for edge in declaration.completeness_edges:
+            if edge.producer not in known_ids and edge.producer not in known_producers:
+                diagnostics.append(
+                    _diagnostic(
+                        declaration,
+                        "unknown_edge_producer",
+                        f"registered producer {edge.producer!r} for consumer {edge.consumer!r}",
+                    )
+                )
     return tuple(sorted(diagnostics, key=lambda item: (item.declaration_id, item.code)))
 
 
