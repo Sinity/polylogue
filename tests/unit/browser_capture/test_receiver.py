@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,7 +39,11 @@ from polylogue.browser_capture.route_contracts import (
     BROWSER_CAPTURE_ROUTE_CONTRACTS,
     browser_capture_route_contract_for,
 )
-from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, make_server
+from polylogue.browser_capture.server import (
+    MAX_BROWSER_CAPTURE_BODY_BYTES,
+    make_server,
+    mission_control_archive_facts,
+)
 from polylogue.daemon.cli import main as daemon_cli
 from polylogue.paths import browser_capture_receiver_identity_path
 
@@ -533,6 +538,7 @@ def test_browser_capture_route_contracts_cover_receiver_boundary() -> None:
     assert ("GET", "/v1/status") in concrete_routes
     assert ("GET", "/v1/browser-captures/capabilities") in concrete_routes
     assert ("GET", "/v1/archive-state") in concrete_routes
+    assert ("GET", "/v1/mission-control") in concrete_routes
     assert ("POST", "/v1/browser-captures") in concrete_routes
     assert browser_capture_route_contract_for("POST", "/v1/browser-captures") is not None
 
@@ -688,6 +694,86 @@ def test_receiver_does_not_double_prefix_prefixed_capture_id(tmp_path: Path) -> 
     assert state.lifecycle == "spooled_only"
     assert state.captured is False
     assert state.spooled is True
+
+
+def test_mission_control_reports_uncaptured_without_archive_facts(tmp_path: Path) -> None:
+    """An unindexed conversation must project 'uncaptured', never a zero cost."""
+    with _running_receiver(tmp_path, archive_root=tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "GET",
+            "/v1/mission-control?provider=chatgpt&provider_session_id=conv-123",
+            origin=_EXTENSION_ORIGIN,
+        )
+        projection = json.loads(response.read())
+
+    assert response.status == HTTPStatus.OK
+    assert projection["status"] == "uncaptured"
+    assert projection["archive"] == {"status": "uncaptured", "session_id": None, "ref": None}
+    assert projection["cost"] == {"status": "unknown", "total_usd": None, "provenance": []}
+    assert projection["assertions"] == {"status": "unknown", "items": []}
+
+
+def test_mission_control_resolves_the_canonical_session_for_an_archived_capture(tmp_path: Path) -> None:
+    """Layer 2 reads canonical identity from the archive, not from the request."""
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    write_capture_envelope(envelope, spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path)
+
+    with _running_receiver(tmp_path, archive_root=tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "GET",
+            "/v1/mission-control?provider=chatgpt&provider_session_id=conv-123",
+            origin=_EXTENSION_ORIGIN,
+        )
+        projection = json.loads(response.read())
+
+    assert projection["archive"]["status"] == "available"
+    assert projection["archive"]["session_id"] == "chatgpt-export:conv-123"
+    assert projection["archive"]["ref"] == "session:chatgpt-export:conv-123"
+    # This fixture archive carries raw + index rows but no derived insight
+    # tables, so the projection must degrade explicitly rather than invent a
+    # zero cost. The productive read path is covered by
+    # test_mission_control_archive_facts_read_a_real_archive.
+    assert projection["status"] == "unknown"
+    assert projection["reason"] == "archive_projection_unavailable"
+    assert projection["cost"] == {"status": "unknown", "total_usd": None, "provenance": []}
+    assert projection["assertions"] == {"status": "unknown", "items": []}
+
+
+def test_mission_control_archive_facts_read_a_real_archive(empty_archive_template: Path, tmp_path: Path) -> None:
+    """A schema-complete archive answers the projection instead of degrading.
+
+    Anti-vacuity: if either read route is renamed or the facade construction
+    stops matching the six-tier layout, the helper swallows the error and
+    returns None, and this fails.
+    """
+    root = tmp_path / "archive"
+    shutil.copytree(empty_archive_template, root)
+
+    facts = mission_control_archive_facts(root, "chatgpt:conv-123")
+
+    assert facts is not None
+    cost, assertions = facts
+    assert cost == {"status": "unknown", "total_usd": None, "provenance": []}
+    assert assertions["status"] == "available"
+    assert assertions["items"] == []
+
+
+def test_mission_control_archive_facts_degrade_on_an_unreadable_archive(tmp_path: Path) -> None:
+    assert mission_control_archive_facts(tmp_path, "chatgpt:missing") is None
+
+
+def test_mission_control_rejects_a_request_without_provider_and_session(tmp_path: Path) -> None:
+    with _running_receiver(tmp_path, archive_root=tmp_path) as (host, port):
+        response = _request(host, port, "GET", "/v1/mission-control", origin=_EXTENSION_ORIGIN)
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.BAD_REQUEST
+    assert error.error == "missing_provider_or_session"
 
 
 def test_receiver_archive_state_reports_missing_without_spool_or_archive(tmp_path: Path) -> None:
