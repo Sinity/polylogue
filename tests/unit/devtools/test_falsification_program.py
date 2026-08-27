@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -28,6 +30,11 @@ def test_falsification_report_has_four_gated_slices() -> None:
     assert slices["interaction"]["status"] == "blocked"
     assert report["blind_spots"]
     assert resources["network"] == "none"
+
+
+def test_contract_artifact_is_strict_json() -> None:
+    artifact = Path(__file__).resolve().parents[3] / "docs/independent-falsification-v1.json"
+    assert json.loads(artifact.read_text(encoding="utf-8"))["version"] == 1
 
 
 def test_cli_requires_safety_execution() -> None:
