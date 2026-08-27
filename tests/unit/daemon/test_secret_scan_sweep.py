@@ -12,10 +12,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import AssertionKind
 from polylogue.daemon.secret_scan_sweep import (
     SecretScanSweepResult,
     _record_secret_scan_sweep_event,
+    periodic_secret_scan_sweep,
     run_secret_scan_sweep_once_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -131,3 +134,44 @@ def test_failed_sweep_outcome_is_recorded_for_health_readers(tmp_path: Path) -> 
     assert row[1] == "failed"
     assert '"retryable":true' in row[2]
     assert '"error_type":"OperationalError"' in row[2]
+
+
+class _StopPeriodicLoopError(Exception):
+    """Stop the infinite periodic loop after one completed tick."""
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_records_partial_failure_for_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = tmp_path / "archive"
+
+    class Coordinator:
+        async def run_sync(self, *_args: object, **_kwargs: object) -> SecretScanSweepResult:
+            return SecretScanSweepResult(ran=True, errors=1, remaining_pending=1)
+
+    sleep_calls = 0
+
+    async def stop_after_one_tick(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise _StopPeriodicLoopError
+
+    monkeypatch.setattr("polylogue.daemon.write_coordinator.daemon_write_coordinator", Coordinator)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
+    monkeypatch.setattr("polylogue.daemon.secret_scan_sweep.asyncio.sleep", stop_after_one_tick)
+
+    with pytest.raises(_StopPeriodicLoopError):
+        await periodic_secret_scan_sweep()
+
+    with sqlite3.connect(archive_root / "ops.db") as conn:
+        row = conn.execute(
+            "SELECT status, payload_json FROM daemon_stage_events WHERE stage = 'maintenance.secret_scan_sweep'"
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == "failed"
+    assert '"errors":1' in row[1]
+    assert '"retryable":true' in row[1]

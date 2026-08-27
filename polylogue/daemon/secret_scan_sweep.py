@@ -109,7 +109,11 @@ async def periodic_secret_scan_sweep(
                 run_secret_scan_sweep_once_sync,
                 root,
             )
-            _record_secret_scan_sweep_event(root, status="completed", result=result)
+            _record_secret_scan_sweep_event(
+                root,
+                status="failed" if result.errors else "completed",
+                result=result,
+            )
             if result.ran and (result.sessions_scanned or result.candidates_found):
                 logger.info(
                     "secret_scan_sweep: scanned=%d candidates_found=%d errors=%d remaining_pending=%d",
