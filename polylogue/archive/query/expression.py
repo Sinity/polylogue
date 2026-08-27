@@ -580,11 +580,8 @@ class QueryUnitAggStage:
 class QueryUnitTransformStage:
     """Named row-shaping transform stage in a terminal query-unit pipeline.
 
-    Reserved vocabulary member for #2006's ``Transform(name, args)`` pipeline
-    node. No row-level transform is wired today, so this stage is part of the
-    closed AST/payload vocabulary but is never produced by the current parser;
-    it exists so surfaces and the executor registry share one source of truth
-    for the pipeline-stage taxonomy rather than re-deriving it.
+    Row-shaping transform stage. ``select`` is the canonical transform name;
+    ``fields`` is accepted as a readable alias by the parser.
     """
 
     name: str
@@ -645,6 +642,7 @@ class QueryUnitPipeline:
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
     agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
+    selected_fields: tuple[str, ...] = ()
     terminal: QueryUnitTerminalStage = QueryUnitTerminalStage(action="rows")
 
     def to_payload(self) -> dict[str, object]:
@@ -677,6 +675,8 @@ class QueryUnitPipeline:
             result["limit"] = self.limit
         if self.offset is not None:
             result["offset"] = self.offset
+        if self.selected_fields:
+            result["fields"] = list(self.selected_fields)
         if result:
             payload["result"] = result
         return payload
@@ -729,6 +729,7 @@ class QueryUnitSource:
     aggregate: Literal["count"] | None = None
     agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
+    selected_fields: tuple[str, ...] = ()
 
     @property
     def pipeline(self) -> QueryUnitPipeline:
@@ -752,6 +753,7 @@ class QueryUnitSource:
             group_by=self.group_by,
             aggregate=self.aggregate,
             agg_metrics=self.agg_metrics,
+            selected_fields=self.selected_fields,
             terminal=QueryUnitTerminalStage(action=terminal_action),
         )
 
@@ -2426,6 +2428,42 @@ def _parse_agg_stage(unit: QueryUnitName, stage: str) -> tuple[QueryUnitAggMetri
     return metrics
 
 
+def _parse_select_stage(unit: QueryUnitName, stage: str) -> tuple[str, ...] | None:
+    """Parse and validate the row projection transform."""
+
+    normalized = " ".join(stage.split())
+    keyword, separator, raw_fields = normalized.partition(" ")
+    if keyword.lower() not in {"fields", "select"}:
+        return None
+    if not separator or not raw_fields.strip():
+        raise ExpressionCompileError(
+            f"pipeline `{keyword.lower()}` requires a comma-separated field list",
+            field=keyword.lower(),
+        )
+    fields = tuple(field.strip().lower() for field in raw_fields.split(","))
+    if any(not field for field in fields):
+        raise ExpressionCompileError(
+            f"pipeline `{keyword.lower()}` requires a comma-separated field list",
+            field=keyword.lower(),
+        )
+    descriptor = query_unit_descriptor(unit)
+    supported = frozenset(descriptor.projectable_fields) if descriptor is not None else frozenset()
+    unknown = tuple(field for field in fields if field not in supported)
+    if unknown:
+        supported_text = ", ".join(sorted(supported))
+        raise ExpressionCompileError(
+            f"pipeline `{keyword.lower()}` has unknown field {unknown[0]!r} for {unit} rows; "
+            f"supported fields: {supported_text}",
+            field=unknown[0],
+        )
+    if len(fields) != len(set(fields)):
+        raise ExpressionCompileError(
+            f"pipeline `{keyword.lower()}` cannot repeat fields",
+            field=keyword.lower(),
+        )
+    return fields
+
+
 def _query_unit_lowerer_kind(unit: QueryUnitName) -> QueryUnitLowererKind:
     descriptor = query_unit_descriptor(unit)
     if descriptor is None or not descriptor.terminal_supported:
@@ -2468,6 +2506,18 @@ def _ensure_aggregate_lowerer_supported(unit: QueryUnitName, *, stage: str) -> N
 
 
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
+    selected_fields = _parse_select_stage(source.unit, stage)
+    if selected_fields is not None:
+        if source.selected_fields:
+            raise ExpressionCompileError("pipeline projection may only be specified once", field="fields")
+        return replace(
+            source,
+            selected_fields=selected_fields,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitTransformStage(name="select", args=(("fields", ",".join(selected_fields)),)),
+            ),
+        )
     sort = _parse_sort_stage(stage)
     if sort is not None:
         if sort.field == "time":

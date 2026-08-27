@@ -2847,6 +2847,19 @@ def daemon_status_payload(
         include_exact_raw_materialization_readiness=include_exact_raw_materialization_readiness,
         registry=registry,
     )
+    from polylogue.config import load_polylogue_config
+    from polylogue.paths import source_db_path
+    from polylogue.sinex.service import publication_status_payload
+
+    sinex_mode = str(getattr(load_polylogue_config(), "sinex_mode", "off"))
+    try:
+        sinex_publication = publication_status_payload(source_db_path(), sinex_mode)
+    except Exception as exc:
+        sinex_publication = {
+            "mode": sinex_mode,
+            "state": "unavailable",
+            "reason": f"status unavailable: {type(exc).__name__}",
+        }
     if include_archive_debt:
         # polylogue-20d.17: this scan is a full archive-debt listing, not a
         # cheap fact — on a large archive it can run well past every other
@@ -2932,6 +2945,7 @@ def daemon_status_payload(
             "archive_storage": status.archive_storage.model_dump(),
             "archive_debt": archive_debt,
             "assertion_candidate_queue": assertion_candidate_queue,
+            "sinex_publication": sinex_publication,
             "quick_check_result": "unknown",
             "quick_check_age_s": None,
             "watcher_roots": [str(s.root) for s in watch_sources],

@@ -61,7 +61,10 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Schema](schema.md) | Index and durable tier schema, FTS, vectors, and versioning. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [Atlas: Storage](atlas/storage.md) | Agent-orientation sheet: six-tier substrate, blob store, identity model, anchored invariants. |
+| [Atlas: Core](atlas/00-core.md) | Cold-start orientation for Polylogue's data flow, boundaries, and area sheets. |
 | [Atlas: Daemon](atlas/daemon.md) | Agent-orientation sheet: runtime ownership, convergence stages, current operational state. |
+| [Atlas: Sources and Parsers](atlas/sources-parsers.md) | Agent-orientation sheet: acquisition, detection, normalization, and parser invariants. |
+| [Atlas: Query and Read Path](atlas/query-read-path.md) | Agent-orientation sheet: query planning, stable reads, and surface ownership. |
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Daemon Concurrency Profile](daemon-concurrency-profile.md) | Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger. |

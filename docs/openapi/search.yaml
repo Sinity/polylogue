@@ -2499,6 +2499,11 @@ components:
       - evidence_refs
       title: ObservedEventQueryRowPayload
       type: object
+    QueryUnitProjectedRowPayload:
+      additionalProperties: true
+      description: Generic field-name keyed row emitted by an explicit query projection.
+      title: QueryUnitProjectedRowPayload
+      type: object
     RunQueryRowPayload:
       additionalProperties: false
       description: Shared terminal-query row for runtime-transform runs.
@@ -2648,6 +2653,12 @@ components:
             - $ref: '#/components/schemas/DelegationQueryRowPayload'
           title: Items
           type: array
+        projected_items:
+          default: []
+          items:
+            $ref: '#/components/schemas/QueryUnitProjectedRowPayload'
+          title: Projected Items
+          type: array
         pipeline:
           anyOf:
           - additionalProperties: true
@@ -2668,6 +2679,9 @@ components:
                 - offset
                 - group
                 - count
+                - agg
+                - transform
+                - terminal
                 type: string
               predicate:
                 type: object
@@ -2681,6 +2695,10 @@ components:
                 enum:
                 - count
                 type: string
+              name:
+                type: string
+              args:
+                type: object
             required:
             - kind
             type: object
@@ -2826,6 +2844,9 @@ components:
                 - offset
                 - group
                 - count
+                - agg
+                - transform
+                - terminal
                 type: string
               predicate:
                 type: object
@@ -2839,6 +2860,10 @@ components:
                 enum:
                 - count
                 type: string
+              name:
+                type: string
+              args:
+                type: object
             required:
             - kind
             type: object
@@ -3928,6 +3953,14 @@ components:
           - type: 'null'
           default: null
           title: Offset
+        fields:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Fields
       title: QueryUnitPipelineResultAst
       type: object
     QueryUnitPipelineSourceAst:
