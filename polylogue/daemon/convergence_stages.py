@@ -1448,14 +1448,23 @@ def _hot_insight_session_ids(
     """
 
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "raw_sessions"):
+    if not unique_ids or not _table_exists(conn, "sessions"):
         return set()
+    raw_table = "raw_sessions"
+    if not _table_exists(conn, raw_table):
+        raw_table = "source_tier.raw_sessions"
+        try:
+            if not _ensure_source_tier_attached(conn):
+                return set()
+        except sqlite3.Error:
+            logger.warning("convergence: failed to attach source tier for hot-insight check", exc_info=True)
+            return set()
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(
         f"""
         SELECT DISTINCT c.session_id, r.source_path
         FROM sessions AS c
-        JOIN raw_sessions AS r ON r.raw_id = c.raw_id
+        JOIN {raw_table} AS r ON r.raw_id = c.raw_id
         WHERE c.session_id IN ({placeholders})
           AND r.source_path IS NOT NULL
           AND r.source_path != ''
