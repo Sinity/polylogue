@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -103,8 +103,30 @@ class _CallGraph:
         self.module_names = {module.name for module in parsed}
         for module in parsed:
             self._index_functions(module)
+        self._index_prefixes()
         for module in parsed:
             self._index_edges(module)
+
+    def _index_prefixes(self) -> None:
+        """Map every dotted prefix to the node names beneath it.
+
+        Resolution asks repeatedly whether any node lives under a candidate
+        name. Answering that by scanning every node is quadratic in the graph:
+        it cost 1.2 billion string comparisons on this repository. The prefixes
+        are known once the nodes are, so the question becomes a lookup.
+        """
+        descendants: dict[str, set[str]] = {}
+        for name in self.nodes:
+            parts = name.split(".")
+            for end in range(1, len(parts)):
+                descendants.setdefault(".".join(parts[:end]), set()).add(name)
+        self._descendants = descendants
+
+    def descendants_of(self, prefix: str) -> frozenset[str]:
+        return frozenset(self._descendants.get(prefix, ()))
+
+    def has_descendants(self, prefix: str) -> bool:
+        return prefix in self._descendants
 
     def _index_functions(self, module: _ParsedModule) -> None:
         for statement in module.tree.body:
@@ -130,11 +152,9 @@ class _CallGraph:
                     candidate = ".".join(parts[:end])
                     if candidate in self.module_names:
                         targets.add(candidate)
-                    if expand_nodes and (
-                        candidate in self.nodes or any(name.startswith(f"{candidate}.") for name in self.nodes)
-                    ):
+                    if expand_nodes and (candidate in self.nodes or self.has_descendants(candidate)):
                         targets.add(candidate)
-                        targets.update(name for name in self.nodes if name.startswith(f"{candidate}."))
+                        targets.update(self.descendants_of(candidate))
             return targets
 
         # Package roots are declared production entrypoints. Follow their
@@ -178,7 +198,7 @@ class _CallGraph:
                 imported_targets(local_imports, expand_nodes=False) if module.name.startswith("polylogue.") else set()
             )
             for call in _calls_in_function(function.node):
-                target = _resolve_call_target(call.func, bindings, self.nodes)
+                target = _resolve_call_target(call.func, bindings, self.nodes, self.has_descendants)
                 if target is not None:
                     targets.add(target)
             self.edges[function.qualified_name] = frozenset(targets)
@@ -306,9 +326,19 @@ def _attribute_parts(node: ast.AST) -> tuple[str, ...] | None:
     return None
 
 
-def _resolve_call_target(function: ast.AST, bindings: dict[str, str], nodes: dict[str, _FunctionNode]) -> str | None:
+def _resolve_call_target(
+    function: ast.AST,
+    bindings: dict[str, str],
+    nodes: dict[str, _FunctionNode],
+    has_descendants: Callable[[str], bool] | None = None,
+) -> str | None:
+    if has_descendants is None:
+
+        def has_descendants(prefix: str) -> bool:
+            return any(name.startswith(f"{prefix}.") for name in nodes)
+
     if isinstance(function, ast.Attribute) and isinstance(function.value, ast.Call):
-        constructor = _resolve_call_target(function.value.func, bindings, nodes)
+        constructor = _resolve_call_target(function.value.func, bindings, nodes, has_descendants)
         if constructor is not None:
             candidate = f"{constructor}.{function.attr}"
             if candidate in nodes:
@@ -322,7 +352,7 @@ def _resolve_call_target(function: ast.AST, bindings: dict[str, str], nodes: dic
     target = ".".join((bound, *parts[1:]))
     if target in nodes:
         return target
-    if bound in nodes or any(name.startswith(f"{bound}.") for name in nodes):
+    if bound in nodes or has_descendants(bound):
         return bound
     return None
 

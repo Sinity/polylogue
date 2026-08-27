@@ -1109,7 +1109,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         return await hooks.async_safe_call("context", run, session_id=session_id)
 
     async def status(
-        scope: Literal["archive", "sources", "embeddings", "coordination", "operation"],
+        scope: Literal["archive", "sources", "embeddings", "coordination", "operation", "sinex"],
         include: tuple[str, ...] = (),
         ref: str | None = None,
     ) -> str:
@@ -1123,7 +1123,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         detail and band statistics. ``scope="coordination"`` returns the
         multi-agent coordination envelope (``include=("detail",)`` for the
         undiscounted view). ``scope="operation"`` returns readiness plus MCP
-        call-delivery outbox pressure.
+        call-delivery outbox pressure. ``scope="sinex"`` returns durable
+        publication lag and receipt state.
         """
 
         async def run() -> str:
@@ -1200,6 +1201,16 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     embedding_component.component: embedding_component.to_dict()
                 }
                 root["embeddings"] = embeddings_result
+                return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
+
+            if scope == "sinex":
+                from polylogue.config import load_polylogue_config
+                from polylogue.sinex.service import publication_status_payload
+
+                root["sinex"] = publication_status_payload(
+                    hooks.get_config().archive_root / "source.db",
+                    str(getattr(load_polylogue_config(), "sinex_mode", "off")),
+                )
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest

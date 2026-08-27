@@ -16,6 +16,12 @@ def _git_metadata(repo_root: Path) -> tuple[str, bool]:
     return commit, dirty
 
 
+# Build metadata is mandatory, so this timeout decides whether a workspace
+# provision succeeds at all. Concurrent provisioning puts many git processes on
+# one repository at once, and `status --porcelain` there is far from instant.
+GIT_TIMEOUT_SECONDS = 60
+
+
 def _run_git(repo_root: Path, *args: str) -> str:
     try:
         result = subprocess.run(
@@ -24,7 +30,7 @@ def _run_git(repo_root: Path, *args: str) -> str:
             check=True,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except (FileNotFoundError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         joined = " ".join(args)

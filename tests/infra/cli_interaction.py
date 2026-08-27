@@ -99,6 +99,7 @@ COMMAND_ROOT_OWNERS: dict[str, str] = {
     "annotations": "tests/unit/cli/test_annotation_join_command.py",
     "compare": "tests/unit/cli/test_compare_command.py",
     "config": "tests/unit/cli/test_completions_contract.py",
+    "context": "tests/unit/cli/test_context_view.py",
     "continue": "tests/unit/cli/test_continue_absorption.py",
     "dashboard": "tests/unit/cli/test_dashboard_command.py",
     "delete": "tests/unit/cli/test_query_verbs_runtime.py",

@@ -125,6 +125,30 @@ def test_phase_rejects_measurement_reported_as_both_present_and_unavailable() ->
         )
 
 
+def test_process_tree_receipt_requires_complete_component_accounting() -> None:
+    with pytest.raises(ValueError, match="both self and child"):
+        WorkloadPhaseObservation(name="query", peak_rss_bytes=10, peak_rss_self_bytes=10)
+
+    phase = WorkloadPhaseObservation(
+        name="query",
+        peak_rss_bytes=12,
+        peak_rss_self_bytes=8,
+        peak_rss_children_bytes=4,
+    )
+    assert phase.to_payload()["peak_rss_self_bytes"] == 8
+    assert phase.to_payload()["peak_rss_children_bytes"] == 4
+
+
+def test_process_tree_receipt_rejects_omitted_child_from_aggregate() -> None:
+    with pytest.raises(ValueError, match="self plus child"):
+        WorkloadPhaseObservation(
+            name="query",
+            peak_rss_bytes=12,
+            peak_rss_self_bytes=12,
+            peak_rss_children_bytes=1,
+        )
+
+
 def test_receipt_rejects_cancellation_claim_without_latency_evidence() -> None:
     with pytest.raises(ValueError, match="cancellation request requires a latency"):
         WorkloadReceipt.from_observations(

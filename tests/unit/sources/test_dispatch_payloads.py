@@ -131,9 +131,8 @@ def test_parse_payload_unwraps_single_drive_chunked_session_list() -> None:
     assert from_list[0].provider_session_id == "demo-00"
 
 
-def test_parse_payload_unwraps_single_antigravity_metadata_list() -> None:
-    """Antigravity ``*.metadata.json`` brain artifacts are single JSON objects;
-    the list-wrapped full-ingest input must still resolve via source_path."""
+def test_parse_payload_rejects_antigravity_metadata_as_a_session() -> None:
+    """Metadata sidecars are artifact evidence, never session payloads."""
     record = {
         "artifactType": "ARTIFACT_TYPE_IMPLEMENTATION_PLAN",
         "summary": "A plan summary.",
@@ -144,8 +143,8 @@ def test_parse_payload_unwraps_single_antigravity_metadata_list() -> None:
     from_dict = parse_payload(Provider.ANTIGRAVITY, record, "fallback", source_path=source_path)
     from_list = parse_payload(Provider.ANTIGRAVITY, [record], "fallback", source_path=source_path)
 
-    assert len(from_dict) == 1
-    assert len(from_list) == 1
+    assert from_dict == []
+    assert from_list == []
 
 
 def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stream() -> None:

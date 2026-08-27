@@ -40,7 +40,7 @@ from polylogue.sinex.obligations import (
     record_obligation,
     stage_payload,
 )
-from polylogue.sinex.service import DrainSummary, PublicationService
+from polylogue.sinex.service import DrainSummary, PublicationService, publication_status_payload
 from polylogue.sinex.transport import (
     LocalReferenceTransport,
     NullTransport,
@@ -64,6 +64,7 @@ __all__ = [
     "PublicationPayloadInvalidError",
     "PublicationReceipt",
     "PublicationService",
+    "publication_status_payload",
     "PublicationStatus",
     "ReceiptState",
     "SinexTransport",

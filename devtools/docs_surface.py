@@ -186,9 +186,27 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "internals",
     ),
     _entry(
+        "Atlas: Core",
+        "atlas/00-core.md",
+        "Cold-start orientation for Polylogue's data flow, boundaries, and area sheets.",
+        "internals",
+    ),
+    _entry(
         "Atlas: Daemon",
         "atlas/daemon.md",
         "Agent-orientation sheet: runtime ownership, convergence stages, current operational state.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: Sources and Parsers",
+        "atlas/sources-parsers.md",
+        "Agent-orientation sheet: acquisition, detection, normalization, and parser invariants.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: Query and Read Path",
+        "atlas/query-read-path.md",
+        "Agent-orientation sheet: query planning, stable reads, and surface ownership.",
         "internals",
     ),
     _entry(
@@ -202,6 +220,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Daemon Concurrency Profile",
         "daemon-concurrency-profile.md",
         "Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger.",
+        "internals",
+    ),
+    _entry(
+        "Runtime and Concurrency Contract",
+        "runtime-concurrency.md",
+        "Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger.",
         "internals",
     ),
     _entry(
@@ -231,6 +255,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
+        "Artifact Publication",
+        "artifact-publication.md",
+        "Filesystem contract shared by the cache and reusable-fixture publication routes.",
+        "operations",
+    ),
+    _entry(
         "Verification Authority",
         "verification-authority.md",
         "Sole ownership matrix for AgentCTL execution and Polylogue semantic verification.",
@@ -256,6 +286,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Demos and Proofs",
         "demos.md",
         "Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations.",
+        "evidence",
+    ),
+    _entry(
+        "Full-Archive Dogfooding",
+        "operator-dogfooding.md",
+        "Versioned question queue, cycle packet, comparison method, and priority review rules.",
         "evidence",
     ),
     _entry(
@@ -337,6 +373,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Query Set Algebra", "design/query-set-algebra.md", "Set-composition semantics over query results.", "design"
     ),
     _entry(
+        "Analyze Projections",
+        "design/analyze-projections.md",
+        "Named aggregate projections and their shared query execution contract.",
+        "design",
+    ),
+    _entry(
         "Session Lineage Model",
         "design/session-lineage-model.md",
         "Fork, resume, compaction, and composition semantics.",
@@ -367,6 +409,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "Derived-artifact freshness",
+        "design/derived-artifact-freshness.md",
+        "Source-digest and verify-or-refuse law for derived state.",
+        "design",
+    ),
+    _entry(
         "Convergence Simplification Inventory",
         "design/convergence-simplification-inventory.md",
         "Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp).",
@@ -388,6 +436,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "CLI Interaction Oracle Deletion Ledger",
         "plans/cli-interaction-deletion-ledger.md",
         "Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles.",
+        "design",
+    ),
+    _entry(
+        "Typed WebUI Capability Matrix",
+        "plans/webui-capability-matrix.md",
+        "Cutover inventory for typed and legacy browser capabilities.",
         "design",
     ),
     _entry("Second Brain", "design/second-brain.md", "Vision note for remembered work.", "design"),

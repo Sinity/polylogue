@@ -61,10 +61,14 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Schema](schema.md) | Index and durable tier schema, FTS, vectors, and versioning. |
 | [Internals](internals.md) | Working implementation reference and debugging landmarks. |
 | [Atlas: Storage](atlas/storage.md) | Agent-orientation sheet: six-tier substrate, blob store, identity model, anchored invariants. |
+| [Atlas: Core](atlas/00-core.md) | Cold-start orientation for Polylogue's data flow, boundaries, and area sheets. |
 | [Atlas: Daemon](atlas/daemon.md) | Agent-orientation sheet: runtime ownership, convergence stages, current operational state. |
+| [Atlas: Sources and Parsers](atlas/sources-parsers.md) | Agent-orientation sheet: acquisition, detection, normalization, and parser invariants. |
+| [Atlas: Query and Read Path](atlas/query-read-path.md) | Agent-orientation sheet: query planning, stable reads, and surface ownership. |
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Daemon Concurrency Profile](daemon-concurrency-profile.md) | Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger. |
+| [Runtime and Concurrency Contract](runtime-concurrency.md) | Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
@@ -78,6 +82,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
+| [Artifact Publication](artifact-publication.md) | Filesystem contract shared by the cache and reusable-fixture publication routes. |
 | [Verification Authority](verification-authority.md) | Sole ownership matrix for AgentCTL execution and Polylogue semantic verification. |
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
@@ -88,6 +93,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Demos and Proofs](demos.md) | Reproducible proofs, construct-valid demo doctrine, and flagship demonstrations. |
+| [Full-Archive Dogfooding](operator-dogfooding.md) | Versioned question queue, cycle packet, comparison method, and priority review rules. |
 | [Structured Failure Follow-Up](findings/claim-vs-evidence.md) | Bounded finding with a structural oracle, sample frame, calibration, and caveats. |
 | [Corpus Reliability and Closure Reliability](findings/corpus-reliability.md) | Measured distinction between stale assertions, void records, and closure reliability. |
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
@@ -108,15 +114,18 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Browser Capture Redesign](design/browser-capture-redesign/README.md) | Browser-capture redesign rationale and verification artifacts. |
 | [Project Memory](design/project-memory.md) | Long-term memory model and product intent. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
+| [Analyze Projections](design/analyze-projections.md) | Named aggregate projections and their shared query execution contract. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
 | [Physical Session Identity](design/physical-session-identity.md) | Durable identity proposal beneath lossy public origin projection. |
 | [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |
 | [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Prefix-Blob Reclamation](design/prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes. |
+| [Derived-artifact freshness](design/derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state. |
 | [Convergence Simplification Inventory](design/convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp). |
 | [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
 | [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
 | [CLI Interaction Oracle Deletion Ledger](plans/cli-interaction-deletion-ledger.md) | Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles. |
+| [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
 | [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
 | [Whole Product](design/whole-product.md) | Product vision and system relationships. |

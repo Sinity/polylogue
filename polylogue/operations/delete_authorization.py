@@ -14,6 +14,7 @@ from polylogue.operations.audit import AuditRepository, token_sha256
 from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
 from polylogue.operations.mutation_transaction import (
+    MAX_MUTATION_PLAN_TARGETS,
     AuthorizationMismatchError,
     ConfirmationStrength,
     MutationAuthorization,
@@ -50,9 +51,10 @@ class DeletePreviewPayload:
     preview_ref: str
     session_ids: tuple[str, ...]
     expires_at_ms: int
+    preview_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "status": "prepared",
             "operation": "delete",
             "preview_ref": self.preview_ref,
@@ -60,6 +62,9 @@ class DeletePreviewPayload:
             "session_count": len(self.session_ids),
             "expires_at_ms": self.expires_at_ms,
         }
+        if len(self.preview_refs) > 1:
+            payload["preview_refs"] = list(self.preview_refs)
+        return payload
 
 
 def _now_ms() -> int:
@@ -130,20 +135,40 @@ def prepare_cli_delete(
     binding = _binding()
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         session_ids = _canonical_session_ids(archive, requested_session_ids)
-        args = SessionDeleteArgs(archive=archive, session_ids=session_ids)
-        preview = executor.prepare_bound(
-            binding,
-            args,
-            principal,
-            archive_instance_id=audit.ensure_archive_authority(now_ms=_now_ms()),
-            archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
-            parameter_digest=_parameter_digest(session_ids),
+        chunks = tuple(
+            session_ids[offset : offset + MAX_MUTATION_PLAN_TARGETS]
+            for offset in range(0, len(session_ids), MAX_MUTATION_PLAN_TARGETS)
         )
+        previews = []
+        for chunk in chunks:
+            args = SessionDeleteArgs(archive=archive, session_ids=chunk)
+            previews.append(
+                executor.prepare_bound(
+                    binding,
+                    args,
+                    principal,
+                    archive_instance_id=audit.ensure_archive_authority(now_ms=_now_ms()),
+                    archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+                    parameter_digest=_parameter_digest(chunk),
+                )
+            )
+        preview = previews[0]
     return DeletePreviewPayload(
         preview_ref=preview.preview_ref,
         session_ids=session_ids,
         expires_at_ms=preview.plan.expires_at_ms,
+        preview_refs=tuple(item.preview_ref for item in previews),
     )
+
+
+def authorize_cli_delete_many(
+    archive_root: Path, preview_refs: tuple[str, ...], principal: MutationPrincipal
+) -> tuple[str, ...]:
+    return tuple(authorize_cli_delete(archive_root, ref, principal) for ref in preview_refs)
+
+
+def consume_cli_delete_many(archive_root: Path, tokens: tuple[str, ...], principal: MutationPrincipal) -> int:
+    return sum(consume_cli_delete(archive_root, token, principal).affected_count for token in tokens)
 
 
 def authorize_cli_delete(
@@ -386,6 +411,8 @@ __all__ = [
     "DeleteAuthorizationError",
     "DeletePreviewPayload",
     "authorize_cli_delete",
+    "authorize_cli_delete_many",
     "consume_cli_delete",
+    "consume_cli_delete_many",
     "prepare_cli_delete",
 ]

@@ -11,10 +11,16 @@ UPDATES_FILE=$(mktemp)
 trap 'rm -f "$UPDATES_FILE"' EXIT
 cat >"$UPDATES_FILE"
 
-# Pre-flight: ensure checkout-local devtools is importable before attempting verification.
-if ! python -m devtools --help >/dev/null 2>&1; then
-    echo "pre-push: checkout-local devtools is not importable; enter the project devshell (nix develop) first." >&2
+# Use the interpreter belonging to the worktree being pushed. A bare `python`
+# resolves through PATH, which in a linked worktree is either another
+# checkout's virtualenv or one without this project's dependencies.
+ROOT=$(git rev-parse --show-toplevel)
+PYTHON="$ROOT/.venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON=python
+
+if ! "$PYTHON" -m devtools --help >/dev/null 2>&1; then
+    echo "pre-push: checkout-local devtools is not importable via $PYTHON; enter the project devshell (nix develop) first." >&2
     exit 2
 fi
 
-python -m devtools.pre_push_gate "$UPDATES_FILE"
+"$PYTHON" -m devtools.pre_push_gate "$UPDATES_FILE"

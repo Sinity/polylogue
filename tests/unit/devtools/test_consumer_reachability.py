@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from devtools.consumer_reachability import ConsumerReachabilityError, _authority, _waivers, check
+from devtools.consumer_reachability import (
+    ConsumerReachabilityError,
+    _authority,
+    _cached_reachability,
+    _store_reachability,
+    _waivers,
+    check,
+)
 
 
 def test_polylogue_gb4e_v3_r2_production_route_has_current_authority() -> None:
@@ -42,3 +49,17 @@ def test_polylogue_gb4e_rejects_duplicate_waiver(tmp_path: Path) -> None:
     )
     with pytest.raises(ConsumerReachabilityError, match="duplicate waiver"):
         _waivers(body)
+
+
+def test_reachability_cache_round_trips_per_worktree(tmp_path: Path) -> None:
+    entrypoints = ("polylogue.api", "polylogue.cli")
+    reachable = {"polylogue.api.main"}
+    reachable_modules = frozenset({"polylogue.api", "polylogue.core"})
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "devtools").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project.scripts]\n", encoding="utf-8")
+
+    assert _cached_reachability(tmp_path, entrypoints) is None
+    _store_reachability(tmp_path, entrypoints, reachable, reachable_modules)
+
+    assert _cached_reachability(tmp_path, entrypoints) == (reachable, reachable_modules)

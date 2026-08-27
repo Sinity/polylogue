@@ -1307,8 +1307,8 @@ _DEMO_USAGE = {
 def _inject_demo_session_usage(archive_root: Path) -> None:
     """Set deterministic Opus token usage on the demo claude-code assistant turns.
 
-    Cost is materialized into ``session_profiles.total_cost_usd`` from the
-    per-message token columns, so this must run *before*
+    Cost is computed in the canonical ``session_model_usage`` projection from
+    the per-message token columns, so this must run *before*
     ``_materialize_session_insights``. Demo-scoped by session id: no synthetic
     generator change, no test-snapshot ripple.
     """
@@ -1559,7 +1559,13 @@ def _demo_usage_has_settled(archive_root: Path) -> bool:
     conn = sqlite3.connect(archive_root / "index.db")
     try:
         row = conn.execute(
-            "SELECT total_cost_usd FROM session_profiles WHERE session_id = ?",
+            """
+            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE s.session_id = ?
+            GROUP BY s.session_id, s.reported_cost_usd
+            """,
             (DEMO_CLAUDE_CODE_SESSION_ID,),
         ).fetchone()
     finally:

@@ -47,7 +47,7 @@ from polylogue.context.scheduler import (
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
-from polylogue.core.errors import PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
@@ -1199,29 +1199,38 @@ def _archive_list_assertion_claims(
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
 
     def _read(archive: Any) -> list[Any]:
-        conn = open_readonly_connection(archive.user_db_path)
-        conn.row_factory = sqlite3.Row
         try:
-            if kinds is None:
+            conn = open_readonly_connection(archive.user_db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                if kinds is None:
+                    return list_assertion_claims(
+                        conn,
+                        target_ref=target_ref,
+                        scope_ref=scope_ref,
+                        statuses=statuses,
+                        context_inject=context_inject,
+                        limit=limit,
+                    )
                 return list_assertion_claims(
                     conn,
+                    kinds=kinds,
                     target_ref=target_ref,
                     scope_ref=scope_ref,
                     statuses=statuses,
                     context_inject=context_inject,
                     limit=limit,
                 )
-            return list_assertion_claims(
-                conn,
-                kinds=kinds,
-                target_ref=target_ref,
-                scope_ref=scope_ref,
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-        finally:
-            conn.close()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ArchiveTierUnavailableError(
+                tier="user.db",
+                path=str(archive.user_db_path.resolve(strict=False)),
+                reason=f"cannot read SQLite database ({exc})",
+                guidance="restore or initialize the durable user tier at this path, then retry the query; "
+                "the reader will not create a replacement or search another archive root",
+            ) from exc
 
     return run_archive_read_sync(
         _active_archive_root(config),
@@ -3721,6 +3730,54 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     message_anchor_by_session[hit.session_id] = hit.message_id
         return session_ids, message_anchor_by_session, omitted
 
+    async def record_manual_continuation(self, child_session_id: str, parent_session_id: str) -> None:
+        """Record a spawned-fresh continuation and its first handoff claim."""
+        child = str(child_session_id).strip()
+        parent = str(parent_session_id).strip()
+        if not child or not parent or ":" not in child or ":" not in parent:
+            raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
+        parent_origin, parent_native = parent.split(":", 1)
+        root = _active_archive_root(self.config)
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        index = open_connection(root / "index.db")
+        try:
+            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
+                raise ValueError("manual continuation child session does not exist")
+            if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
+                raise ValueError("manual continuation parent session does not exist")
+            index.execute(
+                """INSERT OR REPLACE INTO session_links
+                   (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
+                    resolved_dst_session_id, status, method, confidence, evidence_json, observed_at_ms)
+                   VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?, 'resolved',
+                           'manual-continuation', 1.0, '[]', ?)""",
+                (child, parent_origin, parent_native, parent, now_ms),
+            )
+            index.commit()
+        finally:
+            index.close()
+
+        from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+        user = open_connection(root / "user.db")
+        try:
+            upsert_assertion(
+                user,
+                assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
+                target_ref=f"session:{child}",
+                kind=AssertionKind.HANDOFF,
+                body_text=f"Continuation from session {parent}.",
+                author_ref="service:polylogue",
+                author_kind="service",
+                evidence_refs=[f"session:{parent}", f"session:{child}"],
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=now_ms,
+            )
+            user.commit()
+        finally:
+            user.close()
+
     async def compile_context(self, spec: ContextSpec) -> ContextImage:
         """Compile a bounded context image from query/ref seeds and read views.
 
@@ -3735,6 +3792,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             compile_assertion_context_segment,
             compile_chronicle_context_segment,
             compile_messages_context_segment,
+            compile_prose_with_refs_context_segment,
             compile_query_unit_context_segment,
             compile_temporal_context_segment,
         )
@@ -3776,6 +3834,26 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         def append_messages_segment(session_id: str, session: Session, view: str) -> bool:
             nonlocal token_total
             remaining_tokens = None if token_budget is None else max(1, token_budget - token_total)
+            if spec.segment_profile == "prose_with_refs":
+                segment, recapped = compile_prose_with_refs_context_segment(
+                    session_id=session_id,
+                    title=session.title,
+                    messages=tuple(session.messages),
+                    max_tokens=remaining_tokens,
+                    evidence_refs=(EvidenceRef(session_id=session_id),),
+                )
+                if recapped:
+                    omitted.append(
+                        ContextOmission(
+                            ref=f"session:{session_id}",
+                            view=view,
+                            reason="budget",
+                            detail="oldest unprotected prose collapsed to one-line recaps",
+                        )
+                    )
+                token_total += segment.token_estimate
+                segments.append(segment)
+                return True
             messages, omitted_before, omitted_after, clipped_messages = _archive_context_message_window(
                 tuple(session.messages),
                 anchor_message_id=message_anchor_by_session.get(session_id),
@@ -4409,6 +4487,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 return self._resolve_message_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
             if object_ref.kind == "block":
                 return self._resolve_block_object_ref(archive, ref, normalized_ref, object_ref, evidence_ref)
+            if object_ref.kind == "action":
+                return self._resolve_block_object_ref(
+                    archive,
+                    ref,
+                    normalized_ref,
+                    ObjectRef(kind="block", object_id=object_ref.object_id, qualifiers=object_ref.qualifiers),
+                    evidence_ref,
+                )
             if object_ref.kind == "assertion":
                 return self._resolve_assertion_object_ref(archive_root, ref, normalized_ref, object_ref)
             if object_ref.kind == "finding":
