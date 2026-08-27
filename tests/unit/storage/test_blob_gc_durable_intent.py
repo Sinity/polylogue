@@ -421,7 +421,7 @@ def test_authorized_abandonment_terminalizes_exact_intent_without_blob_effect(tm
         "test",
     )
     preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
-    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="confirm_flag")
+    authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
     receipt = executor.execute_bound(binding, preview, authorization, args)
 
     assert receipt.affected_count == 1
@@ -433,7 +433,7 @@ def test_authorized_abandonment_terminalizes_exact_intent_without_blob_effect(tm
     assert _member_rows(tmp_path / "source.db") == [("blocked", blob_hash.upper(), "failed")]
     retry_preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
     retry_authorization = executor.authorize_bound(
-        binding, retry_preview, principal, confirmation_strength="confirm_flag"
+        binding, retry_preview, principal, confirmation_strength="bound_token"
     )
     retry = executor.execute_bound(binding, retry_preview, retry_authorization, args)
     assert retry.status == "already_satisfied"
@@ -807,6 +807,11 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
         conn.execute("DROP INDEX idx_gc_generation_members_pending")
         conn.execute("DROP TABLE gc_generation_members")
         conn.execute("DROP TABLE gc_generations")
+        conn.execute("DROP INDEX idx_material_evidence_links_ref")
+        conn.execute("DROP INDEX idx_material_observations_blob")
+        conn.execute("DROP INDEX idx_material_observations_state")
+        conn.execute("DROP TABLE material_evidence_links")
+        conn.execute("DROP TABLE material_observations")
         conn.execute(
             "CREATE TABLE gc_generations (generation_id TEXT PRIMARY KEY, started_at_ms INTEGER NOT NULL, "
             "completed_at_ms INTEGER, reclaimed_count INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0), "
