@@ -541,7 +541,10 @@ def test_query_action_read_explain_uses_local_read_format(cli_runner: CliRunner)
                 "all": False,
                 "archive": False,
                 "first": False,
-                "format": "default",
+                # mark inherits the root format, as select, continue and delete
+                # do. Only read reports its own flag, because it alone resolves
+                # the stage format through _effective_read_output_format.
+                "format": "json",
                 "note": False,
                 "pin": False,
                 "star": False,
