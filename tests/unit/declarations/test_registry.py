@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from polylogue.declarations import (
     OutputSpec,
     normalized_derivation_bytes,
     validate_declaration,
+    validate_registry,
 )
 
 
@@ -140,6 +142,30 @@ def test_validation_reports_source_and_exact_repair_command() -> None:
     }
     assert {item.owner_path for item in diagnostics} == {"tests/complete.py"}
     assert {item.repair_command for item in diagnostics} == {"devtools render test-contract"}
+
+
+def test_validation_rejects_completeness_edge_without_registered_producer() -> None:
+    """Completeness edges must name a producer the registry can emit.
+
+    Anti-vacuity mutation: removing the producer-reference check allows a
+    consumer to advertise coverage for a vocabulary that has no declaration.
+    """
+
+    declaration = _declaration("orphan")
+    broken = replace(
+        declaration,
+        completeness_edges=(CompletenessEdge("test.missing", "test.consumer", "coverage", "tests/test_consumer.py"),),
+    )
+
+    diagnostics = validate_declaration(broken)
+    registry = DeclarationRegistry()
+    registry.register(broken)
+    registry_diagnostics = validate_registry(registry)
+
+    assert not any(item.code == "unknown_edge_producer" for item in diagnostics)
+    assert [item.code for item in registry_diagnostics if item.code == "unknown_edge_producer"] == [
+        "unknown_edge_producer"
+    ]
 
 
 def test_shared_kernel_has_no_domain_or_runtime_imports() -> None:
