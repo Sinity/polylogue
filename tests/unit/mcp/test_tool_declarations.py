@@ -30,7 +30,12 @@ def test_capabilities_are_independent_flags_not_a_ladder() -> None:
     alone must not also expose ``write``/``run``, and vice versa.
     """
     assert declared_tool_names(MCPCapabilities()) == MCP_TOOL_NAME_BASELINE
-    assert declared_tool_names(MCPCapabilities(write=True)) == MCP_TOOL_NAME_BASELINE | {"write", "run"}
+    assert declared_tool_names(MCPCapabilities(write=True)) == MCP_TOOL_NAME_BASELINE | {
+        "write",
+        "run",
+        "record_work_event",
+        "emit_decision",
+    }
     assert declared_tool_names(MCPCapabilities(judge=True)) == MCP_TOOL_NAME_BASELINE | {"judge"}
     assert declared_tool_names(MCPCapabilities(maintenance=True)) == MCP_TOOL_NAME_BASELINE | {"maintenance"}
     assert declared_tool_names(ALL_CAPABILITIES) == MCP_TOOL_NAME_BASELINE | {
@@ -38,6 +43,8 @@ def test_capabilities_are_independent_flags_not_a_ladder() -> None:
         "run",
         "judge",
         "maintenance",
+        "record_work_event",
+        "emit_decision",
     }
 
 
@@ -55,7 +62,14 @@ def test_live_registration_matches_frozen_public_inventory() -> None:
 def test_live_handlers_match_their_declaration_modules_and_public_names() -> None:
     server = build_server(capabilities=ALL_CAPABILITIES)
     declarations = {declaration.name: declaration for declaration in MCP_TOOL_DECLARATIONS}
-    assert set(declarations) == MCP_TOOL_NAME_BASELINE | {"write", "run", "judge", "maintenance"}
+    assert set(declarations) == MCP_TOOL_NAME_BASELINE | {
+        "write",
+        "run",
+        "judge",
+        "maintenance",
+        "record_work_event",
+        "emit_decision",
+    }
     for name, declaration in declarations.items():
         handler = server._tool_manager._tools[name].fn
         assert handler.__name__ == name

@@ -305,10 +305,10 @@ Usage: polylogue read [OPTIONS] [REF]
 Projection:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   dialogue, messages, raw, hooks, events,
-                                  file-edits, agent-policies, web-content,
-                                  context, context-image, neighbors,
-                                  correlation, temporal, chronicle).
-                                  [default: summary]
+                                  effective_context, file-edits, agent-
+                                  policies, web-content, context, context-
+                                  image, neighbors, correlation, temporal,
+                                  chronicle).  [default: summary]
   --render TEXT                   Render expression, e.g. layout:context-
                                   image,timestamps:include-
                                   available,format:markdown. Known keys:

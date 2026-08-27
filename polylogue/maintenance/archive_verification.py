@@ -59,7 +59,7 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_revision_fidelity,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
-from polylogue.storage.blob_integrity import scan_attachment_acquisition_debt, scan_blob_integrity
+from polylogue.storage.blob_integrity import scan_attachment_coverage, scan_blob_integrity
 from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
@@ -884,16 +884,16 @@ def archive_verification_migrated_owner_adapters(
             ),
         ),
         _declared_owner(
-            name="attachment-acquisition-debt",
+            name="attachment-coverage",
             semantic_owner="attachment-acquisition",
             applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_SOURCE_PREFLIGHT, _ROUTE_LIVE}),
             production_route="attachment acquisition",
             population=("index.db.attachments", "index.db.attachment_refs", "blob/"),
             owned_reference="test_acquired_unreachable_attachment_debt_is_blocking",
             check=lambda: (
-                _check_attachment_acquisition_debt_at_candidate(archive_root, index_path_override, sample_limit)
+                _check_attachment_coverage_at_candidate(archive_root, index_path_override, sample_limit)
                 if index_path_override is not None
-                else _check_attachment_acquisition_debt(archive_root, sample_limit)
+                else _check_attachment_coverage(archive_root, sample_limit)
             ),
         ),
         _declared_owner(
@@ -1903,28 +1903,24 @@ def _check_blob_integrity_at_candidate(
     )
 
 
-def _check_attachment_acquisition_debt(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
-    return _check_attachment_acquisition_debt_at_index_path(
-        archive_root, _resolve_index_path(archive_root), sample_limit
-    )
+def _check_attachment_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_attachment_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
 
 
-def _check_attachment_acquisition_debt_at_index_path(
+def _check_attachment_coverage_at_index_path(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
     """Acquired attachment bytes must exist and remain reachable by a ref."""
     if not index_path.exists():
-        return _skip_check("attachment-acquisition-debt", "index.db not present")
+        return _skip_check("attachment-coverage", "index.db not present")
     try:
-        report = scan_attachment_acquisition_debt(
+        report = scan_attachment_coverage(
             index_path,
             store=BlobStore(archive_root / "blob"),
             sample_size=sample_limit,
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
-        return _error_check(
-            "attachment-acquisition-debt", f"could not scan attachment acquisition debt: {exc}", exc=exc
-        )
+        return _error_check("attachment-coverage", f"could not scan attachment coverage: {exc}", exc=exc)
 
     missing = report.acquired_missing_blob_count
     unreachable = report.acquired_unreachable_count
@@ -1934,7 +1930,7 @@ def _check_attachment_acquisition_debt_at_index_path(
         *(f"acquired-unreachable:{attachment_id}" for attachment_id in report.acquired_unreachable_sample),
     ]
     return ArchiveVerificationCheck(
-        name="attachment-acquisition-debt",
+        name="attachment-coverage",
         status=OutcomeStatus.ERROR if debt_count else OutcomeStatus.OK,
         summary=(
             f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
@@ -1947,10 +1943,10 @@ def _check_attachment_acquisition_debt_at_index_path(
     )
 
 
-def _check_attachment_acquisition_debt_at_candidate(
+def _check_attachment_coverage_at_candidate(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
-    return _check_attachment_acquisition_debt_at_index_path(archive_root, index_path, sample_limit)
+    return _check_attachment_coverage_at_index_path(archive_root, index_path, sample_limit)
 
 
 # ---------------------------------------------------------------------------

@@ -143,7 +143,7 @@ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggre
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.origin_specs import artifact_rule_for_path
+from polylogue.sources.origin_specs import artifact_rule_for_path, recognize_source_class
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
@@ -1955,6 +1955,22 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
+            hermes_source_class = (
+                recognize_source_class(Provider.HERMES, path) if fallback_provider is Provider.HERMES else None
+            )
+            if hermes_source_class is not None and hermes_source_class.source_class == "unsupported":
+                # A broad Hermes root is suffix-enumerated so every candidate
+                # remains observable.  Only the OriginSpec recognizer may
+                # admit a candidate to the Hermes parser; unknown/config/cache
+                # material is a typed non-session observation instead.
+                logger.info(
+                    "live.hermes_candidate_not_admitted path=%s source_class=%s reason=%s",
+                    path,
+                    hermes_source_class.source_class,
+                    hermes_source_class.reason,
+                )
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
             path_artifact = classify_artifact_path(path, provider=fallback_provider)
             strong_path_artifact = strong_path_classification(path, provider=fallback_provider)

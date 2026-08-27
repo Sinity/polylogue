@@ -34,6 +34,7 @@ from devtools.testmon_bootstrap import (
     classify_native_testmon_changes,
     prepare_native_testmon_environment,
 )
+from devtools.toolchain import venv_bin, venv_python
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_graph import (
@@ -55,7 +56,9 @@ from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
     VerifyRun,
+    append_verification_evidence,
     append_verify_history,
+    canonical_verification_receipt,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
@@ -135,57 +138,38 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
-def _is_primary_checkout() -> bool:
-    """True when ROOT is the repository's main checkout rather than a worktree."""
-    try:
-        common = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=ROOT,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return True
-    if common.returncode != 0:
-        return True
-    common_dir = getattr(common, "stdout", "").strip()
-    if not common_dir:
-        return True
-    return Path(common_dir).parent.resolve() == ROOT.resolve()
+#: The daemon holds a type cache worth well over a gigabyte and is reparented to
+#: the user manager, so without this it outlives every gate that starts one and
+#: one accumulates per checkout. The idle clock resets on each connection, so a
+#: checkout under active gating keeps its warm daemon.
+DMYPY_IDLE_TIMEOUT_SECONDS = 900
 
 
 def _mypy_cmd() -> list[str]:
-    if not _is_primary_checkout():
-        # dmypy is a persistent daemon holding a type cache, and it is
-        # reparented to the user manager rather than to this run. A lane or
-        # batch worktree gates once and is then disposed, so the daemon is
-        # never reused and never exits: ten of them held 9.2 GB on this
-        # machine. The cache only pays for itself where runs repeat.
-        return ["mypy"]
+    dmypy = venv_bin("dmypy", root=ROOT)
     try:
-        result = subprocess.run(["dmypy", "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
+        result = subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
         if result.returncode == 0:
-            return ["dmypy", "run", "--", "--no-error-summary"]
+            return [dmypy, "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     try:
         result = subprocess.run(
-            ["dmypy", "start", "--", "--no-error-summary"],
+            [dmypy, "start", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
             capture_output=True,
             text=True,
             timeout=15,
             cwd=ROOT,
         )
         if result.returncode == 0:
-            return ["dmypy", "run", "--", "--no-error-summary"]
+            return [dmypy, "run", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
-    return ["mypy"]
+    return [venv_bin("mypy", root=ROOT)]
 
 
 def _devtools_cmd(*args: str) -> list[str]:
-    return [sys.executable, "-m", "devtools", *(part for arg in args for part in arg.split())]
+    return [venv_python(root=ROOT), "-m", "devtools", *(part for arg in args for part in arg.split())]
 
 
 def _native_pytest_environment() -> dict[str, str | None]:
@@ -224,7 +208,7 @@ def _native_pytest_steps(
         else ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
     )
     base = [
-        sys.executable,
+        venv_python(root=ROOT),
         "-m",
         "pytest",
         "-q",
@@ -289,8 +273,8 @@ def build_verify_steps(
     *, quick: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
 ) -> list[tuple[str, list[str]]]:
     steps = [
-        ("ruff format", ["ruff", "format", "--check", "polylogue/", "tests/", "devtools/"]),
-        ("ruff check", ["ruff", "check", "polylogue/", "tests/", "devtools/"]),
+        ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
+        ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
         ("mypy", _mypy_cmd()),
     ]
     if not commit:
@@ -310,7 +294,7 @@ def build_verify_steps(
             (
                 "schema promotion audit",
                 [
-                    sys.executable,
+                    venv_python(root=ROOT),
                     "-m",
                     "polylogue.schemas.promotion_audit",
                     "polylogue/schemas",
@@ -318,7 +302,7 @@ def build_verify_steps(
                     str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
                 ],
             ),
-            ("schema privacy registry", [sys.executable, "-m", "devtools.verify_schema_privacy"]),
+            ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
         ]
     if not quick and not commit:
         if testmon_mode not in {"affected", "all"} or not testmon_environment:
@@ -395,24 +379,24 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
     completed: subprocess.CompletedProcess[Any]
+    executable_result = executable_gate_result(command, gate=label, env=env)
+    if not executable_result.ok:
+        early_metadata = {
+            "diagnosis": executable_result.diagnosis,
+            "required_gate": executable_result.to_payload(),
+        }
+        run.finish_step(
+            step_id=artifacts.step_id,
+            result=_early_gate_failure_result(started, early_metadata),
+        )
+        sys.stderr.write("FAILED (missing executable)\n")
+        return 127, time.monotonic() - started, early_metadata
     if pytest_step:
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
     else:
-        executable_result = executable_gate_result(command, gate=label, env=env)
-        if not executable_result.ok:
-            early_metadata: dict[str, Any] = {
-                "diagnosis": executable_result.diagnosis,
-                "required_gate": executable_result.to_payload(),
-            }
-            run.finish_step(
-                step_id=artifacts.step_id,
-                result=_early_gate_failure_result(started, early_metadata),
-            )
-            sys.stderr.write("FAILED (missing executable)\n")
-            return 127, time.monotonic() - started, early_metadata
         try:
             completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
         except OSError as exc:
@@ -532,6 +516,11 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
+    if operation:
+        # The operation result carries the same bounded receipt as the
+        # evidence lane.  AgentCTL lifecycle fields remain outside this
+        # projection and cannot turn process completion into semantic success.
+        result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
@@ -644,6 +633,7 @@ def _finish_and_record_verification(
         run._payload["failure_ledger"] = payload["failure_ledger"]
         run.write()
     append_verify_history(payload)
+    append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
     if exit_code != 0:
         try:
@@ -790,6 +780,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         git_head=head,
         root=ROOT,
         mirror_current=agentctl_operation is None,
+        agentctl_operation=agentctl_operation,
     )
     try:
         preparation = None

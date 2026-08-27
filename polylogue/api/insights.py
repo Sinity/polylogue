@@ -41,6 +41,7 @@ from polylogue.insights.archive import (
 from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.insights.cost_enrichment import enrich_session_cost_insights
 from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.insights.topology import (
     LogicalSession,
@@ -97,6 +98,10 @@ if TYPE_CHECKING:
             self,
             query: ToolUsageInsightQuery | None = None,
         ) -> list[ToolUsageInsight]: ...
+
+        async def list_tool_episode_insights(
+            self, query: ToolEpisodeQuery | None = None
+        ) -> list[ToolEpisodeInsight]: ...
 
         async def list_command_shape_usage(
             self,
@@ -537,6 +542,18 @@ class PolylogueInsightsMixin:
             offset=getattr(query, "offset", 0),
             projection="tool-usage",
             stable_order="tool,origin",
+        )
+
+    async def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="insights.tool_episodes.list",
+            arguments={"query": query},
+            work=lambda archive: archive.list_tool_episode_insights(query),
+            page_size=getattr(query, "limit", None),
+            offset=getattr(query, "offset", 0),
+            projection="tool-episodes",
+            stable_order="session,message,tool",
         )
 
     async def list_command_shape_usage(

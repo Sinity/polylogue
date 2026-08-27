@@ -50,6 +50,7 @@ from polylogue.sources.detection import (
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
 ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
+SourceClass = Literal["session", "non_session", "unsupported"]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
@@ -262,6 +263,75 @@ class OriginArtifactRule:
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceClassRecognition:
+    """The declaration-owned result of inspecting one source candidate.
+
+    Enumeration is deliberately separate from admission: a suffix may make a
+    file observable, but only structural evidence can make it a session.
+    ``unsupported`` is a typed observation and must not be sent to a parser.
+    """
+
+    source_class: SourceClass
+    reason: str
+
+
+def recognize_source_class(
+    provider: Provider,
+    source_path: str | Path,
+    *,
+    payload: object | None = None,
+) -> SourceClassRecognition | None:
+    """Classify broad-root candidates before provider-session admission.
+
+    Hermes is currently the only broad provider root whose acquisition modes
+    share a directory and suffixes.  Keep this dispatch declaration-owned and
+    structural; callers may still enumerate cheaply by suffix, but may not
+    assign a Hermes session from that suffix alone.
+    """
+    if provider is not Provider.HERMES:
+        return None
+
+    from polylogue.sources.parsers import hermes_spans, hermes_state, hermes_verification, local_agent
+
+    path = Path(source_path)
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
+            path
+        ):
+            return SourceClassRecognition("session", "Hermes SQLite schema signature")
+        return SourceClassRecognition("unsupported", "Hermes SQLite lacks a declared state/verification schema")
+
+    if payload is None:
+        try:
+            if path.suffix.lower() in {".jsonl", ".ndjson"}:
+                records: list[object] = []
+                with path.open(encoding="utf-8") as handle:
+                    for line in handle:
+                        if line.strip():
+                            records.append(json.loads(line))
+                        if len(records) >= 32:
+                            break
+                payload = records
+            else:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")
+
+    record = payload if isinstance(payload, dict) else None
+    if record is not None and (
+        hermes_spans.looks_like_atif_payload(record)
+        or hermes_spans.looks_like_atof_payload(record)
+        or local_agent.looks_like_hermes(record)
+    ):
+        return SourceClassRecognition("session", "Hermes declared JSON structural signature")
+    if isinstance(payload, list) and any(
+        isinstance(item, dict) and hermes_spans.looks_like_atof_payload(item) for item in payload
+    ):
+        return SourceClassRecognition("session", "Hermes ATOF JSONL structural signature")
+    return SourceClassRecognition("unsupported", "Hermes candidate has no declared source-class signature")
 
 
 #: Root the committed schema packages live under, resolved once here so
@@ -1093,7 +1163,7 @@ def _hermes_spec() -> OriginSpec:
         discovery=(
             "Hermes state database plus NeMo Relay ATIF/ATOF observer and coding-verification-ledger admission."
         ),
-        acquisition_modes=("state-db", "atif-spans", "atof-jsonl", "verification-evidence-db"),
+        acquisition_modes=("state-db", "atif-spans", "atof-jsonl", "verification-evidence-db", "session-snapshot"),
         parser_paths=(
             "polylogue/sources/parsers/hermes_state.py",
             "polylogue/sources/parsers/hermes_spans.py",
@@ -2012,6 +2082,8 @@ __all__ = [
     "ArtifactParsePolicy",
     "DroppedValueVocabulary",
     "OriginArtifactRule",
+    "SourceClassRecognition",
+    "SourceClass",
     "OriginLifecycle",
     "OriginSpec",
     "OriginSpecDiagnostic",
@@ -2024,6 +2096,7 @@ __all__ = [
     "public_origin_tokens",
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
+    "recognize_source_class",
     "schema_observed_leaf_values",
     "undeclared_schema_values",
     "lowering_fingerprint",

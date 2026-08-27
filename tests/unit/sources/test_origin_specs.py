@@ -28,11 +28,49 @@ from polylogue.sources.origin_specs import (
     public_origin_descriptions,
     public_origin_meanings,
     public_origin_tokens,
+    recognize_source_class,
     schema_observed_leaf_values,
     undeclared_schema_values,
     validate_assembly_spec_parity,
     validate_stream_parser_parity,
 )
+
+
+def test_hermes_source_class_recognition_is_structural_and_fails_closed(tmp_path: Path) -> None:
+    """Suffixes enumerate candidates; declared Hermes shapes alone admit sessions.
+
+    Anti-vacuity: replacing this recognizer with a suffix check would admit the
+    renamed template and the unrelated JSON document below.
+    """
+
+    atif = tmp_path / "renamed-template.json"
+    atif.write_text(
+        '{"schema_version":"ATIF-v1.7","session_id":"s-1","steps":[]}',
+        encoding="utf-8",
+    )
+    template = tmp_path / "config.json"
+    template.write_text('{"name":"optional skill","version":1}', encoding="utf-8")
+    unrelated = tmp_path / "session.json"
+    unrelated.write_text('{"session_id":"copied","messages":[]}', encoding="utf-8")
+
+    for path, expected in ((atif, "session"), (template, "unsupported"), (unrelated, "unsupported")):
+        recognition = recognize_source_class(Provider.HERMES, path)
+        assert recognition is not None
+        assert recognition.source_class == expected
+
+
+def test_hermes_source_class_recognition_accepts_atof_jsonl(tmp_path: Path) -> None:
+    """The real ATOF envelope remains admitted independently of its basename."""
+
+    path = tmp_path / "moved-events.jsonl"
+    path.write_text(
+        '{"atof_version":"0.1","kind":"mark","uuid":"u-1",'
+        '"timestamp":"2026-08-26T00:00:00Z","name":"hermes.turn.start"}\n',
+        encoding="utf-8",
+    )
+    result = recognize_source_class(Provider.HERMES, path)
+    assert result is not None
+    assert result.source_class == "session"
 
 
 def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:

@@ -60,6 +60,8 @@ class QueryUnitDescriptor:
 
     @property
     def source_aliases(self) -> tuple[str, str]:
+        if self.unit == "action":
+            return (self.singular_source, self.plural_source, "tool-episode", "tool-episodes")  # type: ignore[return-value]
         return (self.singular_source, self.plural_source)
 
 
@@ -1247,6 +1249,10 @@ def query_unit_descriptor(unit_or_source: str) -> QueryUnitDescriptor | None:
     """Return the descriptor for a canonical unit or accepted source alias."""
 
     normalized = unit_or_source.lower()
+    # Episodes retain the action query's canonical pairing and predicate
+    # semantics; the richer insight endpoint supplies context fields.
+    if normalized in {"tool-episode", "tool-episodes"}:
+        return _QUERY_UNIT_BY_UNIT["action"]
     for descriptor in QUERY_UNIT_DESCRIPTORS:
         if descriptor.unit == normalized or normalized in descriptor.source_aliases:
             return descriptor

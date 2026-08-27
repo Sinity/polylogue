@@ -358,7 +358,7 @@ def test_activation_refuses_acquired_unreachable_attachment_without_pointer_muta
         )
         conn.commit()
 
-    with pytest.raises(forward.IndexFastForwardError, match=r"attachment-acquisition-debt"):
+    with pytest.raises(forward.IndexFastForwardError, match=r"attachment-coverage"):
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"

@@ -3743,8 +3743,8 @@ def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids:
     cleanup ``prune_attachments`` and ``delete_session_sql`` perform after
     their own ref deletions -- otherwise an acquired ``attachments`` row
     survives with a stale ref_count and no canonical ref, which
-    ``attachment-acquisition-debt`` / ``blob-reference-closure`` report as
-    archive-verification errors.
+    archive verification / ``blob-reference-closure`` report as archive
+    verification errors.
     """
     if not attachment_ids:
         return
@@ -4907,6 +4907,21 @@ def _write_session_events(
         if source_message_id is None and inherited_source_message_ids is not None:
             source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
         if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
+            boundary_message_id = None
+            if event.boundary_message_position is not None:
+                for fallback_position, message in enumerate(messages):
+                    # Parsers may leave ``position`` unset; the ordinal is then
+                    # the message's position, exactly as ``_message_id`` derives it.
+                    effective_position = message.position if message.position is not None else fallback_position
+                    if effective_position == event.boundary_message_position:
+                        boundary_message_id = _message_id(
+                            session_id,
+                            message,
+                            fallback_position,
+                            position_offset=position_offset,
+                            duplicate_native_ids=duplicate_native_ids,
+                        )
+                        break
             session_event_rows.append(
                 (
                     session_id,
@@ -4917,6 +4932,11 @@ def _write_session_events(
                     _sqlite_text(_event_summary(event) or ""),
                     _json_dumps(event.payload),
                     _timestamp_ms(event.timestamp),
+                    event.boundary_start_position + position_offset
+                    if event.boundary_start_position is not None
+                    else None,
+                    event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
+                    boundary_message_id,
                 ),
             )
         if event.event_type == "agent_policy":
@@ -4950,8 +4970,9 @@ def _write_session_events(
             """
             INSERT OR REPLACE INTO session_events (
                 session_id, source_message_id, source_message_provider_id,
-                position, event_type, summary, payload_json, occurred_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                position, event_type, summary, payload_json, occurred_at_ms,
+                boundary_start_position, boundary_end_position, boundary_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             session_event_rows,
         )

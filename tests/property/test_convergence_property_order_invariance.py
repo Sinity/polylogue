@@ -117,7 +117,7 @@ def test_reingest_child_then_parent_keeps_attachment_closure_green(tmp_path: Pat
     """Deterministic pin of a machine-found failure: fork child (3) ingested
     before its lineage parent (2) prunes the child's replayed prefix, and the
     child's prefix-anchored attachment row must be swept with its refs — not
-    left acquired-but-unreachable for attachment-acquisition-debt to report."""
+    left acquired-but-unreachable for archive verification to report."""
     pathology = rich_convergence_pathology()
     initialize_active_archive(tmp_path)
     archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(0,), converge_after_each=False)

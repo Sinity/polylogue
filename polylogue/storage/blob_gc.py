@@ -53,7 +53,7 @@ import stat
 import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -540,13 +540,7 @@ def _commit_gc_member_outcome(
     outcome: str,
     detail: str | None = None,
 ) -> None:
-    """Stage one post-recheck result under the generation's writer lock.
-
-    The enclosing bounded batch commits these rows once all fresh liveness
-    rechecks and unlinks are complete.  A crash before that commit leaves the
-    pre-existing exact intents pending; a restart then distinguishes a
-    readable object absence from namespace loss.
-    """
+    """Record one post-recheck result under the generation's writer lock."""
     cursor = source_conn.execute(
         "UPDATE gc_generation_members SET outcome = ?, outcome_at_ms = ?, outcome_detail = ? "
         "WHERE generation_id = ? AND blob_hash = ? AND outcome = 'pending'",
@@ -713,11 +707,9 @@ def _execute_gc_generation_members(
 ) -> tuple[int, int]:
     """Run a bounded pending batch under one source/index writer window.
 
-    Intent is committed before this function starts.  Outcomes are staged only
-    after every locked recheck/unlink has completed, which keeps the legacy
-    liveness matcher current without rebuilding it after bookkeeping writes.
-    A crash before the single outcome commit leaves exact pending intents for
-    idempotent restart reconciliation.
+    Intent is committed before this function starts. Each terminal member
+    outcome is committed immediately after its locked recheck/unlink, so a
+    crash leaves only the interrupted member pending for restart reconciliation.
     """
     namespace_blocker = _generation_namespace_matches(control_db_path, generation_id, blob_root)
     if namespace_blocker is not None:
@@ -739,7 +731,6 @@ def _execute_gc_generation_members(
         ]
     deleted_now = 0
     reclaimed_bytes_now = 0
-    staged_outcomes: list[tuple[str, str, str | None]] = []
     source_conn = sqlite3.connect(control_db_path)
     index_conn: sqlite3.Connection | None = None
     try:
@@ -760,6 +751,8 @@ def _execute_gc_generation_members(
         try:
             with _open_blob_namespace(blob_root, namespace_identity=namespace_identity) as namespace:
                 for blob_hash in members:
+                    if not source_conn.in_transaction:
+                        source_conn.execute("BEGIN IMMEDIATE")
                     protection = _inspect_gc_protection(
                         source_conn,
                         recheck_index,
@@ -771,13 +764,15 @@ def _execute_gc_generation_members(
                         report.blocked_reason = "; ".join(protection.blockers)
                         return deleted_now, reclaimed_bytes_now
                     if protection.is_live:
-                        staged_outcomes.append(
-                            (
-                                blob_hash,
-                                "skipped_still_live",
-                                "canonical liveness or publication reservation became live",
-                            )
+                        _commit_gc_member_outcome(
+                            source_conn,
+                            generation_id=generation_id,
+                            blob_hash=blob_hash,
+                            outcome="skipped_still_live",
+                            detail="canonical liveness or publication reservation became live",
                         )
+                        source_conn.commit()
+                        legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                         evidence.skipped_referenced += protection.liveness.state is LivenessState.LIVE
                         evidence.skipped_reserved += protection.reservation.state is LivenessState.LIVE
                         continue
@@ -785,9 +780,15 @@ def _execute_gc_generation_members(
                         if observed is None:
                             # The root and (where present) shard were freshly readable, so
                             # this is a per-object absence rather than namespace loss.
-                            staged_outcomes.append(
-                                (blob_hash, "reconciled_removed", "blob absent in readable namespace")
+                            _commit_gc_member_outcome(
+                                source_conn,
+                                generation_id=generation_id,
+                                blob_hash=blob_hash,
+                                outcome="reconciled_removed",
+                                detail="blob absent in readable namespace",
                             )
+                            source_conn.commit()
+                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_missing += 1
                             continue
                         try:
@@ -798,33 +799,55 @@ def _execute_gc_generation_members(
                             # namespace after its root has been swapped.
                             with namespace.observe_object(blob_hash) as replacement:
                                 if replacement is not None:
-                                    staged_outcomes.append((blob_hash, "failed", "blob changed during final unlink"))
+                                    _commit_gc_member_outcome(
+                                        source_conn,
+                                        generation_id=generation_id,
+                                        blob_hash=blob_hash,
+                                        outcome="failed",
+                                        detail="blob changed during final unlink",
+                                    )
+                                    source_conn.commit()
+                                    legacy_hook_stage = replace(
+                                        legacy_hook_stage, total_changes=source_conn.total_changes
+                                    )
                                     evidence.skipped_unlink_error += 1
                                     continue
-                            staged_outcomes.append(
-                                (blob_hash, "reconciled_removed", "blob disappeared in readable namespace")
+                            _commit_gc_member_outcome(
+                                source_conn,
+                                generation_id=generation_id,
+                                blob_hash=blob_hash,
+                                outcome="reconciled_removed",
+                                detail="blob disappeared in readable namespace",
                             )
+                            source_conn.commit()
+                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_missing += 1
                             continue
                         except OSError as exc:
-                            staged_outcomes.append((blob_hash, "failed", str(exc)))
+                            _commit_gc_member_outcome(
+                                source_conn,
+                                generation_id=generation_id,
+                                blob_hash=blob_hash,
+                                outcome="failed",
+                                detail=str(exc),
+                            )
+                            source_conn.commit()
+                            legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                             evidence.skipped_unlink_error += 1
                             continue
-                        staged_outcomes.append((blob_hash, "removed", None))
+                        _commit_gc_member_outcome(
+                            source_conn,
+                            generation_id=generation_id,
+                            blob_hash=blob_hash,
+                            outcome="removed",
+                        )
+                        source_conn.commit()
+                        legacy_hook_stage = replace(legacy_hook_stage, total_changes=source_conn.total_changes)
                         deleted_now += 1
                         reclaimed_bytes_now += observed.size_bytes
         except _BlobNamespaceUnavailableError as exc:
             report.blocked_reason = str(exc)
             return deleted_now, reclaimed_bytes_now
-        for blob_hash, outcome, detail in staged_outcomes:
-            _commit_gc_member_outcome(
-                source_conn,
-                generation_id=generation_id,
-                blob_hash=blob_hash,
-                outcome=outcome,
-                detail=detail,
-            )
-        source_conn.commit()
     except Exception:
         if source_conn.in_transaction:
             source_conn.rollback()

@@ -11,9 +11,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.evidence_families import STATUS_SNAPSHOT_STATE_FAMILY
 from polylogue.core.evidence_value import (
     EvidenceValue,
-    FactFamilySpec,
     FrameCoverage,
     FreshnessProvenance,
     TemporalProvenance,
@@ -33,39 +33,6 @@ _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
 _RUNTIME_COMPONENT_LOCK = threading.Lock()
 _SNAPSHOT: StatusSnapshot | None = None
-
-_STATUS_SNAPSHOT_STATE_DEFINITION_REF = ObjectRef(
-    kind="insight",
-    object_id="daemon-status-snapshot-state:v1",
-)
-STATUS_SNAPSHOT_STATE_FAMILY = FactFamilySpec(
-    family="daemon.status_snapshot_state",
-    owner="polylogue.daemon.status_snapshot",
-    source_adapter="StatusSnapshot.with_metadata",
-    public_field="status_snapshot.state_evidence",
-    renderer_label="status snapshot state",
-    value_schema="string",
-    unit="state",
-    grain="status_snapshot",
-    denominator="one cached daemon status snapshot",
-    definition_ref=_STATUS_SNAPSHOT_STATE_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known"}),
-    allowed_authorities=frozenset({"structural"}),
-    authority_precedence=("structural",),
-    requires_last_good_when_degraded=True,
-)
 
 
 @dataclass(frozen=True, slots=True)

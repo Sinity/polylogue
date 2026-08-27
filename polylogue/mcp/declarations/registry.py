@@ -166,6 +166,34 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "mutate-write",
     ),
     _ToolRow(
+        "record_work_event",
+        "Record a typed live-agent work event for a session.",
+        "polylogue.mcp.server_cutover",
+        "register_cutover_privileged_tools",
+        "write",
+        MCPVerb.WRITE,
+        ("session", "work-event", "evidence-ref"),
+        MCPResultSemantics.MUTATION,
+        "polylogue.mcp.server_cutover.record_work_event:inspect.signature",
+        (("session_id", "codex-session:demo"), ("event_type", "tool_run"), ("event_id", "evt-1")),
+        "operation_result",
+        "polylogue.api.Polylogue.record_work_event",
+    ),
+    _ToolRow(
+        "emit_decision",
+        "Record a typed decision event with evidence references for a session.",
+        "polylogue.mcp.server_cutover",
+        "register_cutover_privileged_tools",
+        "write",
+        MCPVerb.WRITE,
+        ("session", "decision", "evidence-ref"),
+        MCPResultSemantics.MUTATION,
+        "polylogue.mcp.server_cutover.emit_decision:inspect.signature",
+        (("session_id", "codex-session:demo"), ("decision", "keep"), ("event_id", "evt-2")),
+        "operation_result",
+        "polylogue.api.Polylogue.emit_decision",
+    ),
+    _ToolRow(
         "judge",
         "Accept, reject, defer, or supersede assertion candidates without collapsing candidate state.",
         "polylogue.mcp.server_cutover",
@@ -298,7 +326,7 @@ _ALL_CAPABILITIES_ENABLED = MCPCapabilities(write=True, judge=True, maintenance=
 def declared_tool_names(capabilities: MCPCapabilities = _ALL_CAPABILITIES_ENABLED) -> frozenset[str]:
     """Return the tool names visible under ``capabilities``.
 
-    Default is every capability enabled (the full ten-tool surface), used by
+    Default is every capability enabled (the full twelve-tool surface), used by
     inventory/discovery tooling that wants the complete declared set rather
     than one server's resolved config.
     """

@@ -41,6 +41,7 @@ from devtools.pytest_collection_contract import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
     VerifyRun,
@@ -298,7 +299,7 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
-        sys.executable,
+        venv_python(root=ROOT),
         "-m",
         "pytest",
         "-p",

@@ -84,6 +84,11 @@ class ReadViewEventsOptions:
     limit: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ReadViewEffectiveContextOptions:
+    at_position: int | None = None
+
+
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
@@ -92,6 +97,7 @@ ReadViewOptions = (
     | ReadViewCorrelationOptions
     | ReadViewChronicleOptions
     | ReadViewEventsOptions
+    | ReadViewEffectiveContextOptions
 )
 ReadViewOptionValues = Mapping[str, object]
 ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
@@ -236,6 +242,7 @@ __all__ = [
     "ReadViewCorrelationOptions",
     "ReadViewChronicleOptions",
     "ReadViewEventsOptions",
+    "ReadViewEffectiveContextOptions",
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",

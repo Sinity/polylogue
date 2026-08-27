@@ -519,6 +519,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if path == "/v1/backfill-checkpoint":
             self._backfill_checkpoint_store()
             return
+        if path == "/v1/assertion-candidates":
+            self._assertion_candidate_capture()
+            return
         if path != "/v1/browser-captures":
             self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
             return
@@ -578,6 +581,53 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 capture_instance_id=result.capture_instance_id,
                 accepted_identities=list(result.accepted_identities),
             ).model_dump(mode="json"),
+        )
+
+    def _assertion_candidate_capture(self) -> None:
+        payload = self._read_json_body()
+        policy = payload.get("context_policy") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict) or not isinstance(policy, dict) or policy.get("inject") is not False:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "candidate_policy_required")
+            return
+        evidence_refs = payload.get("evidence_refs")
+        observation = payload.get("source_observation")
+        if (
+            not isinstance(payload.get("body_text"), str)
+            or not isinstance(payload.get("kind"), str)
+            or not isinstance(evidence_refs, list)
+            or len(evidence_refs) != 1
+            or not isinstance(evidence_refs[0], str)
+            or not isinstance(observation, dict)
+            or observation.get("fidelity") != "native"
+            or not observation.get("provider_message_id")
+            or not payload.get("target_ref")
+        ):
+            self._safe_error(HTTPStatus.BAD_REQUEST, "exact_message_evidence_required")
+            return
+        try:
+            from polylogue.api.archive import _archive_capture_assertion_candidate, candidate_capture_kind
+            from polylogue.config import Config
+            from polylogue.paths import archive_root as default_archive_root
+
+            root = self.server.config.archive_root or default_archive_root()
+            envelope = _archive_capture_assertion_candidate(
+                Config(archive_root=root, render_root=root, sources=[]),
+                body_text=payload["body_text"],
+                kind=candidate_capture_kind(payload["kind"]),
+                scope_refs=(evidence_refs[0],),
+                author_ref=str(payload.get("author_ref") or "user:browser-extension"),
+                author_kind=str(payload.get("author_kind") or "user"),
+                idempotency_key=payload.get("idempotency_key"),
+            )
+        except (ValueError, KeyError) as exc:
+            self._safe_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except (OSError, sqlite3.Error, RuntimeError) as exc:
+            logger.warning("browser_capture.assertion_candidate_failed", request_id=self._request_id(), error=repr(exc))
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "assertion_candidate_write_failed")
+            return
+        self._send_json(
+            HTTPStatus.ACCEPTED, {"ok": True, "status": "applied", "candidate": envelope.model_dump(mode="json")}
         )
 
     def do_PUT(self) -> None:
