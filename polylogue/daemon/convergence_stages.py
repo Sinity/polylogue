@@ -1453,11 +1453,7 @@ def _hot_insight_session_ids(
     raw_table = "raw_sessions"
     if not _table_exists(conn, raw_table):
         raw_table = "source_tier.raw_sessions"
-        try:
-            if not _ensure_source_tier_attached(conn):
-                return set()
-        except sqlite3.Error:
-            logger.warning("convergence: failed to attach source tier for hot-insight check", exc_info=True)
+        if not _ensure_source_tier_attached(conn):
             return set()
     placeholders = ", ".join("?" for _ in unique_ids)
     rows = conn.execute(
