@@ -6,9 +6,15 @@ import multiprocessing
 import os
 import sys
 import time
+from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
+
+
+class _BlobSized(Protocol):
+    blob_size: int
 
 
 def _initialize_worker_logging() -> None:
@@ -193,6 +199,22 @@ def resolve_ingest_batch_dispatch(*, total_blob_bytes: int, record_count: int, w
     )
 
 
+def select_ingest_worker_count(
+    raw_artifacts: Sequence[_BlobSized],
+    ingest_workers: int | None,
+    *,
+    default_worker_limit: int = 16,
+) -> int:
+    """Resolve the size-tiered ingest worker count without importing ingest code."""
+    total_blob_size = sum(record.blob_size for record in raw_artifacts)
+    worker_limit = default_worker_limit if ingest_workers is None else ingest_workers
+    return resolve_ingest_batch_dispatch(
+        total_blob_bytes=total_blob_size,
+        record_count=len(raw_artifacts),
+        worker_limit=worker_limit,
+    ).worker_count
+
+
 def resolve_revision_backfill_census_dispatch(
     *, ingest_workers: int, record_count: int, free_threaded: bool
 ) -> ParseDispatchPlan:
@@ -261,5 +283,6 @@ __all__ = [
     "resolve_parse_worker_count",
     "resolve_revision_backfill_census_dispatch",
     "resolve_validation_dispatch",
+    "select_ingest_worker_count",
     "terminate_process_pool",
 ]

@@ -46,7 +46,10 @@ from polylogue.pipeline.services.ingest_worker import (
     SessionWritePayload,
     ingest_record,
 )
-from polylogue.pipeline.services.process_pool import process_pool_executor, resolve_ingest_batch_dispatch
+from polylogue.pipeline.services.process_pool import (
+    process_pool_executor,
+    select_ingest_worker_count,
+)
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
     PublicationEncodingError,
@@ -56,7 +59,6 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
-from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -684,6 +686,13 @@ def _drive_structural_growth_predecessor(
     strictly additive typed-lineage improvement, never a narrowing of what
     the legacy path already proves.
     """
+    # Import lazily: importing the Drive package also initializes the live
+    # watcher package, whose acquisition helpers depend on the batch worker.
+    # This classifier is only needed for this Drive-specific lineage branch;
+    # keeping it out of the batch module's import graph preserves the
+    # ingest-worker entry point's acyclic startup path.
+    from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
+
     new_row = source_conn.execute(
         "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
         (raw_id,),
@@ -1536,17 +1545,12 @@ def _iter_ingest_results_chunk(
                 progress.in_flight_raw_ids.clear()
 
 
-def _resolved_ingest_worker_limit(value: int | None) -> int:
-    return value if value is not None else _DEFAULT_INGEST_WORKER_LIMIT
-
-
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
-    total_blob_size = sum(record.blob_size for record in raw_artifacts)
-    return resolve_ingest_batch_dispatch(
-        total_blob_bytes=total_blob_size,
-        record_count=len(raw_artifacts),
-        worker_limit=_resolved_ingest_worker_limit(ingest_workers),
-    ).worker_count
+    return select_ingest_worker_count(
+        raw_artifacts,
+        ingest_workers,
+        default_worker_limit=_DEFAULT_INGEST_WORKER_LIMIT,
+    )
 
 
 def _new_ingest_batch_summary(
@@ -1820,88 +1824,20 @@ def _resolve_codex_sidecar_snapshots(
     *,
     archive_root: Path,
 ) -> None:
-    """Attach each Codex raw record's frozen sidecar snapshot (polylogue-ih67).
+    """Require Codex evidence to have been carried by acquisition.
 
-    ``ingest_record`` runs in a ProcessPoolExecutor worker and must stay
-    subprocess-safe (no shared DB writer, no live-filesystem replay
-    dependence -- AC#4). Sidecar discovery (Codex ``session_index.jsonl`` /
-    ``history.jsonl`` / ``state_5.sqlite``) therefore happens here, in the
-    main process, before dispatch: the first time a given ``source_path`` is
-    seen, discover from disk and persist the result in ``history_sidecars``
-    (source.db); every later ingest of a raw record sharing that acquisition
-    path replays the persisted snapshot instead of touching disk again, so an
-    ambient edit to the live sidecar file cannot silently change a
-    previously acquired replay's title (AC#3).
-
-    Non-Codex records, and records with no ``source_path``, are left with
-    ``sidecar_snapshot=None`` -- ``_enrich_parsed_sessions`` falls back to
-    on-demand disk discovery for those, matching prior behavior.
+    The process-pool worker is subprocess-safe because all provider evidence
+    must already be carried on the acquired record. A missing optional
+    snapshot is represented as an empty bundle; it is never reconstructed
+    from the recorded rollout path.
     """
-    codex_records = [
-        record for record in raw_artifacts if record.payload_provider is Provider.CODEX and record.source_path
-    ]
-    if not codex_records:
-        return
-
-    from polylogue.sources.assembly_codex import CodexAssemblySpec, read_codex_thread_title_hook_events
-    from polylogue.storage.sqlite.archive_tiers.source_write import (
-        read_earliest_history_sidecar_for_path,
-        write_history_sidecar,
-    )
-
-    origin = origin_from_provider(Provider.CODEX)
-    spec = CodexAssemblySpec()
-    resolved: dict[str, dict[str, dict[str, str]]] = {}
-    source_db_path = archive_root / "source.db"
-    with closing(sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)) as conn:
-        # bd polylogue-foee: read acquired codex_thread_title hook events
-        # fresh on every batch (never frozen into the persisted sidecar
-        # snapshot below -- the hook events themselves come from a separate,
-        # later-running acquisition path, polylogue-0jf4, so freezing them
-        # into the once-and-done snapshot could permanently exclude titles
-        # acquired after the first parse of a given source_path).
-        hook_event_titles = read_codex_thread_title_hook_events(conn)
-        for record in codex_records:
-            source_path = record.source_path
-            if source_path in resolved:
-                continue
-            existing = read_earliest_history_sidecar_for_path(conn, origin=origin, source_path=source_path)
-            if existing is not None:
-                resolved[source_path] = cast("dict[str, dict[str, str]]", existing.payload)
-                continue
-            try:
-                discovered = cast("dict[str, dict[str, str]]", spec.discover_sidecars([Path(source_path)]))
-            except Exception:
-                # polylogue-azf7: a transient discovery failure (disk I/O,
-                # malformed sidecar this instant) must NOT be persisted as a
-                # snapshot. read_earliest_history_sidecar_for_path freezes
-                # the FIRST row ever written for (origin, source_path)
-                # (polylogue-ih67 AC#3/4); persisting {} here would freeze a
-                # permanently empty snapshot and no later successful
-                # discovery would ever be recorded or replayed again. Use
-                # the empty result for THIS ingest only and leave no
-                # snapshot behind, so the next ingest attempt still sees
-                # "no snapshot yet" and retries discovery from disk.
-                logger.exception("codex sidecar discovery failed for %s", source_path)
-                resolved[source_path] = {}
-                continue
-            resolved[source_path] = discovered
-            try:
-                write_history_sidecar(
-                    conn,
-                    origin=origin,
-                    source_path=source_path,
-                    payload=dict(discovered),
-                    observed_at_ms=int(time.time() * 1000),
-                )
-            except Exception:
-                logger.exception("failed to persist codex sidecar snapshot for %s", source_path)
-    for record in codex_records:
-        snapshot = resolved.get(record.source_path)
-        if hook_event_titles:
-            snapshot = dict(snapshot) if snapshot else {}
-            snapshot["hook_event_titles"] = hook_event_titles
-        record.sidecar_snapshot = snapshot
+    del archive_root
+    for record in raw_artifacts:
+        if record.payload_provider is Provider.CODEX and record.sidecar_snapshot is None:
+            # Optional title artifacts may be absent.  This marker prevents
+            # the worker from treating absence as permission for an ambient
+            # read, while keeping the normal assembly fallback deterministic.
+            record.sidecar_snapshot = {}
 
 
 def _process_ingest_batch_sync(
