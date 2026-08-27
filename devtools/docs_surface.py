@@ -249,12 +249,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
-        "Artifact Publication",
-        "artifact-publication.md",
-        "Filesystem contract shared by the cache and reusable-fixture publication routes.",
-        "operations",
-    ),
-    _entry(
         "Verification Authority",
         "verification-authority.md",
         "Sole ownership matrix for AgentCTL execution and Polylogue semantic verification.",
