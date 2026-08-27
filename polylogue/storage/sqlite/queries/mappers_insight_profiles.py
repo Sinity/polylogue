@@ -28,6 +28,20 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 
 
+def _cost_is_estimated(row: sqlite3.Row) -> bool:
+    """Whether this profile's cost is an estimate rather than a stated figure.
+
+    Absent evidence is not a known zero. A provenance that is anything other
+    than a provider-reported figure means the cost is at best an estimate: a
+    subscription session is only ever an API-equivalent one, and a stated
+    figure is the sole thing that makes a cost known.
+    """
+    stored = _row_int(row, "cost_is_estimated", None)
+    if stored is not None:
+        return bool(int(stored))
+    return (_row_text(row, "cost_provenance") or "unknown") != "provider_reported"
+
+
 def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
     search_text = row["search_text"]
     evidence_search_text = (_row_get(row, "evidence_search_text", "") or "").strip() or search_text
@@ -105,7 +119,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         terminal_state_method=_row_text(row, "terminal_state_method") or "unknown",
         terminal_state_confidence=float(_row_float(row, "terminal_state_confidence", 0.0) or 0.0),
         terminal_state_evidence_json=_row_text(row, "terminal_state_evidence_json") or "{}",
-        cost_is_estimated=bool(int(_row_int(row, "cost_is_estimated", 0) or 0)),
+        cost_is_estimated=_cost_is_estimated(row),
         thinking_duration_ms=int(_row_int(row, "thinking_duration_ms", 0) or 0),
         output_duration_ms=int(_row_int(row, "output_duration_ms", 0) or 0),
         tool_duration_ms=int(_row_int(row, "tool_duration_ms", 0) or 0),

@@ -50,8 +50,8 @@
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
           "tokens": {
-            "input_tokens": 100,
-            "output_tokens": 91,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0
           },
@@ -162,8 +162,8 @@
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
           "tokens": {
-            "input_tokens": 100,
-            "output_tokens": 91,
+            "input_tokens": 0,
+            "output_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0
           },
@@ -508,7 +508,7 @@
         "id": "chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
         "message_count": 5,
         "origin": "chatgpt-export",
-        "relative_time": "129w ago",
+        "relative_time": "130w ago",
         "tags": [],
         "target_ref": {
           "identity_key": "session:chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
@@ -1040,16 +1040,14 @@
           "blob_refs": 2,
           "blob_publication_reservations": 0,
           "raw_artifacts": 0,
-          "raw_hook_events": 0,
-          "history_sidecars": 0
+          "raw_hook_events": 0
         },
         "table_count_precision": {
           "raw_sessions": "exact",
           "blob_refs": "exact",
           "blob_publication_reservations": "exact",
           "raw_artifacts": "exact",
-          "raw_hook_events": "exact",
-          "history_sidecars": "exact"
+          "raw_hook_events": "exact"
         }
       },
       "index": {
@@ -1156,7 +1154,8 @@
         "source",
         "index",
         "embeddings",
-        "user"
+        "user",
+        "ops"
       ],
       "tiers": {
         "source": {
@@ -1191,13 +1190,28 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 0,
-          "planner_stats_present": false
+          "sqlite_stat1_rows": 1,
+          "planner_stats_present": true
         }
       }
     },
     "storage": {
       "active_db_path": "<PATH>"
+    },
+    "sinex_publication": {
+      "mode": "off",
+      "total": 0,
+      "pending": 0,
+      "publishing": 0,
+      "confirmed": 0,
+      "durable_debt": 0,
+      "rejected": 0,
+      "retry_due": 0,
+      "blocking": 0,
+      "active_lag": 0,
+      "oldest_active_age_ms": null,
+      "last_receipt_state": null,
+      "last_error_code": null
     },
     "ingest": {
       "available": true,
@@ -1429,7 +1443,7 @@
   - **Sessions:** 4 analyzed / 4 matched
   - **Origins:** chatgpt-export (2), claude-code-session (2)
   - **Total cost:** $0.00 _(estimated)_
-  - **Tokens:** in 100, out 91, cache-read 0, cache-write 0
+  - **Tokens:** in 0, out 0, cache-read 0, cache-write 0
   
   ## Distributions
   
@@ -1462,7 +1476,7 @@
   | session_count | 4 |
   | wallclock_span | span_ms=75663126945, summed_wall_ms=<HASH> |
   | estimated_cost_usd | $0.000000 (estimated) |
-  | token_lanes | input=100, output=91, cache_read=0, cache_write=0 |
+  | token_lanes | input=0, output=0, cache_read=0, cache_write=0 |
   | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
   | repos_touched | (none) |
   | subagent_branch_count | 0 |
@@ -1496,7 +1510,7 @@
   sessions: analyzed=4 matched=4
   origins: chatgpt-export=2, claude-code-session=2
   total_cost: $0.00 (estimated)
-  tokens: in=100 out=91 cache_read=0 cache_write=0
+  tokens: in=0 out=0 cache_read=0 cache_write=0
   cost_per_session_usd: no signal
   wall_per_session_s: n=4 total=1.45443e+<DURATION> min=240 p50=360 p90=7.38324e+07 max=7.38324e+07 mean=3.63606e+07
   wallclock_span_ms: 75663126945
@@ -1512,7 +1526,7 @@
     sessions: 4
     wallclock: span_ms=75663126945 summed_wall_ms=<HASH> (<TIMESTAMP> -> <TIMESTAMP>)
     cost: $0.000000 (estimated)
-      tokens: input=100 output=91 cache_read=0 cache_write=0
+      tokens: input=0 output=0 cache_read=0 cache_write=0
     top_expensive_session: no_signal (no session in scope carries a positive cost figure)
     repos_touched: (none)
     subagent_branch_count: 0
