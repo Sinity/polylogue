@@ -47,7 +47,7 @@ from polylogue.context.scheduler import (
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
-from polylogue.core.errors import PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
@@ -1199,29 +1199,38 @@ def _archive_list_assertion_claims(
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
 
     def _read(archive: Any) -> list[Any]:
-        conn = open_readonly_connection(archive.user_db_path)
-        conn.row_factory = sqlite3.Row
         try:
-            if kinds is None:
+            conn = open_readonly_connection(archive.user_db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                if kinds is None:
+                    return list_assertion_claims(
+                        conn,
+                        target_ref=target_ref,
+                        scope_ref=scope_ref,
+                        statuses=statuses,
+                        context_inject=context_inject,
+                        limit=limit,
+                    )
                 return list_assertion_claims(
                     conn,
+                    kinds=kinds,
                     target_ref=target_ref,
                     scope_ref=scope_ref,
                     statuses=statuses,
                     context_inject=context_inject,
                     limit=limit,
                 )
-            return list_assertion_claims(
-                conn,
-                kinds=kinds,
-                target_ref=target_ref,
-                scope_ref=scope_ref,
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-        finally:
-            conn.close()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ArchiveTierUnavailableError(
+                tier="user.db",
+                path=str(archive.user_db_path.resolve(strict=False)),
+                reason=f"cannot read SQLite database ({exc})",
+                guidance="restore or initialize the durable user tier at this path, then retry the query; "
+                "the reader will not create a replacement or search another archive root",
+            ) from exc
 
     return run_archive_read_sync(
         _active_archive_root(config),
