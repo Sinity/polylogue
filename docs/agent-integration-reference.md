@@ -27,6 +27,7 @@ Arguments:
 | `limit` | `integer` | no | Requested page size, subject to server and transport bounds. |
 | `projection` | `string` | no | Declared result projection such as session-summary or cost-rollup. |
 | `continuation` | `string` | no | Opaque token from the preceding response; send alone. |
+| `offset` | `integer` | no | Offset for projections that use decimal offset pagination. |
 | `origin` | `string` | no | Public origin filter. |
 | `tag` | `string` | no | Tag filter. |
 | `repo` | `string` | no | Repository filter. |

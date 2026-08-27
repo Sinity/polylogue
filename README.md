@@ -9,22 +9,22 @@
   <a href="https://sinity.github.io/polylogue/"><img src="https://img.shields.io/badge/docs-live-2563eb" alt="Live documentation"></a>
 </p>
 
-Polylogue archives AI conversations and coding-agent runs from multiple tools in
-one searchable local archive. It imports supported histories from ChatGPT,
-Claude and Claude Code, Codex, Gemini, Hermes, and other sources, then exposes
-sessions, messages, tool calls and results, branches, subagents, usage, and costs
-through a CLI, Python API, local HTTP reader, and MCP server.
+Polylogue is a local flight recorder for AI work: a cross-provider system of
+record where sessions, tool receipts, lineage, usage, and costs remain tied to
+their source evidence. It imports supported histories from ChatGPT, Claude and
+Claude Code, Codex, Gemini, Hermes, and other sources, then makes that archive
+available through a CLI, Python API, local HTTP reader, and MCP server.
 
 By default, the archive stays on your machine.
 
-[Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
+[Getting started](docs/getting-started.md) | [Live documentation](https://sinity.github.io/polylogue/) | [Demo](docs/demos.md) | [Published finding](https://sinity.github.io/polylogue/findings/claim-vs-evidence/) | [Architecture](docs/architecture.md) | [CLI reference](docs/cli-reference.md)
 
 ## Try it without importing personal data
 
 Run the tour in a throwaway archive:
 
 ```bash
-nix run github:Sinity/polylogue -- demo tour
+uvx polylogue demo tour
 ```
 
 The tour imports sample files for the supported providers, queries structured
@@ -37,21 +37,19 @@ From a source checkout:
 ```bash
 git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-nix develop -c polylogue demo tour
+uv run polylogue demo tour
 ```
 
-## What you can do
+## Search, analyze, audit, remember
 
 - Search conversations and coding sessions across supported sources.
-- Inspect tool calls and provider-reported outcomes without inferring success or
-  failure from prose.
-- Follow branches, continuations, subagent sessions, and compacted histories.
-- Distinguish human-authored text from injected runtime context.
-- Query usage and cost without combining provider fields that mean different
-  things.
-- Add notes, tags, corrections, and judgments without changing imported source
-  data.
-- Let agents read the archive through MCP.
+- Analyze tool calls, branches, usage, and costs from structured evidence.
+- Audit provider-reported outcomes without inferring success or failure from
+  prose.
+- Remember work through source references, lineage, notes, tags, and MCP access
+  for agents.
+
+See the [published structured-failure finding](https://sinity.github.io/polylogue/findings/claim-vs-evidence/) for a concrete example of a claim whose evidence and limitations remain visible.
 
 ## Install
 
