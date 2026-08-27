@@ -63,6 +63,7 @@ def _replace_graph(index_db: Path, graph: object) -> None:
     if not isinstance(graph, WorkEvidenceGraph):
         raise TypeError("expected WorkEvidenceGraph")
     with sqlite3.connect(index_db) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM work_evidence_graphs WHERE graph_id = ?", (graph.graph_id,))
         conn.execute(
