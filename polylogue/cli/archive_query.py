@@ -2350,6 +2350,14 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         raise click.ClickException("daemon is unavailable; it must prepare the delete authorization")
 
     prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
+    preview_refs = daemon_preview.get("preview_refs")
+    if isinstance(preview_refs, list) and all(isinstance(ref, str) and ref for ref in preview_refs):
+        daemon_preview_refs = tuple(preview_refs)
+    else:
+        preview_ref = daemon_preview.get("preview_ref")
+        if not isinstance(preview_ref, str) or not preview_ref:
+            raise click.ClickException("daemon returned an invalid delete preview")
+        daemon_preview_refs = (preview_ref,)
     if not force:
         click.echo(f"About to delete {len(prepared_session_ids)} session(s):", err=True)
         for session_id in prepared_session_ids[:5]:
@@ -2357,14 +2365,11 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         if len(prepared_session_ids) > 5:
             click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
         if not env.ui.confirm("Proceed?", default=False):
-            preview_ref = daemon_preview.get("preview_ref")
-            if not isinstance(preview_ref, str) or not preview_ref:
-                raise click.ClickException("daemon returned an invalid delete preview")
             try:
                 cancellation = _submit_daemon_mutation(
                     config,
                     "/api/cli/delete/cancel",
-                    body={"preview_ref": preview_ref},
+                    body={"preview_refs": list(daemon_preview_refs)},
                 )
             except DaemonMutationIndeterminateError as exc:
                 raise click.ClickException(
@@ -2375,7 +2380,7 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
                 raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
             if cancellation is None:
                 raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
-            if cancellation.get("status") != "cancelled" or cancellation.get("preview_ref") != preview_ref:
+            if cancellation.get("status") != "cancelled":
                 raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
             click.echo(
                 MutationResultPayload(
@@ -2383,24 +2388,30 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
                 ).to_json(exclude_none=True)
             )
             return
-    preview_ref = daemon_preview.get("preview_ref")
-    if not isinstance(preview_ref, str) or not preview_ref:
-        raise click.ClickException("daemon returned an invalid delete preview")
     try:
         daemon_authorization = _submit_daemon_mutation(
             config,
             "/api/cli/delete/authorize",
-            body={"preview_ref": preview_ref},
+            body={"preview_refs": list(daemon_preview_refs)},
         )
         if daemon_authorization is None:
             raise click.ClickException("daemon became unavailable before it authorized the confirmed delete")
-        authorization_token = daemon_authorization.get("authorization_token")
-        if not isinstance(authorization_token, str) or not authorization_token:
+        authorization_tokens = daemon_authorization.get("authorization_tokens")
+        if isinstance(authorization_tokens, list) and all(
+            isinstance(token, str) and token for token in authorization_tokens
+        ):
+            daemon_authorization_tokens = tuple(authorization_tokens)
+        else:
+            authorization_token = daemon_authorization.get("authorization_token")
+            if not isinstance(authorization_token, str) or not authorization_token:
+                raise click.ClickException("daemon returned an invalid delete authorization")
+            daemon_authorization_tokens = (authorization_token,)
+        if len(daemon_authorization_tokens) != len(daemon_preview_refs):
             raise click.ClickException("daemon returned an invalid delete authorization")
         daemon_payload = _submit_daemon_mutation(
             config,
             "/api/cli/delete",
-            body={"authorization_token": authorization_token},
+            body={"authorization_tokens": list(daemon_authorization_tokens)},
         )
     except DaemonMutationIndeterminateError as exc:
         raise click.ClickException(

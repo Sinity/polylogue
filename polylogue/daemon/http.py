@@ -124,7 +124,7 @@ logger = get_logger(__name__)
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
 _CLI_DELETE_SELECTION_MAX_BYTES = 64 * 1024 * 1024
-_CLI_DELETE_AUTHORIZATION_MAX_BYTES = 2_048
+_CLI_DELETE_AUTHORIZATION_MAX_BYTES = 8_192
 
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
 
@@ -5313,15 +5313,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_cli_delete_authorize(self) -> None:
         """Issue an authenticated caller's one-time delete authorization."""
 
-        preview_ref = self._read_cli_delete_token_field("preview_ref")
-        if preview_ref is None:
+        fields = self._read_cli_delete_refs_or_tokens("preview_ref", "preview_refs")
+        if fields is None:
             return
+        preview_refs = fields
         principal = self._cli_delete_principal()
 
-        async def _authorize(poly: Polylogue) -> str:
-            from polylogue.operations.delete_authorization import authorize_cli_delete
+        async def _authorize(poly: Polylogue) -> tuple[str, ...]:
+            from polylogue.operations.delete_authorization import authorize_cli_delete_many
 
-            return authorize_cli_delete(poly.config.archive_root, preview_ref, principal)
+            return authorize_cli_delete_many(poly.config.archive_root, preview_refs, principal)
 
         try:
             with self._write_gate("http.cli.delete.authorize"):
@@ -5329,21 +5330,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
-        self._send_json(HTTPStatus.OK, {"status": "authorized", "authorization_token": token})
+        tokens = cast(tuple[str, ...], token)
+        payload: dict[str, object] = {"status": "authorized"}
+        if len(tokens) == 1:
+            payload["authorization_token"] = tokens[0]
+        else:
+            payload["authorization_tokens"] = list(tokens)
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete_cancel(self) -> None:
         """Cancel an authenticated caller's unconfirmed delete preview."""
 
-        preview_ref = self._read_cli_delete_token_field("preview_ref")
-        if preview_ref is None:
+        fields = self._read_cli_delete_refs_or_tokens("preview_ref", "preview_refs")
+        if fields is None:
             return
+        preview_refs = fields
         principal = self._cli_delete_principal()
 
         async def _cancel(poly: Polylogue) -> None:
             from polylogue.operations.delete_authorization import cancel_cli_delete
 
-            cancel_cli_delete(poly.config.archive_root, preview_ref, principal)
+            for preview_ref in preview_refs:
+                cancel_cli_delete(poly.config.archive_root, preview_ref, principal)
 
         try:
             with self._write_gate("http.cli.delete.cancel"):
@@ -5351,22 +5360,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return
-        self._send_json(HTTPStatus.OK, {"status": "cancelled", "preview_ref": preview_ref})
+        payload: dict[str, object] = {"status": "cancelled"}
+        if len(preview_refs) == 1:
+            payload["preview_ref"] = preview_refs[0]
+        else:
+            payload["preview_refs"] = list(preview_refs)
+        self._send_json(HTTPStatus.OK, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete(self) -> None:
         """Consume one daemon-held authorization before deleting its exact targets."""
 
-        token = self._read_cli_delete_token_field("authorization_token")
-        if token is None:
+        tokens = self._read_cli_delete_refs_or_tokens("authorization_token", "authorization_tokens")
+        if tokens is None:
             return
+        authorization_tokens = tokens
         principal = self._cli_delete_principal()
 
         async def _delete(poly: Polylogue) -> int:
-            from polylogue.operations.delete_authorization import consume_cli_delete
+            from polylogue.operations.delete_authorization import consume_cli_delete_many
 
-            receipt = consume_cli_delete(poly.config.archive_root, token, principal)
-            return receipt.affected_count
+            return consume_cli_delete_many(poly.config.archive_root, authorization_tokens, principal)
 
         try:
             with self._write_gate("http.cli.delete"):
@@ -5416,6 +5430,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return None
         return value
+
+    def _read_cli_delete_refs_or_tokens(self, singular: str, plural: str) -> tuple[str, ...] | None:
+        body = self._read_bounded_json_body(_CLI_DELETE_AUTHORIZATION_MAX_BYTES)
+        if body is None or set(body) not in ({singular}, {plural}):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        value = body.get(singular) if singular in body else body.get(plural)
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item for item in values):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        if len(set(values)) != len(values):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        return tuple(values)
 
     def _read_bounded_json_body(self, max_bytes: int) -> dict[str, object] | None:
         raw_content_length = self.headers.get("Content-Length")
