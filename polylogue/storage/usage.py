@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Literal, cast
 
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.semantic.pricing import (
@@ -32,6 +32,12 @@ from polylogue.archive.semantic.subscription_pricing import (
     credits_to_usd,
 )
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.evidence_families import (
+    SESSION_USAGE_RECONCILED_COST_FAMILY,
+    SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
+    USAGE_LANE_CATALOG_COST_FAMILY,
+    USAGE_LANE_EXACT_TOKENS_FAMILY,
+)
 from polylogue.core.evidence_value import (
     CoverageExclusion,
     EvidenceObservation,
@@ -289,138 +295,6 @@ _MODEL_NAME_STRIP_CHARS = (
     " \x85\xa0\u1680"
     "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
     "\u2028\u2029\u202f\u205f\u3000"
-)
-
-_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF: Final = ObjectRef(
-    kind="insight",
-    object_id="usage-lane-exact-total-tokens:v1",
-)
-USAGE_LANE_EXACT_TOKENS_FAMILY: Final = FactFamilySpec(
-    family="usage.pricing_lane_exact_total_tokens",
-    owner="polylogue.storage.usage",
-    source_adapter="_pricing_lane_reports",
-    public_field="pricing_lanes[].exact_total_tokens_evidence",
-    renderer_label="exact total tokens",
-    value_schema="integer",
-    unit="tokens",
-    grain="pricing_lane",
-    denominator="session_model_usage rows in the declared lane",
-    definition_ref=_USAGE_LANE_EXACT_TOKENS_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known", "unknown"}),
-    allowed_authorities=frozenset({"provider-reported", "model-derived", "structural"}),
-    authority_precedence=("provider-reported", "structural", "model-derived"),
-)
-
-_USAGE_LANE_CATALOG_COST_DEFINITION_REF: Final = ObjectRef(
-    kind="insight",
-    object_id="usage-lane-catalog-api-equivalent-cost:v1",
-)
-USAGE_LANE_CATALOG_COST_FAMILY: Final = FactFamilySpec(
-    family="usage.pricing_lane_catalog_api_equivalent_cost",
-    owner="polylogue.storage.usage",
-    source_adapter="_pricing_lane_reports",
-    public_field="pricing_lanes[].catalog_api_equivalent_evidence",
-    renderer_label="catalog API-equivalent cost",
-    value_schema="number",
-    unit="USD",
-    grain="pricing_lane",
-    denominator="session_model_usage rows in the declared lane",
-    definition_ref=_USAGE_LANE_CATALOG_COST_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known", "unknown"}),
-    allowed_authorities=frozenset({"catalog-derived"}),
-    authority_precedence=("catalog-derived",),
-)
-
-
-_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF: Final = ObjectRef(
-    kind="insight",
-    object_id="session-usage-reconciled-total-tokens:v1",
-)
-SESSION_USAGE_RECONCILED_TOKENS_FAMILY: Final = FactFamilySpec(
-    family="usage.session_reconciled_total_tokens",
-    owner="polylogue.storage.usage",
-    source_adapter="build_session_usage_reconciliation",
-    public_field="session_usage_reconciliation.reconciled_tokens_evidence",
-    renderer_label="reconciled session total tokens",
-    value_schema="integer",
-    unit="tokens",
-    grain="session",
-    denominator="canonical per-session token sources (session_model_usage rollup, session_profiles estimate)",
-    definition_ref=_SESSION_USAGE_RECONCILED_TOKENS_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known", "unknown"}),
-    allowed_authorities=frozenset({"provider-reported", "structural", "model-derived"}),
-    authority_precedence=("provider-reported", "structural", "model-derived"),
-)
-
-_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF: Final = ObjectRef(
-    kind="insight",
-    object_id="session-usage-reconciled-catalog-cost:v1",
-)
-SESSION_USAGE_RECONCILED_COST_FAMILY: Final = FactFamilySpec(
-    family="usage.session_reconciled_catalog_cost",
-    owner="polylogue.storage.usage",
-    source_adapter="build_session_usage_reconciliation",
-    public_field="session_usage_reconciliation.reconciled_cost_evidence",
-    renderer_label="reconciled session catalog-equivalent cost",
-    value_schema="number",
-    unit="USD",
-    grain="session",
-    denominator=(
-        "canonical per-session cost sources (fresh catalog price of the reconciled tokens, "
-        "legacy session_profiles/cost-insight total)"
-    ),
-    definition_ref=_SESSION_USAGE_RECONCILED_COST_DEFINITION_REF,
-    required_axes=frozenset(
-        {
-            "value_state",
-            "measurement_authority",
-            "evidence_refs",
-            "definition_ref",
-            "temporal",
-            "enumeration",
-            "coverage",
-            "freshness",
-        }
-    ),
-    allowed_states=frozenset({"known", "unknown"}),
-    allowed_authorities=frozenset({"provider-reported", "catalog-derived", "model-derived"}),
-    authority_precedence=("provider-reported", "catalog-derived", "model-derived"),
 )
 
 

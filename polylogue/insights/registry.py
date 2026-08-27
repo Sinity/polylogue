@@ -23,6 +23,7 @@ from typing import Any, TypeAlias, cast
 import click
 
 from polylogue.core.errors import PolylogueError
+from polylogue.core.evidence_families import fact_family_schema
 from polylogue.insights.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
@@ -50,6 +51,10 @@ from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsa
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
+
+# Shared evidence declarations are exposed through the existing insight
+# registry so discovery and renderers consume one generated schema source.
+EVIDENCE_FAMILY_SCHEMAS = fact_family_schema()
 
 
 @dataclass(frozen=True, slots=True)
