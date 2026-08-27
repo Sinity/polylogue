@@ -108,6 +108,28 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
     assert materialize_delegation_work_evidence_archive(tmp_path) == 1
     assert delegation_work_evidence_materialization_needed(tmp_path) is False
 
+    # A replacement must remove rows that disappeared from the canonical view;
+    # otherwise stale nodes remain traversable after source evidence changes.
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM delegation_facts")
+
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 0
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work_evidence_nodes WHERE graph_id = ?",
+                (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM work_evidence_edges WHERE graph_id = ?",
+                (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
+            ).fetchone()[0]
+            == 0
+        )
+
 
 def test_convergence_stage_reports_probe_and_materialization_failures_as_pending_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
