@@ -53,9 +53,10 @@ def test_hermes_source_class_recognition_is_structural_and_fails_closed(tmp_path
     unrelated = tmp_path / "session.json"
     unrelated.write_text('{"session_id":"copied","messages":[]}', encoding="utf-8")
 
-    assert recognize_source_class(Provider.HERMES, atif).source_class == "session"
-    assert recognize_source_class(Provider.HERMES, template).source_class == "unsupported"
-    assert recognize_source_class(Provider.HERMES, unrelated).source_class == "unsupported"
+    for path, expected in ((atif, "session"), (template, "unsupported"), (unrelated, "unsupported")):
+        recognition = recognize_source_class(Provider.HERMES, path)
+        assert recognition is not None
+        assert recognition.source_class == expected
 
 
 def test_hermes_source_class_recognition_accepts_atof_jsonl(tmp_path: Path) -> None:
