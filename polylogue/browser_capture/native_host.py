@@ -75,6 +75,9 @@ def _write_message(value: dict[str, object]) -> None:
 
 
 def main() -> int:
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue browser native host")
     origin = sys.argv[1] if len(sys.argv) > 1 else ""
     extension_id = (
         origin.removeprefix("chrome-extension://").rstrip("/") if origin.startswith("chrome-extension://") else ""

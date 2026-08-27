@@ -1715,11 +1715,12 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
         conn: sqlite3.Connection,
         *,
         session_ids: list[str],
+        marker_conn: sqlite3.Connection | None = None,
         page_size: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "insights",
     ) -> SimpleNamespace:
-        del conn, page_size, stage_timing_prefix
+        del conn, marker_conn, page_size, stage_timing_prefix
         seen_session_ids.append(session_ids)
         if stage_timings_s is not None:
             stage_timings_s["insights.fake"] = 0.25
@@ -1761,11 +1762,12 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
         conn: sqlite3.Connection,
         *,
         session_ids: list[str],
+        marker_conn: sqlite3.Connection | None = None,
         page_size: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "insights",
     ) -> SimpleNamespace:
-        del conn, page_size, stage_timing_prefix
+        del conn, marker_conn, page_size, stage_timing_prefix
         seen_session_ids.append(session_ids)
         if stage_timings_s is not None:
             stage_timings_s["insights.fake"] = 0.25

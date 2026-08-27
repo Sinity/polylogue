@@ -362,7 +362,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "blob_publication_reservations",
         "raw_artifacts",
         "raw_hook_events",
-        "history_sidecars",
     ),
     "index": (
         "sessions",

@@ -1163,6 +1163,10 @@ def read_verb(
     """
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    # Rendering inherits the root format, but the explained stage reports what
+    # the read verb itself was given: the stage describes this verb's options,
+    # not the invocation's output encoding.
+    local_output_format = output_format
     if output_format is None:
         inherited_format = request.params.get("output_format")
         if isinstance(inherited_format, str):
@@ -1314,7 +1318,7 @@ def read_verb(
         action="read",
         view=view,
         destination=destination,
-        format=_effective_read_output_format(request, view=view, output_format=output_format) or "default",
+        format=_effective_read_output_format(request, view=view, output_format=local_output_format) or "default",
         all=all_matches,
         first=first_only,
     ):

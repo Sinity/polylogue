@@ -153,6 +153,9 @@ def _read_status(request: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def main() -> int:
+    from polylogue.runtime import require_free_threaded_runtime
+
+    require_free_threaded_runtime(consumer="polylogue AgentCTL adapter")
     request: Mapping[str, Any] = {}
     try:
         decoded = json.loads(sys.stdin.read())

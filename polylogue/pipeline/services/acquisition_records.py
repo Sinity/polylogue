@@ -106,6 +106,7 @@ def make_raw_record(
         blob_size=blob_size,
         acquired_at=acquired_at,
         file_mtime=raw_data.file_mtime,
+        sidecar_snapshot=raw_data.sidecar_snapshot,
     )
 
 
