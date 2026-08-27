@@ -41,7 +41,7 @@ export default [
     },
   },
   {
-    files: ["src/background.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js"],
+    files: ["src/background.js", "src/background/**/*.js", "src/actions/**/*.js", "src/backfill/**/*.js", "src/capture/**/*.js"],
     languageOptions: {
       sourceType: "module",
     },
