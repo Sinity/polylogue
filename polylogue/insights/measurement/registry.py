@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import cast
 
+from polylogue.core.evidence_value import EvidenceAxis, EvidenceValue
 from polylogue.insights.measurement.canon import content_ref
 from polylogue.insights.measurement.metric import MetricDefinition
-
-EvidenceAxis = Literal[
-    "value_state", "measurement_authority", "evidence_refs", "definition_ref", "enumeration", "coverage", "freshness"
-]
 
 
 class MeasureValidityError(ValueError):
@@ -53,6 +50,8 @@ class MeasureSpec:
             missing.append("measurement authority")
         if "coverage" not in self.required_axes:
             missing.append("required EvidenceValue axis: coverage")
+        if any(not item.strip() for item in self.coverage_preconditions):
+            missing.append("coverage preconditions")
         if missing:
             raise MeasureValidityError("measure is missing " + ", ".join(dict.fromkeys(missing)))
 
@@ -169,11 +168,16 @@ def compose_measure(
     spec = registry.require(plan.measure_ref)
     groups: dict[str | None, list[Mapping[str, object]]] = {}
     for row in rows:
+        _validate_composition_row(spec, row)
         group = None if group_field is None else str(row.get(group_field, "unknown"))
         groups.setdefault(group, []).append(row)
     results: list[MeasureResult] = []
     for group, members in groups.items():
-        known = [row[value_field] for row in members if row.get("value_state", "known") == "known"]
+        known = [
+            row[value_field]
+            for row in members
+            if row.get("value_state", "known") == "known" and row.get(value_field) is not None
+        ]
         refs = tuple(str(row[ref_field]) for row in members if ref_field in row)
         aggregate = spec.metric.aggregation.lower()
         value: object
@@ -195,6 +199,76 @@ def compose_measure(
             MeasureResult(spec.ref, plan.query_ref, result_ref, value, state, group, refs, spec.tier_footnote)
         )
     return tuple(results)
+
+
+def _validate_composition_row(spec: MeasureSpec, row: Mapping[str, object]) -> None:
+    """Apply the declaration's evidence and frame gates before aggregation.
+
+    Legacy callers may still provide the small mapping shape used by the
+    original aggregate helper.  New callers can attach the canonical
+    ``EvidenceValue`` under ``evidence``; when present, all declared axes are
+    checked here so an aggregate cannot hide an incomplete frame.
+    """
+
+    evidence = row.get("evidence")
+    if evidence is not None and not isinstance(evidence, EvidenceValue):
+        raise MeasureValidityError("composition evidence must be an EvidenceValue")
+    for precondition in spec.coverage_preconditions:
+        if precondition in {"coverage_complete", "frame_complete"}:
+            complete = evidence.coverage.complete if evidence is not None else row.get("coverage_complete")
+            if complete is not True:
+                raise MeasureValidityError(
+                    f"measure {spec.name!r} requires complete frame coverage; "
+                    "composition was suppressed because coverage is incomplete or undeclared"
+                )
+        elif precondition == "enumeration_exact":
+            enumeration = evidence.enumeration if evidence is not None else row.get("enumeration")
+            if enumeration not in {"census", "exact"}:
+                raise MeasureValidityError(f"measure {spec.name!r} requires exact enumeration, got {enumeration!r}")
+        elif precondition == "authority_compatible":
+            authorities = (
+                set(evidence.measurement_authority)
+                if evidence is not None
+                else set(cast(tuple[str, ...], row.get("measurement_authority", ())))
+            )
+            required = set(spec.metric.measurement_authority)
+            if not authorities or (required and not authorities & required):
+                raise MeasureValidityError(
+                    f"measure {spec.name!r} requires compatible measurement authority; got {sorted(authorities)}"
+                )
+        else:
+            raise MeasureValidityError(f"measure {spec.name!r} has unsupported coverage precondition {precondition!r}")
+
+    if evidence is None:
+        return
+    missing_axes: list[str] = []
+    for axis in spec.required_axes:
+        value = getattr(evidence, axis, None)
+        if axis == "coverage":
+            value = evidence.coverage.intended_frame
+        if axis == "definition_ref":
+            value = evidence.definition_ref.object_id
+        if axis == "evidence_refs" and evidence.value_state == "known":
+            value = evidence.evidence_refs
+        if axis == "measurement_authority" and evidence.value_state == "known":
+            value = evidence.measurement_authority
+        if value in (None, (), ""):
+            missing_axes.append(axis)
+    if missing_axes:
+        raise MeasureValidityError(
+            f"measure {spec.name!r} composition is missing EvidenceValue axes: {', '.join(sorted(missing_axes))}"
+        )
+    if spec.metric.required_frame and evidence.coverage.intended_frame != spec.metric.required_frame:
+        raise MeasureValidityError(
+            f"measure {spec.name!r} requires frame {spec.metric.required_frame!r}, "
+            f"got {evidence.coverage.intended_frame!r}"
+        )
+    if spec.metric.measurement_authority and not (
+        set(evidence.measurement_authority) & set(spec.metric.measurement_authority)
+    ):
+        raise MeasureValidityError(
+            f"measure {spec.name!r} has incompatible measurement authority {list(evidence.measurement_authority)!r}"
+        )
 
 
 __all__ = ["MeasurePlan", "MeasureRegistry", "MeasureResult", "MeasureSpec", "MeasureValidityError", "compose_measure"]
