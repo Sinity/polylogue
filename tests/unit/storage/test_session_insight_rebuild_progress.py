@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.storage_scale
+
 from polylogue.api import Polylogue
 from polylogue.storage.insights.session.rebuild import _delete_tables_with_progress_sync
 from tests.infra.storage_records import SessionBuilder
