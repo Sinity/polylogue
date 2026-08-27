@@ -186,9 +186,27 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "internals",
     ),
     _entry(
+        "Atlas: Core",
+        "atlas/00-core.md",
+        "Cold-start orientation for Polylogue's data flow, boundaries, and area sheets.",
+        "internals",
+    ),
+    _entry(
         "Atlas: Daemon",
         "atlas/daemon.md",
         "Agent-orientation sheet: runtime ownership, convergence stages, current operational state.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: Sources and Parsers",
+        "atlas/sources-parsers.md",
+        "Agent-orientation sheet: acquisition, detection, normalization, and parser invariants.",
+        "internals",
+    ),
+    _entry(
+        "Atlas: Query and Read Path",
+        "atlas/query-read-path.md",
+        "Agent-orientation sheet: query planning, stable reads, and surface ownership.",
         "internals",
     ),
     _entry(

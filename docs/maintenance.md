@@ -889,7 +889,8 @@ Classification is one-pass and idempotent. A classified run is terminal, so
 restarting the daemon over an already-recovered archive appends no further
 `recovery_classified` events.
 
-Two terminal reasons deliberately keep an operation blocking:
+Recovery terminal reasons deliberately keep an operation visible to bounded
+inspection:
 
 - `recovery_unknown` keeps the run visible to overlap detection, so a later
   mutation touching the same targets is refused rather than racing an effect
@@ -897,7 +898,12 @@ Two terminal reasons deliberately keep an operation blocking:
 - `recovered_applied` installs the duplicate-effect barrier: a confirmed
   applied recovery refuses a second attempt at the same semantic effect.
 
-Both are adjudicable, which is what keeps them from being permanent wedges.
+- `recovered_partial:<action>` preserves the declared `retry-exact`, `forward`,
+  or `rollback` continuation. A retryable partial remains eligible for the
+  same exact plan; a forward or rollback continuation remains blocked until an
+  operator adjudicates it.
+
+These states are adjudicable, which keeps them from becoming permanent wedges.
 Adjudication is an offline operator route with no writer lease of its own, so
 it refuses to run beside a live `polylogued`:
 

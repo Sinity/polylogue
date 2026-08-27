@@ -57,10 +57,21 @@ _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token"
 #: Terminal reasons that deliberately keep a finished run open to bounded
 #: operator adjudication.  ``recovery_unknown`` is the wedge a blocked
 #: classification installs; ``recovered_applied`` is the duplicate-effect
-#: barrier a confirmed-applied classification installs.  Neither may become
+#: barrier a confirmed-applied classification installs.  A partial
+#: classification keeps its declared continuation visible.  Neither may become
 #: unrecoverable: without an adjudication route a single misclassification
 #: would permanently refuse every later attempt on the same targets.
 _ADJUDICABLE_TERMINAL_REASONS = frozenset({"recovery_unknown", "recovered_applied"})
+
+
+def _is_adjudicable_recovery(status: str, terminal_reason: str | None) -> bool:
+    """Return whether a run still carries unresolved recovery authority."""
+
+    reason = terminal_reason or ""
+    return status in {"running", "interrupted"} or (
+        status in {"failed", "completed"}
+        and (reason in _ADJUDICABLE_TERMINAL_REASONS or reason.startswith("recovered_partial:"))
+    )
 
 
 def _run_state_for_targets(states: list[str]) -> tuple[str, str | None]:
@@ -1263,7 +1274,9 @@ class AuditRepository:
                        r.plan_hash, r.target_digest
                 FROM operation_runs AS r
                 JOIN operation_targets AS t ON t.operation_id = r.operation_id
-                WHERE (r.status IN ('running', 'interrupted') OR r.terminal_reason = 'recovery_unknown')
+                WHERE (r.status IN ('running', 'interrupted')
+                       OR r.terminal_reason = 'recovery_unknown'
+                       OR r.terminal_reason LIKE 'recovered_partial:%')
                   AND t.target_ref IN ({placeholders})
                 ORDER BY r.started_at_ms, r.operation_id
                 """,
@@ -1430,9 +1443,7 @@ class AuditRepository:
             # committed recovery with matching intent/postflight/receipt) must
             # be able to finalize it, not just a freshly-dead ``interrupted``
             # run (polylogue-39pdi).
-            if status not in {"running", "interrupted"} and not (
-                status == "failed" and str(run[2] or "") == "recovery_unknown"
-            ):
+            if not _is_adjudicable_recovery(status, cast(str | None, run[2])):
                 return
             live_owner = conn.execute(
                 "SELECT worker_id FROM operation_attempts WHERE operation_id = ? AND state = 'running'", (operation_id,)
@@ -1605,9 +1616,7 @@ class AuditRepository:
             if run is None:
                 raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
             status = str(run[1])
-            adjudicable = status in {"running", "interrupted"} or (
-                status in {"failed", "completed"} and str(run[2] or "") in _ADJUDICABLE_TERMINAL_REASONS
-            )
+            adjudicable = _is_adjudicable_recovery(status, cast(str | None, run[2]))
             if not adjudicable:
                 raise ValueError(f"operation {operation_id!r} is not awaiting recovery adjudication")
             if status == "running":
@@ -1761,7 +1770,9 @@ class AuditRepository:
                 """
                 SELECT operation_id FROM operation_runs
                 WHERE operation_name = ? AND parameter_digest = ?
-                  AND (status = 'interrupted' OR (status = 'failed' AND terminal_reason = 'recovery_unknown'))
+                  AND (status = 'interrupted'
+                       OR (status = 'failed' AND (terminal_reason = 'recovery_unknown'
+                           OR terminal_reason LIKE 'recovered_partial:%')))
                 ORDER BY started_at_ms, operation_id
                 """,
                 (operation_name, parameter_digest),
@@ -1801,7 +1812,8 @@ class AuditRepository:
                 """
                 SELECT * FROM operation_runs
                 WHERE status = 'interrupted'
-                   OR (status = 'failed' AND terminal_reason = 'recovery_unknown')
+                   OR (status = 'failed' AND (terminal_reason = 'recovery_unknown'
+                       OR terminal_reason LIKE 'recovered_partial:%'))
                 ORDER BY started_at_ms, operation_id
                 """
             ).fetchall()

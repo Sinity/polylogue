@@ -46,7 +46,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
@@ -626,6 +626,13 @@ class RecoveryOperation:
         return (
             f"reconstructed {self.reconstructed_target_count} of {self.expected_target_count} durable recovery targets"
         )
+
+
+class _FailClosedRecovery:
+    """Default recovery contract for actuators without a domain postcondition oracle."""
+
+    def inspect_recovery(self, _operation: RecoveryOperation, _args: Any) -> RecoveryDisposition:
+        return RecoveryDisposition("unknown", "operator-blocking", "actuator has no domain recovery oracle")
 
 
 #: Both ``prepare`` and ``apply`` take the *same* argument shape in every

@@ -318,6 +318,7 @@ class QueryUnitPipelineResultAst(_AstModel):
     aggregate: Literal["count"] | None = None
     limit: int | None = None
     offset: int | None = None
+    fields: list[str] | None = None
 
 
 class QueryUnitPipelineAst(_AstModel):

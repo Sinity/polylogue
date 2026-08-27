@@ -30,6 +30,7 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     MutationReceipt,
     OperationExecutor,
+    _FailClosedRecovery,
     build_plan,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -209,7 +210,7 @@ def _persist_annotation_batch(
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationBatchImportActuator:
+class AnnotationBatchImportActuator(_FailClosedRecovery):
     """Executor actuator for the atomic, provenance-bearing annotation import."""
 
     operation: str = "mutate-import-annotation-batch"

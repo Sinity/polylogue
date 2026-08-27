@@ -257,6 +257,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
     ),
     CommandSpec(
+        "verify atlas",
+        "verification",
+        "Check atlas citation anchors and verification-commit freshness.",
+        "devtools.verify_atlas",
+        use_when="Find atlas sections that need re-verification or deletion after cited source files change.",
+        examples=("devtools verify atlas", "devtools verify atlas --json"),
+    ),
+    CommandSpec(
         "verify corpus-fidelity",
         "verification",
         "Run the production corpus-fidelity acceptance gate against an archive root.",
