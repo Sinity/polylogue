@@ -38,7 +38,11 @@ from polylogue.archive.viewport import (
     read_view_http_format_choices,
     read_view_http_query_params,
 )
-from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
+from polylogue.daemon.route_contracts import (
+    ROUTE_CONTRACTS,
+    RouteContract,
+    daemon_route_declaration,
+)
 from polylogue.daemon.web_auth import (
     WebCredentialBootstrapPayload,
     WebCredentialFailurePayload,
@@ -295,7 +299,7 @@ def _protected_auth_error_response(description: str) -> dict[str, Any]:
 
 def _build_openapi_document() -> dict[str, Any]:
     schemas = _collect_component_schemas()
-    return {
+    document: dict[str, Any] = {
         "openapi": OPENAPI_VERSION,
         "info": {
             "title": "Polylogue Search API",
@@ -917,6 +921,22 @@ def _build_openapi_document() -> dict[str, Any]:
             ),
         },
     }
+    # The find route is registered in the shared declaration kernel. Keep the
+    # large hand-authored parameter detail above readable, but bind the
+    # executable operation's identity, security, schemas, and owner to that
+    # declaration so declaration-only mutations cannot silently drift docs.
+    declaration = daemon_route_declaration("GET", "/api/sessions")
+    operation = document["paths"][declaration.path][declaration.method.lower()]
+    operation["operationId"] = declaration.kernel.public_name + "Sessions"
+    operation["security"] = _protected_read_security()
+    operation["x-polylogue-declaration"] = {
+        "declaration_id": declaration.kernel.declaration_id,
+        "request_contract": declaration.request_contract,
+        "response_contract": declaration.response_contract,
+        "auth_policy": declaration.auth_policy,
+        "owner_path": declaration.kernel.owner_path,
+    }
+    return document
 
 
 def _build_yaml_body() -> str:

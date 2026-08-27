@@ -12,6 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from polylogue.declarations import (
+    CompatibilityKey,
+    DeclarationRegistry,
+    DeclarationSpec,
+    HandlerBinding,
+    OutputSpec,
+)
+
 RouteKind = Literal[
     "browser_shell",
     "operational",
@@ -45,6 +53,97 @@ class RouteContract:
     auth_policy: AuthPolicy
     response_contract: str
     notes: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonRouteDeclaration:
+    """HTTP projection of one shared declaration-kernel record.
+
+    The kernel owns identity, handler ownership, and output/schema edges. The
+    HTTP projection adds the transport vocabulary that the route adapter and
+    OpenAPI renderer need. Keeping this projection beside the kernel record
+    makes a route declaration executable without teaching the shared kernel
+    about HTTP.
+    """
+
+    kernel: DeclarationSpec
+    method: Literal["GET", "POST", "DELETE"]
+    path: str
+    request_contract: str
+    response_contract: str
+    auth_policy: AuthPolicy
+
+
+_FIND_DECLARATION = DaemonRouteDeclaration(
+    kernel=DeclarationSpec(
+        declaration_id="daemon.find.sessions",
+        family_id="daemon.read-query",
+        public_name="find",
+        owner_path="polylogue/daemon/http.py",
+        compatibility=CompatibilityKey(
+            identity="daemon-route",
+            lifecycle="stable",
+            authority="daemon-read",
+            access_result_shape="search-envelope-or-session-list",
+            durability="read-only",
+        ),
+        producer="polylogue.daemon.http.DaemonAPIHandler._handle_list_sessions",
+        role_gate="credential_if_configured",
+        schema_ref="polylogue.surfaces.payloads.SearchEnvelope|SessionListResponse",
+        discovery_text="Find sessions with the shared archive query semantics.",
+        repair_command="devtools render openapi",
+        handlers=(
+            HandlerBinding(
+                surface="daemon-http",
+                owner_path="polylogue/daemon/http.py",
+                symbol="_handle_list_sessions",
+                binding_key="GET /api/sessions",
+            ),
+        ),
+        outputs=(
+            OutputSpec(
+                name="response",
+                kind="json",
+                schema_ref="SearchEnvelope|SessionListResponse",
+                target_path="/api/sessions",
+            ),
+        ),
+        examples=(),
+        completeness_edges=(),
+    ),
+    method="GET",
+    path="/api/sessions",
+    request_contract="SessionSearchQuery",
+    response_contract="SearchEnvelope | SessionListResponse",
+    auth_policy="credential_if_configured",
+)
+
+DAEMON_ROUTE_REGISTRY = DeclarationRegistry()
+DAEMON_ROUTE_REGISTRY.register(_FIND_DECLARATION.kernel)
+DAEMON_ROUTE_DECLARATIONS: tuple[DaemonRouteDeclaration, ...] = (_FIND_DECLARATION,)
+
+
+def daemon_route_declaration(method: str, path: str) -> DaemonRouteDeclaration:
+    """Return the executable declaration for an exact daemon route."""
+
+    for declaration in DAEMON_ROUTE_DECLARATIONS:
+        if declaration.method == method.upper() and declaration.path == path:
+            return declaration
+    raise KeyError(f"no daemon route declaration for {method.upper()} {path}")
+
+
+def route_contract_from_declaration(declaration: DaemonRouteDeclaration) -> RouteContract:
+    """Lower a kernel-backed route declaration to legacy public metadata."""
+
+    return RouteContract(
+        declaration.method,
+        declaration.path,
+        "read_query",
+        "stable",
+        declaration.auth_policy,
+        declaration.response_contract,
+        f"declaration={declaration.kernel.declaration_id}; request={declaration.request_contract}",
+    )
 
 
 ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
@@ -241,14 +340,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "AgentCoordinationPayload",
         "Shared coordination envelope used by CLI, MCP, and the web mission-control projection.",
     ),
-    RouteContract(
-        "GET",
-        "/api/sessions",
-        "read_query",
-        "stable",
-        "credential_if_configured",
-        "SearchEnvelope / SessionListResponse with route_state",
-    ),
+    route_contract_from_declaration(_FIND_DECLARATION),
     RouteContract(
         "POST",
         "/api/cli/query",
@@ -737,9 +829,14 @@ def _split_path(path: str) -> tuple[str, ...]:
 
 
 __all__ = [
+    "DAEMON_ROUTE_DECLARATIONS",
+    "DAEMON_ROUTE_REGISTRY",
+    "DaemonRouteDeclaration",
     "ROUTE_CONTRACTS",
     "RouteContract",
+    "daemon_route_declaration",
     "route_contract_for",
     "route_contract_for_pattern",
+    "route_contract_from_declaration",
     "stable_route_contracts",
 ]
