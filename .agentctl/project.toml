@@ -133,6 +133,59 @@ lifetime = "job"
 environment = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
 range = [49120, 49183]
 
+[operations.harvest]
+description = "Review a finished lane, then publish it under an authorized receipt"
+exec = ["sinnixd-harvest"]
+pool = "normal"
+result = "json"
+cache = "none"
+timeout_seconds = 7200
+scratch = "nvme"
+
+[operations.harvest.parameters.authorize]
+type = "bool"
+flag = "--authorize"
+
+[operations.harvest.parameters.no_watch]
+type = "bool"
+flag = "--no-watch"
+
+[operations.harvest.parameters.receipt_ref]
+type = "string"
+flag = "--receipt-ref"
+max_length = 128
+grammar = "safe-token"
+
+[operations.harvest.parameters.lane_job_id]
+type = "string"
+flag = "--lane-job-id"
+max_length = 128
+grammar = "safe-token"
+
+[operations.harvest.parameters.bead_id]
+type = "string"
+flag = "--bead-id"
+max_length = 128
+grammar = "safe-token"
+
+[operations.harvest.parameters.title_file]
+type = "string"
+flag = "--title-file"
+max_length = 128
+grammar = "path"
+
+[operations.harvest.parameters.body_file]
+type = "string"
+flag = "--body-file"
+max_length = 128
+grammar = "path"
+
+[operations.harvest.parameters.close_reason_file]
+type = "string"
+flag = "--close-reason-file"
+max_length = 128
+grammar = "path"
+
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
 owner = "polylogue-archive"
@@ -144,3 +197,4 @@ source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
 documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
+
