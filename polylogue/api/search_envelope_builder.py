@@ -12,7 +12,7 @@ adapters stay thin and the per-file LOC budget on
 from __future__ import annotations
 
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import TYPE_CHECKING
 
 from polylogue.surfaces.payloads import (
@@ -23,6 +23,7 @@ from polylogue.surfaces.payloads import (
     build_search_envelope,
     decode_search_cursor,
     search_cursor_lane_matches_request,
+    search_cursor_request_identity,
 )
 
 if TYPE_CHECKING:
@@ -56,6 +57,13 @@ async def build_search_envelope_for_spec(
     """
     display_limit = limit if limit is not None else (spec.limit or 50)
     display_offset = offset if offset is not None else spec.offset
+    request_identity = search_cursor_request_identity(
+        {
+            field.name: getattr(spec, field.name)
+            for field in fields(spec)
+            if field.name not in {"cursor", "offset", "limit", "vector_provider", "predicates"}
+        }
+    )
     decoded_cursor = decode_search_cursor(spec.cursor) if spec.cursor else None
     if decoded_cursor is not None and not search_cursor_lane_matches_request(decoded_cursor.lane, spec.retrieval_lane):
         raise InvalidSearchCursorError(
@@ -113,6 +121,7 @@ async def build_search_envelope_for_spec(
         sort=spec.sort,
         diagnostics=diagnostics_payload,
         cursor=decoded_cursor,
+        request_identity=request_identity,
         execution=execution,
     )
 
