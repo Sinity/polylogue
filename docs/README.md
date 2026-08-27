@@ -81,6 +81,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
+| [Artifact Publication](artifact-publication.md) | Filesystem contract shared by the cache and reusable-fixture publication routes. |
 | [Verification Authority](verification-authority.md) | Sole ownership matrix for AgentCTL execution and Polylogue semantic verification. |
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
