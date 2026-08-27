@@ -22,6 +22,7 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -377,6 +378,21 @@ def _copy_focused_pytest_report(artifacts: PytestStepArtifacts) -> None:
         shutil.copyfile(report_path, artifacts.step_dir / "pytest-report.json")
 
 
+def _remove_run_temp(path: Path) -> None:
+    """Delete a pytest basetemp, including the read-only trees tests seal.
+
+    Sealed archive generations are written without write permission, so a plain
+    rmtree cannot unlink them and silently leaves the tree behind.
+    """
+
+    for parent, directories, files in os.walk(path, topdown=False):
+        for name in (*directories, *files):
+            target = os.path.join(parent, name)
+            with contextlib.suppress(OSError):
+                os.chmod(target, 0o700)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     invocation_directory = Path.cwd()
     selection = list(sys.argv[1:] if argv is None else argv)
@@ -415,8 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     # when it is no longer needed instead of relying on an age sweep days
     # later. A failed run keeps its tree: that is when the fixtures are worth
     # reading.
-    run_temp = PYTEST_REPORT_DIR / "tmp"
-    shutil.rmtree(run_temp, ignore_errors=True)
+    # Unique per invocation: pytest creates the basetemp itself and fails if it
+    # already exists, so a fixed path makes two runs in one checkout collide —
+    # and lanes, batches and the coordinator do run concurrently here.
+    run_temp = PYTEST_REPORT_DIR / f"tmp-{os.getpid()}-{time.time_ns():x}"
+    _remove_run_temp(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(cmd)
     run = VerifyRun(
@@ -463,8 +482,30 @@ def main(argv: list[str] | None = None) -> int:
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
+    if rc == 5:
+        # pytest exits 5 both when a selection genuinely matches nothing and
+        # when a path in it does not exist, and the two are indistinguishable
+        # to a caller. A selection derived from `git diff --name-only` contains
+        # files the branch deleted, so the whole run silently collects nothing
+        # and reads as "no work to do".
+        absent = [
+            argument
+            for argument in selection
+            if not argument.startswith("-")
+            and (argument.endswith(".py") or "/" in argument)
+            and not Path(argument.split("::", 1)[0]).exists()
+        ]
+        if absent:
+            sys.stderr.write(
+                "devtools test: collected nothing because these paths do not exist: " + ", ".join(absent) + "\n"
+            )
+        else:
+            sys.stderr.write(
+                "devtools test: the selection collected no tests; every path exists, "
+                "so check the -k/-m expression or retry if runs are contending.\n"
+            )
     if rc == 0:
-        shutil.rmtree(run_temp, ignore_errors=True)
+        _remove_run_temp(run_temp)
     payload = run.finish(
         exit_code=rc,
         duration_s=elapsed,
