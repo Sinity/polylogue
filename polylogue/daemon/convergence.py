@@ -47,7 +47,6 @@ class StageExecutionResult:
     """Optional rich result for convergence stages that report sub-timings."""
 
     success: bool
-    deferred: bool = False
     stage_timings_s: dict[str, float] = field(default_factory=dict)
 
     def __bool__(self) -> bool:
@@ -130,7 +129,6 @@ def _record_execute_result(
     stage_name: str,
     stage: ConvergenceStage,
     success: bool,
-    deferred: bool,
     scope: str,
 ) -> None:
     if success:
@@ -144,10 +142,10 @@ def _record_execute_result(
     state.error_count += 1
 
 
-def _coerce_execute_result(result: StageExecuteReturn) -> tuple[bool, bool, dict[str, float]]:
+def _coerce_execute_result(result: StageExecuteReturn) -> tuple[bool, dict[str, float]]:
     if isinstance(result, StageExecutionResult):
-        return result.success, result.deferred, dict(result.stage_timings_s)
-    return bool(result), False, {}
+        return result.success, dict(result.stage_timings_s)
+    return bool(result), {}
 
 
 def _record_stage_times(
@@ -311,7 +309,7 @@ class DaemonConverger:
                             state.last_error = str(exc)
                         else:
                             elapsed = time.perf_counter() - t_stage
-                            success, deferred, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             state.stage_times[stage_name] = elapsed
                             state.last_stage_times[stage_name] = elapsed
                             for name, value in extra_stage_timings_s.items():
@@ -322,7 +320,6 @@ class DaemonConverger:
                                 stage_name=stage_name,
                                 stage=stage,
                                 success=success,
-                                deferred=deferred,
                                 scope="stage",
                             )
 
@@ -410,7 +407,7 @@ class DaemonConverger:
                         continue
 
                     elapsed = time.perf_counter() - t_stage
-                    success, deferred, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                    success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                     _record_stage_times(batch_stage_times, stage_name, elapsed, extra_stage_timings_s)
                     state.stage_times[stage_name] = elapsed
                     state.last_stage_times[stage_name] = elapsed
@@ -422,7 +419,6 @@ class DaemonConverger:
                         stage_name=stage_name,
                         stage=stage,
                         success=success,
-                        deferred=deferred,
                         scope="stage",
                     )
             else:
@@ -455,7 +451,7 @@ class DaemonConverger:
                                 state.last_error = str(exc)
                         else:
                             elapsed = time.perf_counter() - t_stage
-                            success, deferred, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             remaining_needs_work: set[Path] | None = None
                             if not success and stage.false_means_pending:
                                 try:
@@ -489,7 +485,6 @@ class DaemonConverger:
                                     stage_name=stage_name,
                                     stage=stage,
                                     success=path_success,
-                                    deferred=deferred,
                                     scope="batch",
                                 )
 
@@ -561,7 +556,7 @@ class DaemonConverger:
                                 state.last_error = str(exc)
                         else:
                             elapsed = time.perf_counter() - t_stage
-                            success, deferred, extra_stage_timings_s = _coerce_execute_result(execute_result)
+                            success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             remaining_needs_work: set[str] | None = None
                             if not success and stage.false_means_pending:
                                 try:
@@ -595,7 +590,6 @@ class DaemonConverger:
                                     stage_name=stage_name,
                                     stage=stage,
                                     success=session_success,
-                                    deferred=deferred,
                                     scope="session",
                                 )
 
