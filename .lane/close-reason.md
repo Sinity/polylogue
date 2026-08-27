@@ -1,1 +1,0 @@
-Implemented the MCP work-event write leg, shared append ingest path, idempotency behavior, and generated-surface contracts. Focused verification is green; the quick gate remains environment-blocked by missing ruff.
