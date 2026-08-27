@@ -12,6 +12,7 @@ ObjectRefKind: TypeAlias = Literal[
     "session",
     "message",
     "block",
+    "action",
     "attachment",
     "paste_span",
     "work_event",
@@ -101,6 +102,7 @@ _OBJECT_REF_KINDS: Final[dict[str, ObjectRefKind]] = {
     "session": "session",
     "message": "message",
     "block": "block",
+    "action": "action",
     "attachment": "attachment",
     "paste_span": "paste_span",
     "work_event": "work_event",
@@ -175,7 +177,7 @@ class ObjectRef:
         if not separator:
             raise ValueError("object ref must use 'kind:id' form")
         kind = _parse_object_ref_kind(kind_value)
-        if kind == "block" and ":" in tail:
+        if kind in {"block", "action"} and ":" in tail:
             object_id, qualifier = tail.rsplit(":", 1)
             qualifiers: tuple[str, ...] = (qualifier,)
         else:
