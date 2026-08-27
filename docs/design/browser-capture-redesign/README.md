@@ -101,3 +101,34 @@ acceptance criteria.
 - `polylogue-90y` — F2/F3/F4/F5 (in-page overlay + selection→assertion)
 - `polylogue-3v1` — F1/F6 (popup mission control, timeline, states gallery)
 - `polylogue-ptx` — F1's dry-run-draft safety refinement for the reverse channel
+
+## Child disposition matrix
+
+The epic is not closeable while a row marked deferred remains open. Satisfied
+rows point to the shared production contract and its focused verification;
+deferred rows retain the named bead that owns the missing slice.
+
+| Slice | Disposition | Evidence or owner |
+| --- | --- | --- |
+| `polylogue-r2kb` — operator status vocabulary | Satisfied | `browser-extension/src/operator_status.js`; `tests/operator_status.test.js` |
+| `polylogue-l40k` — multi-tab and offline spool | Satisfied | `browser-extension/src/popup.js` and `src/background.js`; popup/background tests |
+| `polylogue-4g3n` — conversation timeline | Satisfied | Shared event presentation and durable capture-job event projection; closed as superseded by `polylogue-06zm` for remaining archive work |
+| `polylogue-bkff` — popup mission control | Satisfied | Popup multi-tab and active-conversation rendering; closed by the merged `#2780` implementation |
+| `polylogue-yyvg.7` — automatic exception-driven UX | Satisfied | Shared popup/ambient/message presentation and diagnostics; closed by merged `#4210` |
+| `polylogue-r4no` — automatic capture trigger | Satisfied | Capture-or-held-decision path and timeline event coverage |
+| `polylogue-ys30` — Layer 1 | Satisfied | `browser-extension/src/content/message_layer.js`; `tests/content/message_layer.test.js` |
+| `polylogue-yyvg.4` — provider identity resolver | Satisfied | Typed ChatGPT/Claude identity observations and receiver-resolved acknowledgements; closed by merged `#4254` |
+| `polylogue-yyvg.5` — Sol Pro work packages | Misframed | Generic browser actions belong to `polylogue-ptx`; campaign orchestration belongs to `polylogue-yyvg.6` |
+| `polylogue-bj5h` — selection to assertion | Deferred to `polylogue-bj5h` | Requires the shared identity contract and user-tier candidate write route |
+| `polylogue-wvji` — Layer 2 corner chip and slide-over | Deferred to `polylogue-wvji` | The ambient shell exists; the remaining deep-dive slice is still open |
+| `polylogue-yqof` — reverse-channel popup | Deferred to `polylogue-yqof` | Keep the existing receiver posting gates and dry-run contract as prerequisites |
+| `polylogue-yyvg.1` — reverse organization | Deferred to `polylogue-yyvg.1` | Provider mutation organization remains a separate plan/authorize/apply/receipt slice |
+| `polylogue-yyvg.2` — provider collections | Deferred to `polylogue-yyvg.2` | Collection identity and membership history are not yet modeled |
+| `polylogue-yyvg.3` — archive-context intelligence | Deferred to `polylogue-yyvg.3` | Cross-conversation intelligence remains Layer 2 work and must use the floating surface |
+| `polylogue-yyvg.6` — external campaign incorporation | Deferred to `polylogue-yyvg.6` | Campaign ledger and orchestration stay outside extension and receiver transport |
+
+The matrix is also the boundary for the two-layer rule: `ys30` owns blended
+per-message state, while `wvji` and `yyvg.3` own floating cross-conversation
+intelligence. Capture, timeline, popup, assertion, and reverse-channel work
+consume the shared receiver identity and status contracts rather than creating
+parallel ledgers.
