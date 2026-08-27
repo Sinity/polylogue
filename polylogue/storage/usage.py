@@ -104,7 +104,11 @@ def _projection_int(row: Mapping[str, object], name: str) -> int:
         value = row.get(name)
     except AttributeError:
         value = row[name]  # sqlite3.Row supports indexed/name access, not get()
-    return max(int(value or 0), 0)
+    if value is None or isinstance(value, str) and not value.strip():
+        return 0
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"usage column {name!r} is not numeric: {type(value).__name__}")
+    return max(int(value), 0)
 
 
 def _projection_value(row: Mapping[str, object], name: str) -> object:
@@ -150,7 +154,7 @@ def project_provider_usage_events(
     non-zero catalog cache rate; otherwise the result is typed incomplete.
     """
     del origin  # retained in the public signature for rollup composition
-    grouped: dict[tuple[str, str | None], list[object]] = {}
+    grouped: dict[tuple[str, str | None], list[int]] = {}
     latest_cumulative: dict[str, tuple[int, str | None, tuple[int, int, int, int]]] = {}
     for row in events:
         session_id = str(_projection_value(row, "session_id") or "")
@@ -176,7 +180,7 @@ def project_provider_usage_events(
             continue
         bucket = grouped.setdefault(key, [0, 0, 0, 0])
         for index, value in enumerate(lanes):
-            bucket[index] = int(bucket[index]) + value
+            bucket[index] += value
 
     for session_id, (_, model, lanes) in latest_cumulative.items():
         # A session-global cumulative supersedes all deltas and prior model
@@ -186,7 +190,7 @@ def project_provider_usage_events(
 
     result: list[UsageProjectionModel] = []
     for (session_id, model), raw_lanes in sorted(grouped.items()):
-        input_tokens, output_tokens, cache_read, cache_write = (int(v) for v in raw_lanes)
+        input_tokens, output_tokens, cache_read, cache_write = raw_lanes
         reasons: list[str] = []
         pricing = PRICING.get(_normalize_model(model)) if model else None
         cost: float | None = None
@@ -225,36 +229,46 @@ def rollup_usage_projections(
     origins: Mapping[str, str] | None = None,
 ) -> tuple[UsageProjectionRollup, ...]:
     """Aggregate model projections without converting incomplete cost to zero."""
-    grouped: dict[tuple[str, str | None], list[object]] = {}
+
+    @dataclass
+    class _Bucket:
+        sessions: int = 0
+        input_tokens: int = 0
+        output_tokens: int = 0
+        cache_read_tokens: int = 0
+        cache_write_tokens: int = 0
+        cost_usd: float | None = None
+        incomplete: int = 0
+
+    grouped: dict[tuple[str, str | None], _Bucket] = {}
     for projection in projections:
         origin = str((origins or {}).get(projection.session_id, "unknown"))
-        key = (origin, projection.model_name)
-        bucket = grouped.setdefault(key, [0, 0, 0, 0, 0, None, 0])
-        bucket[0] = int(bucket[0]) + 1
-        bucket[1] = int(bucket[1]) + projection.input_tokens
-        bucket[2] = int(bucket[2]) + projection.output_tokens
-        bucket[3] = int(bucket[3]) + projection.cache_read_tokens
-        bucket[4] = int(bucket[4]) + projection.cache_write_tokens
+        bucket = grouped.setdefault((origin, projection.model_name), _Bucket())
+        bucket.sessions += 1
+        bucket.input_tokens += projection.input_tokens
+        bucket.output_tokens += projection.output_tokens
+        bucket.cache_read_tokens += projection.cache_read_tokens
+        bucket.cache_write_tokens += projection.cache_write_tokens
         if projection.cost_usd is None:
-            bucket[6] = int(bucket[6]) + 1
-        elif bucket[5] is None:
-            bucket[5] = projection.cost_usd
+            bucket.incomplete += 1
+        elif bucket.cost_usd is None:
+            bucket.cost_usd = projection.cost_usd
         else:
-            bucket[5] = float(bucket[5]) + projection.cost_usd
+            bucket.cost_usd += projection.cost_usd
     return tuple(
         UsageProjectionRollup(
             origin=origin,
             model_name=model,
-            session_count=int(values[0]),
-            input_tokens=int(values[1]),
-            output_tokens=int(values[2]),
-            cache_read_tokens=int(values[3]),
-            cache_write_tokens=int(values[4]),
-            cost_usd=None if int(values[6]) else round(float(values[5] or 0.0), 6),
-            state="incomplete" if int(values[6]) else "complete",
-            incomplete_session_count=int(values[6]),
+            session_count=bucket.sessions,
+            input_tokens=bucket.input_tokens,
+            output_tokens=bucket.output_tokens,
+            cache_read_tokens=bucket.cache_read_tokens,
+            cache_write_tokens=bucket.cache_write_tokens,
+            cost_usd=(None if bucket.incomplete else round(bucket.cost_usd or 0.0, 6)),
+            state="incomplete" if bucket.incomplete else "complete",
+            incomplete_session_count=bucket.incomplete,
         )
-        for (origin, model), values in sorted(grouped.items())
+        for (origin, model), bucket in sorted(grouped.items())
     )
 
 
