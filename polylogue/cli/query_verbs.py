@@ -675,6 +675,7 @@ def _build_read_projection_spec(
     """Build the typed selection/projection/render contract for read options."""
 
     from polylogue.surfaces.projection_spec import projection_from_views
+    from polylogue.surfaces.read_contract import ReadRequest
 
     primary_view = views[0] if views else "summary"
     effective_format = (
@@ -690,7 +691,7 @@ def _build_read_projection_spec(
         if len(query_spec.repo_names) == 1
         else None
     )
-    return projection_from_views(
+    selection_projection = projection_from_views(
         views,
         format=effective_format,
         destination=destination,
@@ -712,6 +713,35 @@ def _build_read_projection_spec(
         neighbor_window_hours=neighbor_window_hours,
         redact_paths=redact_paths,
         include_assertions=include_assertions,
+    )
+    normalized_request = ReadRequest.normalize(
+        {
+            "output_format": effective_format,
+            "views": views,
+            "destination": destination,
+            "layout": render_layout,
+            "timestamps": timestamp_policy,
+            "max_tokens": max_tokens,
+            "out": out_path,
+            "query": selection_query if selection_query is not None else _read_query_text(request),
+            "origin": selection_origin if selection_origin is not None else origin,
+            "since": selection_since if selection_since is not None else query_spec.since,
+            "until": selection_until if selection_until is not None else query_spec.until,
+            "project_path": project_path,
+            "project_repo": project_repo,
+            "limit": selection_limit,
+            "edge_limit": edge_limit,
+            "body_limit": body_limit,
+            "body_offset": body_offset,
+            "neighbor_limit": neighbor_limit,
+            "neighbor_window_hours": neighbor_window_hours,
+            "redact_paths": redact_paths,
+            "include_assertions": include_assertions,
+        },
+        preset=primary_view,
+    )
+    return selection_projection.model_copy(
+        update={"projection": normalized_request.projection, "render": normalized_request.render}
     )
 
 
