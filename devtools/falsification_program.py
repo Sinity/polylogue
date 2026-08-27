@@ -32,10 +32,10 @@ def _contract() -> dict[str, object]:
     return payload
 
 
-def _query_oracle() -> dict[str, object]:
+def _query_oracle(*, suppress_next_cursor: bool = False) -> dict[str, object]:
     """Compare production cursor pages with a reference list.
 
-    The reference is deliberately only a list walk; it does not reuse cursor
+    The reference ordering is only a list walk; it does not reuse cursor
     encoding, trimming, or page construction logic.
     """
     values = [f"session-{index:03d}" for index in range(11)]
@@ -60,29 +60,37 @@ def _query_oracle() -> dict[str, object]:
         )
         hits.append(SessionSearchHitPayload.from_search_hit(hit, message_count=0))
     walked: list[str] = []
-    offset = 0
     cursor_token: str | None = None
     pages = 0
-    while True:
+    while pages <= len(values):
         cursor = decode_search_cursor(cursor_token) if cursor_token else None
-        if cursor is not None:
-            offset = cursor.r
-        page_hits = hits[offset : offset + 3]
+        offset = cursor.r if cursor is not None else 0
         envelope = build_search_envelope(
-            page_hits, total=len(values), limit=3, offset=offset, query="seed", retrieval_lane="dialogue", cursor=cursor
+            hits,
+            total=len(values),
+            limit=3,
+            offset=offset,
+            query="seed",
+            retrieval_lane="dialogue",
+            cursor=cursor,
         )
-        # The envelope is exercised with synthetic hits in the property suite;
-        # this bounded check independently verifies the reference walk's stop law.
-        expected = values[offset : offset + len(envelope.hits)]
+        page_ids = [str(hit.session.id) for hit in envelope.hits]
+        expected = values[len(walked) : len(walked) + len(page_ids)]
+        if page_ids != expected:
+            return {"passed": False, "failure": "page_order", "pages": pages, "rows": len(walked)}
+        if not page_ids:
+            return {"passed": walked == values, "failure": "empty_page", "pages": pages, "rows": len(walked)}
+        if set(page_ids) & set(walked):
+            return {"passed": False, "failure": "duplicate_page", "pages": pages, "rows": len(walked)}
         walked.extend(expected)
         pages += 1
-        if offset + len(envelope.hits) >= len(values):
-            break
-        cursor_token = envelope.next_cursor
-        if cursor_token is None:
-            # Seeded mutation: removing the cursor must be detected.
-            return {"passed": False, "mutation_caught": True, "pages": pages}
-    return {"passed": walked == values, "mutation_caught": True, "pages": pages, "rows": len(walked)}
+        next_cursor = None if suppress_next_cursor else envelope.next_cursor
+        if next_cursor is None:
+            if walked != values:
+                return {"passed": False, "failure": "cursor_missing_before_end", "pages": pages, "rows": len(walked)}
+            return {"passed": True, "pages": pages, "rows": len(walked)}
+        cursor_token = next_cursor
+    return {"passed": False, "failure": "pagination_did_not_terminate", "pages": pages, "rows": len(walked)}
 
 
 def build_report(*, execute_safety: bool = False) -> dict[str, object]:
@@ -93,7 +101,16 @@ def build_report(*, execute_safety: bool = False) -> dict[str, object]:
     semantic_population = cast(dict[str, object], semantic["population"])
     semantic_versions = cast(dict[str, object], semantic["versions"])
     query = _query_oracle()
-    interaction = {"cells": len(assert_matrix_complete()), "passed": True}
+    mutation = _query_oracle(suppress_next_cursor=True)
+    mutation_caught = not bool(mutation["passed"])
+    prerequisites_passed = (
+        safety is not None and safety.all_passed and semantic["contradiction_count"] == 0 and query["passed"]
+    )
+    interaction = (
+        {"cells": len(assert_matrix_complete()), "passed": True, "status": "executed"}
+        if prerequisites_passed
+        else {"passed": False, "status": "blocked"}
+    )
     slices = {
         "safety": {
             "passed": safety.all_passed if safety is not None else False,
@@ -105,10 +122,17 @@ def build_report(*, execute_safety: bool = False) -> dict[str, object]:
             "artifact": "docs/semantic-fidelity-v1.json",
             "population": semantic_population,
         },
-        "query": query,
+        "query": {**query, "mutation_caught": mutation_caught},
         "interaction": {**interaction, "gated_by": ["safety", "semantics", "query"]},
     }
-    mutation_controls = [{"slice": "query", "mutation": "remove-next-cursor", "caught": query["mutation_caught"]}]
+    mutation_controls = [
+        {
+            "slice": "query",
+            "mutation": "remove-next-cursor",
+            "caught": mutation_caught,
+            "failure": mutation.get("failure"),
+        }
+    ]
     gate_passed = all(bool(cast(dict[str, object], item)["passed"]) for item in slices.values())
     return {
         "schema_version": SCHEMA_VERSION,
@@ -142,6 +166,8 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument("--report", type=Path)
     parser.add_argument("--execute-safety", action="store_true", help="Run the full rebuild safety scenario.")
     args = parser.parse_args(argv)
+    if not args.execute_safety:
+        parser.error("--execute-safety is required to run the four-slice falsification gate")
     report = build_report(execute_safety=args.execute_safety)
     gate = cast(dict[str, object], report["gate"])
     if args.report:
