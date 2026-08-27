@@ -599,6 +599,46 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
     ),
     RigorContract(
+        insight_name="tool_episodes",
+        display_name="Tool Episodes",
+        evidence_payload=(),
+        inference_payload=(),
+        fallback_markers=(),
+        confidence_field=(),
+        readiness_semantics=(
+            "Each episode joins a tool_use block to its paired tool_result (when one exists) "
+            "and surfaces provider-reported structural outcomes; result_state and caveat "
+            "distinguish a genuine structural outcome from a call with no paired result."
+        ),
+        consumer_fields=(
+            "episode_id",
+            "session_id",
+            "message_id",
+            "origin",
+            "tool_use_block_id",
+            "tool_result_block_id",
+            "tool_name",
+            "semantic_type",
+            "call_input",
+            "result_output",
+            "is_error",
+            "exit_code",
+            "result_state",
+            "context_before",
+            "context_after",
+            "next_action",
+            "followup_class",
+            "caveat",
+        ),
+        field_exemptions=_true_zero_fields(
+            "is_error and exit_code are provider-reported structural values read directly "
+            "from the paired tool_result block, not estimates or aggregates; None means the "
+            "value was never reported, 0 is the recorded exit code or a reported non-error.",
+            "is_error",
+            "exit_code",
+        ),
+    ),
+    RigorContract(
         insight_name="command_shapes",
         display_name="Command Shape Usage",
         evidence_payload=(),
