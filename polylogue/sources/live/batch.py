@@ -1958,7 +1958,16 @@ class LiveBatchProcessor:
             hermes_source_class = (
                 recognize_source_class(Provider.HERMES, path) if fallback_provider is Provider.HERMES else None
             )
-            if hermes_source_class is not None and hermes_source_class.source_class == "unsupported":
+            hermes_owned_sqlite_name = (
+                source_only
+                and fallback_provider is Provider.HERMES
+                and path.name in {"state.db", "verification_evidence.db"}
+            )
+            if (
+                hermes_source_class is not None
+                and hermes_source_class.source_class == "unsupported"
+                and not hermes_owned_sqlite_name
+            ):
                 # A broad Hermes root is suffix-enumerated so every candidate
                 # remains observable.  Only the OriginSpec recognizer may
                 # admit a candidate to the Hermes parser; unknown/config/cache
@@ -2016,11 +2025,6 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            hermes_owned_sqlite_name = (
-                source_only
-                and fallback_provider is Provider.HERMES
-                and path.name in {"state.db", "verification_evidence.db"}
-            )
             codex_owned_sqlite_name = (
                 source_only and fallback_provider is Provider.CODEX and path.name in _CODEX_STATE_DB_NAMES
             )
