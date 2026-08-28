@@ -192,7 +192,6 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
                 author: { role: "assistant" },
                 content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-IMG9" }] },
                 metadata: {},
-                },
               },
             },
             n4: {
@@ -208,6 +207,7 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
                 metadata: {},
               },
             },
+          },
         });
       }
       // Every asset metadata/download round trip 404s -- this test cares

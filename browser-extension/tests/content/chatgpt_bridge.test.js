@@ -900,7 +900,7 @@ describe("ChatGPT authenticated asset capture envelope", () => {
       inline_base64: Buffer.from(assetBytes).toString("base64"),
       provider_meta: {
         capture_source: "chatgpt_page_asset_fetch",
-        asset_kind: "sandbox",
+        asset_kind: "sandbox_file",
         sandbox_path: "/mnt/data/kit.zip",
         content_sha256: expectedSha256,
       },
