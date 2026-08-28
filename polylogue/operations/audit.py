@@ -11,7 +11,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 from functools import wraps
 from pathlib import Path
@@ -1168,10 +1168,38 @@ class AuditRepository:
         with self._connection() as conn:
             self._begin(conn)
             run = conn.execute(
-                "SELECT actor_ref FROM operation_runs WHERE operation_id = ?", (operation_id,)
+                """
+                SELECT operation_name, plan_hash, target_digest, target_count, actor_ref
+                FROM operation_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
             ).fetchone()
             if run is None:
                 raise ValueError(f"unknown operation {operation_id!r}")
+            if receipt is not None:
+                operation_name, plan_hash, _target_digest, target_count, _actor_ref = run
+                durable_refs = tuple(
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT target_ref FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
+                        (operation_id,),
+                    )
+                )
+                if receipt.operation != str(operation_name):
+                    raise ValueError("mutation receipt operation does not match the audited operation")
+                if receipt.plan_hash != str(plan_hash):
+                    raise ValueError("mutation receipt plan does not match the audited plan")
+                if receipt.status != status:
+                    raise ValueError("mutation receipt status does not match the audited outcome")
+                if receipt.target_refs != durable_refs or len(durable_refs) != int(target_count):
+                    raise ValueError("mutation receipt targets do not match the audited target set")
+                if receipt.operation_id not in (None, operation_id):
+                    raise ValueError("mutation receipt operation id does not match the audited operation")
+                receipt = replace(
+                    receipt,
+                    receipt_ref=receipt.receipt_ref or f"mutation-operation:{operation_id}",
+                    operation_id=operation_id,
+                )
             target = conn.execute(
                 "SELECT ordinal FROM operation_targets WHERE operation_id = ? AND state IN ('running', 'pending') ORDER BY ordinal LIMIT 1",
                 (operation_id,),
@@ -1216,7 +1244,8 @@ class AuditRepository:
                     failed_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'failed'),
                     unknown_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'unknown'),
                     affected_count = (SELECT COUNT(*) FROM operation_targets WHERE operation_id = ? AND state = 'applied'),
-                    error_summary = ?, unknown_reason = ?
+                    error_summary = ?, unknown_reason = ?,
+                    domain_receipt_ref = ?, domain_receipt_kind = ?
                 WHERE operation_id = ?
                 """,
                 (
@@ -1231,6 +1260,8 @@ class AuditRepository:
                     operation_id,
                     error_summary,
                     unknown_reason,
+                    None if receipt is None else receipt.receipt_ref,
+                    None if receipt is None else "mutation-receipt",
                     operation_id,
                 ),
             )
@@ -1241,7 +1272,7 @@ class AuditRepository:
                 event_type="attempt_finalized" if run_status != "interrupted" else "attempt_unknown",
                 from_state="running",
                 to_state=run_status,
-                actor_ref=str(run[0]),
+                actor_ref=str(run[4]),
                 occurred_at_ms=now_ms,
                 detail=_receipt_event_detail(receipt, status=status, reason=unknown_reason or error_summary),
             )
@@ -1782,7 +1813,7 @@ class AuditRepository:
         return None if not rows else str(rows[0][0])
 
     def recovery_operation(self, operation_id: str) -> RecoveryOperation:
-        """Load one interrupted (or recovery-unknown) operation with its durable target evidence."""
+        """Load one recoverable operation with its durable target evidence."""
 
         with self._connection() as conn:
             row = conn.execute(
@@ -1790,12 +1821,13 @@ class AuditRepository:
                 SELECT operation_id, operation_name, operation_version, plan_hash, target_digest
                 FROM operation_runs
                 WHERE operation_id = ?
-                  AND (status = 'interrupted' OR (status = 'failed' AND terminal_reason = 'recovery_unknown'))
+                  AND (status = 'interrupted' OR (status = 'failed' AND (terminal_reason = 'recovery_unknown'
+                       OR terminal_reason LIKE 'recovered_partial:%')))
                 """,
                 (operation_id,),
             ).fetchone()
             if row is None:
-                raise ValueError(f"operation {operation_id!r} is not interrupted")
+                raise ValueError(f"operation {operation_id!r} is not recoverable")
             return self._recovery_operation(conn, row)
 
     def list_recovery_operations(self) -> tuple[dict[str, object], ...]:
