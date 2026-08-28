@@ -30,7 +30,6 @@ what gets parsed or how parse failures are recorded.
 
 from __future__ import annotations
 
-import os
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -69,7 +68,9 @@ def live_watcher_parse_stage_worker_count() -> int:
     configured = load_polylogue_config().live_watcher_parse_stage_workers
     if configured is not None and configured > 0:
         return configured
-    return max(_DEFAULT_WORKER_COUNT_FLOOR, (os.cpu_count() or 2) - 1)
+    from polylogue.runtime import available_cpus
+
+    return max(_DEFAULT_WORKER_COUNT_FLOOR, (available_cpus() or 2) - 1)
 
 
 def live_watcher_parse_stage_max_inflight_bytes() -> int:

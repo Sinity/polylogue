@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root
+from polylogue.runtime import available_cpus as _available_cpus
 
 #: Packages whose `npm test` script participates in the gate, in run order.
 JS_PACKAGES: tuple[str, ...] = ("browser-extension", "webui")
@@ -37,43 +38,21 @@ JS_PACKAGES: tuple[str, ...] = ("browser-extension", "webui")
 #: The extension suite's own default worker count (see its vitest.config.js).
 DEFAULT_EXTENSION_TEST_WORKERS = 4
 
-#: cgroup v2 and v1 CPU quota files, checked in that order.
+#: cgroup v2 and v1 CPU quota files, retained as seams for gate tests.
 _CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 _CGROUP_V1_QUOTA = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
 _CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
 
 
-def _cgroup_cpu_quota() -> int | None:
-    """CPUs a cgroup quota allows, or None when unlimited or unreadable.
-
-    Container CPU limits are invisible to `os.cpu_count()`, which reports the
-    host's processors: a CircleCI `medium` runner reports 24 while its cgroup
-    permits 2. Reading the quota is what keeps the worker cap honest.
-    """
-    try:
-        quota_text, period_text = _CGROUP_V2_CPU_MAX.read_text().split()
-        if quota_text == "max":
-            return None
-        quota, period = int(quota_text), int(period_text)
-    except (OSError, ValueError):
-        try:
-            quota = int(_CGROUP_V1_QUOTA.read_text().strip())
-            period = int(_CGROUP_V1_PERIOD.read_text().strip())
-        except (OSError, ValueError):
-            return None
-        if quota <= 0:
-            return None
-    if period <= 0:
-        return None
-    return max(1, quota // period)
-
-
 def available_cpus() -> int | None:
-    """The smallest credible CPU budget: affinity, host count, cgroup quota."""
-    candidates = [count for count in (os.cpu_count(), _cgroup_cpu_quota()) if count]
-    with contextlib.suppress(AttributeError):
-        candidates.append(len(os.sched_getaffinity(0)))
-    return min(candidates) if candidates else None
+    """Compatibility wrapper around the shared process CPU budget."""
+    return _available_cpus(
+        cpu_count=os.cpu_count(),
+        affinity=len(os.sched_getaffinity(0)),
+        v2_path=_CGROUP_V2_CPU_MAX,
+        v1_quota_path=_CGROUP_V1_QUOTA,
+        v1_period_path=_CGROUP_V1_PERIOD,
+    )
 
 
 def extension_test_workers(cpu_count: int | None) -> int:
