@@ -299,6 +299,9 @@ describe("build.mjs full archive emission", () => {
     await import(/* @vite-ignore */ packagedWorkerUrl);
     const send = (message) => new Promise((resolve) => messageListener(message, {}, resolve));
     const started = await send({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 0 } });
+    // Name the refusal: reaching for `started.job.id` on a rejected start
+    // reports "undefined has no 'id'" and buries the reason.
+    expect(started).toMatchObject({ ok: true });
     await vi.waitFor(() => expect(pageRequests.some((message) => message.operation === "inventory")).toBe(true));
     for (let inventoryCount = 2; inventoryCount <= 4; inventoryCount += 1) {
       alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });

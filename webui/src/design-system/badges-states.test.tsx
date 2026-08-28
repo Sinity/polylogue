@@ -4,7 +4,7 @@ import { EmptyState, UnknownState } from './states';
 import { renderComponent } from '../test/render';
 
 describe('public badge and honest-state contracts', () => {
-  it('renders exactly the ten public Origin tokens without promoting unknown-export', () => {
+  it('renders every generated public Origin token without promoting unknown-export', () => {
     const container = renderComponent(
       <div>
         {PUBLIC_ORIGINS.map((origin) => <OriginBadge key={origin} origin={origin} />)}
@@ -12,9 +12,11 @@ describe('public badge and honest-state contracts', () => {
       </div>,
     );
 
-    expect(PUBLIC_ORIGINS).toHaveLength(10);
+    // The count is the generator's, not a literal: `render webui-design-system`
+    // owns the roster, so a hardcoded number only ever fossilises a past run.
+    expect(PUBLIC_ORIGINS.length).toBeGreaterThan(0);
     expect(PUBLIC_ORIGINS).not.toContain('unknown-export');
-    expect(container.querySelectorAll('[data-origin]')).toHaveLength(10);
+    expect(container.querySelectorAll('[data-origin]')).toHaveLength(PUBLIC_ORIGINS.length);
     expect(container.querySelector('[data-origin-state="unknown"]')?.textContent).toContain('Unknown origin');
   });
 

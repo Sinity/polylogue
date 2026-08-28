@@ -768,6 +768,9 @@ describe("background receiver diagnostics", () => {
   it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
     globalThis.fetch = vi.fn(async () => responseJson({ error: "not_found" }, { ok: false, status: 404 }));
     const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    // Name the refusal: reaching for `started.job.id` on a rejected start
+    // reports "undefined has no 'id'" and buries the reason.
+    expect(started).toMatchObject({ ok: true });
     expect(started.job).toMatchObject({ status: "paused", cooldown_reason: "receiver_contract_incompatible" });
     expect(globalThis.chrome.scripting.executeScript.mock.calls.filter(
       ([details]) => details.args?.[0]?.operation !== "identity",
@@ -1081,6 +1084,9 @@ describe("background receiver diagnostics", () => {
     const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
     try {
       const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+      // Name the refusal: reaching for `started.job.id` on a rejected start
+      // reports "undefined has no 'id'" and buries the reason.
+      expect(started).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       // Four ChatGPT inventory partitions (active/archived x starred/
       // unstarred) to walk through before inventory_complete, plus one more
@@ -1194,6 +1200,9 @@ describe("background receiver diagnostics", () => {
     const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
     try {
       const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+      // Name the refusal: reaching for `started.job.id` on a rejected start
+      // reports "undefined has no 'id'" and buries the reason.
+      expect(started).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       for (let wake = 0; wake < 5; wake += 1) {
         simulatedNowMs += 20000;
@@ -1312,6 +1321,9 @@ describe("background receiver diagnostics", () => {
     const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
     try {
       const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+      // Name the refusal: reaching for `started.job.id` on a rejected start
+      // reports "undefined has no 'id'" and buries the reason.
+      expect(started).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       for (let wake = 0; wake < 8; wake += 1) {
         simulatedNowMs += 20000;
