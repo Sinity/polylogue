@@ -526,6 +526,19 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
 
 
+def _emit_native_testmon_refusal(*, preparation: Any, reason: str, stream: Any | None = None) -> None:
+    """Explain why affected verification refused to measure this checkout."""
+    if stream is None:
+        stream = sys.stderr
+    stream.write(
+        "verify: refusing to measure affected verification; no compatible native testmon graph is available.\n"
+        "  selection: affected\n"
+        f"  environment: '{preparation.environment_name}' ({preparation.local_state.status})\n"
+        f"  reason: {reason}\n"
+        "  remedy: run 'devtools verify --all' to produce a compatible graph, then rerun 'devtools verify'.\n"
+    )
+
+
 def _verification_workload_receipt(
     *,
     tier: str,
@@ -827,6 +840,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     verification_scope=scope.value,
                     final_git_head=git_head(ROOT),
                 )
+                _emit_native_testmon_refusal(preparation=preparation, reason=preparation.local_state.reason)
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 return 2
             if not args.all_tests and latest_eligible_root(ROOT) is None:
@@ -847,6 +861,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     diagnosis="verification_graph_parent_unavailable",
                     verification_scope=scope.value,
                     final_git_head=git_head(ROOT),
+                )
+                _emit_native_testmon_refusal(
+                    preparation=preparation,
+                    reason="no immutable complete parent graph root is available; selected verification refused",
                 )
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 return 2

@@ -446,6 +446,47 @@ def test_verify_records_early_native_terminal_paths(
     assert rows[0]["exit_code"] == expected_code
 
 
+def test_verify_reports_native_testmon_refusal_to_the_operator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing graph must be visible at the production command boundary."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _base, _head: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_args: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    monkeypatch.setattr(
+        verify,
+        "prepare_native_testmon_environment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            selection_mode="bootstrap",
+            environment_name="expected-environment",
+            local_state=SimpleNamespace(
+                status="absent",
+                reason="native environment 'expected-environment' is absent",
+                missing_executable_paths=(),
+            ),
+        ),
+    )
+
+    assert verify._main([]) == 2
+
+    output = capsys.readouterr().err
+    assert "refusing to measure affected verification" in output
+    assert "selection: affected" in output
+    assert "environment: 'expected-environment' (absent)" in output
+    assert "native environment 'expected-environment' is absent" in output
+    assert "devtools verify --all" in output
+
+
 def test_verify_emits_shared_workload_receipt_for_step_timing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
