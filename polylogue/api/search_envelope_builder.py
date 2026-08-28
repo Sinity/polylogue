@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING
 
+from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
     QueryMissDiagnosticsPayload,
@@ -23,7 +24,6 @@ from polylogue.surfaces.payloads import (
     build_search_envelope,
     decode_search_cursor,
     search_cursor_lane_matches_request,
-    search_cursor_request_identity,
 )
 
 if TYPE_CHECKING:
