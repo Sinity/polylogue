@@ -60,3 +60,17 @@ def test_current_provisioned_graph_passes_with_json_result(tmp_path: Path, capsy
     assert main(["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert payload["state"] == "valid"
+
+
+def test_absent_graph_provisions_without_a_seed(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
+    """A workspace with no seeded graph provisions.
+
+    The cache is untracked, so a fresh checkout has no graph to copy; refusing
+    here fails every lane before it starts. Anti-vacuity: rejecting an absent
+    graph again makes this red, and the stale case above stays red because its
+    database file exists.
+    """
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    assert main([]) == 0
+    assert "absent" in capsys.readouterr().out  # type: ignore[attr-defined]
