@@ -1,1 +1,0 @@
-fix(agentctl): reject stale testmon seeds during provisioning
