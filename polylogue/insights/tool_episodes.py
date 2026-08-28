@@ -29,6 +29,10 @@ class ToolEpisodeInsight(ArchiveInsightModel):
 
 class ToolEpisodeQuery(PaginatedInsightQuery):
     origin: str | None = None
+    tag: str | None = None
+    repo: str | None = None
+    since: str | None = None
+    until: str | None = None
     session_id: str | None = None
     tool: str | None = None
     result_state: str | None = None

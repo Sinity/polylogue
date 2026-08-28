@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from polylogue.archive.query.spec import parse_query_date
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ArchiveInsightProvenance
 from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
@@ -25,7 +26,9 @@ IsoFromMilliseconds = Callable[[object], str | None]
 def _query_window_ms(value: str | None, *, upper: bool) -> int | None:
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value)
+    parsed = parse_query_date("until" if upper else "since", value)
+    if parsed is None:
+        return None
     milliseconds = int(parsed.timestamp() * 1000)
     if upper and len(value) == 10:
         milliseconds += 86_400_000 - 1
@@ -41,10 +44,12 @@ class ArchiveReadInsights:
         *,
         normalize_origin: OriginNormalizer,
         iso_from_milliseconds: IsoFromMilliseconds,
+        tags_relation: str = "session_tags",
     ) -> None:
         self._conn = conn
         self._normalize_origin = normalize_origin
         self._iso_from_milliseconds = iso_from_milliseconds
+        self._tags_relation = tags_relation
 
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
@@ -65,6 +70,21 @@ class ArchiveReadInsights:
         if request.origin:
             where.append("s.origin = ?")
             params.append(self._normalize_origin(request.origin) or request.origin)
+        if request.tag:
+            where.append(
+                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
+            )
+            params.append(request.tag)
+        if request.repo:
+            where.append(
+                "EXISTS ("
+                "SELECT 1 FROM session_repos filter_session_repos "
+                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
+                "WHERE filter_session_repos.session_id = s.session_id "
+                "AND filter_repos.repo_name = ?"
+                ")"
+            )
+            params.append(request.repo)
         if request.session_id:
             where.append("a.session_id = ?")
             params.append(request.session_id)
@@ -74,24 +94,57 @@ class ArchiveReadInsights:
         if request.result_state:
             where.append("a.result_state = ?")
             params.append(request.result_state)
+        event_ms = "COALESCE(m.occurred_at_ms, s.sort_key_ms)"
+        since_ms = _query_window_ms(request.since, upper=False)
+        until_ms = _query_window_ms(request.until, upper=True)
+        if since_ms is not None:
+            where.append(f"{event_ms} >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append(f"{event_ms} <= ?")
+            params.append(until_ms)
         rows = self._conn.execute(
             f"""
-            SELECT a.*, s.origin, tu.tool_input, m.position, m.variant_index,
-                   (SELECT GROUP_CONCAT(COALESCE(pm.role || ': ', '') || COALESCE(pm.text, ''), char(10))
+            SELECT a.*, NULL AS followup_class, s.origin, tu.tool_input, m.position, m.variant_index,
+                   (SELECT GROUP_CONCAT(
+                              COALESCE(pm.role || ': ', '') || COALESCE(
+                                  (SELECT GROUP_CONCAT(pb.text, char(10))
+                                   FROM blocks pb
+                                   WHERE pb.message_id = pm.message_id
+                                     AND pb.block_type = 'text'),
+                                  ''
+                              ),
+                              char(10)
+                          )
                       FROM messages pm WHERE pm.session_id=m.session_id AND
                        (pm.position<m.position OR (pm.position=m.position AND pm.variant_index<m.variant_index))
                      ORDER BY pm.position DESC, pm.variant_index DESC LIMIT 3) context_before,
-                   (SELECT GROUP_CONCAT(COALESCE(nm.role || ': ', '') || COALESCE(nm.text, ''), char(10))
+                   (SELECT GROUP_CONCAT(
+                              COALESCE(nm.role || ': ', '') || COALESCE(
+                                  (SELECT GROUP_CONCAT(nb.text, char(10))
+                                   FROM blocks nb
+                                   WHERE nb.message_id = nm.message_id
+                                     AND nb.block_type = 'text'),
+                                  ''
+                              ),
+                              char(10)
+                          )
                       FROM messages nm WHERE nm.session_id=m.session_id AND
                        (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
                      ORDER BY nm.position, nm.variant_index LIMIT 3) context_after,
-                   (SELECT nm.text FROM messages nm WHERE nm.session_id=m.session_id AND
+                   (SELECT (
+                              SELECT GROUP_CONCAT(nb.text, char(10))
+                              FROM blocks nb
+                              WHERE nb.message_id = nm.message_id
+                                AND nb.block_type = 'text'
+                          )
+                      FROM messages nm WHERE nm.session_id=m.session_id AND
                        (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
                      ORDER BY nm.position, nm.variant_index LIMIT 1) next_action
               FROM actions a JOIN sessions s ON s.session_id=a.session_id
               JOIN messages m ON m.message_id=a.message_id JOIN blocks tu ON tu.block_id=a.tool_use_block_id
              WHERE {" AND ".join(where)}
-             ORDER BY COALESCE(m.occurred_at_ms,s.sort_key_ms), a.tool_use_block_id LIMIT ? OFFSET ?
+             ORDER BY {event_ms}, a.tool_use_block_id LIMIT ? OFFSET ?
         """,
             (*params, request.limit if request.limit is not None else -1, request.offset),
         ).fetchall()

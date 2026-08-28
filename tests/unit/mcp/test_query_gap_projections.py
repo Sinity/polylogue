@@ -45,6 +45,102 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
+def _seed_repo_filtered_archive(archive_root: Path) -> str:
+    """Write two profiled sessions so repository filtering is observable."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    sessions = (
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-repo-match",
+            title="Query gap repo match",
+            working_directories=["/realm/project/polylogue"],
+            git_repository_url="https://github.com/Sinity/polylogue.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="repo filter match",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="repo filter match")],
+                )
+            ],
+        ),
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-repo-other",
+            title="Query gap repo other",
+            working_directories=["/realm/project/other"],
+            git_repository_url="https://github.com/example/other.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="repo filter other",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="repo filter other")],
+                )
+            ],
+        ),
+    )
+    with ArchiveStore(archive_root) as archive:
+        session_ids = [archive.write_parsed(session) for session in sessions]
+        for session_id in session_ids:
+            archive._conn.execute(
+                """
+                INSERT INTO session_profiles (
+                    session_id, workflow_shape, workflow_shape_method, workflow_shape_confidence,
+                    terminal_state, terminal_state_method, terminal_state_confidence, search_text
+                ) VALUES (?, 'chat', 'fixture', 1.0, 'question_left', 'fixture', 1.0, '')
+                """,
+                (session_id,),
+            )
+        archive._conn.commit()
+    return session_ids[0]
+
+
+def _seed_tool_episode_archive(archive_root: Path) -> str:
+    """Write one tagged tool episode with repository and timestamp evidence."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(archive_root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="query-gap-tool-episode",
+                title="Query gap tool episode",
+                working_directories=["/realm/project/polylogue"],
+                git_repository_url="https://github.com/Sinity/polylogue.git",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        timestamp="2026-01-01T12:00:00Z",
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="tool-1",
+                                tool_input={"command": "pwd"},
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="tool-1",
+                                text="/realm/project/polylogue",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        )
+        archive.add_user_tags((session_id,), ("episode-filter",))
+    return session_id
+
+
 class TestPersonalStateProjections:
     @pytest.mark.asyncio
     async def test_marks_round_trip(self, tmp_path: Path) -> None:
@@ -270,6 +366,62 @@ class TestInsightProjections:
             result = json.loads(await invoke_surface_async(query_fn, projection="stuck_sessions"))
             assert result.get("is_error") is not True, result
             assert "items" in result
+
+    @pytest.mark.asyncio
+    async def test_repo_filter_matches_session_scope_for_abandoned_and_stuck(self, tmp_path: Path) -> None:
+        """A URL/path predicate would exclude the bare ``polylogue`` match."""
+        archive_root = tmp_path / "archive"
+        matching_session_id = _seed_repo_filtered_archive(archive_root)
+        query_fn = build_tools()["query"]
+
+        with installed_runtime_services(archive_root):
+            sessions = json.loads(await invoke_surface_async(query_fn, projection="sessions", repo="polylogue"))
+            all_abandoned = json.loads(await invoke_surface_async(query_fn, projection="abandoned_sessions"))
+            filtered_abandoned = json.loads(
+                await invoke_surface_async(query_fn, projection="abandoned_sessions", repo="polylogue")
+            )
+            all_stuck = json.loads(await invoke_surface_async(query_fn, projection="stuck_sessions"))
+            filtered_stuck = json.loads(
+                await invoke_surface_async(query_fn, projection="stuck_sessions", repo="polylogue")
+            )
+            missing = [
+                json.loads(await invoke_surface_async(query_fn, projection=projection, repo="does-not-exist"))
+                for projection in ("sessions", "abandoned_sessions", "stuck_sessions")
+            ]
+
+        session_ids = {item["id"] for item in sessions["items"]}
+        abandoned_ids = {item["session_id"] for item in filtered_abandoned["items"]}
+        all_abandoned_ids = {item["session_id"] for item in all_abandoned["items"]}
+        stuck_ids = {item["session_id"] for item in filtered_stuck["items"]}
+        all_stuck_ids = {item["session_id"] for item in all_stuck["items"]}
+
+        assert session_ids == {matching_session_id}
+        assert abandoned_ids == all_abandoned_ids & session_ids
+        assert stuck_ids == all_stuck_ids & session_ids
+        assert abandoned_ids == {matching_session_id}
+        assert all(result.get("total") == 0 for result in missing)
+
+    @pytest.mark.asyncio
+    async def test_tool_episode_projection_forwards_all_session_filters(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_tool_episode_archive(archive_root)
+        query_fn = build_tools()["query"]
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    query_fn,
+                    projection="tool-episodes",
+                    tag="episode-filter",
+                    repo="polylogue",
+                    since="2025-12-31",
+                    until="2026-01-02",
+                )
+            )
+
+        assert result.get("is_error") is not True, result
+        assert result["total"] == 1
+        assert result["tool_episodes"][0]["session_id"] == session_id
 
     @pytest.mark.asyncio
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:

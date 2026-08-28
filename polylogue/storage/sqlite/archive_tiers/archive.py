@@ -3242,9 +3242,14 @@ class ArchiveStore:
             params.append(tag)
         if repo is not None:
             where.append(
-                "(s.git_repository_url = ? OR EXISTS (SELECT 1 FROM session_working_dirs swd WHERE swd.session_id = s.session_id AND swd.path = ?))"
+                "EXISTS ("
+                "SELECT 1 FROM session_repos filter_session_repos "
+                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
+                "WHERE filter_session_repos.session_id = s.session_id "
+                "AND filter_repos.repo_name = ?"
+                ")"
             )
-            params.extend([repo, repo])
+            params.append(repo)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -3401,9 +3406,14 @@ class ArchiveStore:
             params.append(tag)
         if repo is not None:
             where.append(
-                "(s.git_repository_url = ? OR EXISTS (SELECT 1 FROM session_working_dirs swd WHERE swd.session_id = s.session_id AND swd.path = ?))"
+                "EXISTS ("
+                "SELECT 1 FROM session_repos filter_session_repos "
+                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
+                "WHERE filter_session_repos.session_id = s.session_id "
+                "AND filter_repos.repo_name = ?"
+                ")"
             )
-            params.extend([repo, repo])
+            params.append(repo)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -3819,6 +3829,7 @@ class ArchiveStore:
             self._conn,
             normalize_origin=_origin_value,
             iso_from_milliseconds=_iso_from_ms,
+            tags_relation=self._tags_relation,
         )
 
     def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:

@@ -564,7 +564,7 @@ async def _query_insight_projection(
     since: str | None,
     until: str | None,
 ) -> str:
-    """``query(projection="postmortem"|"pathologies"|"abandoned_sessions"|"stuck_sessions", ...)``.
+    """``query(projection="postmortem"|"pathologies"|"abandoned_sessions"|"stuck_sessions"|"tool-episodes", ...)``.
 
     ``postmortem``/``pathologies`` reuse the same filter-building scaffolding
     ``_query_sessions`` does (``build_session_query_request`` ->
@@ -577,7 +577,15 @@ async def _query_insight_projection(
         from polylogue.insights.tool_episodes import ToolEpisodeQuery
 
         episodes = await hooks.get_polylogue().list_tool_episode_insights(
-            ToolEpisodeQuery(origin=origin, limit=hooks.clamp_limit(limit), offset=0)
+            ToolEpisodeQuery(
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                limit=hooks.clamp_limit(limit),
+                offset=0,
+            )
         )
         return hooks.json_payload(
             MCPRootPayload(
@@ -611,7 +619,6 @@ async def _query_insight_projection(
                 repo=repo,
                 since=since,
                 until=until,
-                repo_path=repo,
                 limit=hooks.clamp_limit(limit),
             )
             return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
@@ -721,7 +728,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         default; ``limit`` raises or lowers it). ``projection`` also accepts
         ``"abandoned_sessions"`` (dangling-work terminal states) and
         ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
-        by the same origin/since/until filters.
+        by the same origin/tag/repo/since/until filters.
 
         Personal-state continuations are decimal offsets, matching the
         ``next_offset`` returned in each page.
@@ -2092,14 +2099,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if not isinstance(operation_id, str) or not operation_id:
             return hooks.error_json("maintenance(operation='status') requires operation_id", code="invalid_argument")
         registry = MaintenanceOperationRegistry(config=config)
-        record, issues = registry.get_operation_diagnostic(operation_id)
-        if issues:
-            issue = issues[0]
-            return hooks.error_json(
-                f"maintenance registry could not read {issue.path.name}",
-                code="maintenance_registry_degraded",
-                detail=issue.detail,
-            )
+        record = registry.get_operation(operation_id)
         if record is None:
             return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
         envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
@@ -2117,13 +2117,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         from polylogue.maintenance.registry import MaintenanceOperationRegistry
 
         registry = MaintenanceOperationRegistry(config=config)
-        records, issues = registry.list_operations_diagnostic()
-        if issues:
-            return hooks.error_json(
-                "maintenance registry contains unreadable state files",
-                code="maintenance_registry_degraded",
-                detail="; ".join(f"{issue.path.name}: {issue.detail}" for issue in issues),
-            )
+        records = registry.list_operations()
         items = [
             {
                 "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
