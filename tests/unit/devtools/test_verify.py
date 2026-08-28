@@ -353,6 +353,46 @@ def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(run.run_id)
     assert Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) == artifacts.events_dir
+    assert Path(env["TESTMON_DATAFILE"]) == tmp_path / ".cache" / "testmon" / "testmondata"
+
+
+def test_production_testmon_selection_writes_only_to_owned_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A selected pytest step must not create testmon state at checkout root."""
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text("def test_sample():\n    assert True\n", encoding="utf-8")
+    (tmp_path / ".cache" / "testmon").mkdir(parents=True)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    run = VerifyRun(tier="affected", argv=[], git_head="head", root=tmp_path, mirror_current=False)
+
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--override-ini=addopts=",
+        "-p",
+        "testmon.pytest_testmon",
+        "-p",
+        "pytest_jsonreport.plugin",
+        "--json-report",
+        "--json-report-file=.cache/verify/last-pytest.json",
+        "--testmon",
+        "--testmon-forceselect",
+        "--testmon-env=selection-test",
+        "test_sample.py",
+    ]
+    artifacts = run.start_step(label="pytest native serial (affected)", cmd=command)
+    env = verify._subprocess_env()
+    verify._normalize_managed_pytest_environment(env)
+    env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / ".cache" / "testmon" / "testmondata").is_file()
+    assert not (tmp_path / ".testmondata").exists()
 
 
 def test_agentctl_verify_run_omits_mutable_current_receipt(tmp_path: Path) -> None:
