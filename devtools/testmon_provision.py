@@ -48,6 +48,15 @@ def main(argv: list[str] | None = None) -> int:
             "reason": f"{type(exc).__name__}: {exc}",
         }
 
+    # A seed graph that does not name this environment is useless, not
+    # dangerous: affected verification already refuses to represent it as
+    # coverage. Discarding it leaves the workspace in the state of one that was
+    # never seeded, which provisions.
+    database = root / TESTMON_DATA_RELPATH
+    payload["discarded"] = payload["state"] not in {"valid", "error"} and database.exists()
+    if payload["discarded"]:
+        database.unlink()
+
     if args.json:
         json.dump(payload, sys.stdout, sort_keys=True)
         sys.stdout.write("\n")
@@ -55,17 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"testmon provision: {payload['state']}: {payload['reason']}")
         if payload.get("environment"):
             print(f"expected environment: {payload['environment']}")
+        if payload["discarded"]:
+            print(f"discarded the unusable seed at {TESTMON_DATA_RELPATH}")
 
-    # A workspace with no seed graph is ordinary: affected verification refuses
-    # and explains itself, and the lane can still build its own. A graph that is
-    # present but names another environment is not, because it silently
-    # misrepresents what was covered -- and both read as "absent" here, so the
-    # file's existence is what separates them.
-    if payload["state"] == "valid":
-        return 0
-    if payload["state"] != "error" and not (root / TESTMON_DATA_RELPATH).exists():
-        return 0
-    return 1
+    return 1 if payload["state"] == "error" else 0
 
 
 if __name__ == "__main__":
