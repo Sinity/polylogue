@@ -1,20 +1,21 @@
 Summary
 
-Add deterministic configuration-evidence records and exact historical context resolution. Live bytes are SHA-256 addressed; committed git revisions can be enumerated; gaps and overlaps remain explicit. Structural invocations join only unique active declarations, and efficacy comparisons require cohort limits and judgment authority.
+No product diff was required: the requested workspace provisioning declaration is already present at the lane base.
 
 Problem
 
-Actor and execution-context refs existed, but configuration artifacts had no reusable evidence model. Consumers could not distinguish an exact historical setup from missing or overlapping revisions without consulting current files.
+Fresh worktrees need a checkout-local development environment before managed `devtools` commands run. The current `.agentctl/project.toml` provisions it with `uv sync --extra dev --frozen`, using the repository’s supported development extra rather than the unsupported all-extras set.
 
 Solution
 
-Add `polylogue.context.configuration_evidence` with immutable artifact revisions, live-file capture, committed git-history capture, interval resolution, invocation joins, and an honest comparison record. Export the API through `polylogue.context`. Add tests covering content identity, changed contexts, gap/overlap handling, structural joins, required comparison metadata, and committed-versus-uncommitted git bytes.
+Verified the existing `[workspace.provision]` declaration and its 600-second timeout. It is already on `origin/master`; this lane adds no duplicate implementation.
 
 Verification
 
-- `nix develop --command devtools test tests/unit/context/test_configuration_evidence.py` — 6 passed.
-- `nix develop --command devtools verify --quick` — all quick checks passed, including ruff, mypy, render, layering, pattern, CI/doc command, schema, oracle-integrity, reachability, definition-closure, timestamp, insight-honesty, schema-promotion, and schema-privacy checks.
+- `uv sync --extra dev --frozen` — `Checked 136 packages in 2ms`.
+- `uv run devtools verify --quick` — exit 0; all quick checks passed.
+- TOML parse of `.agentctl/project.toml` — provisioning declaration parsed as `exec = ["uv", "sync", "--extra", "dev", "--frozen"]`, timeout `600`.
 
 Residual risk
 
-This is the reusable storage-independent core only. It does not yet persist records in source.db, wire the live watcher or archive session rows, ingest the full setup inventory, or materialize Claude Workflow coverage. Those integrations require a separately scoped durable migration and production-route slice.
+The live workspace-creation hook remains owned by Sinnix/AgentCTL. This repository declares the command it should execute; first use of that hook is the live integration check.
