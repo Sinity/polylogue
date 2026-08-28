@@ -335,6 +335,7 @@ class _UsageTimelineAccumulator:
     subscription_credits: float = 0.0
     cost_provenance_counts: dict[str, int] = field(default_factory=dict)
     cost_session_ids: set[str] = field(default_factory=set)
+    event_session_ids: set[str] = field(default_factory=set)
     source_sort_key: float | None = None
 
     def note_sort_key(self, value: object) -> None:
@@ -2930,7 +2931,8 @@ class ArchiveStore:
                        COALESCE(SUM(e.last_cache_write_tokens), 0) AS cache_write_tokens,
                        COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
-                       MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
+                       MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key,
+                       GROUP_CONCAT(DISTINCT e.session_id) AS session_ids
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
                 WHERE {where_clause}
@@ -2952,7 +2954,9 @@ class ArchiveStore:
                 ),
             )
             item.event_count += int(row["event_count"] or 0)
-            item.event_session_count += int(row["session_count"] or 0)
+            event_session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            item.event_session_ids.update(event_session_ids)
+            item.event_session_count = len(item.event_session_ids)
             item.usage = item.usage.plus(
                 CostUsagePayload(
                     input_tokens=int(row["input_tokens"] or 0),
