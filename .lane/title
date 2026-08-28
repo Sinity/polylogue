@@ -1,1 +1,1 @@
-fix(agentctl): reject stale testmon seeds during provisioning
+fix(query): make bounded pagination honest across surfaces
