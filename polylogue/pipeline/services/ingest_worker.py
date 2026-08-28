@@ -698,7 +698,43 @@ def _enrich_parsed_sessions(
     # missing snapshot is ordinary absence, not permission to rediscover it;
     # the empty snapshot still allows provider assembly's content fallback.
     sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot or {})
+    sidecar_data = _with_codex_hook_event_titles(
+        sidecar_data,
+        provider=plan.provider,
+        archive_root=context.archive_root,
+        parsed_sessions=parsed_sessions,
+    )
     return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
+
+
+def _with_codex_hook_event_titles(
+    sidecar_data: SidecarData,
+    *,
+    provider: Provider | None,
+    archive_root: Path,
+    parsed_sessions: list[ParsedSession],
+) -> SidecarData:
+    """Attach acquired ``codex_thread_title`` evidence to a Codex bundle.
+
+    bd polylogue-zco96. The durable ``raw_hook_events`` capture of
+    ``state_5.sqlite``'s ``threads.title`` is archive evidence, not an
+    ambient source file, so resolving it here keeps the worker's
+    no-rediscovery contract while giving ladder step 3b the only producer it
+    has. The read is an indexed point lookup per parsed session
+    (``idx_raw_hook_events_session``); a caller that already supplied
+    ``hook_event_titles`` stays authoritative.
+    """
+    if provider is not Provider.CODEX or "hook_event_titles" in sidecar_data:
+        return sidecar_data
+    from polylogue.sources.assembly_codex import resolve_codex_hook_event_titles
+
+    thread_ids = [convo.provider_session_id for convo in parsed_sessions if convo.provider_session_id]
+    titles = resolve_codex_hook_event_titles(archive_root, thread_ids)
+    if not titles:
+        return sidecar_data
+    merged = cast(SidecarData, dict(sidecar_data))
+    merged["hook_event_titles"] = titles
+    return merged
 
 
 def _materialize_parsed_sessions(

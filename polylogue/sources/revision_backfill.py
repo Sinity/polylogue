@@ -2967,10 +2967,9 @@ def _enrich_retained_parse_results(
     first-human-message title) changed the session hash and made byte-proven
     source cohorts permanently non-adoptable.
 
-    Replay may consume only evidence carried by the retained raw record. This
-    replay path has no acquisition-time sidecar bundle, so it supplies an
-    explicit empty sidecar set. It never rediscovers mutable files beside the
-    original source path.
+    Replay may consume only evidence already durable in the archive: the
+    retained raw bytes plus the source tier's own acquired rows. It never
+    rediscovers mutable files beside the original source path.
     """
     # Unit-level parser/dedupe probes deliberately pass tiny protocol fakes;
     # enrichment is an ArchiveStore production concern and is covered through
@@ -2991,6 +2990,7 @@ def _enrich_retained_parse_results(
             _replay_safe_enrich_sessions(
                 provider=provider,
                 sessions=sessions,
+                source_conn=source_conn,
             ),
             payload_bytes,
             kind,
@@ -3025,14 +3025,30 @@ def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
     sessions: list[ParsedSession],
+    source_conn: sqlite3.Connection | None = None,
 ) -> list[ParsedSession]:
-    """Enrich one retained parse without consulting ambient source files."""
+    """Enrich one retained parse without consulting ambient source files.
+
+    bd polylogue-zco96: Codex title resolution's step 3b reads acquired
+    ``codex_thread_title`` hook events. Those are durable source-tier rows,
+    so a reindex resolves the same curated titles a live ingest does instead
+    of baking in the content-heuristic first-prompt fallback. Without a
+    source connection the bundle stays empty and only the parsed-content
+    fallbacks apply.
+    """
     from polylogue.sources.assembly import SidecarData, get_assembly_spec
 
     spec = get_assembly_spec(provider)
     if spec is None:
         return sessions
     sidecar_data = cast("SidecarData", {})
+    if provider is Provider.CODEX and source_conn is not None:
+        from polylogue.sources.assembly_codex import read_codex_thread_title_hook_events
+
+        thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
+        titles = read_codex_thread_title_hook_events(source_conn, thread_ids=thread_ids)
+        if titles:
+            sidecar_data = cast("SidecarData", {"hook_event_titles": titles})
     return [spec.enrich_session(session, sidecar_data) for session in sessions]
 
 

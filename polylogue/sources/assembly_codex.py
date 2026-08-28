@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.core.enums import MaterialOrigin, TitleSource
@@ -144,27 +144,43 @@ def _parse_state_db_file(state_path: Path) -> dict[str, str]:
     return titles
 
 
-def read_codex_thread_title_hook_events(source_conn: sqlite3.Connection) -> dict[str, str]:
+def read_codex_thread_title_hook_events(
+    source_conn: sqlite3.Connection,
+    *,
+    thread_ids: Sequence[str] | None = None,
+) -> dict[str, str]:
     """Return ``{thread_id: title}`` from acquired ``codex_thread_title`` hook events.
 
-    bd polylogue-foee: ``sources/live/batch.py``'s
-    ``_write_codex_thread_state_evidence`` writes one durable
-    ``raw_hook_events`` row per Codex thread (``hook_event_id ==
-    f"codex-thread-title:{thread_id}"``, upserted -- at most one row per
-    thread) whenever ``polylogue-0jf4``'s state-db acquisition observes a
-    ``threads.title``. This is the read side: called from
-    ``pipeline/services/ingest_batch/_core.py::_resolve_codex_sidecar_snapshots``,
-    which owns the only open ``source.db`` connection available at the point
-    Codex sidecar discovery runs. Any failure (missing table, locked file,
-    corrupt payload) degrades to an empty mapping, matching every other
-    sidecar source in this module.
+    ``polylogue-0jf4``'s state-db acquisition writes one durable
+    ``raw_hook_events`` row per observed ``threads.title``
+    (``sources/codex_state_evidence.py``). This is the read side, feeding
+    ladder step 3b in ``CodexAssemblySpec.enrich_session``.
+
+    ``thread_ids`` restricts the read to those sessions, served by
+    ``idx_raw_hook_events_session``; without it the whole Codex hook-event
+    set is scanned. Later observations of the same thread win, matching the
+    ``observed_at_ms`` ordering ``list_hook_events`` applies.
+
+    Any failure (missing table, locked file, corrupt payload) degrades to an
+    empty mapping, matching every other sidecar source in this module.
     """
     from polylogue.core.enums import Origin
     from polylogue.storage.sqlite.archive_tiers.source_write import list_hook_events
 
     titles: dict[str, str] = {}
     try:
-        events = list_hook_events(source_conn, origin=Origin.CODEX_SESSION)
+        if thread_ids is None:
+            events = list_hook_events(source_conn, origin=Origin.CODEX_SESSION)
+        else:
+            events = tuple(
+                event
+                for thread_id in dict.fromkeys(thread_ids)
+                for event in list_hook_events(
+                    source_conn,
+                    origin=Origin.CODEX_SESSION,
+                    session_native_id=thread_id,
+                )
+            )
     except sqlite3.Error as exc:
         logger.debug("Failed to read Codex thread-title hook events: %s", exc)
         return {}
@@ -176,6 +192,34 @@ def read_codex_thread_title_hook_events(source_conn: sqlite3.Connection) -> dict
         if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
             titles[thread_id] = title.strip()
     return titles
+
+
+def resolve_codex_hook_event_titles(
+    archive_root: Path,
+    thread_ids: Sequence[str],
+) -> CodexHistoryTitles:
+    """Read acquired Codex thread titles for ``thread_ids`` out of ``source.db``.
+
+    The durable archive is the evidence carrier for this lane, so both the
+    pipeline ingest worker and retained-raw replay resolve step 3b from it
+    rather than from any live ``~/.codex`` file. A read-only connection keeps
+    this safe beside the daemon's single writer, and an absent or unreadable
+    ``source.db`` degrades to no evidence.
+    """
+    if not thread_ids:
+        return {}
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error as exc:
+        logger.debug("Failed to open source.db for Codex thread titles: %s", exc)
+        return {}
+    try:
+        return read_codex_thread_title_hook_events(conn, thread_ids=thread_ids)
+    finally:
+        conn.close()
 
 
 def _title_preview(text: str) -> str | None:
@@ -416,4 +460,5 @@ __all__ = [
     "_parse_codex_session_index",
     "_parse_codex_state_titles",
     "read_codex_thread_title_hook_events",
+    "resolve_codex_hook_event_titles",
 ]
