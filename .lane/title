@@ -1,1 +1,1 @@
-feat(context): model versioned configuration evidence
+fix(agentctl): reject stale testmon seeds during provisioning

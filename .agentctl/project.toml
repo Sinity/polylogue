@@ -27,9 +27,9 @@ verification_operations = ["verify_affected", "verify_quick", "verify_all"]
 
 [workspace.provision]
 copy = [".cache/testmon/testmondata"]
-# Prove the lane venv is complete at provision time (dev extras included);
-# rides the sinnixd exec hook. Failure rolls the workspace back typed.
-exec = ["uv", "sync", "--extra", "dev", "--frozen"]
+# Prove the lane venv and copied testmon graph at provision time; failure rolls
+# the workspace back as a typed provisioning error.
+exec = ["sh", "-c", "uv sync --extra dev --frozen && python -m devtools.testmon_provision"]
 exec_timeout_seconds = 600
 
 [conflicts]
@@ -200,4 +200,3 @@ source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
 documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
-
