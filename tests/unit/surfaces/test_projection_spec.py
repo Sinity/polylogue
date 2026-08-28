@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
 from polylogue.surfaces.projection_spec import (
     READ_VIEW_PROJECTION_FAMILIES,
     BodyPolicy,
@@ -172,5 +173,8 @@ def test_executable_read_views_have_projection_mapping() -> None:
 
     assert set(READ_VIEW_PROJECTION_FAMILIES) == set(READ_VIEW_HANDLERS)
     assert set(mapped) == set(READ_VIEW_HANDLERS)
+    # Metadata-only registry drives ``read --views`` without importing the
+    # handlers, so it can drift from the projection map independently.
+    assert set(READ_VIEW_HANDLER_METADATA) == set(READ_VIEW_PROJECTION_FAMILIES)
     assert "recovery" not in READ_VIEW_PROJECTION_FAMILIES
     assert "context-pack" not in READ_VIEW_PROJECTION_FAMILIES
