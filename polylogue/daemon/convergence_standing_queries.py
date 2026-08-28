@@ -106,9 +106,15 @@ def make_standing_query_stage(
             finally:
                 conn.close()
             return True
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                logger.info("standing-queries: evaluation deferred because sqlite is busy")
+                return False
+            logger.warning("standing-queries: evaluation failed", exc_info=True)
+            raise
         except Exception:
             logger.warning("standing-queries: evaluation deferred", exc_info=True)
-            return False
+            raise
 
     return ConvergenceStage(
         name="standing-queries",

@@ -866,6 +866,24 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
     assert result is True
 
 
+def test_archive_insights_batch_propagates_nontransient_write_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch insight failure must reach the converger's failed-state path.
+
+    Anti-vacuity: returning ``False`` here records deliberate deferral for an
+    unexpected write failure.
+    """
+
+    def fail_open(_db_path: Path) -> sqlite3.Connection:
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(stages, "_open_archive_insight_write_connection", fail_open)
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        stages._archive_insights_execute_many(tmp_path / "index.db", [tmp_path / "source.jsonl"])
+
+
 def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     source_path = tmp_path / "codex.jsonl"

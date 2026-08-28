@@ -284,6 +284,73 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
     assert embedded_calls == [(index_db, "codex-session:v1-a", embeddings_db)]
 
 
+def test_archive_convergence_persists_foreground_spend_before_enforcing_monthly_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Foreground passes share the persistent monthly embedding allowance.
+
+    Anti-vacuity: removing the foreground receipt lets the second pass call the
+    provider despite the first pass having exhausted most of the cap.
+    """
+
+    class CostCappedConfig(_EmbeddingConfig):
+        def get(self, key: str, default: object = None) -> object:
+            if key == "embedding_max_cost_usd":
+                return 0.000075
+            return super().get(key, default)
+
+    embedded_calls: list[str] = []
+
+    def fake_embed(_db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
+        embedded_calls.append(session_id)
+        return EmbedSessionOutcome(status="embedded", session_id=session_id, embedded_message_count=1)
+
+    monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: CostCappedConfig())
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda **_: MagicMock())
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed)
+
+    first = convergence_stages._embed_archive_sessions_sync(
+        tmp_path / "index.db",
+        [PendingSession(session_id="first", message_count=1)],
+    )
+    second = convergence_stages._embed_archive_sessions_sync(
+        tmp_path / "index.db",
+        [PendingSession(session_id="second", message_count=1)],
+    )
+
+    assert first is True
+    assert second is False
+    assert embedded_calls == ["first"]
+
+
+def test_embedding_startup_marks_running_catchup_receipts_interrupted(tmp_path: Path) -> None:
+    from polylogue.core.enums import OperationStatus
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.ops_write import (
+        list_embedding_catchup_runs,
+        upsert_embedding_catchup_run,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="unfinished",
+            status=OperationStatus.RUNNING,
+            started_at_ms=1,
+        )
+
+    assert embedding_backlog.recover_embedding_catchup_receipts(tmp_path) == 1
+
+    with sqlite3.connect(ops_db) as conn:
+        (run,) = list_embedding_catchup_runs(conn)
+    assert run.status == "interrupted"
+    assert run.finished_at_ms is not None
+
+
 def test_archive_convergence_pending_check_rejects_status_only_freshness(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
