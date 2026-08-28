@@ -709,6 +709,16 @@ def test_backup_creation_oracle_rejects_projection_omitting_independent_attachme
             },
             "invalid source owner payloads",
         ),
+        (
+            {
+                "format": "polylogue-blob-reference-evidence-v1",
+                "source_owner_hashes": {"source.db.raw_sessions": ["0" * 64]},
+                "index_attachment_evidence": "not_consulted",
+                "index_attachment_hashes": [],
+                "declared_expected_reference_hashes": [],
+            },
+            "empty declared expected reference set",
+        ),
     ],
 )
 def test_backup_reference_evidence_refuses_malformed_payloads(evidence: object, message: str) -> None:
@@ -982,9 +992,8 @@ def test_full_evidence_backup_attests_pre_generation_source_with_declared_empty_
 ) -> None:
     """A pre-generation source tier may attest known-absent historical references.
 
-    Anti-vacuity: if verification derives expected references from the frozen
-    source rows instead of the declared scope, the missing reference makes the
-    backup unverifiable.
+    Anti-vacuity: mutating the verifier to derive expected references from the
+    frozen source rows instead of the declared scope makes the backup fail.
     """
     archive_root = workspace_env["archive_root"]
     initialize_active_archive_root(archive_root)
@@ -1006,6 +1015,15 @@ def test_full_evidence_backup_attests_pre_generation_source_with_declared_empty_
                VALUES (?, 'pre-generation-raw', 'raw_payload', '/pre-generation.jsonl', 1, 1)""",
             (missing_hash,),
         )
+        conn.execute(
+            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms) VALUES ('prune', 1, 2)"
+        )
+        conn.execute(
+            """INSERT INTO gc_generation_members
+               (generation_id, blob_hash, candidate_size_bytes, intent_committed_at_ms, outcome, outcome_at_ms)
+               VALUES ('prune', ?, 1, 1, 'removed', 2)""",
+            (missing_hash,),
+        )
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -1015,7 +1033,46 @@ def test_full_evidence_backup_attests_pre_generation_source_with_declared_empty_
     backup_root = Path(result.output_path or "")
     evidence = json.loads((backup_root / "blob-reference-evidence.json").read_text())
     assert evidence["source_generation_id"] is None
-    assert evidence["declared_expected_reference_hashes"] == []
+    assert evidence["declared_expected_reference_hashes"] == [missing_hash.hex()]
+    assert evidence["declared_absent_reference_hashes"] == [missing_hash.hex()]
+
+
+def test_full_evidence_backup_does_not_attest_undeclared_pre_generation_missing_blob(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A pre-generation backup still fails for missing blobs without GC removal authority.
+
+    Anti-vacuity: mutating the verifier to accept every pre-generation missing
+    blob makes this assertion pass incorrectly.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    missing_hash = hashlib.sha256(b"undeclared pre-generation missing source").digest()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("DROP VIEW source_item_reconciliation")
+        conn.execute("DROP TABLE source_items")
+        conn.execute("DROP TABLE source_generations")
+        conn.execute(
+            """INSERT INTO raw_sessions
+               (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+               VALUES ('undeclared-pre-generation-raw', 'codex-session', '/pre-generation.jsonl', 0, ?, 1, 1)""",
+            (missing_hash,),
+        )
+        conn.execute(
+            """INSERT INTO blob_refs
+               (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               VALUES (?, 'undeclared-pre-generation-raw', 'raw_payload', '/pre-generation.jsonl', 1, 1)""",
+            (missing_hash,),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert result.verification["canonical_blobs_resolved"] is False
+    assert result.verification["missing_canonical_blob_count"] == 1
 
 
 def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(

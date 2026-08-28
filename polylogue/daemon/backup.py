@@ -493,6 +493,22 @@ def _source_generation_tables_exist(source_db: Path) -> bool:
         return len(tables) == 2
 
 
+def _source_declared_absent_blob_hashes(source_db: Path) -> set[str]:
+    """Return blob hashes whose durable GC receipt records intentional removal."""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(gc_generation_members)")}
+        if not {"blob_hash", "outcome"}.issubset(columns):
+            return set()
+        hashes: set[str] = set()
+        for (blob_hash,) in conn.execute(
+            "SELECT DISTINCT blob_hash FROM gc_generation_members WHERE outcome IN ('removed', 'reconciled_removed')"
+        ):
+            if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:
+                raise RuntimeError("source.gc_generation_members has invalid blob_hash evidence")
+            hashes.add(blob_hash.hex())
+        return hashes
+
+
 def _source_blob_reservations(source_db: Path) -> set[str]:
     """Read pending publication receipts independently of committed liveness."""
 
@@ -548,6 +564,7 @@ def _blob_reference_evidence(
     index_db: Path | None,
     source_generation_id: str | None = None,
     source_generation_tables_exist: bool = True,
+    declared_absent_hashes: set[str] | None = None,
 ) -> dict[str, object]:
     """Persist source resolution plus an independent index-attachment oracle.
 
@@ -566,14 +583,18 @@ def _blob_reference_evidence(
     if omitted:
         sample = ", ".join(sorted(omitted)[:_MISSING_BLOB_WARNING_SAMPLE_LIMIT])
         raise RuntimeError(f"canonical blob liveness projection omitted independent attachment evidence: {sample}")
-    return {
+    declared_absent = (declared_absent_hashes or set()) & expected_hashes
+    evidence: dict[str, object] = {
         "format": "polylogue-blob-reference-evidence-v1",
         "source_generation_id": source_generation_id,
         "source_owner_hashes": source_owners,
-        "declared_expected_reference_hashes": sorted(expected_hashes if source_generation_tables_exist else ()),
         "index_attachment_evidence": attachment_evidence_state,
         "index_attachment_hashes": sorted(attachment_hashes),
     }
+    if not source_generation_tables_exist and expected_hashes:
+        evidence["declared_expected_reference_hashes"] = sorted(expected_hashes)
+        evidence["declared_absent_reference_hashes"] = sorted(declared_absent)
+    return evidence
 
 
 def _write_blob_reference_evidence(backup_root: Path, evidence: dict[str, object]) -> Path:
@@ -587,6 +608,7 @@ def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
         raise RuntimeError("backup blob reference evidence is missing or has an unknown format")
     source_owners = evidence.get("source_owner_hashes")
     declared_expected = evidence.get("declared_expected_reference_hashes")
+    declared_absent = evidence.get("declared_absent_reference_hashes")
     attachment_hashes = evidence.get("index_attachment_hashes")
     attachment_evidence = evidence.get("index_attachment_evidence")
     if (
@@ -621,7 +643,22 @@ def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
         for blob_hash in declared_expected
     ):
         raise RuntimeError("backup blob reference evidence has invalid declared expected references")
-    return set(declared_expected)
+    if not declared_expected:
+        raise RuntimeError("backup blob reference evidence has an empty declared expected reference set")
+    if declared_absent is None:
+        return set(declared_expected)
+    if not isinstance(declared_absent, list) or any(
+        not isinstance(blob_hash, str)
+        or len(blob_hash) != 64
+        or any(char not in "0123456789abcdef" for char in blob_hash)
+        for blob_hash in declared_absent
+    ):
+        raise RuntimeError("backup blob reference evidence has invalid declared absent references")
+    absent = set(declared_absent)
+    expected = set(declared_expected)
+    if not absent <= expected:
+        raise RuntimeError("backup blob reference evidence declares an absent non-expected reference")
+    return expected - absent
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -651,6 +688,7 @@ def _copy_referenced_blobs(
         index_db=index_db,
         source_generation_id=source_generation_id,
         source_generation_tables_exist=source_generation_tables_exist,
+        declared_absent_hashes=_source_declared_absent_blob_hashes(source_db),
     )
     _write_blob_reference_evidence(backup_root, reference_evidence)
     inventory = _inventory_from_liveness(projection, reservations)
