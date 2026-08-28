@@ -166,17 +166,22 @@ def test_missing_snapshot_does_not_attempt_on_demand_enrichment(
         encoding="utf-8",
     )
 
-    def raising_discover(self: object, paths: object) -> object:
-        raise OSError("simulated transient disk error during on-demand discovery")
+    discovery_calls: list[object] = []
 
-    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", raising_discover)
+    def recording_discover(self: object, paths: object) -> object:
+        discovery_calls.append(paths)
+        raise OSError("on-demand discovery must never run inside a worker")
+
+    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", recording_discover)
 
     record = _record(blob_store, content, source_path=str(rollout))
     result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
 
     assert result.error is None
     assert result.sessions, "expected the record to materialize without optional evidence"
-    assert result.sessions_unenriched is False
+    assert discovery_calls == [], "worker consulted the ambient source tree for sidecars"
+    # The runtime root carries a session_index naming the thread "Ingest bug
+    # hunt"; only a worker that read it off disk could surface that title.
     assert result.sessions[0].parsed_session.title == "please fix the ingest bug"
 
 

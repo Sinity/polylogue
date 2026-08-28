@@ -50,6 +50,7 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "raw_sessions", ref_type="raw_payload", referent_column="raw_id"),
     BlobOwner("source", "raw_sessions", ref_type="attachment", referent_column="raw_id"),
     BlobOwner("source", "raw_hook_events", ref_type="hook_payload", referent_column="hook_event_id"),
+    BlobOwner("source", "history_sidecars", ref_type="sidecar", referent_column="sidecar_id"),
     # Before source schema v22, hook payloads were recorded as raw_payload
     # refs keyed by a deterministic raw id, even though hooks never create a
     # raw_sessions row. The rekey matcher proves the actual hook referent.
