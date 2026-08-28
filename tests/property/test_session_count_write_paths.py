@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -52,12 +52,26 @@ def message_sets(draw: st.DrawFn) -> list[ParsedMessage]:
     size = draw(st.integers(min_value=0, max_value=7))
     messages: list[ParsedMessage] = []
     for index in range(size):
-        provider_message_id = "seed" if index == 0 else draw(st.sampled_from(("duplicate-a", "duplicate-b")))
+        # Keep one repeated native ID in every multi-message batch so the
+        # writer's duplicate-identity normalization is exercised on all paths.
+        provider_message_id = "duplicate" if index else "seed"
         role = draw(st.sampled_from(_ROLES))
         material_origin = draw(st.sampled_from(_MATERIAL_ORIGINS))
         text = draw(st.one_of(st.just(""), st.text(min_size=1, max_size=30)))
         block_types = draw(st.sets(st.sampled_from((BlockType.TOOL_USE, BlockType.THINKING)), max_size=2))
         blocks = [ParsedContentBlock(type=block_type, text="block") for block_type in sorted(block_types, key=str)]
+        paste_spans = (
+            [
+                ParsedPasteEvidence(
+                    position=0,
+                    start_offset=0,
+                    end_offset=len(text),
+                    boundary_state="whole_message_fallback",
+                )
+            ]
+            if draw(st.booleans())
+            else []
+        )
         messages.append(
             ParsedMessage(
                 provider_message_id=provider_message_id,
@@ -65,6 +79,7 @@ def message_sets(draw: st.DrawFn) -> list[ParsedMessage]:
                 text=text,
                 material_origin=material_origin,
                 blocks=blocks,
+                paste_spans=paste_spans,
             )
         )
     return messages
