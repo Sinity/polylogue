@@ -118,3 +118,8 @@ _site/
 
 # Lane-authored publication text, read by the integrator.
 .lane/
+
+# testmon caches are machine-local and environment-fingerprinted; a committed
+# one never matches a real checkout, so affected verification refuses forever.
+.testmondata
+.testmondata-*
