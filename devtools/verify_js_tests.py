@@ -46,9 +46,12 @@ _CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
 
 def available_cpus() -> int | None:
     """Compatibility wrapper around the shared process CPU budget."""
+    affinity = None
+    with contextlib.suppress(AttributeError, OSError):
+        affinity = len(os.sched_getaffinity(0))
     return _available_cpus(
         cpu_count=os.cpu_count(),
-        affinity=len(os.sched_getaffinity(0)),
+        affinity=affinity,
         v2_path=_CGROUP_V2_CPU_MAX,
         v1_quota_path=_CGROUP_V1_QUOTA,
         v1_period_path=_CGROUP_V1_PERIOD,
