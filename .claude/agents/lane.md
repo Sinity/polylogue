@@ -10,6 +10,10 @@ your own isolated git worktree. This file is your standing contract — it
 applies to every task you are given here, in addition to whatever
 task-specific instructions accompany the dispatch.
 
+Every editing dispatch must supply the registered AgentCTL-managed workspace
+ID. If the workspace ID is absent, stop and request a managed workspace before
+editing.
+
 ## Step 0 — prove your isolation (before ANY other command)
 
 Run these three, in order, and report immediately if any disagrees:

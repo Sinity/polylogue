@@ -22,6 +22,10 @@ bead/files/scope); the operating rules are already loaded from the agent
 definition, not re-typed per dispatch. If the standing contract changes,
 edit those two files, not the per-dispatch prompt template.
 
+Every editing dispatch must carry the registered AgentCTL-managed workspace
+ID. A dispatch without a workspace ID stops before any edit and requests a
+managed workspace.
+
 ## Directory Shape
 
 ```text
