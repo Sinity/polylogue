@@ -28,7 +28,12 @@ from click.shell_completion import (
 )
 
 from polylogue.archive.query.completions import query_terminal_source_candidates
-from polylogue.archive.query.metadata import query_unit_descriptors, terminal_query_sources
+from polylogue.archive.query.expression import parse_expression_ast
+from polylogue.archive.query.metadata import (
+    query_unit_descriptor,
+    query_unit_descriptors,
+    terminal_query_sources,
+)
 from polylogue.cli.click_app import cli
 from polylogue.operations.action_contracts import CompletionContext, action_completion_contexts
 from tests.infra.cli_interaction import SUPPORTED_SHELLS as SUPPORTED_SHELL_NAMES
@@ -894,3 +899,34 @@ def test_dynamic_completers_seeded_archive_per_shell(
     # always have data in a seeded archive.
     if label in {"session_id"}:
         assert items, f"{label} returned no items on seeded archive ({shell})"
+
+
+@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
+def test_tool_episode_source_completion_per_shell(
+    shell: str,
+    comp_cls: type[ShellComplete],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tool-episode``/``tool-episodes`` complete and lower to the action unit.
+
+    The aliases are grammar, not decoration: completion offers both spellings
+    with the ``where`` insertion, the field vocabulary after ``where`` is the
+    action unit's, and the parsed AST is identical to the ``actions``
+    spelling. Dropping either alias from ``source_aliases``, or resolving it
+    to a different unit, turns this red.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    values = {value for value, _ in _run_completion_for_partial(shell, comp_cls, ["find"], "tool-epi")}
+    assert values == {"tool-episode where ", "tool-episodes where "}
+
+    action_fields = dict(_run_completion_for_partial(shell, comp_cls, ["find", "actions", "where"], "tool"))
+    assert action_fields, f"action unit yielded no terminal field completions on {shell}"
+    for alias in ("tool-episode", "tool-episodes"):
+        assert query_unit_descriptor(alias) is query_unit_descriptor("action")
+        fields = dict(_run_completion_for_partial(shell, comp_cls, ["find", alias, "where"], "tool"))
+        assert fields == action_fields, f"{alias} field completions diverge from actions on {shell}"
+        assert parse_expression_ast(f"{alias} where tool:Bash") == parse_expression_ast("actions where tool:Bash")
