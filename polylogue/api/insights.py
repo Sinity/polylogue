@@ -640,12 +640,16 @@ class PolylogueInsightsMixin:
                 "session_id": request.session_id,
                 "origin": request.origin,
                 "only_stuck": request.only_stuck,
+                "tag": request.tag,
+                "repo": request.repo,
                 "since": request.since,
                 "until": request.until,
             },
             work=lambda archive: archive.list_session_latency_profile_insights(
                 session_id=request.session_id,
                 origin=request.origin,
+                tag=request.tag,
+                repo=request.repo,
                 only_stuck=request.only_stuck,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
@@ -666,9 +670,17 @@ class PolylogueInsightsMixin:
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.session_latency.stuck",
-            arguments={"origin": request.origin, "since": request.since, "until": request.until},
+            arguments={
+                "origin": request.origin,
+                "since": request.since,
+                "until": request.until,
+                "tag": request.tag,
+                "repo": request.repo,
+            },
             work=lambda archive: archive.find_stuck_session_latency_profile_insights(
                 origin=request.origin,
+                tag=request.tag,
+                repo=request.repo,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,
@@ -849,6 +861,8 @@ class PolylogueInsightsMixin:
         self,
         *,
         origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
         since: str | None = None,
         until: str | None = None,
         repo_path: str | None = None,
@@ -862,7 +876,7 @@ class PolylogueInsightsMixin:
         from polylogue.insights.archive_rollups import abandoned_session_items
 
         profiles = await self.list_session_profile_insights(
-            SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
+            SessionProfileInsightQuery(origin=origin, tag=tag, repo=repo, since=since, until=until, limit=None)
         )
         items = abandoned_session_items(profiles, min_severity=min_severity, repo_path=repo_path)
         return {"total": len(items), "items": items[:limit]}

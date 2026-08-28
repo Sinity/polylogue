@@ -3218,6 +3218,8 @@ class ArchiveStore:
         session_id: str | None = None,
         origin: str | None = None,
         only_stuck: bool = False,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3233,6 +3235,16 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
+        if tag is not None:
+            where.append(
+                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
+            )
+            params.append(tag)
+        if repo is not None:
+            where.append(
+                "(s.git_repository_url = ? OR EXISTS (SELECT 1 FROM session_working_dirs swd WHERE swd.session_id = s.session_id AND swd.path = ?))"
+            )
+            params.extend([repo, repo])
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -3262,6 +3274,8 @@ class ArchiveStore:
         self,
         *,
         origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3274,6 +3288,8 @@ class ArchiveStore:
         """
         return self.list_session_latency_profile_insights(
             origin=origin,
+            tag=tag,
+            repo=repo,
             only_stuck=True,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -3340,6 +3356,8 @@ class ArchiveStore:
         origin: str | None = None,
         workflow_shape: str | None = None,
         terminal_state: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         first_message_since: str | None = None,
@@ -3376,6 +3394,16 @@ class ArchiveStore:
         if terminal_state is not None:
             where.append("sp.terminal_state = ?")
             params.append(terminal_state)
+        if tag is not None:
+            where.append(
+                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
+            )
+            params.append(tag)
+        if repo is not None:
+            where.append(
+                "(s.git_repository_url = ? OR EXISTS (SELECT 1 FROM session_working_dirs swd WHERE swd.session_id = s.session_id AND swd.path = ?))"
+            )
+            params.extend([repo, repo])
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)

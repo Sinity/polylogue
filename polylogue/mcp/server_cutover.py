@@ -607,6 +607,8 @@ async def _query_insight_projection(
         if projection == "abandoned_sessions":
             abandoned = await poly.find_abandoned_sessions(
                 origin=origin,
+                tag=tag,
+                repo=repo,
                 since=since,
                 until=until,
                 repo_path=repo,
@@ -618,7 +620,9 @@ async def _query_insight_projection(
         from polylogue.insights.archive import SessionLatencyProfileInsightQuery
 
         stuck = await poly.find_stuck_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=hooks.clamp_limit(limit))
+            SessionLatencyProfileInsightQuery(
+                origin=origin, tag=tag, repo=repo, since=since, until=until, limit=hooks.clamp_limit(limit)
+            )
         )
         return hooks.json_payload(
             MCPRootPayload(root={"items": [insight.model_dump(mode="json") for insight in stuck], "total": len(stuck)}),
@@ -2088,7 +2092,14 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if not isinstance(operation_id, str) or not operation_id:
             return hooks.error_json("maintenance(operation='status') requires operation_id", code="invalid_argument")
         registry = MaintenanceOperationRegistry(config=config)
-        record = registry.get_operation(operation_id)
+        record, issues = registry.get_operation_diagnostic(operation_id)
+        if issues:
+            issue = issues[0]
+            return hooks.error_json(
+                f"maintenance registry could not read {issue.path.name}",
+                code="maintenance_registry_degraded",
+                detail=issue.detail,
+            )
         if record is None:
             return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
         envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
@@ -2106,7 +2117,13 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         from polylogue.maintenance.registry import MaintenanceOperationRegistry
 
         registry = MaintenanceOperationRegistry(config=config)
-        records = registry.list_operations()
+        records, issues = registry.list_operations_diagnostic()
+        if issues:
+            return hooks.error_json(
+                "maintenance registry contains unreadable state files",
+                code="maintenance_registry_degraded",
+                detail="; ".join(f"{issue.path.name}: {issue.detail}" for issue in issues),
+            )
         items = [
             {
                 "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
