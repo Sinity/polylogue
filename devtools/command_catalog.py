@@ -229,6 +229,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify webui", "devtools verify webui --json"),
     ),
     CommandSpec(
+        "verify js-tests",
+        "verification",
+        "Run the JavaScript test suites of the browser-extension and webui packages.",
+        "devtools.verify_js_tests",
+        use_when=(
+            "Check the Node packages after changing extension capture code, WebUI components, or generated "
+            "TypeScript contracts. Absent dependencies are reported as a blocked refusal, never a silent skip. "
+            "CI carries no Node runtime and reports not-run-in-ci there rather than a pass."
+        ),
+        examples=(
+            "devtools verify js-tests",
+            "devtools verify js-tests --install",
+            "devtools verify js-tests --package webui --json",
+        ),
+    ),
+    CommandSpec(
         "verify ci-commands",
         "verification",
         "Validate devtools invocations in structured CI run fields.",
