@@ -23,7 +23,6 @@ from .detection import DetectionMode
 from .origin_specs import detector_registry
 from .parsers import (
     antigravity,
-    beads,
     browser_capture,
     chatgpt,
     chatgpt_codex_sidecar,
@@ -52,10 +51,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI, Provider.CLAUDE_DESIGN})
-GROUP_PROVIDERS = frozenset(
-    {Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS, Provider.HERMES}
-)
-STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.BEADS, Provider.HERMES})
+GROUP_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.HERMES})
+STREAM_RECORD_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX, Provider.HERMES})
 DRIVE_LIKE_PROVIDERS = frozenset({Provider.GEMINI, Provider.DRIVE})
 _MAX_PARSE_DEPTH = 10
 
@@ -270,16 +267,6 @@ def _looks_like_hermes_atof_sequence(payload: object) -> bool:
 def _looks_like_antigravity_markdown_record(payload: object) -> bool:
     record = _payload_record(payload)
     return record is not None and antigravity.looks_like_markdown_export(record)
-
-
-def _looks_like_beads_record(payload: object) -> bool:
-    record = _payload_record(payload)
-    return record is not None and beads.looks_like(record)
-
-
-def _looks_like_beads_sequence(payload: object) -> bool:
-    record = _first_sequence_record(payload)
-    return record is not None and beads.looks_like(record)
 
 
 def _looks_like_codex_record(payload: object) -> bool:
@@ -1391,16 +1378,6 @@ def _lower_payload_specs(
         return _lower_bundle_payload(runtime_provider, shaped_payload, fallback_id)
     if runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}:
         return _lower_grouped_payload(runtime_provider, shaped_payload, fallback_id, source_path=source_path)
-    if runtime_provider is Provider.BEADS:
-        payloads = _payload_sequence(shaped_payload)
-        if payloads is not None and all(
-            (record := _payload_record(item)) is not None and beads.looks_like(record) for item in payloads
-        ):
-            return [_grouped_records_spec(runtime_provider, payloads, fallback_id, source_path=source_path)]
-        record = _single_document_record(shaped_payload)
-        if record is not None and beads.looks_like(record):
-            return [_grouped_records_spec(runtime_provider, [record], fallback_id, source_path=source_path)]
-        return []
     if runtime_provider is Provider.GEMINI_CLI:
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
@@ -1555,10 +1532,6 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
     if spec.provider is Provider.CODEX:
         payloads = _payload_sequence(spec.payload)
         return [codex.parse(payloads, spec.fallback_id)] if payloads is not None else []
-
-    if spec.provider is Provider.BEADS:
-        payloads = _payload_sequence(spec.payload)
-        return beads.parse(payloads, spec.fallback_id, source_path=spec.source_path) if payloads is not None else []
 
     if spec.provider is Provider.HERMES and spec.mode == "grouped_records":
         payloads = _payload_sequence(spec.payload)
@@ -1820,8 +1793,6 @@ def parse_stream_payload(
         return list(_claude_code_multiway_parse(payloads, fallback_id, source_path=source_path))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
-    if runtime_provider is Provider.BEADS:
-        return beads.parse(payloads, fallback_id, source_path=source_path)
     if runtime_provider is Provider.HERMES:
         return hermes_spans.parse_atof_stream(
             payloads,

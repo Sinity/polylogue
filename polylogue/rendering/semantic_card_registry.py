@@ -382,7 +382,6 @@ _ORIGIN_POLICIES: tuple[OriginPolicy, ...] = (
     OriginPolicy(Origin.GEMINI_CLI_SESSION, "gemini-cli"),
     OriginPolicy(Origin.HERMES_SESSION, "hermes"),
     OriginPolicy(Origin.ANTIGRAVITY_SESSION, "antigravity"),
-    OriginPolicy(Origin.BEADS_ISSUE, "beads"),
     OriginPolicy(Origin.GROK_EXPORT, "grok"),
     OriginPolicy(Origin.CHATGPT_EXPORT, "chatgpt"),
     OriginPolicy(Origin.CLAUDE_AI_EXPORT, "claude-ai"),
@@ -410,7 +409,6 @@ def normalize_provider_family(value: object) -> str:
         "chatgpt": "chatgpt",
         "claude-ai": "claude-ai",
         "antigravity": "antigravity",
-        "beads": "beads",
         "grok": "grok",
         "drive": "gemini-cli",
     }

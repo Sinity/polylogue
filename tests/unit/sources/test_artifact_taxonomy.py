@@ -14,6 +14,27 @@ from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
+def test_beads_interaction_artifact_is_refused_as_session() -> None:
+    artifact = classify_artifact(
+        [
+            {
+                "id": "int-1",
+                "kind": "field_change",
+                "created_at": "2026-07-08T20:14:36Z",
+                "issue_id": "polylogue-7fj",
+                "extra": {},
+            }
+        ],
+        provider="unknown",
+        source_path="/repo/.beads/interactions.jsonl",
+    )
+
+    assert artifact.provider is Provider.UNKNOWN
+    assert artifact.kind is ArtifactKind.UNKNOWN
+    assert artifact.parse_as_session is False
+    assert "not a session" in artifact.reason
+
+
 def test_relationship_index_jsonl_is_metadata_not_session_stream() -> None:
     records: list[JSONValue] = [
         {

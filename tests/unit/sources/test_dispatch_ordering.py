@@ -35,28 +35,6 @@ def _payload(obj: object) -> object:
 ADVERSARIAL_CATALOG: list[tuple[object, Provider, str]] = []
 
 
-# ── Beads interaction vs loose session-record probes ──────────────
-#
-# Beads interaction rows may carry generic identifiers that resemble runtime
-# records.  Their complete structural signature is stronger and must win before
-# the Pydantic/dict-key session probes below.
-ADVERSARIAL_CATALOG.append(
-    (
-        {
-            "id": "int-1",
-            "kind": "field_change",
-            "created_at": "2026-07-08T20:14:36Z",
-            "issue_id": "polylogue-7fj",
-            "extra": {},
-            "sessionId": "not-a-codex-session",
-            "parentUuid": "runtime-shaped-noise",
-        },
-        Provider.BEADS,
-        "beads interaction vs loose runtime probes: complete Beads structural detector runs before Pydantic/dict-key probes",
-    )
-)
-
-
 # ── claude-code record stream vs codex envelope ───────────────────
 #
 # Both Claude Code JSONL and Codex session files are JSON records with
@@ -213,7 +191,7 @@ def test_swapping_adjacent_stream_priorities_changes_real_dispatch_result(
         codex,
         detector_bindings=(codex.detector_bindings[0], replace(codex_stream, mode_rank=0)),
     )
-    ambiguous_stream = ADVERSARIAL_CATALOG[1][0]
+    ambiguous_stream = ADVERSARIAL_CATALOG[0][0]
     assert detect_provider(ambiguous_stream) is Provider.CLAUDE_CODE
 
     monkeypatch.setattr(

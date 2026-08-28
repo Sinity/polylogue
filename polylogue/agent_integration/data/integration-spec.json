@@ -123,10 +123,6 @@
       "token": "antigravity-session"
     },
     {
-      "meaning": "Beads issue exports (non-chat work artifacts)",
-      "token": "beads-issue"
-    },
-    {
       "meaning": "Grok account-data exports (lab: xAI)",
       "token": "grok-export"
     },

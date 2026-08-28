@@ -11,7 +11,7 @@ Three adapters are concrete and read-only:
 
 - :class:`GitCommitEffectAdapter` reads ``git log`` for a local checkout.
 - :class:`BeadsIssueEffectAdapter` reads a Beads ``interactions.jsonl``
-  ledger (the same append-only shape ``sources/parsers/beads.py`` ingests).
+  ledger with its append-only interaction shape.
 - :class:`GitHubPullRequestEffectAdapter` shells out to the ``gh`` CLI (the
   same subprocess pattern ``insights.correlation_view._enrich_with_github_api``
   already uses) to read PR lifecycle state -- number, title, body, open/
@@ -221,9 +221,7 @@ class BeadsIssueEffectAdapter:
     ``jsonl_path`` points at a ``.beads/interactions.jsonl``-shaped file (a
     fixture in tests; the committed ledger in production). Each valid
     interaction record becomes one effect -- this is the same record shape
-    ``sources/parsers/beads.py`` already ingests as archived sessions, read
-    here directly so reconciliation does not require the record to have been
-    ingested first.
+    here directly so reconciliation does not require session admission.
     """
 
     jsonl_path: Path

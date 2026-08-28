@@ -1238,25 +1238,6 @@ def _antigravity_spec() -> OriginSpec:
     )
 
 
-def _beads_spec() -> OriginSpec:
-    return _executable_spec(
-        Origin.BEADS_ISSUE,
-        provider=Provider.BEADS,
-        tightness=40,
-        discovery="Beads issue export admission.",
-        acquisition_modes=("issue-jsonl",),
-        parser_paths=("polylogue/sources/parsers/beads.py",),
-        fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-        # dispatch.py:parse_stream_payload routes Provider.BEADS to the
-        # plain ``beads.parse`` entry point -- there is no dedicated
-        # ``parse_beads_stream`` function; this declaration must name the
-        # function dispatch actually calls.
-        stream_parser_path="polylogue/sources/parsers/beads.py:parse",
-        display_description="Beads issue exports (non-chat work artifacts)",
-        public_filter=False,
-    )
-
-
 def _claude_ai_spec() -> OriginSpec:
     return _executable_spec(
         Origin.CLAUDE_AI_EXPORT,
@@ -1496,36 +1477,6 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             docs_paths=("docs/architecture.md",),
         ),
     ),
-    Origin.BEADS_ISSUE: (
-        _completeness_mode(
-            "provider-package:beads-issue/issue-jsonl@v1",
-            "issue-jsonl",
-            Provider.BEADS,
-            # Kept "proposed" (not "accepted") deliberately: the detector and
-            # parser are real and admitted (OriginSpec.lifecycle="executable"
-            # above), but no schema-discovery harvesting pass has run against
-            # a real Beads repository export sample -- the wire shape is
-            # reconstructed from independent secondary sources (see
-            # polylogue/sources/parsers/beads.py), not a harvested provider-
-            # package catalog. "accepted" would require schema_package evidence
-            # this origin does not yet have, and would fail `devtools provider-
-            # completeness --check`.
-            "proposed",
-            detector_paths=("polylogue/sources/parsers/beads.py", "polylogue/sources/dispatch.py"),
-            raw_model_paths=("polylogue/sources/parsers/beads.py",),
-            parser_paths=("polylogue/sources/parsers/beads.py",),
-            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
-            fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-            schema_paths=(),
-            docs_paths=("docs/architecture.md",),
-            caveats=(
-                "No schema-discovery harvesting pass has run against a real Beads repository export; "
-                "the wire shape is reconstructed from independent secondary sources (see "
-                "polylogue/sources/parsers/beads.py), not a harvested provider-package catalog. "
-                "Promote to accepted once real-sample schema evidence exists.",
-            ),
-        ),
-    ),
     Origin.GROK_EXPORT: (
         _completeness_mode(
             "provider-package:grok-export/export-json@v1",
@@ -1759,24 +1710,6 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             fixed_provider=Provider.ANTIGRAVITY,
         ),
     ),
-    Origin.BEADS_ISSUE: (
-        DetectorBinding(
-            "beads-record",
-            DetectionMode.RECORD,
-            "polylogue.sources.dispatch:_looks_like_beads_record",
-            0,
-            "beads.looks_like",
-            fixed_provider=Provider.BEADS,
-        ),
-        DetectorBinding(
-            "beads-sequence",
-            DetectionMode.SEQUENCE_DOCUMENT,
-            "polylogue.sources.dispatch:_looks_like_beads_sequence",
-            0,
-            "beads.looks_like (sequence[0])",
-            fixed_provider=Provider.BEADS,
-        ),
-    ),
     Origin.CHATGPT_EXPORT: (
         DetectorBinding(
             "chatgpt-record-fragment",
@@ -1929,7 +1862,6 @@ for _spec in (
     _gemini_cli_spec(),
     _hermes_spec(),
     _antigravity_spec(),
-    _beads_spec(),
     _grok_spec(),
     _chatgpt_spec(),
     _claude_ai_spec(),

@@ -32,14 +32,14 @@ def test_manifest_covers_every_origin_with_typed_support_state() -> None:
 
     supported = [entry for entry in manifest.entries if entry.unsupported is None]
     unsupported = [entry for entry in manifest.entries if entry.unsupported is not None]
-    assert len(supported) == 11
+    assert len(supported) == 10
     assert len(unsupported) == 1
     assert unsupported[0].origin is Origin.UNKNOWN_EXPORT
     assert unsupported[0].unsupported is not None
     assert unsupported[0].unsupported.status == "unsupported"
     assert unsupported[0].unsupported.reason == "compatibility-only"
     assert unsupported[0].unsupported.detail
-    assert sum(len(entry.witnesses) for entry in supported) == 12
+    assert sum(len(entry.witnesses) for entry in supported) == 11
 
 
 def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and_parser() -> None:
