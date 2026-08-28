@@ -91,8 +91,8 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
     assert decoded.result_ref == "result:0123456789abcdef01234567"
 
 
-def test_origin_teaching_follows_authoritative_enum_including_beads_issue() -> None:
-    """Mutation: using the mission's stale count of ten or omitting a new Origin token fails here."""
+def test_origin_teaching_follows_authoritative_enum() -> None:
+    """Mutation: using a stale origin count or omitting an Origin token fails here."""
     assert tuple(item.token for item in ORIGIN_MEANINGS) == tuple(item.value for item in Origin)
-    assert len(ORIGIN_MEANINGS) == 12
-    assert "beads-issue" in {item.token for item in ORIGIN_MEANINGS}
+    assert len(ORIGIN_MEANINGS) == 11
+    assert "beads-issue" not in {item.token for item in ORIGIN_MEANINGS}

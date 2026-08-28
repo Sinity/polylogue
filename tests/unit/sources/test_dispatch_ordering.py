@@ -191,7 +191,7 @@ def test_swapping_adjacent_stream_priorities_changes_real_dispatch_result(
         codex,
         detector_bindings=(codex.detector_bindings[0], replace(codex_stream, mode_rank=0)),
     )
-    ambiguous_stream = ADVERSARIAL_CATALOG[1][0]
+    ambiguous_stream = ADVERSARIAL_CATALOG[0][0]
     assert detect_provider(ambiguous_stream) is Provider.CLAUDE_CODE
 
     monkeypatch.setattr(
