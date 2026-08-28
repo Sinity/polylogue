@@ -388,6 +388,18 @@ def test_resolve_or_start_creates_resumes_and_retires_transaction(
     assert restarted.processed_raw_count == 0
 
 
+def test_resumable_transaction_does_not_follow_foreign_active_pointer(tmp_path: Path) -> None:
+    """Bulk-rebuild resume probing must honor archive-root pointer containment."""
+    root = tmp_path / "copy"
+    foreign = tmp_path / "source"
+    root.mkdir()
+    foreign.mkdir()
+    (foreign / "index.db").touch()
+    (root / ".index-active-pointer").write_text(str(foreign / "index.db"), encoding="utf-8")
+
+    assert has_resumable_daemon_bulk_rebuild_transaction(root) is False
+
+
 @pytest.mark.parametrize("cleanup_failure", ["false", "exception"], ids=["discard-false", "discard-exception"])
 def test_daemon_post_create_cleanup_surfaces_candidate_and_transaction_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleanup_failure: str
