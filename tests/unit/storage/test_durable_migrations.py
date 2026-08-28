@@ -866,7 +866,9 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
         "    -- raw_payload blob (see blob_refs above). Populated at write time by\n"
         "    -- write_source_hook_event; NULL for rows written before v22 until a\n"
         "    -- one-shot reconciliation pass backfills them (see\n"
-        "    -- polylogue.storage.hook_payload_ref_reconciliation).\n"
+        "    -- polylogue.storage.hook_payload_ref_reconciliation). Delete that apply\n"
+        "    -- pass only after both the orphaned raw_payload-ref census and the\n"
+        "    -- missing blob_hash census are zero.\n"
         "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
         "",
     )

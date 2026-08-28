@@ -847,7 +847,9 @@ CREATE TABLE IF NOT EXISTS raw_hook_events (
     -- raw_payload blob (see blob_refs above). Populated at write time by
     -- write_source_hook_event; NULL for rows written before v22 until a
     -- one-shot reconciliation pass backfills them (see
-    -- polylogue.storage.hook_payload_ref_reconciliation).
+    -- polylogue.storage.hook_payload_ref_reconciliation). Delete that apply
+    -- pass only after both the orphaned raw_payload-ref census and the
+    -- missing blob_hash census are zero.
     ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)
 ) STRICT;
 
