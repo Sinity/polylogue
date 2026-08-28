@@ -50,6 +50,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 
 # The names below are used only as type annotations across this module (never
 # constructed/called at the module's own top level) except at the specific
@@ -299,8 +300,6 @@ def _execute_reference_query_pipeline(
 def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None:
     """Render root query output to stdout."""
     params = dict(request.params)
-    from polylogue.surfaces.payloads import search_cursor_request_identity
-
     cursor_request_identity = search_cursor_request_identity(params)
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)

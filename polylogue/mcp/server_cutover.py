@@ -252,7 +252,7 @@ async def _query_sessions(
     archive_root = mcp_archive_root(config)
 
     if request.query:
-        from polylogue.surfaces.payloads import search_cursor_request_identity
+        from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 
         transaction = QueryTransaction(
             archive_root,

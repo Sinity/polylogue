@@ -3625,15 +3625,6 @@ class InvalidSearchCursorError(ValueError):
     """
 
 
-def search_cursor_request_identity(arguments: Mapping[str, object]) -> str:
-    """Return a stable identity for the logical ranked-search request."""
-    import hashlib
-
-    canonical = {key: value for key, value in arguments.items() if key not in {"cursor", "offset", "limit"}}
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]
-
-
 def build_search_cursor(
     hits: Sequence[SessionSearchHitPayload],
     *,
