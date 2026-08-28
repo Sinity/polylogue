@@ -1,20 +1,21 @@
 Summary
 
-Add deterministic configuration-evidence records and exact historical context resolution. Live bytes are SHA-256 addressed; committed git revisions can be enumerated; gaps and overlaps remain explicit. Structural invocations join only unique active declarations, and efficacy comparisons require cohort limits and judgment authority.
+Confirm the daemon startup blob-publication reconciliation baseline is resolved.
 
 Problem
 
-Actor and execution-context refs existed, but configuration artifacts had no reusable evidence model. Consumers could not distinguish an exact historical setup from missing or overlapping revisions without consulting current files.
+The named test previously expected startup reconciliation to delete both a missing blob receipt and a receipt whose blob remains durably referenced. That expectation conflicts with the blob-authority contract: referenced receipts remain for explicit abandonment. Commit `b908947c4` corrected the expectation; the current `origin/master` contains that correction and the product route is green.
 
 Solution
 
-Add `polylogue.context.configuration_evidence` with immutable artifact revisions, live-file capture, committed git-history capture, interval resolution, invocation joins, and an honest comparison record. Export the API through `polylogue.context`. Add tests covering content identity, changed contexts, gap/overlap handling, structural joins, required comparison metadata, and committed-versus-uncommitted git bytes.
+No product-code change is required in this lane. Preserve the existing reconciliation behavior and corrected regression expectation.
 
 Verification
 
-- `nix develop --command devtools test tests/unit/context/test_configuration_evidence.py` — 6 passed.
-- `nix develop --command devtools verify --quick` — all quick checks passed, including ruff, mypy, render, layering, pattern, CI/doc command, schema, oracle-integrity, reachability, definition-closure, timestamp, insight-honesty, schema-promotion, and schema-privacy checks.
+- `nix develop --command bash nix/devtools-wrapper.sh test tests/unit/daemon/test_daemon_cli.py::test_reconcile_blob_publications_clears_terminal_receipts_at_startup` — 1 passed.
+- `nix develop --command bash nix/devtools-wrapper.sh test tests/unit/daemon/test_daemon_cli.py` — 129 passed.
+- `nix develop --command bash nix/devtools-wrapper.sh verify --quick` — run after rebasing; result recorded in the lane report.
 
 Residual risk
 
-This is the reusable storage-independent core only. It does not yet persist records in source.db, wire the live watcher or archive session rows, ingest the full setup inventory, or materialize Claude Workflow coverage. Those integrations require a separately scoped durable migration and production-route slice.
+The original baseline report predates the upstream expectation correction. No broader full-corpus claim is made by the focused checks.
