@@ -1325,13 +1325,21 @@ describe("background receiver diagnostics", () => {
       // reports "undefined has no 'id'" and buries the reason.
       expect(started).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
-      for (let wake = 0; wake < 8; wake += 1) {
+      // Each wake waits for the capture to land rather than for a fixed
+      // interval: under CPU contention the coordinator can need longer than
+      // any constant, and the wakes are what drive it forward.
+      const capturePosted = () =>
+        fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
+      for (let wake = 0; wake < 8 && !capturePosted(); wake += 1) {
         simulatedNowMs += 20000;
         alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-        await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
-        if (fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
+        try {
+          await vi.waitFor(() => expect(capturePosted()).toBe(true), { timeout: 2000, interval: 25 });
+        } catch {
+          // This wake did not produce the capture; the next one drives it.
+        }
       }
-      await vi.waitFor(() => expect(fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")).toBe(true), { timeout: 4000 });
+      await vi.waitFor(() => expect(capturePosted()).toBe(true), { timeout: 4000 });
     } finally {
       clockSpy.mockRestore();
     }
