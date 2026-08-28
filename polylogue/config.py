@@ -696,7 +696,7 @@ class PolylogueConfig:
     def daemon_parse_stage_workers(self) -> int | None:
         """Worker cap for the daemon-owned pre-parse thread pool.
 
-        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
         default. See ``polylogue.daemon.parse_prefetch``.
         """
         value = self._data.get("daemon_parse_stage_workers")
@@ -744,7 +744,7 @@ class PolylogueConfig:
     def live_watcher_parse_stage_workers(self) -> int | None:
         """Worker cap for the watcher-owned pre-parse thread pool.
 
-        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
         default. See ``polylogue.sources.live.parse_prefetch``.
         """
         value = self._data.get("live_watcher_parse_stage_workers")
@@ -1511,7 +1511,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         reload_behavior="daemon-loop",
         description=(
             "Worker cap for the daemon-owned pre-parse thread pool "
-            "(polylogue-m6tp phase (a)); default cpu_count-1. <=0 falls "
+            "(polylogue-m6tp phase (a)); default available-CPU-minus-one. <=0 falls "
             "back to the adaptive default."
         ),
     ),
@@ -1559,7 +1559,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         reload_behavior="daemon-loop",
         description=(
             "Worker cap for the watcher-owned pre-parse thread pool "
-            "(polylogue-wf8a); default cpu_count-1. <=0 falls back to the "
+            "(polylogue-wf8a); default available-CPU-minus-one. <=0 falls back to the "
             "adaptive default."
         ),
     ),

@@ -2,13 +2,74 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.util
+import os
 import sys
 import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+
+_CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_V1_QUOTA = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+_CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+
+
+def _cgroup_cpu_quota(
+    *,
+    v2_path: Path = _CGROUP_V2_CPU_MAX,
+    v1_quota_path: Path = _CGROUP_V1_QUOTA,
+    v1_period_path: Path = _CGROUP_V1_PERIOD,
+) -> int | None:
+    """Return the integer CPUs allowed by cgroup quota, if it is bounded."""
+    try:
+        quota_text, period_text = v2_path.read_text().split()
+        if quota_text == "max":
+            return None
+        quota, period = int(quota_text), int(period_text)
+    except (OSError, ValueError):
+        try:
+            quota = int(v1_quota_path.read_text().strip())
+            period = int(v1_period_path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        if quota <= 0:
+            return None
+    if period <= 0:
+        return None
+    return max(1, quota // period)
+
+
+def available_cpus(
+    *,
+    cpu_count: int | None = None,
+    affinity: int | None = None,
+    v2_path: Path = _CGROUP_V2_CPU_MAX,
+    v1_quota_path: Path = _CGROUP_V1_QUOTA,
+    v1_period_path: Path = _CGROUP_V1_PERIOD,
+) -> int | None:
+    """Return the smallest credible CPU budget available to this process.
+
+    The cgroup quota is authoritative for CPU admission; affinity and the
+    host count provide fallback and upper-bound signals when quota is absent.
+    Optional values are dependency seams for callers and tests.
+    """
+    host = os.cpu_count() if cpu_count is None else cpu_count
+    quota = _cgroup_cpu_quota(
+        v2_path=v2_path,
+        v1_quota_path=v1_quota_path,
+        v1_period_path=v1_period_path,
+    )
+    candidates = [count for count in (host, quota) if count]
+    if affinity is None:
+        with contextlib.suppress(AttributeError, OSError):
+            affinity = len(os.sched_getaffinity(0))
+    if affinity:
+        candidates.append(affinity)
+    return min(candidates) if candidates else None
+
 
 MINIMUM_PYTHON = (3, 14)
 REQUIRED_NATIVE_PACKAGES: tuple[str, ...] = (

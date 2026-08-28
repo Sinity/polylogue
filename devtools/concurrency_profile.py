@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import resource
 import statistics
 import sys
@@ -22,7 +21,7 @@ from polylogue.daemon.execution import (
     current_cancellation,
 )
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
-from polylogue.runtime import require_free_threaded_runtime, runtime_identity
+from polylogue.runtime import available_cpus, require_free_threaded_runtime, runtime_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +152,7 @@ def run_profile(*, workers: int, admission_units: int, workload: str, jobs: int)
         queue_count=peak_queue_count,
         queue_bytes=peak_queue_bytes,
         rss_kib=int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss),
-        cpu_utilization_percent=round(cpu_seconds / elapsed / (os.cpu_count() or 1) * 100, 2),
+        cpu_utilization_percent=round(cpu_seconds / elapsed / (available_cpus() or 1) * 100, 2),
         writer_hold_ms=round(writer_hold_seconds * 1000, 3),
         cancelled=cancelled,
         background_progress=len(durations),
@@ -167,7 +166,7 @@ async def _completed_operation() -> None:
 def main(argv: list[str] | None = None) -> int:
     args = list(argv or sys.argv[1:])
     require_free_threaded_runtime(consumer="managed concurrency profile")
-    cpu = os.cpu_count() or 2
+    cpu = available_cpus() or 2
     worker_profiles = (1, max(1, min(4, cpu - 1)), max(1, min(8, cpu - 2)))
     workloads = (
         ("tiny-file", 8),

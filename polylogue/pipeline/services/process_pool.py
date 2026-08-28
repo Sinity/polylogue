@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from polylogue.runtime import available_cpus
+
 
 class _BlobSized(Protocol):
     blob_size: int
@@ -70,7 +72,7 @@ def resolve_parse_worker_count(*, env_var: str = "POLYLOGUE_INGEST_PARSE_WORKERS
     every read-only blob->parsed-session decode stage (direct ingest,
     raw-authority census) so one operator knob bounds all of them consistently.
     """
-    cpus = os.cpu_count() or 2
+    cpus = available_cpus() or 2
     default = max(1, min(16, cpus - 2)) if parallel_threads_effective() else max(1, min(8, cpus - 1))
     raw = os.environ.get(env_var)
     if raw is None:
@@ -172,7 +174,8 @@ def resolve_validation_dispatch(*, record_count: int) -> ParseDispatchPlan:
     a GIL-build result threads cannot approach regardless of build. Do not
     gate this on ``parallel_threads_effective()``.
     """
-    return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(record_count, os.cpu_count() or 4, 8)))
+    cpus = available_cpus() or 4
+    return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(record_count, cpus, 8)))
 
 
 def resolve_ingest_batch_dispatch(*, total_blob_bytes: int, record_count: int, worker_limit: int) -> ParseDispatchPlan:
@@ -187,13 +190,15 @@ def resolve_ingest_batch_dispatch(*, total_blob_bytes: int, record_count: int, w
     if total_blob_bytes <= 8 * 1024 * 1024:
         return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
     if total_blob_bytes <= 64 * 1024 * 1024:
+        cpus = available_cpus() or 4
         return ParseDispatchPlan(
             PoolKind.PROCESS,
-            min(max(record_count, 1), os.cpu_count() or 4, worker_limit, 4),
+            min(max(record_count, 1), cpus, worker_limit, 4),
         )
+    cpus = available_cpus() or 4
     return ParseDispatchPlan(
         PoolKind.PROCESS,
-        min(max(record_count, 1), os.cpu_count() or 4, worker_limit),
+        min(max(record_count, 1), cpus, worker_limit),
     )
 
 

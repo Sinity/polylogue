@@ -46,6 +46,20 @@ def test_process_pool_context_is_spawn() -> None:
     assert process_pool_context().get_start_method() == "spawn"
 
 
+def test_dispatch_caps_workers_to_process_cpu_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cgroup-limited process must not size its pool from host CPUs.
+
+    Mutating the dispatchers to use the host count directly makes this
+    assertion fail: the 24-host/2-budget scenario would select four workers.
+    """
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 24)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 2)
+
+    plan = resolve_validation_dispatch(record_count=24)
+
+    assert plan.worker_count == 2
+
+
 def test_process_pool_workers_initialize_info_logging() -> None:
     with process_pool_executor(max_workers=1) as executor:
         wrapper_name = executor.submit(_worker_wrapper_class_name).result(timeout=10)
