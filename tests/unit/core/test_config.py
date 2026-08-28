@@ -94,7 +94,7 @@ class TestConfig:
         """
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        generation_dir = tmp_path / "generation"
+        generation_dir = archive_root / "generation"
         generation_dir.mkdir()
         active_index = generation_dir / "index.db"
         active_index.write_text("active generation data")
@@ -107,8 +107,8 @@ class TestConfig:
     def test_with_sources_keeps_implicit_active_generation_tracking(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        first = tmp_path / "first" / "index.db"
-        second = tmp_path / "second" / "index.db"
+        first = archive_root / "first" / "index.db"
+        second = archive_root / "second" / "index.db"
         first.parent.mkdir()
         second.parent.mkdir()
         first.touch()
@@ -151,7 +151,7 @@ class TestConfig:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         (archive_root / "index.db").write_text("stale near-empty generation")
-        generation_dir = tmp_path / "generation"
+        generation_dir = archive_root / "generation"
         generation_dir.mkdir()
         active_index = generation_dir / "index.db"
         active_index.write_text("real active generation")

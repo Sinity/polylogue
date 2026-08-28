@@ -43,7 +43,7 @@ def test_path_aliases_resolve_to_equal_archive_identity(tmp_path: Path) -> None:
 
 def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_pointer(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
-    canonical = tmp_path / "canonical"
+    canonical = configured / "canonical"
     _touch_tiers(configured)
     _touch_tiers(canonical)
     for name in ("source.db", "user.db", "ops.db", "embeddings.db"):
@@ -80,6 +80,20 @@ def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, poi
         ArchiveLocation.resolve(root)
     with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
         resolve_active_index_path(root)
+
+
+def test_archive_location_rejects_active_pointer_outside_configured_root(tmp_path: Path) -> None:
+    """An archive copy must not follow its source archive's active index pointer."""
+    root = tmp_path / "archive-copy"
+    foreign = tmp_path / "source-archive"
+    root.mkdir()
+    foreign.mkdir()
+    foreign_index = foreign / "index.db"
+    foreign_index.touch()
+    (root / ".index-active-pointer").write_text(str(foreign_index), encoding="utf-8")
+
+    with pytest.raises(ArchiveLocationError, match="outside configured archive root"):
+        ArchiveLocation.resolve(root)
 
 
 def test_archive_location_rejects_undecodable_active_pointer(tmp_path: Path) -> None:
@@ -367,8 +381,8 @@ def test_assert_owns_archive_location_rejects_foreign_root(tmp_path: Path) -> No
 
 def test_assert_owns_archive_location_rejects_stale_generation_after_pointer_rotation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    generation_a = tmp_path / "gen-a"
-    generation_b = tmp_path / "gen-b"
+    generation_a = root / "gen-a"
+    generation_b = root / "gen-b"
     _touch_tiers(root)
     generation_a.mkdir()
     generation_b.mkdir()
