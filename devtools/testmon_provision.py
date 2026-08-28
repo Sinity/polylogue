@@ -56,7 +56,16 @@ def main(argv: list[str] | None = None) -> int:
         if payload.get("environment"):
             print(f"expected environment: {payload['environment']}")
 
-    return 0 if payload["state"] == "valid" else 1
+    # A workspace with no seed graph is ordinary: affected verification refuses
+    # and explains itself, and the lane can still build its own. A graph that is
+    # present but names another environment is not, because it silently
+    # misrepresents what was covered -- and both read as "absent" here, so the
+    # file's existence is what separates them.
+    if payload["state"] == "valid":
+        return 0
+    if payload["state"] != "error" and not (root / TESTMON_DATA_RELPATH).exists():
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
