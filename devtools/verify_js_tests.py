@@ -5,10 +5,10 @@ behaviour: the browser extension's capture path and the WebUI's typed
 contracts. Neither is reachable from pytest, so without this gate a red
 JavaScript suite is invisible to `devtools verify`.
 
-Absent dependencies are a failure, never a skip: a gate that reports green for
-a suite it did not run is worse than no gate. `--install` is the explicit
-opt-in that provisions from the committed lockfile; verification itself never
-mutates the tree or reaches the network on its own.
+Absent dependencies are provisioned, never skipped: both packages commit a
+lockfile, so `npm ci` is deterministic and a gate that installs what it needs
+is real in every checkout rather than only where someone ran npm by hand.
+A gate that reports green for a suite it did not run is worse than no gate.
 
 CI carries no Node runtime and does not gate these suites (polylogue-7b45d).
 There it reports `not-run-in-ci` rather than a pass, so a CI log states that
@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,8 +122,16 @@ class PackageResult:
         return payload
 
 
-def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, check=False, text=True, capture_output=True, env=_suite_env())
+def _run(command: list[str], *, cwd: Path, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        check=False,
+        text=True,
+        capture_output=True,
+        env=_suite_env(),
+        timeout=timeout,
+    )
 
 
 def _npm_path() -> str | None:
@@ -149,15 +159,66 @@ def _install_command(package_dir: Path) -> list[str]:
     return ["npm", "install"]
 
 
+#: A provisioning run that outlives this is wedged, not slow.
+INSTALL_TIMEOUT_SECONDS = 900
+
+#: Written inside node_modules so a tree provisioned from a different lockfile
+#: is reinstalled instead of silently tested against stale dependencies.
+_STAMP_NAME = ".polylogue-provisioned"
+
+
+def _lock_fingerprint(package_dir: Path) -> str | None:
+    lock = package_dir / "package-lock.json"
+    try:
+        return hashlib.sha256(lock.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def needs_provisioning(package_dir: Path) -> bool:
+    """True when node_modules is absent, or was built from another lockfile."""
+    if not (package_dir / "node_modules").is_dir():
+        return True
+    fingerprint = _lock_fingerprint(package_dir)
+    if fingerprint is None:
+        # No lockfile to compare against; an existing tree is all we can ask for.
+        return False
+    try:
+        return (package_dir / "node_modules" / _STAMP_NAME).read_text().strip() != fingerprint
+    except OSError:
+        return True
+
+
 def _provision(package: str, package_dir: Path) -> PackageResult | None:
     """Install dependencies; return a blocked result if that fails."""
     command = _install_command(package_dir)
-    completed = _run(command, cwd=package_dir)
+    print(f"verify js-tests: {package}: installing dependencies ({' '.join(command)})...", flush=True)
+    started = time.monotonic()
+    try:
+        completed = _run(command, cwd=package_dir, timeout=INSTALL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return PackageResult(
+            package=package,
+            status="blocked-deps",
+            returncode=None,
+            output=f"{' '.join(command)} exceeded {INSTALL_TIMEOUT_SECONDS}s in {package}.",
+            remedy=f"cd {package} && {' '.join(command)}",
+        )
+    elapsed = time.monotonic() - started
     if completed.returncode == 0:
+        print(f"verify js-tests: {package}: dependencies installed in {elapsed:.1f}s", flush=True)
+        fingerprint = _lock_fingerprint(package_dir)
+        if fingerprint is not None:
+            with contextlib.suppress(OSError):
+                (package_dir / "node_modules" / _STAMP_NAME).write_text(fingerprint, encoding="utf-8")
         return None
+    # Retryable: a failed install is evidence about the environment (network,
+    # registry, a lockfile out of step with package.json), never about the
+    # product code the suite covers. It still fails the gate -- the suite did
+    # not run -- but it is named as a dependency problem, not a red suite.
     return PackageResult(
         package=package,
-        status="blocked-env",
+        status="blocked-deps",
         returncode=completed.returncode,
         output=(completed.stdout + completed.stderr).strip(),
         remedy=f"cd {package} && {' '.join(command)}",
@@ -174,21 +235,10 @@ def _check_package(package: str, *, root: Path, install: bool) -> PackageResult:
             output=f"{package}/package.json is missing; the package catalog and the tree disagree.",
         )
 
-    if install:
+    if install or needs_provisioning(package_dir):
         blocked = _provision(package, package_dir)
         if blocked is not None:
             return blocked
-    elif not (package_dir / "node_modules").is_dir():
-        # Refuse loudly. Reporting green for an unrun suite is the exact hole
-        # this gate exists to close.
-        command = " ".join(_install_command(package_dir))
-        return PackageResult(
-            package=package,
-            status="blocked-deps",
-            returncode=None,
-            output=f"{package}/node_modules is absent, so its suite did not run.",
-            remedy=f"cd {package} && {command}",
-        )
 
     completed = _run(["npm", "test"], cwd=package_dir)
     return PackageResult(
@@ -220,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Install each package's dependencies from its lockfile before running its suite.",
+        help="Reinstall dependencies even when the tree is already current.",
     )
     parser.add_argument(
         "--package",
