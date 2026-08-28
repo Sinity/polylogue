@@ -484,6 +484,15 @@ def _latest_sealed_source_generation(source_db: Path) -> str | None:
         return str(row[0]) if row is not None else None
 
 
+def _source_generation_tables_exist(source_db: Path) -> bool:
+    """Return whether this source tier can declare generation membership."""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+        tables = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('source_generations', 'source_items')"
+        ).fetchall()
+        return len(tables) == 2
+
+
 def _source_blob_reservations(source_db: Path) -> set[str]:
     """Read pending publication receipts independently of committed liveness."""
 
@@ -538,6 +547,7 @@ def _blob_reference_evidence(
     *,
     index_db: Path | None,
     source_generation_id: str | None = None,
+    source_generation_tables_exist: bool = True,
 ) -> dict[str, object]:
     """Persist source resolution plus an independent index-attachment oracle.
 
@@ -560,6 +570,7 @@ def _blob_reference_evidence(
         "format": "polylogue-blob-reference-evidence-v1",
         "source_generation_id": source_generation_id,
         "source_owner_hashes": source_owners,
+        "declared_expected_reference_hashes": sorted(expected_hashes if source_generation_tables_exist else ()),
         "index_attachment_evidence": attachment_evidence_state,
         "index_attachment_hashes": sorted(attachment_hashes),
     }
@@ -575,6 +586,7 @@ def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
     if not isinstance(evidence, dict) or evidence.get("format") != "polylogue-blob-reference-evidence-v1":
         raise RuntimeError("backup blob reference evidence is missing or has an unknown format")
     source_owners = evidence.get("source_owner_hashes")
+    declared_expected = evidence.get("declared_expected_reference_hashes")
     attachment_hashes = evidence.get("index_attachment_hashes")
     attachment_evidence = evidence.get("index_attachment_evidence")
     if (
@@ -598,7 +610,18 @@ def _expected_blob_hashes_from_evidence(evidence: object) -> set[str]:
         for blob_hash in values
     ):
         raise RuntimeError("backup blob reference evidence has invalid blob hashes")
-    return set(values)
+    if declared_expected is None:
+        return set(values)
+    if not isinstance(declared_expected, list):
+        raise RuntimeError("backup blob reference evidence has invalid declared expected references")
+    if any(
+        not isinstance(blob_hash, str)
+        or len(blob_hash) != 64
+        or any(char not in "0123456789abcdef" for char in blob_hash)
+        for blob_hash in declared_expected
+    ):
+        raise RuntimeError("backup blob reference evidence has invalid declared expected references")
+    return set(declared_expected)
 
 
 def _write_blob_reference_debt_report(backup_root: Path, report: BlobReferenceDebtReport) -> Path:
@@ -615,6 +638,7 @@ def _copy_referenced_blobs(
     backup_root: Path,
     warnings: list[str],
     source_generation_id: str | None = None,
+    source_generation_tables_exist: bool = True,
 ) -> tuple[int, int, BlobReferenceDebtReport]:
     if source_generation_id is None:
         projection, reservations = _source_blob_liveness_projection(source_db, index_db=index_db)
@@ -623,7 +647,10 @@ def _copy_referenced_blobs(
             source_db, index_db=index_db, source_generation_id=source_generation_id
         )
     reference_evidence = _blob_reference_evidence(
-        projection, index_db=index_db, source_generation_id=source_generation_id
+        projection,
+        index_db=index_db,
+        source_generation_id=source_generation_id,
+        source_generation_tables_exist=source_generation_tables_exist,
     )
     _write_blob_reference_evidence(backup_root, reference_evidence)
     inventory = _inventory_from_liveness(projection, reservations)
@@ -818,6 +845,9 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         source_generation_id = (
             _latest_sealed_source_generation(backup_root / "source.db") if "source" in included_tiers else None
         )
+        source_generation_tables_exist = (
+            _source_generation_tables_exist(backup_root / "source.db") if "source" in included_tiers else True
+        )
         if "source" in included_tiers:
             blob_count, blob_size, blob_reference_debt = _copy_referenced_blobs(
                 source_db=backup_root / "source.db",
@@ -826,6 +856,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
                 backup_root=backup_root,
                 warnings=warnings,
                 source_generation_id=source_generation_id,
+                source_generation_tables_exist=source_generation_tables_exist,
             )
         else:
             blob_count = 0

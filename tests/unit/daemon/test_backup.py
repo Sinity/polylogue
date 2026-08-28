@@ -976,6 +976,48 @@ def test_full_evidence_backup_scopes_blob_attestation_to_latest_sealed_generatio
     assert not (backup_root / "blob" / frozen_hash.hex()[:2] / frozen_hash.hex()[2:]).exists()
 
 
+def test_full_evidence_backup_attests_pre_generation_source_with_declared_empty_scope(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A pre-generation source tier may attest known-absent historical references.
+
+    Anti-vacuity: if verification derives expected references from the frozen
+    source rows instead of the declared scope, the missing reference makes the
+    backup unverifiable.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
+    missing_hash = hashlib.sha256(b"pre-generation missing source").digest()
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("DROP VIEW source_item_reconciliation")
+        conn.execute("DROP TABLE source_items")
+        conn.execute("DROP TABLE source_generations")
+        conn.execute(
+            """INSERT INTO raw_sessions
+               (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+               VALUES ('pre-generation-raw', 'codex-session', '/pre-generation.jsonl', 0, ?, 1, 1)""",
+            (missing_hash,),
+        )
+        conn.execute(
+            """INSERT INTO blob_refs
+               (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+               VALUES (?, 'pre-generation-raw', 'raw_payload', '/pre-generation.jsonl', 1, 1)""",
+            (missing_hash,),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["canonical_blobs_resolved"] is True
+    backup_root = Path(result.output_path or "")
+    evidence = json.loads((backup_root / "blob-reference-evidence.json").read_text())
+    assert evidence["source_generation_id"] is None
+    assert evidence["declared_expected_reference_hashes"] == []
+
+
 def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     workspace_env: dict[str, Path],
     tmp_path: Path,
