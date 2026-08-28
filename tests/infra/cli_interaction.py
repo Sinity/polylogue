@@ -70,6 +70,8 @@ DECLARED_COMPLETION_SOURCES: tuple[str, ...] = (
     "observed-events",
     "run",
     "runs",
+    "tool-episode",
+    "tool-episodes",
     "value",
 )
 
