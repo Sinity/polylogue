@@ -104,9 +104,11 @@ def _claim(row: Mapping[str, Any]) -> tuple[str | None, datetime | None]:
     claim = row.get("claim")
     metadata = row.get("metadata")
     source: Mapping[str, Any] = (
-        claim if isinstance(claim, Mapping) else metadata if isinstance(metadata, Mapping) else row
+        claim if isinstance(claim, Mapping) else metadata if isinstance(metadata, Mapping) else {}
     )
-    owner = source.get("owner") or source.get("assignee") or row.get("assignee") or row.get("owner")
+    # The row-level `owner` field is authorship, not assignment: reading it as a
+    # claim marks every issue owned by its author, and no operation can clear it.
+    owner = source.get("owner") or source.get("assignee") or row.get("assignee")
     claimed_at = source.get("claimed_at") or row.get("claimed_at")
     if claimed_at is None:
         return (str(owner) if owner else None), None

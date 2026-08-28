@@ -130,3 +130,19 @@ def test_production_scale_input_is_not_truncated() -> None:
     report = build_views([program(), *(row(f"leaf-{i}") for i in range(1000))])
     assert report["active"]["count"] == 1000
     assert len(report["ambition"]["frontier"]) == 1001
+
+
+def test_row_level_authorship_is_not_a_claim() -> None:
+    leaf = row("leaf")
+    leaf["owner"] = "author@example.com"  # bd export authorship, present on every issue
+    report = build_views([program(), leaf])
+    # anti-vacuity: restoring the row-level `owner` fallback makes this an owned,
+    # permanently unclearable "stale ownership on open issue" violation.
+    assert report["active"]["leaves"][0]["claims"] == {"owner": None, "claimed_at": None, "stale": False}
+
+
+def test_row_level_assignee_is_a_claim() -> None:
+    leaf = row("leaf", status="in_progress")
+    leaf["assignee"] = "alice"
+    report = build_views([program(), leaf])
+    assert report["active"]["leaves"][0]["claims"]["owner"] == "alice"
