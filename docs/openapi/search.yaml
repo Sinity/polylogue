@@ -2417,6 +2417,12 @@ components:
           - type: 'null'
           default: null
           title: Title
+        repo:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Repo
         role:
           title: Role
           type: string

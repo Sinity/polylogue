@@ -986,6 +986,18 @@
           "title": "Position",
           "type": "integer"
         },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        },
         "role": {
           "title": "Role",
           "type": "string"
