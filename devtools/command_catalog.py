@@ -235,8 +235,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_js_tests",
         use_when=(
             "Check the Node packages after changing extension capture code, WebUI components, or generated "
-            "TypeScript contracts. Absent dependencies are reported as a blocked refusal, never a silent skip. "
-            "CI carries no Node runtime and reports not-run-in-ci there rather than a pass."
+            "TypeScript contracts. Absent dependencies are installed from the committed lockfile, never "
+            "skipped. CI carries no Node runtime and reports not-run-in-ci there rather than a pass."
         ),
         examples=(
             "devtools verify js-tests",
