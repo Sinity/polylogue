@@ -955,6 +955,23 @@ def test_partial_recovery_continuation_remains_an_overlap_barrier(tmp_path: Path
     assert listed["operation_id"] == operation_id
 
 
+def test_recovery_operation_loads_a_declared_partial_continuation(tmp_path: Path) -> None:
+    """The exact recovery lookup accepts the partial state exposed by listing."""
+
+    actuator = _Actuator(
+        recovery_disposition=RecoveryDisposition(
+            "confirmed-partial",
+            "forward",
+            "one target needs the declared forward continuation",
+            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
+        )
+    )
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    audit.record_recovery_disposition(operation_id, actuator.recovery_disposition)
+
+    assert audit.recovery_operation(operation_id).operation_id == operation_id
+
+
 @dataclass
 class _DestructiveClassActuator(_Actuator):
     """Like ``_Actuator``, but ``prepare()`` honors ``self.destructive_class``.
@@ -1643,6 +1660,51 @@ def test_atomic_batch_finalization_marks_every_target_and_terminates_run(tmp_pat
             "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
             (receipt.operation_id,),
         ).fetchall() == [("applied",), ("applied",)]
+        assert conn.execute(
+            "SELECT domain_receipt_ref, domain_receipt_kind FROM operation_runs WHERE operation_id = ?",
+            (receipt.operation_id,),
+        ).fetchone() == (receipt.receipt_ref, "mutation-receipt")
+        assert conn.execute(
+            "SELECT domain_receipt_ref, domain_receipt_kind FROM operation_targets WHERE operation_id = ? ORDER BY ordinal",
+            (receipt.operation_id,),
+        ).fetchall() == [(receipt.receipt_ref, "mutation-receipt"), (receipt.receipt_ref, "mutation-receipt")]
+
+
+def test_finalization_rejects_a_receipt_not_bound_to_the_durable_plan(tmp_path: Path) -> None:
+    """A domain receipt cannot finalize a different operation or target set."""
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "receipt-binding-token")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:receipt-binding",
+        archive_identity_digest="identity:receipt-binding",
+        parameter_digest="params:receipt-binding",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    operation_id = audit.consume_authorization_and_start(preview, authorization)
+    invalid = MutationReceipt(
+        operation=preview.plan.operation,
+        plan_hash="wrong-plan",
+        status="applied",
+        target_refs=preview.plan.target_refs,
+        affected_count=1,
+        detail=None,
+        receipt_ref="domain:wrong-plan",
+        applied_at="now",
+    )
+
+    with pytest.raises(ValueError, match="plan"):
+        audit.finalize_attempt(operation_id, status="applied", receipt=invalid)
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
+            "running",
+        )
 
 
 def test_zero_target_finalization_completes_a_successful_noop(tmp_path: Path) -> None:
