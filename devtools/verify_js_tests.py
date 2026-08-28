@@ -1,0 +1,281 @@
+"""Run the JavaScript test suites of every Node package in the repository.
+
+The repository ships two Node packages whose suites guard real product
+behaviour: the browser extension's capture path and the WebUI's typed
+contracts. Neither is reachable from pytest, so without this gate a red
+JavaScript suite is invisible to `devtools verify`.
+
+Absent dependencies are a failure, never a skip: a gate that reports green for
+a suite it did not run is worse than no gate. `--install` is the explicit
+opt-in that provisions from the committed lockfile; verification itself never
+mutates the tree or reaches the network on its own.
+
+CI carries no Node runtime and does not gate these suites (polylogue-7b45d).
+There it reports `not-run-in-ci` rather than a pass, so a CI log states that
+the JavaScript suites did not run instead of implying they succeeded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from devtools import repo_root
+
+#: Packages whose `npm test` script participates in the gate, in run order.
+JS_PACKAGES: tuple[str, ...] = ("browser-extension", "webui")
+
+#: The extension suite's own default worker count (see its vitest.config.js).
+DEFAULT_EXTENSION_TEST_WORKERS = 4
+
+#: cgroup v2 and v1 CPU quota files, checked in that order.
+_CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_V1_QUOTA = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+_CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+
+
+def _cgroup_cpu_quota() -> int | None:
+    """CPUs a cgroup quota allows, or None when unlimited or unreadable.
+
+    Container CPU limits are invisible to `os.cpu_count()`, which reports the
+    host's processors: a CircleCI `medium` runner reports 24 while its cgroup
+    permits 2. Reading the quota is what keeps the worker cap honest.
+    """
+    try:
+        quota_text, period_text = _CGROUP_V2_CPU_MAX.read_text().split()
+        if quota_text == "max":
+            return None
+        quota, period = int(quota_text), int(period_text)
+    except (OSError, ValueError):
+        try:
+            quota = int(_CGROUP_V1_QUOTA.read_text().strip())
+            period = int(_CGROUP_V1_PERIOD.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        if quota <= 0:
+            return None
+    if period <= 0:
+        return None
+    return max(1, quota // period)
+
+
+def available_cpus() -> int | None:
+    """The smallest credible CPU budget: affinity, host count, cgroup quota."""
+    candidates = [count for count in (os.cpu_count(), _cgroup_cpu_quota()) if count]
+    with contextlib.suppress(AttributeError):
+        candidates.append(len(os.sched_getaffinity(0)))
+    return min(candidates) if candidates else None
+
+
+def extension_test_workers(cpu_count: int | None) -> int:
+    """Workers to request, never more than the CPUs actually available.
+
+    Several extension tests drive real timers and a backfill coordinator whose
+    recovery must settle before the case asserts. Over-subscribing workers
+    starves them and they fail on timing rather than behaviour, so the gate
+    caps the suite's own default at the visible CPU count.
+    """
+    if not cpu_count or cpu_count < 1:
+        return 1
+    return max(1, min(DEFAULT_EXTENSION_TEST_WORKERS, cpu_count))
+
+
+def _suite_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault(
+        "POLYLOGUE_EXTENSION_TEST_WORKERS",
+        str(extension_test_workers(available_cpus())),
+    )
+    return env
+
+
+@dataclass(frozen=True, slots=True)
+class PackageResult:
+    package: str
+    status: str
+    returncode: int | None
+    output: str
+    remedy: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "green"
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "package": self.package,
+            "status": self.status,
+            "returncode": self.returncode,
+            "output": self.output,
+        }
+        if self.remedy is not None:
+            payload["remedy"] = self.remedy
+        return payload
+
+
+def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=cwd, check=False, text=True, capture_output=True, env=_suite_env())
+
+
+def _npm_path() -> str | None:
+    """Seam for locating the npm binary."""
+    return shutil.which("npm")
+
+
+#: Status reported when CI cannot run the suites. Never a pass, never silent.
+NOT_RUN_IN_CI = "not-run-in-ci"
+
+
+def ci_environment() -> str | None:
+    """The CI system running this process, or None when run locally."""
+    if os.environ.get("CIRCLECI") == "true":
+        return "circleci"
+    if os.environ.get("CI") in {"true", "1"}:
+        return "ci"
+    return None
+
+
+def _install_command(package_dir: Path) -> list[str]:
+    """`npm ci` where a lockfile pins the tree, `npm install` otherwise."""
+    if (package_dir / "package-lock.json").is_file():
+        return ["npm", "ci"]
+    return ["npm", "install"]
+
+
+def _provision(package: str, package_dir: Path) -> PackageResult | None:
+    """Install dependencies; return a blocked result if that fails."""
+    command = _install_command(package_dir)
+    completed = _run(command, cwd=package_dir)
+    if completed.returncode == 0:
+        return None
+    return PackageResult(
+        package=package,
+        status="blocked-env",
+        returncode=completed.returncode,
+        output=(completed.stdout + completed.stderr).strip(),
+        remedy=f"cd {package} && {' '.join(command)}",
+    )
+
+
+def _check_package(package: str, *, root: Path, install: bool) -> PackageResult:
+    package_dir = root / package
+    if not (package_dir / "package.json").is_file():
+        return PackageResult(
+            package=package,
+            status="blocked-env",
+            returncode=None,
+            output=f"{package}/package.json is missing; the package catalog and the tree disagree.",
+        )
+
+    if install:
+        blocked = _provision(package, package_dir)
+        if blocked is not None:
+            return blocked
+    elif not (package_dir / "node_modules").is_dir():
+        # Refuse loudly. Reporting green for an unrun suite is the exact hole
+        # this gate exists to close.
+        command = " ".join(_install_command(package_dir))
+        return PackageResult(
+            package=package,
+            status="blocked-deps",
+            returncode=None,
+            output=f"{package}/node_modules is absent, so its suite did not run.",
+            remedy=f"cd {package} && {command}",
+        )
+
+    completed = _run(["npm", "test"], cwd=package_dir)
+    return PackageResult(
+        package=package,
+        status="green" if completed.returncode == 0 else "red",
+        returncode=completed.returncode,
+        output=(completed.stdout + completed.stderr).strip(),
+    )
+
+
+def run_js_tests(*, root: Path, packages: tuple[str, ...], install: bool) -> list[PackageResult]:
+    if _npm_path() is None:
+        return [
+            PackageResult(
+                package=package,
+                status="blocked-env",
+                returncode=None,
+                output="npm is not on PATH, so no JavaScript suite could run.",
+                remedy="install Node.js 22 and npm",
+            )
+            for package in packages
+        ]
+    return [_check_package(package, root=root, install=install) for package in packages]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Emit a machine-readable result envelope.")
+    parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install each package's dependencies from its lockfile before running its suite.",
+    )
+    parser.add_argument(
+        "--package",
+        action="append",
+        choices=JS_PACKAGES,
+        help="Limit the run to one package (repeatable). Defaults to every package.",
+    )
+    args = parser.parse_args(argv)
+
+    packages = tuple(args.package) if args.package else JS_PACKAGES
+    env = _suite_env()
+    results = run_js_tests(root=repo_root(), packages=packages, install=args.install)
+    status = "green" if all(result.ok for result in results) else "red"
+
+    # A suite that genuinely ran and failed stays red everywhere. Only the
+    # cannot-run case is downgraded, and only under CI, which does not gate
+    # these suites -- and it is downgraded to a named status, not to a pass.
+    ci = ci_environment()
+    blocked = all(result.status.startswith("blocked-") for result in results)
+    if ci is not None and blocked:
+        status = NOT_RUN_IN_CI
+    payload = {
+        "command": "devtools verify js-tests",
+        "status": status,
+        "ci": ci,
+        # Recorded because a starved suite fails on timing, not behaviour, and
+        # the budget is the first thing to check when it does.
+        "available_cpus": available_cpus(),
+        "extension_test_workers": int(env["POLYLOGUE_EXTENSION_TEST_WORKERS"]),
+        "packages": [result.to_payload() for result in results],
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        for result in results:
+            if not result.ok:
+                print(result.output)
+            line = f"verify js-tests: {result.package}: {result.status}"
+            if result.remedy is not None:
+                line += f" -- remedy: {result.remedy}"
+            print(line)
+        if status == NOT_RUN_IN_CI:
+            print(
+                f"verify js-tests: {NOT_RUN_IN_CI}: the JavaScript suites DID NOT RUN "
+                f"on {ci}. They are gated locally by `devtools verify --quick` and "
+                f"pre-push, not here. This is not a pass -- see polylogue-7b45d."
+            )
+        print(
+            f"verify js-tests: {status} "
+            f"(cpus={payload['available_cpus']} "
+            f"extension_workers={payload['extension_test_workers']})"
+        )
+    return 0 if status in {"green", NOT_RUN_IN_CI} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -103,6 +103,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
 | `devtools verify falsification` | Run the bounded four-slice falsification gate after explicit rebuild-safety consent. |
 | `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
+| `devtools verify js-tests` | Run the JavaScript test suites of the browser-extension and webui packages. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
 | `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
