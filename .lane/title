@@ -1,1 +1,1 @@
-feat(context): model versioned configuration evidence
+fix(agentctl): bind Beads mutations to job identity
