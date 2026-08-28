@@ -18,10 +18,37 @@ __all__ = [
     "read_context_ledger",
     "schedule_context",
     "record_context_ledger",
+    "ConfigurationArtifactVersion",
+    "ConfigurationObservation",
+    "ContextResolution",
+    "StructuralInvocation",
+    "EfficacyComparison",
+    "artifact_from_bytes",
+    "capture_path",
+    "resolve_context",
+    "join_invocations",
+    "git_artifact_history",
+    "compare_cohorts",
 ]
 
 
 def __getattr__(name: str) -> object:
+    if name in {
+        "ConfigurationArtifactVersion",
+        "ConfigurationObservation",
+        "ContextResolution",
+        "StructuralInvocation",
+        "EfficacyComparison",
+        "artifact_from_bytes",
+        "capture_path",
+        "resolve_context",
+        "join_invocations",
+        "git_artifact_history",
+        "compare_cohorts",
+    }:
+        from polylogue.context import configuration_evidence
+
+        return getattr(configuration_evidence, name)
     if name in {"ContextImage", "ContextOmission", "ContextSegment", "ContextSnapshotRecord", "ContextSpec"}:
         from polylogue.context import compiler as compiler_module
 
