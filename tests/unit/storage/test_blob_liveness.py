@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -12,7 +13,12 @@ import pytest
 import polylogue.storage.hook_payload_ref_reconciliation as hook_payload_ref_reconciliation
 from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_integrity import referenced_blob_hashes
-from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness, project_live_blob_hashes
+from polylogue.storage.blob_liveness import (
+    LivenessState,
+    inspect_blob_liveness,
+    project_live_blob_hashes,
+    validated_blob_ref_liveness_joins,
+)
 from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -344,3 +350,26 @@ def test_gc_refuses_missing_current_owner_surface_before_unlink(tmp_path: Path) 
     assert report.blocked_reason is not None
     assert "index.attachments is missing" in report.blocked_reason
     assert store.exists(blob_hash)
+
+
+def test_blob_refs_check_vocabulary_and_liveness_join_map_agree(tmp_path: Path) -> None:
+    """Every ref_type the source DDL admits must have a liveness referent join.
+
+    A ref_type the schema accepts but the map cannot resolve makes liveness
+    projection return BLOCKED for any archive holding such a row, stalling GC
+    on data the writer was entitled to create. The two vocabularies live in
+    different files, so nothing but this proof couples them.
+    """
+
+    root, _ = _archive(tmp_path)
+    with sqlite3.connect(root / "source.db") as conn:
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'blob_refs'").fetchone()[0]
+    match = re.search(r"ref_type\s+TEXT\s+NOT NULL\s+CHECK\(ref_type IN \(([^)]*)\)\)", sql)
+    assert match is not None, f"could not read the blob_refs ref_type CHECK from: {sql}"
+    admitted = {literal.strip().strip("'") for literal in match.group(1).split(",")}
+
+    mapped = {ref_type for ref_type, _table, _column in validated_blob_ref_liveness_joins()}
+    assert admitted == mapped, (
+        f"blob_refs CHECK admits {sorted(admitted)} but the liveness join map resolves "
+        f"{sorted(mapped)}; unresolved ref_types block liveness projection"
+    )
