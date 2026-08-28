@@ -37,13 +37,13 @@ class _CodexSidecarData(TypedDict, total=False):
     thread_names: CodexThreadNames
     history_titles: CodexHistoryTitles
     state_titles: CodexHistoryTitles
-    # bd polylogue-foee: thread_id -> title read from acquired
-    # codex_thread_title raw_hook_events (polylogue-0jf4's durable,
-    # snapshot-safe capture of state_5.sqlite's threads.title). Populated by
-    # pipeline/services/ingest_batch/_core.py::_resolve_codex_sidecar_snapshots
-    # (which has the source.db connection this needs), never by
+    # bd polylogue-foee / polylogue-zco96: thread_id -> title read from
+    # acquired codex_thread_title raw_hook_events (polylogue-0jf4's durable,
+    # snapshot-safe capture of state_5.sqlite's threads.title). Resolved from
+    # source.db by the routes that own a connection -- the pipeline ingest
+    # worker and retained-raw replay -- never by
     # CodexAssemblySpec.discover_sidecars itself (file-system only, no DB
-    # access) -- see assembly_codex.py's ladder step 3b.
+    # access). See assembly_codex.py's ladder step 3b.
     hook_event_titles: CodexHistoryTitles
 
 
