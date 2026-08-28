@@ -17,6 +17,7 @@ from polylogue.sources.parsers.base import (
     content_blocks_from_segments,
     extract_messages_from_list,
 )
+from polylogue.sources.parsers.base_models import AdmissionDisposition, AdmissionUnit
 from polylogue.sources.parsers.claude import (
     extract_messages_from_chat_messages,
     extract_text_from_segments,
@@ -466,6 +467,32 @@ def test_parse_code_stream_matches_list_parse() -> None:
     from_stream = parse_stream(iter(items), "fallback")
 
     assert from_stream == from_list
+
+
+def test_parse_code_stream_admission_accounts_unknown_records() -> None:
+    """One-pass payloads must be classified as they are pulled, not re-read."""
+    items: list[object] = [
+        {
+            "sessionId": "session-1",
+            "uuid": "msg-1",
+            "parentUuid": None,
+            "timestamp": "2025-01-01T00:00:00Z",
+            "type": "user",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {"sessionId": "session-1", "uuid": "msg-2", "type": "future_record"},
+    ]
+
+    from_stream = parse_stream(iter(items), "fallback")
+
+    assert from_stream == parse_code(items, "fallback")
+    accounting = from_stream.unit_accounting
+    assert accounting is not None
+    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == 2
+    assert [outcome.disposition for outcome in accounting.outcomes] == [
+        AdmissionDisposition.MATERIALIZED,
+        AdmissionDisposition.TYPED_UNKNOWN,
+    ]
 
 
 def test_parse_code_assistant_no_text_blocks_text_never_none() -> None:
