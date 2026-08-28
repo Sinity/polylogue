@@ -28,6 +28,7 @@ from polylogue.maintenance.receipt_fs import (
 )
 from polylogue.paths import render_root
 from polylogue.storage.archive_identity import (
+    TIER_FILENAMES,
     ArchiveIdentity,
     ArchiveLocation,
     ArchiveOwnershipError,
@@ -69,6 +70,35 @@ _LEGACY_RECEIPT_FORMAT: Literal["polylogue.archive-root-relocation-receipt.v1"] 
 _TIER_NAMES = tuple(tier.value for tier in ArchiveTier)
 _DURABLE_TIER_NAMES = ("source", "user", "audit")
 _SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _relocation_configured_tiers(root: Path) -> tuple[TierFileIdentity, ...]:
+    """Read configured tier identities without interpreting the pre-move pointer."""
+    return tuple(TierFileIdentity.resolve(name, root / filename) for name, filename in TIER_FILENAMES)
+
+
+def _relocation_location(root: Path, active_index_pointer: RelocationActiveIndexPointer | None) -> ArchiveLocation:
+    """Build the owned location from relocation evidence, including a pre-move pointer."""
+    configured_tiers = _relocation_configured_tiers(root)
+    configured_index = next(item for item in configured_tiers if item.name == "index")
+    if active_index_pointer is None:
+        active_index = configured_index
+        active_pointer = None
+    else:
+        active_pointer = Path(active_index_pointer.new_target)
+        active_index = TierFileIdentity.resolve("index", active_pointer)
+    shadow_index = (
+        configured_index
+        if active_pointer is not None and configured_index.exists and not configured_index.same_file(active_index)
+        else None
+    )
+    return ArchiveLocation(
+        configured_root=root.absolute(),
+        configured_tiers=configured_tiers,
+        active_index=active_index,
+        active_pointer=active_pointer,
+        shadow_index=shadow_index,
+    )
 
 
 class ArchiveRootRelocationError(DurableChangeTrainError):
@@ -356,8 +386,10 @@ def _tier_snapshot(
         path = Path(active_index_pointer.new_target)
         resolved_path = Path(active_index_pointer.new_resolved_target)
     else:
-        location = ArchiveLocation.resolve(root)
-        identity = location.active_tier(tier.value)
+        if active_index_pointer is not None:
+            identity = next(item for item in _relocation_configured_tiers(root) if item.name == tier.value)
+        else:
+            identity = ArchiveLocation.resolve(root).active_tier(tier.value)
         path = identity.configured_path
         resolved_path = identity.resolved_path
     if tier is ArchiveTier.INDEX:
@@ -1124,11 +1156,11 @@ def _durable_trains(
         tiers=tier_identities,
         active_generation=index_identity.stable_id,
     ).authority_identity_digest
-    configured_location = ArchiveLocation.resolve(root)
-    configured_index_identity = configured_location.configured_tier("index")
+    configured_tiers = _relocation_configured_tiers(root)
+    configured_index_identity = next(item for item in configured_tiers if item.name == "index")
     legacy_configured_identity = ArchiveIdentity(
         configured_root=old_root,
-        tiers=configured_location.configured_tiers,
+        tiers=configured_tiers,
         active_generation=configured_index_identity.stable_id,
     ).authority_identity_digest
     accepted_legacy_identities = {legacy_active_identity, legacy_configured_identity}
@@ -1859,8 +1891,11 @@ def _revalidate_plan_live_state(
         )
 
 
-def _require_offline_apply_boundary(root: Path) -> None:
-    reason = offline_writer_block_reason(Config(archive_root=root, render_root=render_root(), sources=[]))
+def _require_offline_apply_boundary(root: Path, active_index_pointer: RelocationActiveIndexPointer | None) -> None:
+    db_path = Path(active_index_pointer.new_target) if active_index_pointer is not None else None
+    reason = offline_writer_block_reason(
+        Config(archive_root=root, db_path=db_path, render_root=render_root(), sources=[])
+    )
     if reason is not None:
         raise ArchiveRootRelocationError(f"archive-root relocation requires the daemon to be stopped; {reason}")
 
@@ -1875,10 +1910,10 @@ def apply_archive_root_relocation(
     resolved = _real_directory(root, label="configured archive root")
     try:
         with OwnedArchiveLocation.acquire(
-            ArchiveLocation.resolve(resolved),
+            _relocation_location(resolved, plan.active_index_pointer),
             owner_id=f"archive-root-relocation:{os.getpid()}",
         ):
-            _require_offline_apply_boundary(resolved)
+            _require_offline_apply_boundary(resolved, plan.active_index_pointer)
             return _apply_archive_root_relocation_locked(
                 root=resolved,
                 plan=plan,

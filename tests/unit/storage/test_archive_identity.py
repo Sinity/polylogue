@@ -60,6 +60,27 @@ def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_poin
     assert location.shadow_index.resolved_path == configured / "index.db"
 
 
+def test_location_allows_an_internal_pointer_after_archive_root_relocation(tmp_path: Path) -> None:
+    """A mover-rewritten pointer remains valid when it names the moved root."""
+    old_root = tmp_path / "archive"
+    _touch_tiers(old_root)
+    generation = old_root / ".index-generations" / "generation-1"
+    generation.mkdir(parents=True)
+    active_index = generation / "index.db"
+    active_index.touch()
+    (old_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    moved_index = new_root / ".index-generations" / "generation-1" / "index.db"
+    (new_root / ".index-active-pointer").write_text(str(moved_index), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(new_root)
+
+    assert location.active_index_path == moved_index
+    assert location.active_index.resolved_path == moved_index
+
+
 @pytest.mark.parametrize("pointer_value", ("relative/index.db", "/tmp/not-index.db"))
 def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, pointer_value: str) -> None:
     """A pointer that is relative or does not name ``index.db`` must fail loudly.
