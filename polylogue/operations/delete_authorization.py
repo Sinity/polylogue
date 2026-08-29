@@ -178,15 +178,17 @@ def authorize_cli_delete_many(
 
 def consume_cli_delete_many(archive_root: Path, tokens: tuple[str, ...], principal: MutationPrincipal) -> int:
     affected_count = 0
-    completed_chunks = 0
-    for completed_chunks, token in enumerate(tokens):
+    for index, token in enumerate(tokens):
         try:
             affected_count += consume_cli_delete(archive_root, token, principal).affected_count
         except ValueError as exc:
-            if completed_chunks:
-                raise DeleteBatchPartialError(
-                    str(exc), completed_chunks=completed_chunks, affected_count=affected_count
-                ) from exc
+            # The failing chunk's index is exactly the number that committed
+            # before it. Index zero means nothing committed and the batch was
+            # refused, which the caller already reports correctly; past that
+            # the durable effect is real and partial, and reporting a refusal
+            # would tell the operator their archive is untouched when it is not.
+            if index:
+                raise DeleteBatchPartialError(str(exc), completed_chunks=index, affected_count=affected_count) from exc
             raise
     return affected_count
 
