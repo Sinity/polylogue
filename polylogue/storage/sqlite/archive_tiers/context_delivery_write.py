@@ -197,9 +197,13 @@ def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> Archiv
 
 
 def list_context_deliveries(
-    conn: sqlite3.Connection, *, recipient_ref: str | None = None, assertion_ref: str | None = None, limit: int = 50
+    conn: sqlite3.Connection,
+    *,
+    recipient_ref: str | None = None,
+    assertion_ref: str | None = None,
+    limit: int | None = 50,
 ) -> list[ArchiveContextDeliveryEnvelope]:
-    if limit < 1:
+    if limit is not None and limit < 1:
         raise ValueError("context delivery limit must be positive")
     where: list[str] = []
     params: list[object] = []
@@ -210,10 +214,11 @@ def list_context_deliveries(
         where.append("EXISTS (SELECT 1 FROM json_each(assertion_refs_json) WHERE value = ?)")
         params.append(_normalized_ref(assertion_ref, field="assertion_ref", kinds=frozenset({"assertion"})))
     clause = " WHERE " + " AND ".join(where) if where else ""
-    rows = conn.execute(
-        f"SELECT snapshot_ref FROM context_deliveries{clause} ORDER BY delivered_at_ms DESC, snapshot_ref LIMIT ?",
-        (*params, limit),
-    ).fetchall()
+    query = f"SELECT snapshot_ref FROM context_deliveries{clause} ORDER BY delivered_at_ms DESC, snapshot_ref"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     return [item for row in rows if (item := read_context_delivery(conn, str(row[0]))) is not None]
 
 

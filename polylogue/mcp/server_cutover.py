@@ -1046,6 +1046,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         recent_files: tuple[str, ...] = (),
         session_id: str | None = None,
         limit: int = 5,
+        offset: int | None = None,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
     ) -> str:
@@ -1097,15 +1098,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     )
                 return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(receipt))
             if recipient_ref is not None:
+                from polylogue.mcp.mutation_support import page_items
+
+                clamped_limit = hooks.clamp_limit(limit)
+                page_offset = max(0, offset or 0)
                 receipts = await hooks.get_polylogue().list_context_deliveries(
                     recipient_ref=recipient_ref,
                     assertion_ref=assertion_ref,
-                    limit=hooks.clamp_limit(limit),
+                    limit=None,
+                )
+                page, matched, _, next_offset = page_items(
+                    tuple(MCPContextDeliverySummaryPayload.from_envelope(item) for item in receipts),
+                    limit=clamped_limit,
+                    offset=page_offset,
                 )
                 return hooks.json_payload(
                     MCPContextDeliveryListPayload(
-                        items=tuple(MCPContextDeliverySummaryPayload.from_envelope(item) for item in receipts),
-                        total=len(receipts),
+                        items=page,
+                        total=matched,
+                        limit=clamped_limit,
+                        offset=page_offset,
+                        next_offset=next_offset,
                     )
                 )
             payload = await hooks.get_polylogue().context_image_payload(

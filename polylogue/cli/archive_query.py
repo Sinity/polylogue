@@ -1807,6 +1807,7 @@ def _emit_daemon_search_payload(
     _emit_degraded_daemon_search_payload(payload, query=query, output_format=output_format, fields=fields)
     hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
     total = _object_int(payload.get("total") or len(hits))
+    effective_limit = _object_int(payload.get("limit") or len(hits) or limit)
     total_unit = payload.get("total_unit")
     envelope: dict[str, object] = {
         "mode": "search",
@@ -1816,9 +1817,9 @@ def _emit_daemon_search_payload(
         "items": hits,
         "total": total,
         "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
-        "limit": limit,
+        "limit": effective_limit,
         "offset": offset,
-        "next_offset": None,
+        "next_offset": offset + len(hits) if total > offset + len(hits) else None,
         "next_cursor": None,
         "source": "daemon",
     }

@@ -22,8 +22,14 @@ TItem = TypeVar("TItem")
 
 def page_items(items: Sequence[TItem], *, limit: int, offset: int) -> tuple[tuple[TItem, ...], int, int, int | None]:
     """Slice a list response while retaining deterministic continuation state."""
+    from polylogue.surfaces.payloads import make_page
+
     total = len(items)
     page_offset = max(0, offset)
-    page = tuple(items[page_offset : page_offset + limit])
-    next_offset = page_offset + len(page) if page_offset + len(page) < total else None
-    return page, total, page_offset, next_offset
+    page = make_page(
+        items[page_offset : page_offset + limit],
+        matched=total,
+        continuation=(str(page_offset + limit) if page_offset + limit < total else None),
+    )
+    next_offset = int(page.continuation) if page.continuation is not None else None
+    return page.items, page.matched or 0, page_offset, next_offset
