@@ -744,9 +744,12 @@ class TestNoArchiveStatus:
     ) -> None:
         env = _make_app_env()
         configured_root = tmp_path / "archive"
-        generation = tmp_path / "generation"
         configured_root.mkdir()
-        generation.mkdir()
+        # The index is not the root's top-level index.db, but a managed
+        # generation still lives under the root; a pointer naming a target
+        # outside it is refused.
+        generation = configured_root / ".index-generations" / "gen-status"
+        generation.mkdir(parents=True)
         index_db = generation / "index.db"
         initialize_archive_database(configured_root / "source.db", ArchiveTier.SOURCE)
         initialize_archive_database(index_db, ArchiveTier.INDEX)
