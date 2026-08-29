@@ -93,6 +93,7 @@ class MaintenanceScopePayload(SurfacePayloadModel):
 
     targets: tuple[str, ...]
     filter: dict[str, Any]
+    unsupported_dimensions: tuple[str, ...] = ()
 
 
 class MaintenanceOperationEnvelope(SurfacePayloadModel):
@@ -167,6 +168,20 @@ def envelope_from_operation(
     scope_payload = MaintenanceScopePayload(
         targets=scope_targets,
         filter=scope_filter_dict,
+        unsupported_dimensions=tuple(
+            name
+            for name in (
+                "origin",
+                "source_family",
+                "source_root",
+                "time_range",
+                "failure_kind",
+                "parser_version",
+            )
+            if getattr(scope.filter, name, None) is not None
+        )
+        if scope is not None
+        else (),
     )
     return MaintenanceOperationEnvelope(
         operation_id=operation.operation_id,

@@ -140,7 +140,16 @@ def _parse_updated_at(value: object) -> datetime | None:
         return None
 
 
-def _load_record(path: Path) -> OperationRecord | None:
+@dataclass(frozen=True)
+class RegistryReadIssue:
+    """A state-file read failure that must not be presented as absence."""
+
+    path: Path
+    code: str
+    detail: str
+
+
+def _load_record(path: Path, issues: list[RegistryReadIssue] | None = None) -> OperationRecord | None:
     """Load one state file and project it into an :class:`OperationRecord`.
 
     Returns ``None`` for unparseable files. State directories are
@@ -153,14 +162,20 @@ def _load_record(path: Path) -> OperationRecord | None:
         raw_text = path.read_text()
     except OSError as exc:
         logger.warning("maintenance_registry_read_failed", path=str(path), error=str(exc))
+        if issues is not None:
+            issues.append(RegistryReadIssue(path, "read_failed", str(exc)))
         return None
     try:
         raw = loads(raw_text)
     except ValueError as exc:
         logger.warning("maintenance_registry_parse_failed", path=str(path), error=str(exc))
+        if issues is not None:
+            issues.append(RegistryReadIssue(path, "invalid_json", str(exc)))
         return None
     if not isinstance(raw, dict):
         logger.warning("maintenance_registry_payload_not_object", path=str(path))
+        if issues is not None:
+            issues.append(RegistryReadIssue(path, "invalid_payload", "state file must contain an object"))
         return None
     # ``loads`` returns the recursive ``JSONValue`` alias. Project it
     # onto ``dict[str, object]`` for the rehydration helpers — the
@@ -252,6 +267,17 @@ class MaintenanceOperationRegistry:
         records.sort(key=lambda r: r.updated_at, reverse=True)
         return tuple(records)
 
+    def list_operations_diagnostic(self) -> tuple[tuple[OperationRecord, ...], tuple[RegistryReadIssue, ...]]:
+        """Return records plus malformed/unreadable state-file diagnostics."""
+        issues: list[RegistryReadIssue] = []
+        records: list[OperationRecord] = []
+        for path in self._state_file_paths():
+            record = _load_record(path, issues)
+            if record is not None:
+                records.append(record)
+        records.sort(key=lambda r: r.updated_at, reverse=True)
+        return tuple(records), tuple(issues)
+
     def get_operation(self, operation_id: str) -> OperationRecord | None:
         """Return the snapshot for one operation, or ``None`` when absent."""
         operation_id = validate_operation_id(operation_id)
@@ -259,6 +285,17 @@ class MaintenanceOperationRegistry:
         if not path.exists():
             return None
         return _load_record(path)
+
+    def get_operation_diagnostic(
+        self, operation_id: str
+    ) -> tuple[OperationRecord | None, tuple[RegistryReadIssue, ...]]:
+        """Return one record and a typed diagnostic when its file is unreadable."""
+        operation_id = validate_operation_id(operation_id)
+        path = self.state_dir / f"{operation_id}.json"
+        if not path.exists():
+            return None, ()
+        issues: list[RegistryReadIssue] = []
+        return _load_record(path, issues), tuple(issues)
 
     def prune_completed(
         self,
@@ -311,4 +348,5 @@ __all__ = [
     "DEFAULT_COMPLETED_TTL",
     "MaintenanceOperationRegistry",
     "OperationRecord",
+    "RegistryReadIssue",
 ]

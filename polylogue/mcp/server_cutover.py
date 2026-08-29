@@ -872,6 +872,31 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 if topology is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
+            if view == "messages":
+                from polylogue.surfaces.payloads import (
+                    SessionMessagesResponsePayload,
+                    message_row_envelope_from_domain,
+                )
+
+                messages, total, completeness = await hooks.get_polylogue().get_messages_paginated(
+                    session_id or normalized,
+                    limit=hooks.clamp_limit(limit),
+                    offset=0,
+                )
+                return hooks.json_payload(
+                    SessionMessagesResponsePayload(
+                        session_id=session_id or normalized,
+                        messages=tuple(
+                            message_row_envelope_from_domain(message, session_id=session_id or normalized)
+                            for message in messages
+                        ),
+                        total=total,
+                        limit=hooks.clamp_limit(limit),
+                        offset=0,
+                        lineage_complete=completeness.complete,
+                        lineage_truncation_reason=completeness.truncation_reason,
+                    )
+                )
             if view not in (None, "summary"):
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
@@ -2112,8 +2137,21 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if not isinstance(operation_id, str) or not operation_id:
             return hooks.error_json("maintenance(operation='status') requires operation_id", code="invalid_argument")
         registry = MaintenanceOperationRegistry(config=config)
-        record = registry.get_operation(operation_id)
+        record, issues = registry.get_operation_diagnostic(operation_id)
+        if issues:
+            issue = issues[0]
+            return hooks.error_json(
+                f"maintenance registry could not read {issue.path.name}",
+                code="maintenance_registry_degraded",
+                detail=issue.detail,
+            )
         if record is None:
+            if (registry.state_dir / f"{operation_id}.json").exists():
+                return hooks.error_json(
+                    f"maintenance registry record is unreadable: {operation_id}",
+                    code="registry_degraded",
+                    tool="maintenance",
+                )
             return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
         envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
         return hooks.json_payload(
@@ -2130,7 +2168,13 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         from polylogue.maintenance.registry import MaintenanceOperationRegistry
 
         registry = MaintenanceOperationRegistry(config=config)
-        records = registry.list_operations()
+        records, issues = registry.list_operations_diagnostic()
+        if issues:
+            return hooks.error_json(
+                "maintenance registry contains unreadable state files",
+                code="maintenance_registry_degraded",
+                detail="; ".join(f"{issue.path.name}: {issue.detail}" for issue in issues),
+            )
         items = [
             {
                 "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
@@ -2139,7 +2183,15 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
             }
             for r in records
         ]
-        return hooks.json_payload(MCPRootPayload(root={"items": items, "total": len(items)}))
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    "items": items,
+                    "total": len(items),
+                    "degraded": bool(issues),
+                }
+            )
+        )
 
     if operation == "rebuild_index":
         from polylogue.mcp.payloads import MCPMutationStatusPayload

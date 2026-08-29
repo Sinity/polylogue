@@ -112,6 +112,18 @@ class TestRegistryRoundTrip:
         ids = [r.operation_id for r in registry.list_operations()]
         assert ids == ["op-ok"]
 
+    def test_diagnostic_listing_reports_unparseable_files(self, tmp_path: Path) -> None:
+        config = _make_config(tmp_path)
+        bad = state_path_for(config, "op-broken")
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("{not-json")
+        registry = MaintenanceOperationRegistry(config=config)
+        records, issues = registry.list_operations_diagnostic()
+        assert records == ()
+        assert len(issues) == 1
+        assert issues[0].code == "invalid_json"
+        assert issues[0].path == bad
+
     def test_missing_directory_lists_empty(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
         registry = MaintenanceOperationRegistry(config=config)

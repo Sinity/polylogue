@@ -37,6 +37,7 @@ from polylogue.maintenance.envelope import (
     EnvelopeMode,
     EnvelopeOrigin,
     MaintenanceOperationEnvelope,
+    MaintenanceScopePayload,
     envelope_from_operation,
     envelope_keys,
 )
@@ -325,3 +326,55 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
     assert result.exit_code == 0, result.output
     payload: dict[str, Any] = json.loads(result.output)
     return payload
+
+
+class TestUnsupportedScopeDimensionsAreDeclared:
+    """A narrowing the target cannot honor must be named, not silently echoed.
+
+    `run_selected_maintenance` forwards only `session_ids`; every other
+    dimension is dropped while the envelope reflects the whole filter back to
+    the caller. `scope.py` states the governing rule — a repair fn must not
+    advertise narrower behaviour than it applies — so the envelope has to say
+    which dimensions were not applied.
+    """
+
+    @staticmethod
+    def _envelope_for(**filter_kwargs: object) -> MaintenanceScopePayload:
+        from polylogue.maintenance.scope import MaintenanceScopeFilter
+
+        operation = BackfillOperation(
+            **{
+                **_example_operation().__dict__,
+                "scope": MaintenanceScope(
+                    targets=("session_insights",),
+                    filter=MaintenanceScopeFilter(**filter_kwargs),  # type: ignore[arg-type]
+                ),
+            }
+        )
+        return envelope_from_operation(operation, origin="mcp", mode="execute").scope
+
+    def test_a_dimension_the_run_cannot_honor_is_named(self) -> None:
+        """Anti-vacuity: return an empty tuple unconditionally and this goes red."""
+        scope = self._envelope_for(origin="claude-ai-export")
+
+        assert scope.unsupported_dimensions == ("origin",)
+
+    def test_session_ids_is_honored_and_therefore_not_named(self) -> None:
+        """`session_ids` is the one dimension the run actually applies."""
+        scope = self._envelope_for(session_ids=("claude-ai-export:abc",))
+
+        assert scope.unsupported_dimensions == ()
+
+    def test_every_unhonored_dimension_is_reported_together(self) -> None:
+        scope = self._envelope_for(
+            origin="claude-ai-export",
+            failure_kind="parse_error",
+            parser_version="v3",
+        )
+
+        assert scope.unsupported_dimensions == ("origin", "failure_kind", "parser_version")
+
+    def test_an_empty_filter_names_nothing(self) -> None:
+        scope = self._envelope_for()
+
+        assert scope.unsupported_dimensions == ()
