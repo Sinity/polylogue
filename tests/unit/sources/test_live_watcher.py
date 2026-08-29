@@ -956,7 +956,7 @@ def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
 
 
 def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 16)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
     monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
     records = [
         RawSessionRecord(
@@ -981,7 +981,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
 
 
 def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 16)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
     monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
     records = [
         RawSessionRecord(
