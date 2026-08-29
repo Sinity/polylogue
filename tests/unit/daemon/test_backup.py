@@ -1069,17 +1069,21 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
 
     Anti-vacuity: before writing the declaration, verification must reject the
     missing reference; after writing it, deleting the retained blob must still
-    reject the backup. This is the mutation that would make the happy path
-    green without consulting the operator assertion.
+    reject the backup. A reservation remains outside the effective source
+    scope, so restoring the verifier's reference union must make the empty
+    effective-scope assertion green and turn this test red.
     """
     db_setup(workspace_env)
     archive_root = workspace_env["archive_root"]
     source_db = archive_root / "source.db"
     retained_payload = b"pre-generation retained source"
     absent_payload = b"pre-generation deliberately absent source"
+    reserved_payload = b"pre-generation publication reservation"
     retained_hash = hashlib.sha256(retained_payload).digest()
     absent_hash = hashlib.sha256(absent_payload).digest()
+    reserved_hash = hashlib.sha256(reserved_payload).digest()
     BlobStore(archive_root / "blob").write_from_bytes(retained_payload)
+    BlobStore(archive_root / "blob").write_from_bytes(reserved_payload)
     with sqlite3.connect(source_db) as conn:
         conn.execute("DROP VIEW IF EXISTS source_item_reconciliation")
         conn.execute("DROP TABLE IF EXISTS source_items")
@@ -1102,6 +1106,12 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
                    VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
                 (blob_hash, raw_id, f"/{raw_id}.jsonl", len(payload)),
             )
+        conn.execute(
+            """INSERT INTO blob_publication_reservations
+               (publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms)
+               VALUES ('pre-generation-reservation', ?, ?, 'test-publisher', 1)""",
+            (reserved_hash, len(reserved_payload)),
+        )
 
     without_assertion = backup_archive(output_dir=tmp_path / "without-assertion", verify=True)
     assert without_assertion.ok is False
@@ -1137,6 +1147,13 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
             == "verification-receipt.json"
         )
 
+    generation_backup_root = Path(with_assertion.output_path or "")
+    with sqlite3.connect(generation_backup_root / "source.db") as conn:
+        conn.execute("CREATE TABLE source_generations (marker INTEGER)")
+        conn.execute("CREATE TABLE source_items (marker INTEGER)")
+    with pytest.raises(RuntimeError, match="only valid before source generations exist"):
+        backup_mod._verify_archive_file_set_backup(generation_backup_root)
+
     assertion = json.loads(assertion_path.read_text(encoding="utf-8"))
     assertion["declared_absent_blob_hashes"] = []
     assertion_path.write_text(json.dumps(assertion, indent=2, sort_keys=True), encoding="utf-8")
@@ -1167,6 +1184,48 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
     with_unasserted_loss = backup_archive(output_dir=tmp_path / "with-unasserted-loss", verify=True)
     assert with_unasserted_loss.ok is False
     assert with_unasserted_loss.verification["missing_canonical_blob_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        pytest.param({"format": "wrong-format"}, "unknown format", id="format"),
+        pytest.param({"freeze_authority": "untrusted"}, "freeze authority", id="freeze-authority"),
+        pytest.param({"source_db_sha256": "0" * 64}, "different source.db bytes", id="source-db-sha256"),
+        pytest.param(
+            {"declared_absent_blob_hashes": ["a" * 64, "a" * 64]},
+            "duplicate blob hashes",
+            id="duplicate-hash",
+        ),
+        pytest.param(
+            {"declared_absent_blob_hashes": ["not-a-blob-hash"]},
+            "invalid blob hashes",
+            id="invalid-hash",
+        ),
+    ],
+)
+def test_source_declared_absent_authentication_rejects_each_mutation(
+    tmp_path: Path,
+    mutation: dict[str, object],
+    message: str,
+) -> None:
+    """Each declared-absence authentication mutation must refuse verification."""
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE marker (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO marker VALUES ('source')")
+    assertion_path = tmp_path / backup_mod._SOURCE_DECLARED_ABSENT_FILE
+    assertion: dict[str, object] = {
+        "format": backup_mod._SOURCE_DECLARED_ABSENT_FORMAT,
+        "freeze_authority": backup_mod._SOURCE_DECLARED_ABSENT_AUTHORITY,
+        "source_db_sha256": hashlib.sha256(source_db.read_bytes()).hexdigest(),
+        "declared_absent_blob_hashes": ["a" * 64],
+    }
+    assertion.update(mutation)
+    assertion_path.write_text(json.dumps(assertion), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=message):
+        backup_mod._load_source_declared_absent(source_db, assertion_path)
 
 
 def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path: Path) -> None:

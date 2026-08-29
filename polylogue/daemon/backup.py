@@ -1143,7 +1143,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             reservations = _source_blob_reservations(restored / "source.db")
             expected_reference_blobs = effective_source_hashes | expected_attachment_hashes | reservations
             if assertion_path.exists() or assertion_path.is_symlink():
-                source_scope_ok = bool(expected_reference_blobs)
+                source_scope_ok = bool(effective_source_hashes)
         missing_canonical_blobs = expected_reference_blobs - restored_hash_set
         canonical_blobs_resolved = not source_included or (
             not missing_canonical_blobs and reference_evidence_ok and source_scope_ok

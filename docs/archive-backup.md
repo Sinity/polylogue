@@ -63,6 +63,19 @@ requires the effective reference scope to remain non-empty. The sidecar is
 included in the signed backup artifact inventory, so changing it invalidates
 the backup receipt.
 
+The declaration applies only to source-owned blob hashes. It does not excuse
+missing hashes referenced by `index.db` attachments. A `full_evidence` backup
+therefore cannot attest when an index attachment is missing, even if that hash
+also appears in the source declaration. Restore or otherwise resolve every
+missing index attachment before using that profile for relocation or audit
+adoption.
+
+After the source generation migration creates `source_generations` and
+`source_items`, a retained sidecar makes verified backups fail closed. Remove
+`source-declared-absent.json` from the archive root after the migration and
+before the next verified backup; it is valid only for the pre-generation
+source tier.
+
 ## Offline archive-root relocation
 
 An inode-preserving filesystem move is the only supported way to change a configured archive root without restoring or rebuilding it. Stop the daemon and move the complete root without copying its database files. Set `POLYLOGUE_ARCHIVE_ROOT` to the moved root before creating relocation backup evidence.
