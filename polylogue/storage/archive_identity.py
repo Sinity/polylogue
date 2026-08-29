@@ -45,7 +45,9 @@ def resolve_active_index_path(archive_root: Path) -> Path:
     reads): follows ``.index-active-pointer`` when present so ordinary
     config resolution can never silently diverge from a promoted generation
     (polylogue-k8kj finding 1). Pointer targets must remain inside the configured
-    archive root so a copied archive cannot follow its source's absolute pointer.
+    archive root, except when the configured ``index.db`` symlink resolves to
+    the same target. This preserves archives whose configured root is a symlink
+    farm while refusing a copied archive's stale absolute pointer.
     When the plain ``archive_root/index.db``
     path exists as a stale regular file that diverges from the active
     pointer target -- the signature of an interrupted rebuild that updated
@@ -137,7 +139,11 @@ class ArchiveLocation:
             if not candidate.is_absolute() or candidate.name != "index.db":
                 raise ArchiveLocationError(f"invalid active index pointer: {candidate}")
             resolved_candidate = candidate.resolve(strict=False)
-            if not resolved_candidate.is_relative_to(configured_root.resolve(strict=False)):
+            pointer_is_configured_symlink_target = (
+                configured_index.configured_path.is_symlink() and configured_index.resolved_path == resolved_candidate
+            )
+            pointer_is_inside_configured_root = resolved_candidate.is_relative_to(configured_root.resolve(strict=False))
+            if not pointer_is_inside_configured_root and not pointer_is_configured_symlink_target:
                 raise ArchiveLocationError(
                     "active index pointer target is outside configured archive root: "
                     f"{candidate} (root: {configured_root})"
