@@ -2459,6 +2459,11 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
             "do not retry offline, inspect the archive or wait for the daemon to report completion"
         ) from exc
     except DaemonResponseError as exc:
+        if exc.code == "delete_partially_applied":
+            raise click.ClickException(
+                f"delete partially applied ({exc.status}): {exc.detail}; "
+                f"completed_chunks={exc.completed_chunks}; affected_count={exc.affected_count}"
+            ) from exc
         raise click.ClickException(f"daemon refused delete ({exc.status}): {exc.detail}") from exc
     if daemon_payload is None:
         raise click.ClickException("daemon became unavailable before it consumed the confirmed delete authorization")

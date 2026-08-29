@@ -81,7 +81,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
 )
 from polylogue.logging import get_logger
-from polylogue.operations.delete_authorization import DELETE_PREVIEW_MAX_SESSION_IDS
+from polylogue.operations.delete_authorization import DELETE_PREVIEW_MAX_SESSION_IDS, DeleteBatchPartialError
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
     semantic_card_placement_for_messages,
@@ -1588,6 +1588,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         detail: str | None = None,
         *,
         extra_headers: Mapping[str, str] | None = None,
+        extra_payload: Mapping[str, object] | None = None,
     ) -> None:
         """Emit the canonical daemon error envelope.
 
@@ -1598,11 +1599,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         serialize identically. Health/status payloads use a different,
         deliberately separate shape and do not route through here.
         """
-        self._send_json(
-            status,
-            QueryErrorPayload(error=code, detail=detail).model_dump(mode="json"),
-            extra_headers=extra_headers,
-        )
+        payload = QueryErrorPayload(error=code, detail=detail).model_dump(mode="json")
+        if extra_payload:
+            payload.update(extra_payload)
+        self._send_json(status, payload, extra_headers=extra_headers)
 
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
@@ -5459,6 +5459,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         try:
             with self._write_gate("http.cli.delete"):
                 deleted = cast(int, self._sync_run(_delete))
+        except DeleteBatchPartialError as exc:
+            self._send_error(
+                HTTPStatus.CONFLICT,
+                "delete_partially_applied",
+                str(exc),
+                extra_payload={
+                    "completed_chunks": exc.completed_chunks,
+                    "affected_count": exc.affected_count,
+                },
+            )
+            return
         except ValueError as exc:
             self._send_error(HTTPStatus.CONFLICT, "delete_authorization_denied", str(exc))
             return

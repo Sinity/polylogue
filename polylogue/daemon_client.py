@@ -21,10 +21,20 @@ from polylogue.operations.daemon_protocol import (
 class DaemonResponseError(RuntimeError):
     """A daemon response with a typed non-success HTTP envelope."""
 
-    def __init__(self, *, status: int, code: str | None, detail: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        status: int,
+        code: str | None,
+        detail: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
         self.status = status
         self.code = code
         self.detail = detail or code or f"daemon returned HTTP {status}"
+        self.payload = payload or {}
+        self.completed_chunks = self.payload.get("completed_chunks")
+        self.affected_count = self.payload.get("affected_count")
         super().__init__(self.detail)
 
 
@@ -107,6 +117,7 @@ class DaemonClient:
             status=status,
             code=code if isinstance(code, str) else None,
             detail=detail if isinstance(detail, str) else None,
+            payload=envelope,
         )
 
     def _request_json_response(

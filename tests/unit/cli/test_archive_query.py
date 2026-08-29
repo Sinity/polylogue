@@ -1032,6 +1032,31 @@ class TestEmitDeleteMachineModeNoPrompt:
         archive.delete_sessions.assert_not_called()
         assert capsys.readouterr().out == ""
 
+    def test_partial_delete_error_reports_applied_counts_without_refusal_word(self) -> None:
+        from polylogue.daemon_client import DaemonResponseError
+
+        env = self._env(plain=True)
+        with patch(
+            "polylogue.cli.archive_query._submit_daemon_mutation",
+            side_effect=[
+                {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["s1", "s2"]},
+                {"status": "authorized", "authorization_token": "daemon-token"},
+                DaemonResponseError(
+                    status=HTTPStatus.CONFLICT,
+                    code="delete_partially_applied",
+                    detail="selection_changed_after_authorization",
+                    payload={"completed_chunks": 2, "affected_count": 512},
+                ),
+            ],
+        ):
+            with pytest.raises(click.ClickException, match=r"delete partially applied \(409\)") as context:
+                _emit_delete(env, ("s1", "s2"), params={"force": True, "dry_run": False})
+
+        message = str(context.value)
+        assert "completed_chunks=2" in message
+        assert "affected_count=512" in message
+        assert "refused" not in message
+
     def test_confirmed_delete_uses_an_unbounded_daemon_wait(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

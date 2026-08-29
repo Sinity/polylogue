@@ -46,6 +46,15 @@ class DeleteAuthorizationError(ValueError):
     """A daemon-held delete authorization cannot be prepared or consumed."""
 
 
+class DeleteBatchPartialError(DeleteAuthorizationError):
+    """Some authorized delete chunks committed before a later chunk failed."""
+
+    def __init__(self, detail: str, *, completed_chunks: int, affected_count: int) -> None:
+        super().__init__(detail)
+        self.completed_chunks = completed_chunks
+        self.affected_count = affected_count
+
+
 @dataclass(frozen=True, slots=True)
 class DeletePreviewPayload:
     preview_ref: str
@@ -168,7 +177,18 @@ def authorize_cli_delete_many(
 
 
 def consume_cli_delete_many(archive_root: Path, tokens: tuple[str, ...], principal: MutationPrincipal) -> int:
-    return sum(consume_cli_delete(archive_root, token, principal).affected_count for token in tokens)
+    affected_count = 0
+    completed_chunks = 0
+    for completed_chunks, token in enumerate(tokens):
+        try:
+            affected_count += consume_cli_delete(archive_root, token, principal).affected_count
+        except ValueError as exc:
+            if completed_chunks:
+                raise DeleteBatchPartialError(
+                    str(exc), completed_chunks=completed_chunks, affected_count=affected_count
+                ) from exc
+            raise
+    return affected_count
 
 
 def authorize_cli_delete(
