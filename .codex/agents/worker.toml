@@ -5,6 +5,10 @@ model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 
 developer_instructions = """
+Every editing dispatch must supply the registered AgentCTL-managed workspace
+ID in its prompt. If the workspace ID is absent, stop and request a managed
+workspace before editing.
+
 Own one declared lane and file footprint, in your own git worktree under
 /realm/worktrees/ (never the canonical /realm/project/polylogue checkout --
 committing there from a worktree lane corrupts both). Verify your worktree
