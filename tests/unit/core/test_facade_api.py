@@ -731,7 +731,10 @@ class TestPolylogueArchiveInsights:
         assert any(item.insight_kind == "archive_debt" for item in archive_debt)
         root_cost = next(item for item in session_costs if item.session_id == root_id)
         assert root_cost.estimate.status == "unavailable"
-        assert root_cost.estimate.missing_reasons == ("missing_token_usage",)
+        # "no_tokens" is the declared availability vocabulary in
+        # storage/usage.py, distinct from "known_zero": absent token evidence is
+        # not a recorded zero. "missing_token_usage" is not produced anywhere.
+        assert root_cost.estimate.missing_reasons == ("no_tokens",)
         assert cost_rollups[0].total_usd == pytest.approx(0.0)
 
     @pytest.mark.asyncio
