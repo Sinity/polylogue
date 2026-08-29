@@ -102,6 +102,8 @@ class ClosurePolicy:
             unknown = set(definition.required_edges) - required
             if unknown:
                 raise ValueError(f"{definition.ref}: edge kinds not declared by policy: {sorted(unknown)}")
+            if len(set(definition.required_edges)) != len(definition.required_edges):
+                raise ValueError(f"{definition.ref}: duplicate required edge kind")
         unknown_absences = set(self.intentional_absences) - set(definition_refs)
         if unknown_absences:
             raise ValueError(f"{self.family}: intentional absence has unknown definition: {sorted(unknown_absences)}")
@@ -161,6 +163,23 @@ class DefinitionClosureGraph:
     def ok(self) -> bool:
         return all(row.status in {ClosureStatus.SATISFIED, ClosureStatus.INTENTIONAL_ABSENCE} for row in self.rows)
 
+    @property
+    def exceptions(self) -> tuple[dict[str, str], ...]:
+        """Return every explicit exception, including exceptions with no row.
+
+        Keeping this on the rendered graph makes an exception auditable without
+        requiring consumers to correlate policy and row payloads themselves.
+        """
+        return tuple(
+            {
+                "family": policy.family,
+                "definition_ref": definition_ref,
+                "authority": authority,
+            }
+            for policy in self.policies
+            for definition_ref, authority in sorted(policy.intentional_absences.items())
+        )
+
     def to_dict(self) -> dict[str, object]:
         counts: dict[str, int] = {}
         for row in self.rows:
@@ -174,6 +193,7 @@ class DefinitionClosureGraph:
             "status_counts": dict(sorted(counts.items())),
             "required_edge_count": sum(len(row.required_edges) for row in self.rows),
             "actual_edge_count": sum(sum(len(refs) for refs in row.actual_edges.values()) for row in self.rows),
+            "exceptions": list(self.exceptions),
             "unresolved_rows": [
                 row.definition_ref
                 for row in self.rows
@@ -203,11 +223,11 @@ def evaluate(
     evidence = evidence or {}
     rows: list[ClosureRow] = []
     policy_tuple = tuple(policies)
-    row_count = 0
+    total_definitions = sum(len(policy.definitions) for policy in policy_tuple)
+    if total_definitions > MAX_GRAPH_ROWS:
+        raise ValueError(f"closure graph exceeds bounded row limit ({MAX_GRAPH_ROWS})")
     for policy in policy_tuple:
         for definition in policy.definitions[:MAX_DEFINITIONS]:
-            if row_count >= MAX_GRAPH_ROWS:
-                break
             required = definition.required_edges or policy.required_edge_kinds
             supplied = evidence.get(definition.ref, {})
             actual: dict[EdgeKind, tuple[EvidenceRef, ...]] = {}
@@ -216,7 +236,12 @@ def evaluate(
                     edge = EdgeKind(raw_edge)
                 except (TypeError, ValueError) as exc:
                     raise ValueError(f"{definition.ref}: unknown evidence edge {raw_edge!r}") from exc
-                actual[edge] = tuple(refs)[:MAX_EDGES_PER_DEFINITION]
+                refs_tuple = tuple(refs)
+                if len(refs_tuple) > MAX_EDGES_PER_DEFINITION:
+                    raise ValueError(
+                        f"{definition.ref}: evidence exceeds bounded edge limit ({MAX_EDGES_PER_DEFINITION})"
+                    )
+                actual[edge] = refs_tuple
             missing = tuple(
                 edge for edge in required if not any(ref.source == "production" for ref in actual.get(edge, ()))
             )
@@ -255,7 +280,6 @@ def evaluate(
                     diagnostic,
                 )
             )
-            row_count += 1
     return DefinitionClosureGraph(policy_tuple, tuple(rows), evidence_available, tuple(coverage_limits))
 
 
