@@ -451,14 +451,12 @@ class TestInsightProjections:
         assert session_ids == {matching_session_id}
         assert abandoned_ids == all_abandoned_ids & session_ids
         assert abandoned_ids == {matching_session_id}
-        # stuck_sessions is asserted for scope consistency only. It cannot carry
-        # weight yet: the read path hard-codes stuck_tool_count to 0
-        # (archive_tiers/archive.py:8220) while the projection filters on
-        # `stuck_tool_count > 0`, so no archive state makes it non-empty. Both
-        # sides are empty here and this comparison holds trivially. Give it real
-        # coverage once polylogue-gj7de lands.
+        # The stuck half carries real weight: the fixture's matching session has
+        # stuck_tool_count = 1, so all_stuck_ids is non-empty and the repo filter
+        # is genuinely narrowing it rather than comparing two empty sets.
+        assert all_stuck_ids
         assert stuck_ids == all_stuck_ids & session_ids
-        assert not all_stuck_ids
+        assert stuck_ids == {matching_session_id}
         assert all(result.get("total") == 0 for result in missing)
 
     @pytest.mark.asyncio
