@@ -391,6 +391,7 @@ class ArchiveSessionSummary:
     word_count: int
     tags: tuple[str, ...]
     parent_id: str | None = None
+    branch_type: str | None = None
     session_kind: str = "standard"
     reported_duration_ms: int | None = None
     tool_use_count: int = 0
@@ -3472,7 +3473,7 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id,
+                   s.parent_session_id, s.branch_type,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -5668,7 +5669,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id,
+                   s.parent_session_id, s.branch_type,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -6876,10 +6877,22 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         parent_id = None
     else:
         parent_id = str(raw_parent_id) if raw_parent_id else None
+    branch_type: str | None
+    try:
+        raw_branch_type = row["branch_type"]
+    except IndexError:
+        # Same rationale as parent_id above: not every caller's SELECT projects
+        # branch_type. Absence is unknown, not an error. A summary that omits it
+        # cannot answer is_continuation/is_sidechain, which is why the branch
+        # predicates count zero when this column is missing (polylogue-r9x56).
+        branch_type = None
+    else:
+        branch_type = str(raw_branch_type) if raw_branch_type else None
     return ArchiveSessionSummary(
         session_id=session_id,
         native_id=str(row["native_id"]),
         origin=origin,
+        branch_type=branch_type,
         title=title,
         display_label=display_label,
         title_source=title_source,
