@@ -866,7 +866,7 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.merge_prepare", t0)
             else:
-                stale_attachment_ids = _session_attachment_ids(conn, session_id)
+                stale_attachment_ids = session_attachment_ids(conn, session_id)
                 projection_carry_forward = _replace_full_session_messages_and_blocks(
                     conn,
                     session,
@@ -3732,19 +3732,24 @@ def _write_attachments(
     # path (get_attachments/get_attachments_batch both INNER JOIN
     # attachment_refs), while still reporting acquisition_status='acquired'
     # and real fetched bytes.
-    _refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
+    refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
 
 
-def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:
+def refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:
     """Recompute ``attachments.ref_count`` from live refs and sweep zero-ref rows.
 
-    Every path that deletes ``attachment_refs`` rows outside a message-FK
-    cascade must call this with the affected attachment ids, mirroring the
-    cleanup ``prune_attachments`` and ``delete_session_sql`` perform after
-    their own ref deletions -- otherwise an acquired ``attachments`` row
-    survives with a stale ref_count and no canonical ref, which
-    archive verification / ``blob-reference-closure`` report as archive
+    Every path that removes ``attachment_refs`` rows must call this with the
+    affected attachment ids -- including an FK cascade, which removes them
+    with no Python code observing it. Otherwise an acquired ``attachments``
+    row survives with a stale ref_count and no canonical ref, which archive
+    verification and ``blob-reference-closure`` report as archive
     verification errors.
+
+    A caller re-ingesting content must exclude the ids it is carrying
+    forward: those rows are about to be re-referenced, and sweeping them
+    would break the restore's FK to ``attachments(attachment_id)``. That
+    exemption is why this stays in Python rather than becoming a trigger,
+    which could not see it.
     """
     if not attachment_ids:
         return
@@ -3766,7 +3771,7 @@ def _refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids:
     )
 
 
-def _session_attachment_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
+def session_attachment_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
     rows = conn.execute(
         "SELECT DISTINCT attachment_id FROM attachment_refs WHERE session_id = ?",
         (session_id,),
@@ -6898,9 +6903,9 @@ def _delete_all_session_message_dependents(
         """,
         (session_id,),
     )
-    orphaned_attachment_ids = _session_attachment_ids(conn, session_id)
+    orphaned_attachment_ids = session_attachment_ids(conn, session_id)
     conn.execute("DELETE FROM attachment_refs WHERE session_id = ?", (session_id,))
-    _refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
+    refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
     conn.execute("DELETE FROM paste_spans WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM blocks WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -6934,7 +6939,7 @@ def _delete_prefix_message_dependents(conn: sqlite3.Connection, prefix_message_i
             f"DELETE FROM {table} WHERE message_id IN ({placeholders})",
             params,
         )
-    _refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
+    refresh_and_sweep_attachment_rows(conn, orphaned_attachment_ids)
 
 
 def _remap_session_event_prefix_refs(
