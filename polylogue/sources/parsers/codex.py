@@ -2668,9 +2668,12 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     current_model_name=current_model_name,
                     current_model_effort=current_model_effort,
                 )
+                event_type = _codex_response_item_event_type(_record_type(inner), _record_type(record))
+                if event_type == _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE:
+                    event_payload["wire_type"] = _record_type(inner) or _record_type(record)
                 session_events.append(
                     ParsedSessionEvent(
-                        event_type=_codex_response_item_event_type(_record_type(inner), _record_type(record)),
+                        event_type=event_type,
                         timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                         payload=event_payload,
                     )

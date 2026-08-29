@@ -215,6 +215,7 @@ export type MessageQueryRowPayload = {
   readonly occurred_at_ms?: number | null;
   readonly origin: string;
   readonly position: number;
+  readonly repo?: string | null;
   readonly role: string;
   readonly session_id: string;
   readonly text: string;

@@ -7,10 +7,38 @@ rendered text is useful diagnostic evidence, but is never an identity.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Literal
 
 from polylogue.core.enums import Origin, Provider
+
+_UUID_PATTERN = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def legacy_browser_capture_native_id(provider: Provider | str | None, provider_session_id: str | None) -> str | None:
+    """Recover provider-native IDs from old browser-extension synthetic IDs."""
+    if not provider_session_id:
+        return None
+    provider_value = provider.value if isinstance(provider, Provider) else provider
+    if not provider_value:
+        return provider_session_id
+    synthetic_prefix = f"{provider_value}:"
+    if provider_session_id.startswith(synthetic_prefix):
+        parts = provider_session_id.split(":")
+        if len(parts) == 3 and parts[1] and "/" not in parts[1]:
+            return parts[1]
+        if provider_value == Provider.CHATGPT.value and len(parts) == 4 and parts[1] == "WEB" and parts[2]:
+            return f"WEB:{parts[2]}"
+    hyphen_prefix = f"{provider_value}-"
+    if provider_session_id.startswith(hyphen_prefix):
+        match = _UUID_PATTERN.search(provider_session_id)
+        if match:
+            if provider_value == Provider.CHATGPT.value and provider_session_id.startswith("chatgpt-WEB-"):
+                return f"WEB:{match.group(0)}"
+            return match.group(0)
+    return provider_session_id
+
 
 IdentityFidelity = Literal["native", "dom_degraded", "unknown"]
 IdentityDegradedReason = Literal[
@@ -108,4 +136,5 @@ __all__ = [
     "canonical_session_ref",
     "content_fingerprint",
     "resolve_identity",
+    "legacy_browser_capture_native_id",
 ]
