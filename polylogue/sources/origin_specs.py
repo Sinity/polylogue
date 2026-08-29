@@ -7,13 +7,10 @@ consequences.  The founding pilots (polylogue-2qx.1.1) deliberately covered a
 streaming runtime (Claude Code), a document export (ChatGPT), and a reserved
 origin (Grok, which had no confirmed export shape at the time). Grok has since
 shipped a real parser (polylogue-611 / #3201) and is admitted here as
-``lifecycle="executable"`` -- there is currently no origin genuinely in
-``lifecycle="reserved"``. The reserved-lifecycle path (an origin admitted with
-no parser/detector binding pending a fixture) remains part of this module's
-executable contract; ``tests/unit/sources/test_origin_specs.py`` exercises it
-with a synthetic declaration rather than a real Origin member, since every
-current public ``Origin`` token is already either executable or
-compatibility-only.
+``lifecycle="executable"``. Beads is retained as a reserved origin because its
+durable vocabulary predates the session-admission decision. It has no parser or
+detector binding; ``tests/unit/sources/test_origin_specs.py`` is its synthetic
+fixture declaration until a real wire format is intentionally adopted.
 """
 
 from __future__ import annotations
@@ -1238,6 +1235,35 @@ def _antigravity_spec() -> OriginSpec:
     )
 
 
+def _beads_spec() -> OriginSpec:
+    origin = Origin.BEADS_ISSUE
+    return OriginSpec(
+        origin=origin,
+        declaration=_declaration(
+            origin,
+            lifecycle="reserved",
+            discovery="Reserved Beads issue origin vocabulary; no session admission.",
+        ),
+        lifecycle="reserved",
+        acquisition_modes=("reserved",),
+        provider_wires=(Provider.BEADS,),
+        collision_policy=None,
+        detector_tightness=None,
+        parser_paths=(),
+        stream_parser_path=None,
+        assembly_paths=(),
+        fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+        coverage_refs=("origin:beads-issue:reserved",),
+        fidelity_notes=(
+            "The durable origin and provider tokens remain available for historical CHECK vocabulary, "
+            "but no Beads issue record is admitted as a session.",
+        ),
+        semantic_reparse="no parser; retain the reserved vocabulary until a Beads session adapter is admitted",
+        display_description="Reserved Beads issue origin (not admitted)",
+        public_filter=False,
+    )
+
+
 def _claude_ai_spec() -> OriginSpec:
     return _executable_spec(
         Origin.CLAUDE_AI_EXPORT,
@@ -1475,6 +1501,25 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             ),
             schema_paths=("polylogue/schemas/providers/antigravity/catalog.json",),
             docs_paths=("docs/architecture.md",),
+        ),
+    ),
+    Origin.BEADS_ISSUE: (
+        _completeness_mode(
+            "provider-package:beads-issue/reserved@v1",
+            "reserved",
+            Provider.BEADS,
+            "reserved",
+            detector_paths=(),
+            raw_model_paths=(),
+            parser_paths=(),
+            normalizer_paths=(),
+            fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+            schema_paths=(),
+            docs_paths=("docs/provider-origin-identity.md",),
+            caveats=(
+                "The reserved origin has durable vocabulary and declaration evidence only; no Beads session "
+                "wire format, parser, detector, or schema package is admitted.",
+            ),
         ),
     ),
     Origin.GROK_EXPORT: (
@@ -1862,6 +1907,7 @@ for _spec in (
     _gemini_cli_spec(),
     _hermes_spec(),
     _antigravity_spec(),
+    _beads_spec(),
     _grok_spec(),
     _chatgpt_spec(),
     _claude_ai_spec(),

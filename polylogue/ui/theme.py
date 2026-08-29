@@ -195,7 +195,9 @@ LIGHT_THEME = {
 # ``devtools render webui-design-system``.  Keeping the public Origin list and
 # palette here prevents the TypeScript client from growing a second provider
 # vocabulary while still leaving archive semantics on the server.
-PUBLIC_ORIGIN_TOKENS: tuple[Origin, ...] = tuple(origin for origin in Origin if origin is not Origin.UNKNOWN_EXPORT)
+PUBLIC_ORIGIN_TOKENS: tuple[Origin, ...] = tuple(
+    origin for origin in Origin if origin not in {Origin.UNKNOWN_EXPORT, Origin.BEADS_ISSUE}
+)
 
 WEBUI_SHARED_TOKENS: dict[str, str] = {
     "--pl-font-sans": 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',

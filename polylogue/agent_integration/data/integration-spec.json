@@ -123,6 +123,10 @@
       "token": "antigravity-session"
     },
     {
+      "meaning": "Reserved Beads issue origin (not admitted)",
+      "token": "beads-issue"
+    },
+    {
       "meaning": "Grok account-data exports (lab: xAI)",
       "token": "grok-export"
     },

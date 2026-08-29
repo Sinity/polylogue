@@ -86,6 +86,7 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     chatgpt = by_origin[Origin.CHATGPT_EXPORT]
     grok = by_origin[Origin.GROK_EXPORT]
     antigravity = by_origin[Origin.ANTIGRAVITY_SESSION]
+    beads = by_origin[Origin.BEADS_ISSUE]
 
     assert claude.stream_parser_path is not None
     assert {rule.kind for rule in claude.artifact_rules} == {
@@ -105,6 +106,14 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert grok.lifecycle == "executable"
     assert grok.parser_paths == ("polylogue/sources/parsers/grok.py",)
     assert grok.detector_tightness == 85
+    assert beads.lifecycle == "reserved"
+    assert beads.public_filter is False
+    assert beads.detector_tightness is None
+    assert beads.detector_bindings == ()
+    assert beads.parser_paths == ()
+    assert beads.fixture_paths == ("tests/unit/sources/test_origin_specs.py",)
+    assert beads.completeness_modes[0].maturity == "reserved"
+    assert beads.completeness_modes[0].fixture_paths == beads.fixture_paths
     assert {rule.coverage_role for rule in antigravity.artifact_rules} == {
         "conversation_protobuf",
         "brain_metadata_sidecar",
@@ -441,8 +450,8 @@ def test_origin_specs_are_parity_checked_against_stream_record_providers() -> No
     """Production dependency: declared stream_parser_path presence matches dispatch's stream-record set.
 
     Anti-vacuity mutation: passing an empty stream-record-provider set makes
-    every stream-capable executable OriginSpec (Claude Code, Codex, Beads,
-    Hermes) report a ``stream_parser_parity_mismatch`` diagnostic.
+    every stream-capable executable OriginSpec (Claude Code, Codex, Hermes)
+    report a ``stream_parser_parity_mismatch`` diagnostic.
     """
     assert validate_stream_parser_parity(STREAM_RECORD_PROVIDERS) == ()
 
