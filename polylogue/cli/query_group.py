@@ -11,6 +11,52 @@ from __future__ import annotations
 
 import click
 
+_QUERY_WORKFLOW_HELP = """Search the archive, then optionally run an action.
+
+Usage:
+    polylogue find QUERY
+    polylogue find QUERY then ACTION
+
+Examples:
+    polylogue find \"browser capture\"
+    polylogue find id:abc then read --view messages
+    polylogue find 'repo:polylogue since:7d' then analyze --facets
+    polylogue find 'repo:polylogue tag:stale' then delete --dry-run
+
+Notes:
+    `find` is the explicit query marker, not a normal subcommand.
+    Put root filters before `find`, and verb-specific options after ACTION:
+    `polylogue --origin chatgpt-export find \"sqlite\" then read --all`.
+
+    Exact refs (`id:...`, `session:...`) are identity filters. A miss returns
+    no target instead of broadening to text search. Text queries can return
+    many ranked sessions; singleton actions require an exact ref, an explicit
+    selection, `--first`, or an action-specific multi flag.
+
+    Action ownership: `mark` changes selected session overlays; root
+    `polylogue judge` reviews assertion candidates; `analyze --facets` reports
+    named aggregate families and marks deferred families honestly.
+"""
+
+
+def _render_query_workflow_help(ctx: click.Context) -> None:
+    """Render help for the explicit query marker without registering it as a command."""
+    click.echo(_QUERY_WORKFLOW_HELP)
+    ctx.exit()
+
+
+def _asks_for_query_workflow_help(args: list[str]) -> bool:
+    """Report whether the invocation is a bare help request for the query marker.
+
+    Root filters precede ``find``, so the marker is not always the first token:
+    ``polylogue --origin chatgpt-export find --help`` is the documented shape
+    and asks for the same help as ``polylogue find --help``.
+    """
+    if "find" not in args:
+        return False
+    marker = args.index("find")
+    return args[marker + 1 :] in (["--help"], ["-h"])
+
 
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool, bool]:
     """Split args into (click_args, query_terms, has_subcommand, explicit_query).
@@ -260,6 +306,9 @@ class QueryFirstGroupBase(click.Group):
         # the list into per-mode buckets.
         original_args = list(args)
         ctx.meta["polylogue_raw_args"] = original_args
+
+        if _asks_for_query_workflow_help(original_args):
+            _render_query_workflow_help(ctx)
 
         parse_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(self, args)
         ctx.meta["polylogue_has_subcommand"] = has_subcommand

@@ -860,6 +860,46 @@ class TestQueryFirstGroupParseArgs:
             not in result.output
         )
 
+    def test_find_help_renders_query_workflow_help_without_command_registration(self, cli_runner: CliRunner) -> None:
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["find", "--help"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "Search the archive, then optionally run an action." in result.output
+        assert "polylogue find QUERY then ACTION" in result.output
+        assert "Subcommands:" not in result.output
+        assert "find" not in cli.commands
+
+        root_help = cli_runner.invoke(cli, ["--help"], catch_exceptions=False)
+        assert root_help.exit_code == 0
+        assert "Use `polylogue find QUERY then ACTION` for query-result workflows." in root_help.output
+
+    def test_find_help_renders_behind_the_root_filters_that_help_documents(self, cli_runner: CliRunner) -> None:
+        """Root filters precede the marker, so the marker is not always argv[0].
+
+        Anti-vacuity: match only ``args[:1] == ["find"]`` and this documented
+        shape still exits 2 with "No such command 'find'".
+        """
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(
+            cli,
+            ["--origin", "chatgpt-export", "find", "--help"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0
+        assert "Search the archive, then optionally run an action." in result.output
+
+    def test_find_with_a_query_keeps_ordinary_help(self, cli_runner: CliRunner) -> None:
+        """``--help`` after a query term is not a request for marker help."""
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["find", "sqlite", "--help"], catch_exceptions=False)
+
+        assert "Search the archive, then optionally run an action." not in result.output
+
     def test_query_verb_help_renders_with_root_options(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
