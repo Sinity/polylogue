@@ -18,6 +18,23 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 
+
+def _unreachable_daemon_url() -> str:
+    """A daemon URL nothing is listening on.
+
+    A hardcoded high port is not free by construction: this host runs an
+    unrelated listener on 19999, which turned "daemon is not running" into a
+    connection that answered. Reserve a port from the kernel and release it
+    so the number is at least known-unused a moment ago.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
 pytestmark = pytest.mark.contract
 
 # ANSI CSI sequences (color, cursor movement, formatting).
@@ -70,7 +87,7 @@ class TestPlainOutputIsAscii:
             (["--plain", "stats"], "cli.plain.stats"),
             (["--plain", "config"], "cli.plain.config"),
             (
-                ["--plain", "ops", "status", "--daemon-url", "http://127.0.0.1:19999"],
+                ["--plain", "ops", "status", "--daemon-url", _unreachable_daemon_url()],
                 "cli.plain.status",
             ),
         ],

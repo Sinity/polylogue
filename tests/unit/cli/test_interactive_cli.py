@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import stat
 from datetime import datetime, timedelta, timezone
@@ -195,7 +196,13 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
     )
 
     assert result.exit_code == 0
-    assert json.loads(grid_to_text(result.grid).strip()) == {
+    rendered = json.loads(grid_to_text(result.grid).strip())
+    # The row runs in a real pty subprocess, so a frozen clock in this process
+    # cannot reach it. `relative_time` is distance from now to a fixed date and
+    # would otherwise go red as that distance grows, so its shape is asserted
+    # and the identity this test exists for is asserted exactly.
+    assert re.fullmatch(r"\d+[smhdw] ago", str(rendered.pop("relative_time")))
+    assert rendered == {
         "cost_usd": None,
         "cwd_display": None,
         "date": "2026-07-11",
@@ -203,7 +210,6 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
         "message_count": 1,
         "origin": "chatgpt-export",
         "outcome": "unknown",
-        "relative_time": "6w ago",
         "repo": None,
         "title": "Interactive picker candidate older",
     }

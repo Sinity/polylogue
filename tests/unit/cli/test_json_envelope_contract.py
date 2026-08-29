@@ -230,6 +230,22 @@ class TestStatusFieldInvariant:
 TRACEBACK_SENTINEL = "Traceback (most recent call last)"
 
 
+def _unreachable_daemon_url() -> str:
+    """A daemon URL nothing is listening on.
+
+    A hardcoded high port is not free by construction: this host runs an
+    unrelated listener on 19999, which turned "daemon is not running" into a
+    connection that answered. Reserve a port from the kernel and release it
+    so the number is at least known-unused a moment ago.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
 def _invoke_raw_json_command(args: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[int, str]:
     """Invoke a CLI command and return (exit_code, raw_stdout).
 
@@ -396,7 +412,7 @@ class TestStatusJsonContract:
         direct archive read path, which always returns structured JSON.
         """
         exit_code, output = _invoke_raw_json_command(
-            ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
+            ["ops", "status", "--daemon-url", _unreachable_daemon_url(), "--format", "json"],
             monkeypatch,
         )
         assert exit_code == 0, f"ops status --format json exited {exit_code}: {output!r}"
@@ -475,7 +491,7 @@ class TestAllJsonCommandsProduceValidJson:
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", False),
             (
-                ["ops", "status", "--daemon-url", "http://127.0.0.1:19999", "--format", "json"],
+                ["ops", "status", "--daemon-url", _unreachable_daemon_url(), "--format", "json"],
                 "cli.status_json_matrix",
                 False,
             ),
