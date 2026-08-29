@@ -19,6 +19,7 @@ from polylogue.cli.archive_query import (
     _csv,
     _csv_tokens,
     _decode_cursor,
+    _emit_daemon_search_payload,
     _emit_delete,
     _emit_no_results,
     _emit_stats,
@@ -964,8 +965,8 @@ class TestEmitDeleteMachineModeNoPrompt:
         ]
         assert [call.kwargs["body"] for call in daemon_delete.call_args_list] == [
             {"session_ids": ["s1", "s2"]},
-            {"preview_ref": "preview:delete"},
-            {"authorization_token": "daemon-token"},
+            {"preview_refs": ["preview:delete"]},
+            {"authorization_tokens": ["daemon-token"]},
         ]
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
@@ -1141,7 +1142,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             "/api/cli/delete/prepare",
             "/api/cli/delete/cancel",
         ]
-        assert daemon_delete.call_args_list[-1].kwargs["body"] == {"preview_ref": "preview:delete"}
+        assert daemon_delete.call_args_list[-1].kwargs["body"] == {"preview_refs": ["preview:delete"]}
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "aborted"
 
@@ -1230,3 +1231,65 @@ class TestSessionSummaryText:
         assert "hello there" in transcript
         assert "using a tool now" in transcript
         assert "all done" in transcript
+
+
+class TestDaemonSearchEnvelopeHonestPagination:
+    """A daemon-proxied clamped page must not present itself as complete.
+
+    The golden-parity suite compares direct and daemon envelopes over a seeded
+    corpus smaller than its own ``--limit``, so it never reaches a clamped
+    page and cannot see these fields.
+    """
+
+    @staticmethod
+    def _emit(payload: dict[str, object], *, limit: int, offset: int) -> dict[str, object]:
+        captured: dict[str, object] = {}
+
+        def _capture(envelope: dict[str, object], *args: object, **kwargs: object) -> None:
+            captured.update(envelope)
+
+        with patch("polylogue.cli.archive_query._emit_rows", _capture):
+            _emit_daemon_search_payload(
+                payload,
+                query="sqlite",
+                limit=limit,
+                offset=offset,
+                output_format="json",
+                origin=None,
+                fields=None,
+                typo_hint=None,
+            )
+        return captured
+
+    def test_clamped_page_reports_the_next_offset(self) -> None:
+        """Anti-vacuity: hard-code ``next_offset`` to None and this goes red."""
+        envelope = self._emit(
+            {"hits": [{"session_id": f"s:{n}"} for n in range(10)], "total": 42, "limit": 10},
+            limit=10,
+            offset=0,
+        )
+
+        assert envelope["total"] == 42
+        assert envelope["next_offset"] == 10
+
+    def test_final_page_reports_no_next_offset(self) -> None:
+        envelope = self._emit(
+            {"hits": [{"session_id": f"s:{n}"} for n in range(2)], "total": 42, "limit": 10},
+            limit=10,
+            offset=40,
+        )
+
+        assert envelope["next_offset"] is None
+
+    def test_limit_reports_what_the_daemon_applied(self) -> None:
+        """The daemon may clamp below the requested limit; the envelope says which.
+
+        Anti-vacuity: echo the requested ``limit`` instead and this goes red.
+        """
+        envelope = self._emit(
+            {"hits": [{"session_id": f"s:{n}"} for n in range(25)], "total": 42, "limit": 25},
+            limit=500,
+            offset=0,
+        )
+
+        assert envelope["limit"] == 25

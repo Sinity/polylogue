@@ -1270,7 +1270,7 @@ def _archive_list_context_deliveries(
     *,
     recipient_ref: str | None,
     assertion_ref: str | None,
-    limit: int,
+    limit: int | None,
 ) -> list[ArchiveContextDeliveryEnvelope]:
     """List bounded delivery-receipt envelopes, most recent first."""
 
@@ -2962,7 +2962,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 if spec is not None and spec.has_filters()
                 else archive.list_summaries(limit=1_000_000)
             ),
-            page_size=cap,
+            # The analysis cap applies after the authoritative scope is
+            # resolved. Reading only ``cap`` summaries would make a bounded
+            # analysis look complete and hide the matched denominator.
+            page_size=1_000_000,
             projection="session-scope",
             workload_class="scan",
         )
@@ -3197,7 +3200,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
-        limit: int = 50,
+        limit: int | None = 50,
     ) -> list[ArchiveContextDeliveryEnvelope]:
         """List bounded delivery-receipt envelopes, most recent first.
 
@@ -3211,7 +3214,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             self.config,
             recipient_ref=recipient_ref,
             assertion_ref=assertion_ref,
-            limit=max(1, min(limit, 200)),
+            limit=None if limit is None else max(1, min(limit, 200)),
         )
 
     async def list_context_injection_ledger(

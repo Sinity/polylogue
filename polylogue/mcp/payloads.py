@@ -209,6 +209,9 @@ class MCPContextDeliveryListPayload(SurfacePayloadModel):
 
     items: tuple[MCPContextDeliverySummaryPayload, ...]
     total: int
+    limit: int | None = None
+    offset: int = 0
+    next_offset: int | None = None
 
 
 class MCPFencedCodeBlock(TypedDict):
