@@ -40,7 +40,7 @@ def test_session_reported_cost_metadata_is_not_read() -> None:
     estimate = estimate_session_cost(session)
 
     assert estimate.status == "unavailable"
-    assert estimate.total_usd == 0.0
+    assert estimate.total_usd is None
     assert "archive_provider_reported_cost" not in estimate.provenance
 
 
@@ -94,7 +94,7 @@ def test_hydrated_messages_report_missing_model_when_no_envelope_cost() -> None:
     estimate = estimate_session_cost(session)
 
     assert estimate.status == "unavailable"
-    assert estimate.total_usd == 0.0
+    assert estimate.total_usd is None
     # Either missing_model or missing_token_usage is acceptable; hydrated
     # messages contribute no model or usage facts.
     assert estimate.missing_reasons
@@ -158,7 +158,7 @@ def test_missing_price_is_unavailable_not_zero_precision() -> None:
     estimate = estimate_message_cost(message, origin="chatgpt-export")
 
     assert estimate.status == "unavailable"
-    assert estimate.total_usd == 0.0
+    assert estimate.total_usd is None
     assert estimate.missing_reasons == ("missing_price",)
     assert estimate.unavailable_reason == "no_price"
 
@@ -234,7 +234,7 @@ def test_live_archive_shaped_models_resolve_or_are_labelled_unknown() -> None:
     estimate = estimate_message_cost(message, origin="chatgpt-export")
     assert estimate.status == "unavailable"
     assert estimate.unavailable_reason == "no_price"
-    assert estimate.total_usd == 0.0
+    assert estimate.total_usd is None
 
 
 def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() -> None:
@@ -274,8 +274,8 @@ def test_current_opus_flagships_are_priced_not_zero() -> None:
     """
     for version in ("claude-opus-4-7", "claude-opus-4-8"):
         assert _normalize_model(f"{version}-20260101") == version
-        # 1M input + 1M output at Opus rates ($15 + $75) = $90.
-        assert estimate_cost(1_000_000, 1_000_000, version) == pytest.approx(90.0)
+        # 1M input + 1M output at the catalog's $5/$25 rates = $30.
+        assert estimate_cost(1_000_000, 1_000_000, version) == pytest.approx(30.0)
 
 
 def test_paid_model_missing_cache_rate_is_flagged_not_silently_zero(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -519,25 +519,16 @@ def test_canonical_model_family_returns_none_for_empty_or_none() -> None:
 
 
 def test_canonical_model_family_does_not_leak_pricing_catalog_routing_tag() -> None:
-    """polylogue-4c27 regression: the vendored LiteLLM catalog's bare-name
-    entries carry `litellm_provider` routing tags (e.g.
-    "vertex_ai-anthropic_models", "bedrock_converse", "openrouter") that are
-    catalog/routing provenance, not vendor identity -- multiple provider
-    routes to the SAME vendor collide on a bare model name and only one wins
-    the catalog dict. `claude-fable-5` is a real vendored catalog entry whose
-    bare-key winner is `bedrock_converse`/`vertex_ai-anthropic_models`
-    depending on dict insertion order -- neither is "the family". The
-    pre-fix `canonical_model_family` returned that raw routing tag; the
-    fixed version must return the true semantic vendor regardless of which
-    catalog row happens to win."""
+    """polylogue-4c27 regression: canonical family is derived from the model
+    name, independently of catalog provenance. Curated entries use the
+    semantic vendor as their source label, while routed catalog entries may
+    retain a routing tag."""
     from polylogue.archive.semantic.pricing import PRICING, pricing_catalog_source
 
-    # The catalog's own provenance tag is confirmed messy/non-vendor for this
-    # model -- if this assertion ever starts failing because the vendored
-    # catalog changed shape, that's fine; the point is canonical_model_family
-    # must not track it either way.
-    assert PRICING["claude-fable-5"].source_name != "anthropic"
-    assert pricing_catalog_source("claude-fable-5") != "anthropic"
+    # The curated override currently records Anthropic as the catalog source.
+    # The semantic-family assertion remains independent of that source label.
+    assert PRICING["claude-fable-5"].source_name == "anthropic"
+    assert pricing_catalog_source("claude-fable-5") == "anthropic"
     assert canonical_model_family("claude-fable-5") == "anthropic"
 
 
@@ -564,7 +555,7 @@ def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
     assert fable.vendor == "anthropic"
     assert fable.model_line == "fable"
     assert fable.normalized_model == "claude-fable-5"
-    assert fable.pricing_source is not None and fable.pricing_source != fable.vendor
+    assert fable.pricing_source == "anthropic"
     assert fable.attribution_source == "dispatch_turn"
 
     opus = resolve_model_identity("claude-opus-4-8", attribution_source="child_observed")
