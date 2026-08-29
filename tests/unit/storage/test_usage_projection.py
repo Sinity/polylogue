@@ -110,6 +110,44 @@ def test_paid_model_with_missing_cache_rate_is_not_persisted_as_priced(
     assert cost is None
 
 
+def test_projection_rejects_paid_model_with_missing_cache_write_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing cache-write rate leaves provider pricing incomplete.
+
+    Anti-vacuity: checking only cache reads lets a paid cache-write lane pass
+    as complete while ``estimate_cost`` prices that lane at zero.
+    """
+    monkeypatch.setitem(
+        pricing_module.PRICING,
+        "paid-without-cache-write-rate",
+        pricing_module.ModelPricing(
+            source_name="test",
+            input_usd_per_1m=1.0,
+            output_usd_per_1m=2.0,
+            cache_read_usd_per_1m=0.5,
+            cache_write_usd_per_1m=0.0,
+        ),
+    )
+
+    (projection,) = project_provider_usage_events(
+        [
+            {
+                "session_id": "s1",
+                "provider_event_type": "message_usage",
+                "model_name": "paid-without-cache-write-rate",
+                "last_input_tokens": 100,
+                "last_cache_write_tokens": 1_000,
+            }
+        ],
+        origin="test",
+    )
+
+    assert projection.cost_usd is None
+    assert projection.state == "incomplete"
+    assert projection.missing_reasons == ("missing_cache_write_price",)
+
+
 def test_free_model_with_zero_cache_rate_remains_priced(monkeypatch: pytest.MonkeyPatch) -> None:
     """Zero is a valid cache rate for a genuinely free catalog model."""
     monkeypatch.setitem(
