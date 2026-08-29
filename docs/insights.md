@@ -114,7 +114,7 @@ message/session event or pending-tool count behind the decision.
 
 MCP exposes two convenience readers over the same materialized rows:
 `workflow_shape_distribution(since, until, group_by)` and
-`find_abandoned_sessions(since, repo_path, min_severity)`.
+`find_abandoned_sessions(since, repo, min_severity)`.
 
 ## Session Latency Profiles
 

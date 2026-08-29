@@ -564,7 +564,7 @@ async def _query_insight_projection(
     since: str | None,
     until: str | None,
 ) -> str:
-    """``query(projection="postmortem"|"pathologies"|"abandoned_sessions"|"stuck_sessions", ...)``.
+    """``query(projection="postmortem"|"pathologies"|"abandoned_sessions"|"stuck_sessions"|"tool-episodes", ...)``.
 
     ``postmortem``/``pathologies`` reuse the same filter-building scaffolding
     ``_query_sessions`` does (``build_session_query_request`` ->
@@ -577,7 +577,15 @@ async def _query_insight_projection(
         from polylogue.insights.tool_episodes import ToolEpisodeQuery
 
         episodes = await hooks.get_polylogue().list_tool_episode_insights(
-            ToolEpisodeQuery(origin=origin, limit=hooks.clamp_limit(limit), offset=0)
+            ToolEpisodeQuery(
+                origin=origin,
+                tag=tag,
+                repo=repo,
+                since=since,
+                until=until,
+                limit=hooks.clamp_limit(limit),
+                offset=0,
+            )
         )
         return hooks.json_payload(
             MCPRootPayload(
@@ -607,9 +615,10 @@ async def _query_insight_projection(
         if projection == "abandoned_sessions":
             abandoned = await poly.find_abandoned_sessions(
                 origin=origin,
+                tag=tag,
+                repo=repo,
                 since=since,
                 until=until,
-                repo_path=repo,
                 limit=hooks.clamp_limit(limit),
             )
             return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
@@ -618,7 +627,9 @@ async def _query_insight_projection(
         from polylogue.insights.archive import SessionLatencyProfileInsightQuery
 
         stuck = await poly.find_stuck_session_latency_profile_insights(
-            SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=hooks.clamp_limit(limit))
+            SessionLatencyProfileInsightQuery(
+                origin=origin, tag=tag, repo=repo, since=since, until=until, limit=hooks.clamp_limit(limit)
+            )
         )
         return hooks.json_payload(
             MCPRootPayload(root={"items": [insight.model_dump(mode="json") for insight in stuck], "total": len(stuck)}),
@@ -717,7 +728,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         default; ``limit`` raises or lowers it). ``projection`` also accepts
         ``"abandoned_sessions"`` (dangling-work terminal states) and
         ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
-        by the same origin/since/until filters.
+        by the same origin/tag/repo/since/until filters.
 
         Personal-state continuations are decimal offsets, matching the
         ``next_offset`` returned in each page.

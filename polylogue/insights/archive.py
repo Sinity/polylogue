@@ -117,11 +117,15 @@ class SessionProfileInsightQuery(SessionWindowInsightQuery):
     tier: str = "merged"
     workflow_shape: str | None = None
     terminal_state: str | None = None
+    tag: str | None = None
+    repo: str | None = None
 
 
 class SessionLatencyProfileInsightQuery(OriginTimeWindowInsightQuery):
     session_id: str | None = None
     only_stuck: bool = False
+    tag: str | None = None
+    repo: str | None = None
 
 
 class SessionWorkEventInsightQuery(SearchableSessionTimelineInsightQuery):

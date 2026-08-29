@@ -383,7 +383,6 @@ def abandoned_session_items(
     profiles: Sequence[SessionProfileInsight],
     *,
     min_severity: str,
-    repo_path: str | None = None,
 ) -> list[dict[str, object]]:
     """Sessions whose terminal state indicates dangling work (#1691).
 
@@ -400,9 +399,6 @@ def abandoned_session_items(
         evidence = profile.evidence
         state = inference.terminal_state if inference is not None else "unknown"
         if ABANDONMENT_SEVERITY_RANK.get(state, 0) < min_rank:
-            continue
-        cwd_paths = evidence.cwd_paths if evidence is not None else ()
-        if repo_path and not any(repo_path in path for path in cwd_paths):
             continue
         items.append(
             {
