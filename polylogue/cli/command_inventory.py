@@ -64,6 +64,14 @@ ROOT_COMMAND_ROLE_SECTIONS: tuple[RootCommandRoleSection, ...] = (
 )
 
 
+ROOT_COMMAND_MARKER_HELP: dict[str, str] = {
+    # `find` is the query marker the dispatcher consumes, not a registered
+    # command. Root help teaches it as the entry point to every query
+    # workflow, so it belongs beside the verbs it introduces.
+    "find": "Search the archive, then optionally run an action.",
+}
+
+
 def iter_command_paths(command: click.Command, *, include_root: bool = False) -> tuple[CommandPath, ...]:
     """Return the recursive command-path inventory for a Click command tree."""
     paths: list[CommandPath] = []
@@ -88,6 +96,7 @@ def iter_command_paths(command: click.Command, *, include_root: bool = False) ->
 
 __all__ = [
     "CommandPath",
+    "ROOT_COMMAND_MARKER_HELP",
     "ROOT_COMMAND_ROLE_SECTIONS",
     "RootCommandRoleSection",
     "iter_command_paths",
