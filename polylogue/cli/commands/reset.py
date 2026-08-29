@@ -103,15 +103,18 @@ def _archive_index_targets() -> list[tuple[str, Path]]:
     """Resolve only the rebuildable index tier files for schema rebuilds."""
     root = _archive_root()
     name, _filename = _INDEX_ARCHIVE_DATABASE
-    path = _index_db_path()
     # A managed generation is not a disposable sibling of the configured
     # root.  Deleting it in place bypasses blue/green promotion and can leave
     # a second writable index beside the pointer (the July live incident).
+    # The refusal reads the pointer's presence, never its target: a pointer
+    # naming a path outside the root is precisely a generation this must not
+    # touch, and resolving it first would raise instead of refusing.
     if (root / ".index-active-pointer").exists():
         raise click.ClickException(
             "reset --index is unsafe for a managed active generation; "
             "use `polylogue ops maintenance rebuild-index` to create and promote a replacement"
         )
+    path = _index_db_path()
     targets: list[tuple[str, Path]] = []
     if path.exists():
         targets.append((name, path))
