@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,7 @@ def test_path_aliases_resolve_to_equal_archive_identity(tmp_path: Path) -> None:
 
 def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_pointer(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
-    canonical = tmp_path / "canonical"
+    canonical = configured / "canonical"
     _touch_tiers(configured)
     _touch_tiers(canonical)
     for name in ("source.db", "user.db", "ops.db", "embeddings.db"):
@@ -58,6 +59,27 @@ def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_poin
     assert location.active_tier("ops").resolved_path == (canonical / "ops.db").resolve()
     assert location.shadow_index is not None
     assert location.shadow_index.resolved_path == configured / "index.db"
+
+
+def test_location_allows_an_internal_pointer_after_archive_root_relocation(tmp_path: Path) -> None:
+    """A mover-rewritten pointer remains valid when it names the moved root."""
+    old_root = tmp_path / "archive"
+    _touch_tiers(old_root)
+    generation = old_root / ".index-generations" / "generation-1"
+    generation.mkdir(parents=True)
+    active_index = generation / "index.db"
+    active_index.touch()
+    (old_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    new_root = tmp_path / "moved"
+    os.rename(old_root, new_root)
+    moved_index = new_root / ".index-generations" / "generation-1" / "index.db"
+    (new_root / ".index-active-pointer").write_text(str(moved_index), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(new_root)
+
+    assert location.active_index_path == moved_index
+    assert location.active_index.resolved_path == moved_index
 
 
 @pytest.mark.parametrize("pointer_value", ("relative/index.db", "/tmp/not-index.db"))
@@ -80,6 +102,78 @@ def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, poi
         ArchiveLocation.resolve(root)
     with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
         resolve_active_index_path(root)
+
+
+def test_archive_location_rejects_active_pointer_outside_configured_root(tmp_path: Path) -> None:
+    """An archive copy must not follow its source archive's active index pointer."""
+    root = tmp_path / "archive-copy"
+    foreign = tmp_path / "source-archive"
+    root.mkdir()
+    foreign.mkdir()
+    foreign_index = foreign / "index.db"
+    foreign_index.touch()
+    (root / ".index-active-pointer").write_text(str(foreign_index), encoding="utf-8")
+
+    with pytest.raises(ArchiveLocationError, match="outside configured archive root"):
+        ArchiveLocation.resolve(root)
+
+
+def test_archive_location_rejects_a_symlink_preserving_archive_copy(tmp_path: Path) -> None:
+    """A copy carrying its source's absolute index symlink must not serve the source.
+
+    `promote()` writes an absolute symlink at root/index.db, and the pointer
+    names that symlink. A copy made with `rsync -a` or `cp -a` preserves both,
+    so the pointer and the symlink still agree and target equality alone would
+    admit the copy — which then reads the archive it was copied from. The
+    durable tiers are what separate the cases: real files inside a copy, symlinks
+    out in a genuine symlink farm.
+
+    Anti-vacuity: dropping the durable-tier check from
+    `pointer_is_configured_symlink_target` admits this copy and resolves its
+    index inside `origin`.
+    """
+    origin = tmp_path / "origin"
+    generation = origin / ".index-generations" / "gen-1"
+    generation.mkdir(parents=True)
+    (generation / "index.db").write_text("index", encoding="utf-8")
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (origin / name).write_text(name, encoding="utf-8")
+    (origin / "index.db").symlink_to(generation / "index.db")
+    (origin / ".index-active-pointer").write_text(str(origin / "index.db"), encoding="utf-8")
+
+    # The origin itself resolves, inside itself.
+    assert ArchiveLocation.resolve(origin).active_index.resolved_path.is_relative_to(origin.resolve())
+
+    copy = tmp_path / "copy"
+    shutil.copytree(origin, copy, symlinks=True)
+
+    with pytest.raises(ArchiveLocationError, match="outside configured archive root"):
+        ArchiveLocation.resolve(copy)
+
+
+def test_archive_location_admits_a_symlink_farm_root(tmp_path: Path) -> None:
+    """An archive root that is entirely a symlink farm resolves to its real location.
+
+    Anti-vacuity: requiring containment without the farm exception refuses this
+    and strands such an archive, which is unreadable to CLI, daemon, MCP and API
+    alike because `ArchiveLocation.resolve` is the single choke point.
+    """
+    real = tmp_path / "real"
+    generation = real / ".index-generations" / "gen-1"
+    generation.mkdir(parents=True)
+    (generation / "index.db").write_text("index", encoding="utf-8")
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (real / name).write_text(name, encoding="utf-8")
+
+    farm = tmp_path / "farm"
+    farm.mkdir()
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (farm / name).symlink_to(real / name)
+    (farm / "index.db").symlink_to(generation / "index.db")
+    (farm / ".index-active-pointer").write_text(str(farm / "index.db"), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(farm)
+    assert location.active_index.resolved_path == (generation / "index.db").resolve()
 
 
 def test_archive_location_rejects_undecodable_active_pointer(tmp_path: Path) -> None:
@@ -367,8 +461,8 @@ def test_assert_owns_archive_location_rejects_foreign_root(tmp_path: Path) -> No
 
 def test_assert_owns_archive_location_rejects_stale_generation_after_pointer_rotation(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    generation_a = tmp_path / "gen-a"
-    generation_b = tmp_path / "gen-b"
+    generation_a = root / "gen-a"
+    generation_b = root / "gen-b"
     _touch_tiers(root)
     generation_a.mkdir()
     generation_b.mkdir()

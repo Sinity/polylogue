@@ -53,7 +53,12 @@ from polylogue.maintenance.rebuild_index import (
     candidate_build_schema_identity,
     validate_rebuild_source_admission,
 )
-from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
+from polylogue.storage.archive_identity import (
+    ArchiveLocation,
+    ArchiveLocationError,
+    OwnedArchiveLocation,
+    assert_owns_archive_location,
+)
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
     IndexRebuildTransaction,
@@ -368,18 +373,13 @@ def has_resumable_daemon_bulk_rebuild_transaction(root: Path) -> bool:
     threshold -- abandoning a partially-built generation mid-flight would
     waste every page already replayed into it.
     """
-    anchor = root / ".index-active-pointer"
-    if not anchor.exists() and not anchor.is_symlink():
-        return False
     try:
-        pointer_target = Path(anchor.read_text(encoding="utf-8").strip())
-        if not pointer_target.is_absolute() or pointer_target.name != "index.db":
-            return False
+        pointer_target = ArchiveLocation.resolve(root).active_index_path
         transaction_path = (
             pointer_target.parent / ".index-rebuild-transactions" / f"{DAEMON_BULK_REBUILD_OPERATION_ID}.json"
         )
         transaction = IndexRebuildTransaction(**json.loads(transaction_path.read_text(encoding="utf-8")))
-    except (FileNotFoundError, OSError, ValueError, TypeError, KeyError):
+    except (ArchiveLocationError, FileNotFoundError, OSError, ValueError, TypeError, KeyError):
         return False
     return transaction.status not in _TERMINAL_NOT_RESUMABLE
 

@@ -44,7 +44,11 @@ def resolve_active_index_path(archive_root: Path) -> Path:
     Pure function of ``archive_root`` alone (no ambient environment/cwd
     reads): follows ``.index-active-pointer`` when present so ordinary
     config resolution can never silently diverge from a promoted generation
-    (polylogue-k8kj finding 1). When the plain ``archive_root/index.db``
+    (polylogue-k8kj finding 1). Pointer targets must remain inside the configured
+    archive root, except when the configured ``index.db`` symlink resolves to
+    the same target. This preserves archives whose configured root is a symlink
+    farm while refusing a copied archive's stale absolute pointer.
+    When the plain ``archive_root/index.db``
     path exists as a stale regular file that diverges from the active
     pointer target -- the signature of an interrupted rebuild that updated
     the pointer without ever swapping the conventional path over to a
@@ -134,6 +138,36 @@ class ArchiveLocation:
             candidate = Path(raw)
             if not candidate.is_absolute() or candidate.name != "index.db":
                 raise ArchiveLocationError(f"invalid active index pointer: {candidate}")
+            resolved_candidate = candidate.resolve(strict=False)
+            # A symlink farm — an archive root whose entries all point at a real
+            # location elsewhere — legitimately resolves its index outside the
+            # root. A copy made with `rsync -a` or `cp -a` carries the same two
+            # facts, because `promote()` writes an absolute symlink at
+            # root/index.db and the pointer names it: the copy's pointer and
+            # symlink still agree, so target equality alone admits it and it
+            # then serves the archive it was copied from.
+            #
+            # The two cases differ in the durable tiers. In a farm they are
+            # symlinks out alongside the index; in a copy they are real files
+            # inside the copy while only the index points away. Require that
+            # divergence, so a copy is refused and a farm is not.
+            durable_tiers_are_links = [
+                tier.configured_path.is_symlink()
+                for tier in configured
+                if tier.name != "index" and tier.configured_path.exists()
+            ]
+            root_is_symlink_farm = bool(durable_tiers_are_links) and all(durable_tiers_are_links)
+            pointer_is_configured_symlink_target = (
+                configured_index.configured_path.is_symlink()
+                and configured_index.resolved_path == resolved_candidate
+                and root_is_symlink_farm
+            )
+            pointer_is_inside_configured_root = resolved_candidate.is_relative_to(configured_root.resolve(strict=False))
+            if not pointer_is_inside_configured_root and not pointer_is_configured_symlink_target:
+                raise ArchiveLocationError(
+                    "active index pointer target is outside configured archive root: "
+                    f"{candidate} (root: {configured_root})"
+                )
             pointer = candidate
         active_index = TierFileIdentity.resolve("index", pointer or configured_index.configured_path)
         shadow_index: TierFileIdentity | None = None
