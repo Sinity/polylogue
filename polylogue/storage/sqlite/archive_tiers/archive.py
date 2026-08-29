@@ -307,7 +307,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_session_phases,
     read_session_work_events,
     rebuild_archive_messages_fts,
+    refresh_and_sweep_attachment_rows,
     search_archive_blocks,
+    session_attachment_ids,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
@@ -5053,7 +5055,15 @@ class ArchiveStore:
                     for session_id in resolved_session_ids:
                         conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
                         conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
+                        # attachment_refs cascades from sessions, so the refs
+                        # vanish with no Python code observing it. Their
+                        # attachments rows would survive with a stale ref_count
+                        # and no reachable ref -- what archive verification
+                        # reports as an error. Read the ids before the delete;
+                        # after it there is nothing left to join through.
+                        orphan_candidates = session_attachment_ids(conn, session_id)
                         cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+                        refresh_and_sweep_attachment_rows(conn, orphan_candidates)
                         deleted += max(int(cursor.rowcount), 0)
                 finally:
                     conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")

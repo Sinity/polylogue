@@ -1046,6 +1046,21 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # values. Existing index rows require fresh re-ingest.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=77,
+        # The attachment sweep counts live refs per attachment_id, and a
+        # session delete sweeps every attachment the session touched. Without
+        # this index each count scans attachment_refs whole, which puts a
+        # per-attachment full scan inside the bulk delete path.
+        classes=(DerivedDeltaClass.INDEX_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v77-attachment-ref-attachment-index",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_attachment_refs_attachment"),),
+            ),
+        ),
+    ),
 )
 
 

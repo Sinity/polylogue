@@ -75,9 +75,9 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints:
-        [apply_insight_materialization, rebuild_archive_messages_fts, repair_stale_prefix_branch_points,
-        replace_parser_ingest_flag_tags, upsert_insight_materialization, upsert_parser_ingest_flag_tags,
-        upsert_session_profile_costs, write_parsed_session_to_archive]
+        [apply_insight_materialization, rebuild_archive_messages_fts, refresh_and_sweep_attachment_rows,
+        repair_stale_prefix_branch_points, replace_parser_ingest_flag_tags, upsert_insight_materialization,
+        upsert_parser_ingest_flag_tags, upsert_session_profile_costs, write_parsed_session_to_archive]
     - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces:
         - tier: index
