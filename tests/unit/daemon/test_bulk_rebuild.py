@@ -34,6 +34,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -59,6 +60,7 @@ from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLoca
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.index_generation import (
     IndexGenerationStore,
+    IndexRebuildTransaction,
     rebuild_source_evidence_snapshot,
     source_revision_snapshot,
 )
@@ -396,6 +398,20 @@ def test_resumable_transaction_does_not_follow_foreign_active_pointer(tmp_path: 
     foreign.mkdir()
     (foreign / "index.db").touch()
     (root / ".index-active-pointer").write_text(str(foreign / "index.db"), encoding="utf-8")
+    transaction = IndexRebuildTransaction(
+        operation_id=DAEMON_BULK_REBUILD_OPERATION_ID,
+        generation_id="gen-foreign",
+        generation_owner_id="owner-foreign",
+        source_snapshot="snapshot-foreign",
+        status="running",
+        created_at_ms=1,
+        updated_at_ms=1,
+    )
+    transaction_root = foreign / ".index-rebuild-transactions"
+    transaction_root.mkdir()
+    (transaction_root / f"{DAEMON_BULK_REBUILD_OPERATION_ID}.json").write_text(
+        json.dumps(asdict(transaction)), encoding="utf-8"
+    )
 
     assert has_resumable_daemon_bulk_rebuild_transaction(root) is False
 

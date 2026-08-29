@@ -595,7 +595,7 @@ def test_failed_inactive_generation_is_discarded(tmp_path: Path) -> None:
 
 def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
-    canonical = configured / "canonical"
+    canonical = tmp_path / "canonical"
     configured.mkdir()
     canonical.mkdir()
     for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS):
