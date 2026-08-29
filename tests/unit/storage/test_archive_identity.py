@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -115,6 +116,64 @@ def test_archive_location_rejects_active_pointer_outside_configured_root(tmp_pat
 
     with pytest.raises(ArchiveLocationError, match="outside configured archive root"):
         ArchiveLocation.resolve(root)
+
+
+def test_archive_location_rejects_a_symlink_preserving_archive_copy(tmp_path: Path) -> None:
+    """A copy carrying its source's absolute index symlink must not serve the source.
+
+    `promote()` writes an absolute symlink at root/index.db, and the pointer
+    names that symlink. A copy made with `rsync -a` or `cp -a` preserves both,
+    so the pointer and the symlink still agree and target equality alone would
+    admit the copy — which then reads the archive it was copied from. The
+    durable tiers are what separate the cases: real files inside a copy, symlinks
+    out in a genuine symlink farm.
+
+    Anti-vacuity: dropping the durable-tier check from
+    `pointer_is_configured_symlink_target` admits this copy and resolves its
+    index inside `origin`.
+    """
+    origin = tmp_path / "origin"
+    generation = origin / ".index-generations" / "gen-1"
+    generation.mkdir(parents=True)
+    (generation / "index.db").write_text("index", encoding="utf-8")
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (origin / name).write_text(name, encoding="utf-8")
+    (origin / "index.db").symlink_to(generation / "index.db")
+    (origin / ".index-active-pointer").write_text(str(origin / "index.db"), encoding="utf-8")
+
+    # The origin itself resolves, inside itself.
+    assert ArchiveLocation.resolve(origin).active_index.resolved_path.is_relative_to(origin.resolve())
+
+    copy = tmp_path / "copy"
+    shutil.copytree(origin, copy, symlinks=True)
+
+    with pytest.raises(ArchiveLocationError, match="outside configured archive root"):
+        ArchiveLocation.resolve(copy)
+
+
+def test_archive_location_admits_a_symlink_farm_root(tmp_path: Path) -> None:
+    """An archive root that is entirely a symlink farm resolves to its real location.
+
+    Anti-vacuity: requiring containment without the farm exception refuses this
+    and strands such an archive, which is unreadable to CLI, daemon, MCP and API
+    alike because `ArchiveLocation.resolve` is the single choke point.
+    """
+    real = tmp_path / "real"
+    generation = real / ".index-generations" / "gen-1"
+    generation.mkdir(parents=True)
+    (generation / "index.db").write_text("index", encoding="utf-8")
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (real / name).write_text(name, encoding="utf-8")
+
+    farm = tmp_path / "farm"
+    farm.mkdir()
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (farm / name).symlink_to(real / name)
+    (farm / "index.db").symlink_to(generation / "index.db")
+    (farm / ".index-active-pointer").write_text(str(farm / "index.db"), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(farm)
+    assert location.active_index.resolved_path == (generation / "index.db").resolve()
 
 
 def test_archive_location_rejects_undecodable_active_pointer(tmp_path: Path) -> None:

@@ -139,8 +139,28 @@ class ArchiveLocation:
             if not candidate.is_absolute() or candidate.name != "index.db":
                 raise ArchiveLocationError(f"invalid active index pointer: {candidate}")
             resolved_candidate = candidate.resolve(strict=False)
+            # A symlink farm — an archive root whose entries all point at a real
+            # location elsewhere — legitimately resolves its index outside the
+            # root. A copy made with `rsync -a` or `cp -a` carries the same two
+            # facts, because `promote()` writes an absolute symlink at
+            # root/index.db and the pointer names it: the copy's pointer and
+            # symlink still agree, so target equality alone admits it and it
+            # then serves the archive it was copied from.
+            #
+            # The two cases differ in the durable tiers. In a farm they are
+            # symlinks out alongside the index; in a copy they are real files
+            # inside the copy while only the index points away. Require that
+            # divergence, so a copy is refused and a farm is not.
+            durable_tiers_are_links = [
+                tier.configured_path.is_symlink()
+                for tier in configured
+                if tier.name != "index" and tier.configured_path.exists()
+            ]
+            root_is_symlink_farm = bool(durable_tiers_are_links) and all(durable_tiers_are_links)
             pointer_is_configured_symlink_target = (
-                configured_index.configured_path.is_symlink() and configured_index.resolved_path == resolved_candidate
+                configured_index.configured_path.is_symlink()
+                and configured_index.resolved_path == resolved_candidate
+                and root_is_symlink_farm
             )
             pointer_is_inside_configured_root = resolved_candidate.is_relative_to(configured_root.resolve(strict=False))
             if not pointer_is_inside_configured_root and not pointer_is_configured_symlink_target:
