@@ -16,6 +16,7 @@ The configured archive root contains these durable paths:
 | `user.db` | Human/user/agent overlays stored as assertions, immutable annotation schema definitions and batch provenance, settings, and context-delivery receipts. | Always back up. This tier is irreplaceable user state. |
 | `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Relocation full-evidence backups require it. |
 | `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact relocation full-evidence tier contract. |
+| `source-declared-absent.json` | Operator-authored declared-absent blob hashes for a pre-generation `source.db`. | Copy with `source.db`; never derive or replace it with GC observations. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
 `polylogue ops maintenance archive-plan --output-format json` is the machine-readable
@@ -37,6 +38,43 @@ Use these profiles when choosing what to copy:
 When SQLite WAL files are present, either stop the daemon or run an explicit
 checkpoint before copying. Copying only `*.db` while an uncheckpointed `*-wal`
 contains recent writes creates an incomplete backup.
+
+### Pre-generation source assertions
+
+A source tier before the GC-generation migration may carry an optional
+`source-declared-absent.json` beside `source.db`:
+
+```json
+{
+  "format": "polylogue-source-declared-absent-v1",
+  "freeze_authority": "polylogue-2x6xu",
+  "source_db_sha256": "<sha256 of source.db>",
+  "declared_absent_blob_hashes": ["<64 lowercase hex characters>"]
+}
+```
+
+This is a durable metadata-only change: it adds no SQLite schema object and
+has no lifecycle migration. A sidecar is required because an audit row may not
+exist on the restored tier, while an additive migration cannot run before the
+backup gate it would unblock. GC member outcomes are observations and cannot
+provide operator intent. The verifier re-projects source references from the
+restored `source.db`, checks the declaration against that projection, and
+requires the effective reference scope to remain non-empty. The sidecar is
+included in the signed backup artifact inventory, so changing it invalidates
+the backup receipt.
+
+The declaration applies only to source-owned blob hashes. It does not excuse
+missing hashes referenced by `index.db` attachments. A `full_evidence` backup
+therefore cannot attest when an index attachment is missing, even if that hash
+also appears in the source declaration. Restore or otherwise resolve every
+missing index attachment before using that profile for relocation or audit
+adoption.
+
+After the source generation migration creates `source_generations` and
+`source_items`, a retained sidecar makes verified backups fail closed. Remove
+`source-declared-absent.json` from the archive root after the migration and
+before the next verified backup; it is valid only for the pre-generation
+source tier.
 
 ## Offline archive-root relocation
 
