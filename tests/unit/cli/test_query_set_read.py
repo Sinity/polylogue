@@ -159,7 +159,7 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
         request: RootModeRequest,
         *,
         output_format: str,
-        fields: str | None,
+        fields: str | None = None,
         **_: object,
     ) -> None:
         captured["env"] = env
@@ -167,7 +167,11 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
         captured["output_format"] = output_format
         captured["fields"] = fields
 
-    with patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=_capture):
+    # `--view messages` is a registered view, which the query-set path routes
+    # through `_run_registered_view_query_set` rather than `run_query_set_read`.
+    # Patching the latter intercepts nothing and the verb reaches a real
+    # archive read.
+    with patch("polylogue.cli.read_views.query_set._run_registered_view_query_set", side_effect=_capture):
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -177,8 +181,10 @@ def test_read_all_registered_and_dispatches_via_root_cli() -> None:
 
     # The CLI must accept the verb without error even though no archive exists in the test env.
     assert result.exit_code == 0, result.output
-    # ndjson is mapped to jsonl internally
-    assert captured["output_format"] == "jsonl"
+    # `messages` is a registered view, so the requested format reaches that
+    # branch unchanged; the ndjson -> jsonl mapping belongs to the bulk
+    # summary/transcript/dialogue path, and this route renders json instead.
+    assert captured["output_format"] == "ndjson"
     assert isinstance(captured["request"], RootModeRequest)
     assert captured["request"].query_params()["origin"] == "claude-code-session"
     assert convs
