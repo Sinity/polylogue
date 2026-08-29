@@ -68,4 +68,4 @@ Pending generations are restartable; a restart resumes their exact member set in
 - The repository contract omits the `n:` and `p:` namespaces from `messages.message_id`; the generated-column expression includes them (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
 - The repository contract and `docs/architecture.md` call embeddings simply rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:54-56`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`).
 
-verified: 24be873c0 2026-08-27
+verified: a4536f6b26ba5a84cc9bfbb75c77805fb4442196 2026-08-27

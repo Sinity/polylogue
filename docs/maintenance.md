@@ -376,6 +376,10 @@ recovered state. If an interrupted apply leaves a prepared receipt, rerun the
 same command with that receipt path to record recovery; use a fresh path only
 after reviewing the recovered terminal state.
 
+Deletion trigger: retire this apply command and its tests after a read-only
+census reports zero orphaned `raw_payload` refs and zero hook events with a
+missing `blob_hash`. The matcher remains while blob liveness and GC consume it.
+
 ### `polylogue ops maintenance message-owner-scope-backfill` - pre-reindex user-state compatibility
 
 Read-only by default. It censuses legacy message marks and annotations against
