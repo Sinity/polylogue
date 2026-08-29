@@ -55,6 +55,9 @@ BACKUP_PROFILES: tuple[BackupProfile, ...] = (
 _MISSING_BLOB_WARNING_SAMPLE_LIMIT = 10
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _BLOB_REFERENCE_EVIDENCE_FILE = "blob-reference-evidence.json"
+_SOURCE_DECLARED_ABSENT_FILE = "source-declared-absent.json"
+_SOURCE_DECLARED_ABSENT_FORMAT = "polylogue-source-declared-absent-v1"
+_SOURCE_DECLARED_ABSENT_AUTHORITY = "polylogue-2x6xu"
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
@@ -464,10 +467,7 @@ def _source_blob_liveness_projection(
 def _latest_sealed_source_generation(source_db: Path) -> str | None:
     """Return the newest complete source generation, if this tier has them."""
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
-        tables = conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name IN ('source_generations', 'source_items')"
-        ).fetchall()
-        if len(tables) != 2:
+        if not _source_generation_tables_exist(conn):
             return None
         row = conn.execute(
             """SELECT g.source_generation_id
@@ -482,6 +482,15 @@ def _latest_sealed_source_generation(source_db: Path) -> str | None:
               LIMIT 1"""
         ).fetchone()
         return str(row[0]) if row is not None else None
+
+
+def _source_generation_tables_exist(conn: sqlite3.Connection) -> bool:
+    """Return whether the source tier has crossed the generation migration."""
+
+    tables = conn.execute(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('source_generations', 'source_items')"
+    ).fetchall()
+    return len(tables) == 2
 
 
 def _source_blob_reservations(source_db: Path) -> set[str]:
@@ -502,6 +511,67 @@ def _source_blob_reservations(source_db: Path) -> set[str]:
                 raise RuntimeError("source.blob_publication_reservations has invalid blob_hash evidence")
             reservations.add(blob_hash.hex())
         return reservations
+
+
+def _source_blob_hashes_from_restored_source(source_db: Path, *, source_generation_id: str | None) -> set[str]:
+    """Re-derive source-owned hashes from the restored source tier."""
+
+    projection = project_source_blob_liveness(
+        source_db,
+        immutable=True,
+        source_generation_id=source_generation_id,
+    )
+    if projection.blockers:
+        raise RuntimeError("restored source blob reference projection is blocked: " + "; ".join(projection.blockers))
+    return set(projection.live_hashes)
+
+
+def _load_source_declared_absent(source_db: Path, assertion_path: Path) -> set[str]:
+    """Load and authenticate the operator declaration against ``source.db``."""
+
+    _require_regular_backup_artifact(
+        assertion_path,
+        backup_root=assertion_path.parent,
+        label="source declared-absent assertion",
+    )
+    try:
+        assertion = json.loads(assertion_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("source declared-absent assertion is not valid JSON") from exc
+    if not isinstance(assertion, dict) or assertion.get("format") != _SOURCE_DECLARED_ABSENT_FORMAT:
+        raise RuntimeError("source declared-absent assertion has an unknown format")
+    if assertion.get("freeze_authority") != _SOURCE_DECLARED_ABSENT_AUTHORITY:
+        raise RuntimeError("source declared-absent assertion lacks polylogue-2x6xu freeze authority")
+    if assertion.get("source_db_sha256") != _sha256_file(source_db):
+        raise RuntimeError("source declared-absent assertion is bound to different source.db bytes")
+    raw_hashes = assertion.get("declared_absent_blob_hashes")
+    if not isinstance(raw_hashes, list) or not raw_hashes:
+        raise RuntimeError("source declared-absent assertion has an empty declared set")
+    if any(
+        not isinstance(blob_hash, str)
+        or len(blob_hash) != 64
+        or any(char not in "0123456789abcdef" for char in blob_hash)
+        for blob_hash in raw_hashes
+    ):
+        raise RuntimeError("source declared-absent assertion has invalid blob hashes")
+    hashes = {str(blob_hash) for blob_hash in raw_hashes}
+    if len(hashes) != len(raw_hashes):
+        raise RuntimeError("source declared-absent assertion contains duplicate blob hashes")
+    return hashes
+
+
+def _copy_source_declared_absent_assertion(source_db: Path, backup_root: Path) -> Path | None:
+    """Copy the optional durable source assertion into a backup package."""
+
+    source_path = source_db.with_name(_SOURCE_DECLARED_ABSENT_FILE)
+    if not source_path.exists() and not source_path.is_symlink():
+        return None
+    _require_regular_backup_artifact(
+        source_path, backup_root=source_db.parent, label="source declared-absent assertion"
+    )
+    destination = backup_root / _SOURCE_DECLARED_ABSENT_FILE
+    shutil.copy2(source_path, destination)
+    return destination
 
 
 def _inventory_from_liveness(projection: BlobLivenessProjection, reservations: set[str]) -> dict[str, set[str]]:
@@ -814,6 +884,12 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
             tier_source_fingerprints[f"{tier}.db"] = fingerprint
             backed_up_files.append(str(dst))
 
+        source_assertion = (
+            _copy_source_declared_absent_assertion(root / "source.db", backup_root)
+            if "source" in included_tiers
+            else None
+        )
+
         blob_reference_debt: BlobReferenceDebtReport | None = None
         source_generation_id = (
             _latest_sealed_source_generation(backup_root / "source.db") if "source" in included_tiers else None
@@ -854,6 +930,8 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
         backed_up_files.append(str(backup_root / "blob-inventory.json"))
     if (backup_root / _BLOB_REFERENCE_EVIDENCE_FILE).exists():
         backed_up_files.append(str(backup_root / _BLOB_REFERENCE_EVIDENCE_FILE))
+    if source_assertion is not None:
+        backed_up_files.append(str(source_assertion))
     if blob_reference_debt is not None and blob_reference_debt.missing_referenced_blobs:
         backed_up_files.append(str(backup_root / "blob-reference-debt.json"))
 
@@ -1015,6 +1093,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         source_included = (restored / "source.db").exists()
         index_path = restored / "index.db"
         reference_evidence_ok = True
+        source_scope_ok = True
         expected_reference_blobs: set[str] = set()
         expected_attachment_hashes: set[str] = set()
         observed_attachment_hashes: set[str] = set()
@@ -1027,6 +1106,9 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             )
             evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
             expected_reference_blobs = _expected_blob_hashes_from_evidence(evidence)
+            source_evidence_hashes = {
+                blob_hash for hashes in evidence["source_owner_hashes"].values() for blob_hash in hashes
+            }
             expected_attachment_hashes = set(evidence["index_attachment_hashes"])
             if evidence["index_attachment_evidence"] == "consulted":
                 if not index_path.exists():
@@ -1035,9 +1117,37 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 reference_evidence_ok = observed_attachment_hashes == expected_attachment_hashes
             else:
                 reference_evidence_ok = True
-            expected_reference_blobs.update(_source_blob_reservations(restored / "source.db"))
+            source_generation_id = evidence.get("source_generation_id")
+            if source_generation_id is not None and not isinstance(source_generation_id, str):
+                raise RuntimeError("backup blob reference evidence has invalid source generation identity")
+            with closing(
+                sqlite3.connect(f"file:{restored / 'source.db'}?mode=ro&immutable=1", uri=True)
+            ) as source_conn:
+                source_generation_tables_exist = _source_generation_tables_exist(source_conn)
+            restored_source_hashes = _source_blob_hashes_from_restored_source(
+                restored / "source.db",
+                source_generation_id=source_generation_id,
+            )
+            reference_evidence_ok = reference_evidence_ok and restored_source_hashes == source_evidence_hashes
+            assertion_path = restored / _SOURCE_DECLARED_ABSENT_FILE
+            declared_absent: set[str] = set()
+            if assertion_path.exists() or assertion_path.is_symlink():
+                if source_generation_id is not None or source_generation_tables_exist:
+                    raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
+                declared_absent = _load_source_declared_absent(restored / "source.db", assertion_path)
+                if not declared_absent.issubset(restored_source_hashes):
+                    reference_evidence_ok = False
+                effective_source_hashes = restored_source_hashes - declared_absent
+            else:
+                effective_source_hashes = restored_source_hashes
+            reservations = _source_blob_reservations(restored / "source.db")
+            expected_reference_blobs = effective_source_hashes | expected_attachment_hashes | reservations
+            if assertion_path.exists() or assertion_path.is_symlink():
+                source_scope_ok = bool(expected_reference_blobs)
         missing_canonical_blobs = expected_reference_blobs - restored_hash_set
-        canonical_blobs_resolved = not source_included or (not missing_canonical_blobs and reference_evidence_ok)
+        canonical_blobs_resolved = not source_included or (
+            not missing_canonical_blobs and reference_evidence_ok and source_scope_ok
+        )
         ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and canonical_blobs_resolved
         receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {
@@ -1052,6 +1162,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "canonical_blobs_resolved": canonical_blobs_resolved,
             "missing_canonical_blob_count": len(missing_canonical_blobs),
             "reference_evidence_resolved": reference_evidence_ok,
+            "source_effective_scope_nonempty": source_scope_ok,
             "expected_index_attachment_count": len(expected_attachment_hashes),
             "observed_index_attachment_count": len(observed_attachment_hashes),
             "scratch_restore": "temporary",

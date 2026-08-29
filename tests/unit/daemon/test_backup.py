@@ -22,6 +22,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -1058,6 +1059,114 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
     assert result.verification["canonical_blobs_resolved"] is False
     assert result.verification["missing_canonical_blob_count"] == 2
     assert result.verification["blob_inventory_exact"] is True
+
+
+def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A v30 source may excuse only an operator-declared missing blob.
+
+    Anti-vacuity: before writing the declaration, verification must reject the
+    missing reference; after writing it, deleting the retained blob must still
+    reject the backup. This is the mutation that would make the happy path
+    green without consulting the operator assertion.
+    """
+    db_setup(workspace_env)
+    archive_root = workspace_env["archive_root"]
+    source_db = archive_root / "source.db"
+    retained_payload = b"pre-generation retained source"
+    absent_payload = b"pre-generation deliberately absent source"
+    retained_hash = hashlib.sha256(retained_payload).digest()
+    absent_hash = hashlib.sha256(absent_payload).digest()
+    BlobStore(archive_root / "blob").write_from_bytes(retained_payload)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("DROP VIEW IF EXISTS source_item_reconciliation")
+        conn.execute("DROP TABLE IF EXISTS source_items")
+        conn.execute("DROP TABLE IF EXISTS source_generations")
+        conn.execute("PRAGMA user_version = 30")
+        for raw_id, blob_hash, payload in (
+            ("retained-raw", retained_hash, retained_payload),
+            ("absent-raw", absent_hash, absent_payload),
+        ):
+            conn.execute(
+                """INSERT INTO raw_sessions
+                   (raw_id, origin, native_id, source_path, source_index, blob_hash,
+                    blob_size, acquired_at_ms, validation_status)
+                   VALUES (?, 'codex-session', ?, ?, 0, ?, ?, 1, 'passed')""",
+                (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, len(payload)),
+            )
+            conn.execute(
+                """INSERT INTO blob_refs
+                   (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                   VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
+                (blob_hash, raw_id, f"/{raw_id}.jsonl", len(payload)),
+            )
+
+    without_assertion = backup_archive(output_dir=tmp_path / "without-assertion", verify=True)
+    assert without_assertion.ok is False
+    assert without_assertion.verification["missing_canonical_blob_count"] == 1
+
+    assertion_path = archive_root / backup_mod._SOURCE_DECLARED_ABSENT_FILE
+    assertion_path.write_text(
+        json.dumps(
+            {
+                "format": backup_mod._SOURCE_DECLARED_ABSENT_FORMAT,
+                "freeze_authority": backup_mod._SOURCE_DECLARED_ABSENT_AUTHORITY,
+                "source_db_sha256": hashlib.sha256(source_db.read_bytes()).hexdigest(),
+                "declared_absent_blob_hashes": [absent_hash.hex()],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    with_assertion = backup_archive(output_dir=tmp_path / "with-assertion", verify=True)
+    assert with_assertion.ok
+    assert with_assertion.verified
+    assert with_assertion.verification["missing_canonical_blob_count"] == 0
+    assert with_assertion.verification["source_effective_scope_nonempty"] is True
+    assert Path(with_assertion.output_path or "", backup_mod._SOURCE_DECLARED_ABSENT_FILE).is_file()
+    with sqlite3.connect(source_db) as conn:
+        assert (
+            validate_migration_backup_manifest(
+                Path(with_assertion.output_path or "") / "manifest.json",
+                ArchiveTier.SOURCE,
+                connection=conn,
+            ).name
+            == "verification-receipt.json"
+        )
+
+    assertion = json.loads(assertion_path.read_text(encoding="utf-8"))
+    assertion["declared_absent_blob_hashes"] = []
+    assertion_path.write_text(json.dumps(assertion, indent=2, sort_keys=True), encoding="utf-8")
+    empty_declared_set = backup_archive(output_dir=tmp_path / "empty-declared-set", verify=True)
+    assert empty_declared_set.ok is False
+    assert "empty declared set" in str(empty_declared_set.error)
+
+    assertion["declared_absent_blob_hashes"] = [absent_hash.hex(), "0" * 64]
+    assertion_path.write_text(json.dumps(assertion, indent=2, sort_keys=True), encoding="utf-8")
+    assert json.loads(assertion_path.read_text(encoding="utf-8"))["declared_absent_blob_hashes"] == [
+        absent_hash.hex(),
+        "0" * 64,
+    ]
+    unreferenced_declaration = backup_archive(output_dir=tmp_path / "unreferenced-declaration", verify=True)
+    assert unreferenced_declaration.ok is False, unreferenced_declaration.verification
+    assert unreferenced_declaration.verification["reference_evidence_resolved"] is False
+
+    assertion["declared_absent_blob_hashes"] = [absent_hash.hex(), retained_hash.hex()]
+    assertion_path.write_text(json.dumps(assertion, indent=2, sort_keys=True), encoding="utf-8")
+    empty_effective_scope = backup_archive(output_dir=tmp_path / "empty-effective-scope", verify=True)
+    assert empty_effective_scope.ok is False
+    assert empty_effective_scope.verification["missing_canonical_blob_count"] == 0
+    assert empty_effective_scope.verification["source_effective_scope_nonempty"] is False
+
+    assertion["declared_absent_blob_hashes"] = [absent_hash.hex()]
+    assertion_path.write_text(json.dumps(assertion, indent=2, sort_keys=True), encoding="utf-8")
+    (archive_root / "blob" / retained_hash.hex()[:2] / retained_hash.hex()[2:]).unlink()
+    with_unasserted_loss = backup_archive(output_dir=tmp_path / "with-unasserted-loss", verify=True)
+    assert with_unasserted_loss.ok is False
+    assert with_unasserted_loss.verification["missing_canonical_blob_count"] == 1
 
 
 def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path: Path) -> None:
