@@ -1794,6 +1794,21 @@ def _emit_daemon_list_payload(
     _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line, fields=fields)
 
 
+def _daemon_preview_refs(payload: Mapping[str, object]) -> tuple[str, ...] | None:
+    """Read the preview refs a daemon delete payload names, or None if it names none.
+
+    The daemon echoes ``preview_ref`` for a single ref and ``preview_refs``
+    for several, so both shapes are authoritative.
+    """
+    refs = payload.get("preview_refs")
+    if isinstance(refs, list) and refs and all(isinstance(ref, str) and ref for ref in refs):
+        return tuple(refs)
+    ref = payload.get("preview_ref")
+    if isinstance(ref, str) and ref:
+        return (ref,)
+    return None
+
+
 def _emit_daemon_search_payload(
     payload: Mapping[str, object],
     *,
@@ -2373,14 +2388,9 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         raise click.ClickException("daemon is unavailable; it must prepare the delete authorization")
 
     prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
-    preview_refs = daemon_preview.get("preview_refs")
-    if isinstance(preview_refs, list) and all(isinstance(ref, str) and ref for ref in preview_refs):
-        daemon_preview_refs = tuple(preview_refs)
-    else:
-        preview_ref = daemon_preview.get("preview_ref")
-        if not isinstance(preview_ref, str) or not preview_ref:
-            raise click.ClickException("daemon returned an invalid delete preview")
-        daemon_preview_refs = (preview_ref,)
+    daemon_preview_refs = _daemon_preview_refs(daemon_preview)
+    if daemon_preview_refs is None:
+        raise click.ClickException("daemon returned an invalid delete preview")
     if not force:
         click.echo(f"About to delete {len(prepared_session_ids)} session(s):", err=True)
         for session_id in prepared_session_ids[:5]:
@@ -2403,7 +2413,14 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
                 raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
             if cancellation is None:
                 raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
-            if cancellation.get("status") != "cancelled":
+            # An acknowledgement that names other previews, or none, is not
+            # evidence that this delete was cancelled.
+            acknowledged_refs = _daemon_preview_refs(cancellation)
+            if (
+                cancellation.get("status") != "cancelled"
+                or acknowledged_refs is None
+                or set(acknowledged_refs) != set(daemon_preview_refs)
+            ):
                 raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
             click.echo(
                 MutationResultPayload(
