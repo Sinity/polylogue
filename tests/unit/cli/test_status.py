@@ -744,15 +744,20 @@ class TestNoArchiveStatus:
     ) -> None:
         env = _make_app_env()
         configured_root = tmp_path / "archive"
+        farm = tmp_path / "farm"
         configured_root.mkdir()
-        # The index is not the root's top-level index.db, but a managed
-        # generation still lives under the root; a pointer naming a target
-        # outside it is refused.
-        generation = configured_root / ".index-generations" / "gen-status"
-        generation.mkdir(parents=True)
-        index_db = generation / "index.db"
-        initialize_archive_database(configured_root / "source.db", ArchiveTier.SOURCE)
+        farm.mkdir()
+        # An index outside the configured root is admitted only as a symlink
+        # farm: every durable tier is a symlink out alongside it. A copy --
+        # real durable files with only the index pointing away -- is refused,
+        # because its pointer would resolve into the archive it was copied
+        # from. Building the farm is what keeps this test about an external
+        # index rather than quietly relocating the index inside the root.
+        index_db = farm / "index.db"
+        initialize_archive_database(farm / "source.db", ArchiveTier.SOURCE)
         initialize_archive_database(index_db, ArchiveTier.INDEX)
+        (configured_root / "source.db").symlink_to(farm / "source.db")
+        (configured_root / "index.db").symlink_to(index_db)
         (configured_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
         route_failure_sample(
             FailureSample(kind="RuntimeError", locator="target:session_insights", message="root maintenance failure"),
