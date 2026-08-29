@@ -434,8 +434,10 @@ class TestResetCommandDeletion:
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
-        active_index = tmp_path / "index-generation" / "index.db"
-        active_index.parent.mkdir()
+        # A managed generation lives under the archive root; a pointer naming a
+        # target outside it is refused, which is what the clone hardening added.
+        active_index = archive_root / ".index-generations" / "gen-reset" / "index.db"
+        active_index.parent.mkdir(parents=True)
         (archive_root / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
         session_id = _seed_archive_session(archive_root, native_id="reset-one")
 

@@ -24,7 +24,7 @@ from devtools.checkout_guard import (
 )
 from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
-from polylogue.cli.command_inventory import ROOT_COMMAND_ROLE_SECTIONS
+from polylogue.cli.command_inventory import ROOT_COMMAND_MARKER_HELP, ROOT_COMMAND_ROLE_SECTIONS
 from polylogue.cli.help_markdown import render_help_markdown
 from polylogue.cli.machine_main import extract_option as _extract_option
 from polylogue.cli.machine_main import run_machine_entry
@@ -57,6 +57,13 @@ class QueryFirstGroup(QueryFirstGroupBase):
             for name in section.commands:
                 cmd = self.get_command(ctx, name)
                 if cmd is None:
+                    marker_help = ROOT_COMMAND_MARKER_HELP.get(name)
+                    if marker_help is None:
+                        continue
+                    # The marker is not a command, but its row shares the
+                    # column budget with the ones that are.
+                    rendered.add(name)
+                    rows.append((name, click.Command(name, help=marker_help).get_short_help_str()))
                     continue
                 rendered.add(name)
                 help_text = cmd.get_short_help_str()

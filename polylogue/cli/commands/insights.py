@@ -420,7 +420,7 @@ def insights_export_command(
 @click.option("--schema-id", default="delegation.discourse", show_default=True)
 @click.option("--schema-version", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("--exact-template-cap", type=click.IntRange(min=1), default=1, show_default=True)
-@click.option("--format", "output_format", type=click.Choice(["json"]), default=None)
+@click.option("-f", "--format", "output_format", type=click.Choice(["json"]), default=None)
 @click.pass_context
 def insights_fable_packet_command(
     ctx: click.Context,

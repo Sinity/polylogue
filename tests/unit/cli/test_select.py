@@ -28,6 +28,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _row(index: int = 1) -> SelectSessionRow:
@@ -59,7 +60,10 @@ def test_select_row_carries_shared_informativeness_fields() -> None:
     assert row.to_json()["cwd_display"] == "polylogue"
 
 
-def test_select_row_from_summary_uses_query_result_display_contract() -> None:
+@pytest.mark.frozen_clock_modules("polylogue.surfaces.query_rows")
+def test_select_row_from_summary_uses_query_result_display_contract(frozen_clock: FrozenClock) -> None:
+    """Anti-vacuity: without the frozen clock the expected label ages weekly."""
+    frozen_clock.set_time(datetime(2026, 8, 22, tzinfo=timezone.utc).timestamp())
     summary = SessionSummary(
         id=SessionId("conv-select"),
         origin=Origin.CODEX_SESSION,
