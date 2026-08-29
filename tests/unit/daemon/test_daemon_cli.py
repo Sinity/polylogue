@@ -1052,10 +1052,13 @@ def test_raw_materialization_closes_fts_on_cancellation(
     from polylogue.daemon import cli as daemon_cli
 
     archive = tmp_path / "archive"
-    active_index = tmp_path / "generations" / "active" / "index.db"
+    archive.mkdir()
+    # A managed generation lives under the archive root. A pointer naming a
+    # target outside it is admitted only as a symlink farm, and this test is
+    # about FTS closure rather than pointer topology.
+    active_index = archive / ".index-generations" / "active" / "index.db"
     active_index.parent.mkdir(parents=True)
     active_index.touch()
-    archive.mkdir()
     (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
     closed: list[tuple[Path, Path]] = []
 
@@ -1095,10 +1098,13 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
     from polylogue.daemon import cli as daemon_cli
 
     archive = tmp_path / "archive"
-    active_index = tmp_path / "generations" / "active" / "index.db"
+    archive.mkdir()
+    # A managed generation lives under the archive root. A pointer naming a
+    # target outside it is admitted only as a symlink farm, and this test is
+    # about FTS closure rather than pointer topology.
+    active_index = archive / ".index-generations" / "active" / "index.db"
     active_index.parent.mkdir(parents=True)
     active_index.touch()
-    archive.mkdir()
     (archive / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
     lease_events: list[str] = []
     held = 0
