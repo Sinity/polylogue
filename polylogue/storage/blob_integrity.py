@@ -785,7 +785,35 @@ def _source_db_for_blob_reference_report(db_path: str | Path) -> Path:
     return resolved
 
 
-def _source_path_availability(path: str | None) -> tuple[bool | None, str | None]:
+# Directories the archive owns and acquires material into. A recorded path
+# that runs through one of them was written under some archive root, so its
+# tail from that segment re-anchors onto the root in force.
+_ARCHIVE_OWNED_DIRECTORIES = ("inbox", "browser-capture", "hooks")
+
+
+def _reanchored_archive_path(path: Path, archive_root: Path | None) -> Path | None:
+    """Re-anchor a path recorded under a previous archive root, if it is one."""
+    if archive_root is None:
+        return None
+    parts = path.parts
+    for name in _ARCHIVE_OWNED_DIRECTORIES:
+        if name not in parts:
+            continue
+        tail = parts[parts.index(name) :]
+        candidate = archive_root.joinpath(*tail)
+        if candidate != path:
+            return candidate
+    return None
+
+
+def _source_path_availability(path: str | None, archive_root: Path | None = None) -> tuple[bool | None, str | None]:
+    """Report whether a recorded source path still resolves to material on disk.
+
+    An archive root moves, and acquisition records absolute paths, so a path
+    written under a previous root names material that is present under the
+    current one. Reporting those as missing is false loss, and this number
+    decides whether a prune was safe.
+    """
     if not path:
         return None, None
     direct = Path(path)
@@ -794,7 +822,15 @@ def _source_path_availability(path: str | None) -> tuple[bool | None, str | None
     if ":" in path:
         outer, _inner = path.split(":", 1)
         outer_path = Path(outer)
-        return outer_path.exists(), str(outer_path)
+        if outer_path.exists():
+            return True, str(outer_path)
+        reanchored_outer = _reanchored_archive_path(outer_path, archive_root)
+        if reanchored_outer is not None and reanchored_outer.exists():
+            return True, str(reanchored_outer)
+        return False, str(outer_path)
+    reanchored = _reanchored_archive_path(direct, archive_root)
+    if reanchored is not None and reanchored.exists():
+        return True, str(reanchored)
     return False, str(direct)
 
 
@@ -927,6 +963,7 @@ def classify_blob_reference_debt(
     """Classify missing referenced blobs without mutating archive state."""
 
     source_db = _source_db_for_blob_reference_report(db_path)
+    archive_root = source_db.parent
     blob_store = store if store is not None else BlobStore(source_db.parent / "blob")
     refs = _reference_rows_for_blob_debt(source_db)
     by_hash = _group_reference_rows(refs)
@@ -957,7 +994,9 @@ def classify_blob_reference_debt(
         else:
             ref_id_join["ref_id_without_raw_session"] += 1
 
-        source_availability = [_source_path_availability(_optional_str(row.get("source_path")))[0] for row in group]
+        source_availability = [
+            _source_path_availability(_optional_str(row.get("source_path")), archive_root)[0] for row in group
+        ]
         known_source_availability = [value for value in source_availability if value is not None]
         if not known_source_availability:
             source_path_presence["no_source_path_recorded"] += 1
@@ -975,7 +1014,7 @@ def classify_blob_reference_debt(
         if len(samples) < max(0, sample_size):
             sample = group[0]
             sample_source_path = _optional_str(sample.get("source_path"))
-            available, outer = _source_path_availability(sample_source_path)
+            available, outer = _source_path_availability(sample_source_path, archive_root)
             size = sample.get("size_bytes")
             samples.append(
                 BlobReferenceDebtSample(

@@ -1387,3 +1387,62 @@ def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path:
     assert report.ok is True
     assert report.total_references_seen == 1
     assert report.scanned_references == 1
+
+
+class TestSourcePathSurvivesAnArchiveRootMove:
+    """A recorded absolute path outlives the root it was written under.
+
+    Acquisition records absolute paths. When the archive root moves, those
+    paths stop resolving while the material itself is present under the new
+    root, and reporting it missing is false loss — the number that decides
+    whether a prune was safe.
+    """
+
+    @staticmethod
+    def _recorded_under(previous_root: Path, tail: str) -> str:
+        return str(previous_root / tail)
+
+    def test_a_path_under_a_previous_root_resolves_against_the_current_one(self, tmp_path: Path) -> None:
+        """Anti-vacuity: drop the re-anchoring and this reports False."""
+        archive_root = tmp_path / "state" / "polylogue"
+        (archive_root / "inbox").mkdir(parents=True)
+        (archive_root / "inbox" / "export.zip").write_bytes(b"payload")
+        recorded = self._recorded_under(tmp_path / "db" / "polylogue", "inbox/export.zip")
+
+        available, resolved = blob_integrity._source_path_availability(recorded, archive_root)
+
+        assert available is True
+        assert resolved == str(archive_root / "inbox" / "export.zip")
+
+    def test_a_zip_member_under_a_previous_root_resolves_through_its_container(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "state" / "polylogue"
+        (archive_root / "inbox").mkdir(parents=True)
+        (archive_root / "inbox" / "export.zip").write_bytes(b"payload")
+        recorded = self._recorded_under(tmp_path / "db" / "polylogue", "inbox/export.zip") + ":conversations.json"
+
+        available, resolved = blob_integrity._source_path_availability(recorded, archive_root)
+
+        assert available is True
+        assert resolved == str(archive_root / "inbox" / "export.zip")
+
+    def test_material_absent_under_both_roots_stays_missing(self, tmp_path: Path) -> None:
+        """Re-anchoring must not invent evidence: a real absence stays absent."""
+        archive_root = tmp_path / "state" / "polylogue"
+        (archive_root / "inbox").mkdir(parents=True)
+        recorded = self._recorded_under(tmp_path / "db" / "polylogue", "inbox/never-acquired.zip")
+
+        available, _resolved = blob_integrity._source_path_availability(recorded, archive_root)
+
+        assert available is False
+
+    def test_a_path_outside_every_archive_owned_directory_is_not_re_anchored(self, tmp_path: Path) -> None:
+        """A harness path is not archive-owned; re-anchoring it would be a guess."""
+        archive_root = tmp_path / "state" / "polylogue"
+        archive_root.mkdir(parents=True)
+        (archive_root / "projects").mkdir()
+        (archive_root / "projects" / "session.jsonl").write_bytes(b"payload")
+        recorded = str(tmp_path / "home" / "projects" / "session.jsonl")
+
+        available, _resolved = blob_integrity._source_path_availability(recorded, archive_root)
+
+        assert available is False
