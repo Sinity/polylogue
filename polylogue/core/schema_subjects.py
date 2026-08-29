@@ -33,6 +33,14 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
     SchemaSubjectSpec("gemini-cli", "gemini-cli", "gemini-cli", ("gemini-cli-session",)),
     SchemaSubjectSpec("hermes", "hermes", "hermes", ("hermes-session",)),
     SchemaSubjectSpec("antigravity", "antigravity", "antigravity", ("antigravity-session",)),
+    SchemaSubjectSpec(
+        "beads",
+        "beads",
+        "beads",
+        ("beads-issue",),
+        requires_package=False,
+        package_not_required_reason="Reserved origin with no admitted Beads session wire format",
+    ),
     SchemaSubjectSpec("grok", "grok", "grok", ("grok-export",)),
     SchemaSubjectSpec(
         "browser-capture",
