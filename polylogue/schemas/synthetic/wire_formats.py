@@ -316,6 +316,14 @@ PROVIDER_WIRE_ROUTES: dict[str, WireRoute] = {
         status="unsupported",
         reason="hermes requires local-agent session-document semantics, which this generic adapter does not model",
     ),
+    "claude-design": WireRoute(
+        status="unsupported",
+        reason="claude-design carries camelCase contentBlocks/turnChanges with content as a dict rather than a list, which neither the messages-path nor the tree config expresses",
+    ),
+    "grok": WireRoute(
+        status="unsupported",
+        reason="grok nests conversations then responses and carries no native conversation id, which a single messages path cannot express",
+    ),
 }
 
 # Descriptive alias for callers that care about capability status rather than
