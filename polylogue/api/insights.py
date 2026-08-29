@@ -865,7 +865,6 @@ class PolylogueInsightsMixin:
         repo: str | None = None,
         since: str | None = None,
         until: str | None = None,
-        repo_path: str | None = None,
         min_severity: str = "question_left",
         limit: int = 20,
     ) -> dict[str, object]:
@@ -878,7 +877,7 @@ class PolylogueInsightsMixin:
         profiles = await self.list_session_profile_insights(
             SessionProfileInsightQuery(origin=origin, tag=tag, repo=repo, since=since, until=until, limit=None)
         )
-        items = abandoned_session_items(profiles, min_severity=min_severity, repo_path=repo_path)
+        items = abandoned_session_items(profiles, min_severity=min_severity)
         return {"total": len(items), "items": items[:limit]}
 
     async def tool_call_latency_distribution(

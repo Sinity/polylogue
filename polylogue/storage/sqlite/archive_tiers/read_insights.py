@@ -17,6 +17,7 @@ from polylogue.insights.archive_models import ArchiveInsightProvenance
 from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
 from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
+from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ACTION_FOLLOWUP_RELATION_SQL
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 
 OriginNormalizer = Callable[[str | None], str | None]
@@ -105,7 +106,8 @@ class ArchiveReadInsights:
             params.append(until_ms)
         rows = self._conn.execute(
             f"""
-            SELECT a.*, NULL AS followup_class, s.origin, tu.tool_input, m.position, m.variant_index,
+            {_ACTION_FOLLOWUP_RELATION_SQL}
+            SELECT a.*, s.origin, tu.tool_input, m.position, m.variant_index,
                    (SELECT GROUP_CONCAT(
                               COALESCE(pm.role || ': ', '') || COALESCE(
                                   (SELECT GROUP_CONCAT(pb.text, char(10))
@@ -141,7 +143,7 @@ class ArchiveReadInsights:
                       FROM messages nm WHERE nm.session_id=m.session_id AND
                        (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
                      ORDER BY nm.position, nm.variant_index LIMIT 1) next_action
-              FROM actions a JOIN sessions s ON s.session_id=a.session_id
+              FROM action_rows a JOIN sessions s ON s.session_id=a.session_id
               JOIN messages m ON m.message_id=a.message_id JOIN blocks tu ON tu.block_id=a.tool_use_block_id
              WHERE {" AND ".join(where)}
              ORDER BY {event_ms}, a.tool_use_block_id LIMIT ? OFFSET ?

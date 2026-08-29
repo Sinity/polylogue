@@ -65,7 +65,19 @@ def _seed_repo_filtered_archive(archive_root: Path) -> str:
                     role=Role.USER,
                     text="repo filter match",
                     blocks=[ParsedContentBlock(type=BlockType.TEXT, text="repo filter match")],
-                )
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="stuck-tool",
+                            tool_input={"command": "sleep 30"},
+                        )
+                    ],
+                ),
             ],
         ),
         ParsedSession(
@@ -96,49 +108,90 @@ def _seed_repo_filtered_archive(archive_root: Path) -> str:
                 """,
                 (session_id,),
             )
+        archive._conn.execute(
+            """
+            INSERT INTO session_latency_profiles (session_id, materialized_at, source_name, stuck_tool_count)
+            VALUES (?, '2026-01-01T12:00:00+00:00', 'chatgpt', 1)
+            """,
+            (session_ids[0],),
+        )
         archive._conn.commit()
     return session_ids[0]
 
 
 def _seed_tool_episode_archive(archive_root: Path) -> str:
-    """Write one tagged tool episode with repository and timestamp evidence."""
+    """Write a matching and an out-of-scope tagged tool episode."""
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType, Provider
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+    sessions = (
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-tool-episode-match",
+            title="Query gap tool episode match",
+            working_directories=["/realm/project/polylogue"],
+            git_repository_url="https://github.com/Sinity/polylogue.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    timestamp="2026-01-01T12:00:00Z",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="tool-1",
+                            tool_input={"command": "pwd"},
+                        ),
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="tool-1",
+                            text="/realm/project/polylogue",
+                            is_error=True,
+                        ),
+                    ],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    text="The command failed, so I will fix the path.",
+                    blocks=[
+                        ParsedContentBlock(type=BlockType.TEXT, text="The command failed, so I will fix the path.")
+                    ],
+                ),
+            ],
+        ),
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-tool-episode-other",
+            title="Query gap tool episode other",
+            working_directories=["/realm/project/other"],
+            git_repository_url="https://github.com/example/other.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    timestamp="2026-01-05T12:00:00Z",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="tool-2",
+                            tool_input={"command": "pwd"},
+                        ),
+                        ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-2", text="/realm/project/other"),
+                    ],
+                )
+            ],
+        ),
+    )
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
-            ParsedSession(
-                source_name=Provider.CHATGPT,
-                provider_session_id="query-gap-tool-episode",
-                title="Query gap tool episode",
-                working_directories=["/realm/project/polylogue"],
-                git_repository_url="https://github.com/Sinity/polylogue.git",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.ASSISTANT,
-                        timestamp="2026-01-01T12:00:00Z",
-                        blocks=[
-                            ParsedContentBlock(
-                                type=BlockType.TOOL_USE,
-                                tool_name="Bash",
-                                tool_id="tool-1",
-                                tool_input={"command": "pwd"},
-                            ),
-                            ParsedContentBlock(
-                                type=BlockType.TOOL_RESULT,
-                                tool_id="tool-1",
-                                text="/realm/project/polylogue",
-                            ),
-                        ],
-                    )
-                ],
-            )
-        )
-        archive.add_user_tags((session_id,), ("episode-filter",))
-    return session_id
+        session_ids = [archive.write_parsed(session) for session in sessions]
+        archive.add_user_tags((session_ids[0],), ("episode-filter",))
+        archive.add_user_tags((session_ids[1],), ("other-filter",))
+    return session_ids[0]
 
 
 class TestPersonalStateProjections:
@@ -422,6 +475,7 @@ class TestInsightProjections:
         assert result.get("is_error") is not True, result
         assert result["total"] == 1
         assert result["tool_episodes"][0]["session_id"] == session_id
+        assert result["tool_episodes"][0]["followup_class"] == "acknowledged"
 
     @pytest.mark.asyncio
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
