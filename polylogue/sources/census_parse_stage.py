@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import sqlite3
 import threading
 import time
@@ -179,7 +178,7 @@ def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
 def daemon_parse_stage_worker_count() -> int:
     """Bounded worker cap for the daemon-owned pre-parse thread pool.
 
-    ``cpu_count - 1`` leaves one core free for the daemon's own event loop,
+    ``available_cpus() - 1`` leaves one core free for the daemon's own event loop,
     mirroring ``resolve_parse_worker_count``'s cpu-1 convention (see
     ``polylogue.pipeline.services.process_pool``). Override with
     ``POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS``.
@@ -189,7 +188,9 @@ def daemon_parse_stage_worker_count() -> int:
     configured = load_polylogue_config().daemon_parse_stage_workers
     if configured is not None and configured > 0:
         return configured
-    return max(1, (os.cpu_count() or 2) - 1)
+    from polylogue.runtime import available_cpus
+
+    return max(1, (available_cpus() or 2) - 1)
 
 
 def _physical_memory_bytes() -> int | None:
