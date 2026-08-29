@@ -8208,16 +8208,29 @@ def _session_latency_profile_from_archive_row(
         previous_at = occurred_at
     tool_counts = _latency_tool_category_counts(conn, session_id)
     materialization = _read_archive_materialization(conn, "latency", session_id)
+    # Tool latency facts are materialized into session_latency_profiles by
+    # storage/insights/session/latency_profiles.py, which derives stuck_tool_count
+    # from unpaired tool-start events. Read them rather than reporting zeros: the
+    # stuck_sessions projection filters on `stuck_tool_count > 0`, so zeroing here
+    # makes that projection unable to return any row at all.
+    tool_facts = conn.execute(
+        """
+        SELECT median_tool_call_ms, p90_tool_call_ms, max_tool_call_ms, stuck_tool_count
+        FROM session_latency_profiles
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
     return SessionLatencyProfileInsight(
         session_id=session_id,
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         latency=SessionLatencyProfilePayload(
-            median_tool_call_ms=0,
-            p90_tool_call_ms=0,
-            max_tool_call_ms=0,
-            stuck_tool_count=0,
+            median_tool_call_ms=int(tool_facts["median_tool_call_ms"]) if tool_facts is not None else 0,
+            p90_tool_call_ms=int(tool_facts["p90_tool_call_ms"]) if tool_facts is not None else 0,
+            max_tool_call_ms=int(tool_facts["max_tool_call_ms"]) if tool_facts is not None else 0,
+            stuck_tool_count=int(tool_facts["stuck_tool_count"]) if tool_facts is not None else 0,
             median_agent_response_ms=_median_ms(agent_response_ms),
             median_user_response_ms=_median_ms(user_response_ms),
             tool_call_count_by_category=tool_counts,
