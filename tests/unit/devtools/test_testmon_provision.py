@@ -36,19 +36,21 @@ def _seed_graph(root: Path, environment_name: str) -> None:
         database.con.close()
 
 
-def test_stale_provisioned_graph_fails_before_affected_verify(
+def test_stale_provisioned_graph_is_discarded_not_inherited(
     tmp_path: Path, capsys: object, monkeypatch: object
 ) -> None:
-    """A copied graph for another environment is rejected during provisioning.
+    """A copied graph for another environment is dropped during provisioning.
 
-    Anti-vacuity: changing the command to accept an absent environment would
-    make this red because the stale environment remains in the seeded graph.
+    Anti-vacuity: keeping the file makes this red. Failing the command instead
+    would fail every lane, because the seed a workspace copies is routinely
+    older than the environment it is provisioned into.
     """
     _seed_graph(tmp_path, "polylogue-stale-environment")
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    assert main([]) == 1
-    assert "absent" in capsys.readouterr().out  # type: ignore[attr-defined]
+    assert main([]) == 0
+    assert not (tmp_path / ".cache" / "testmon" / "testmondata").exists()
+    assert "discarded" in capsys.readouterr().out  # type: ignore[attr-defined]
 
 
 def test_current_provisioned_graph_passes_with_json_result(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
@@ -60,3 +62,17 @@ def test_current_provisioned_graph_passes_with_json_result(tmp_path: Path, capsy
     assert main(["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert payload["state"] == "valid"
+    assert payload["discarded"] is False
+    assert (tmp_path / ".cache" / "testmon" / "testmondata").exists()
+
+
+def test_absent_graph_provisions_without_a_seed(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
+    """A workspace with no seeded graph provisions.
+
+    The cache is untracked, so a fresh checkout has no graph to copy; refusing
+    here fails every lane before it starts.
+    """
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    assert main([]) == 0
+    assert "absent" in capsys.readouterr().out  # type: ignore[attr-defined]

@@ -602,24 +602,6 @@ class PolylogueConfig:
         return ()
 
     @property
-    def beads_roots(self) -> tuple[str, ...]:
-        """Repository roots whose ``.beads/interactions.jsonl`` ledger is watched.
-
-        Opt-in and empty by default: unlike every other source, a Beads
-        ledger is repository-scoped, not home-relative, so there is no safe
-        default set of repositories to guess. Set ``sources.beads_roots`` in
-        ``polylogue.toml`` (or ``POLYLOGUE_BEADS_ROOTS``, comma-separated) to
-        the repository roots (not the ``.beads`` directories themselves)
-        whose issue-interaction history should be archived.
-        """
-        v = self._data.get("beads_roots")
-        if isinstance(v, (list, tuple)):
-            return tuple(str(item) for item in v)
-        if isinstance(v, str) and v.strip():
-            return tuple(s.strip() for s in v.split(",") if s.strip())
-        return ()
-
-    @property
     def hermes_root(self) -> str:
         """Optional layered override for the Hermes runtime root."""
         return str(self._data.get("hermes_root", ""))
@@ -696,7 +678,7 @@ class PolylogueConfig:
     def daemon_parse_stage_workers(self) -> int | None:
         """Worker cap for the daemon-owned pre-parse thread pool.
 
-        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
         default. See ``polylogue.daemon.parse_prefetch``.
         """
         value = self._data.get("daemon_parse_stage_workers")
@@ -744,7 +726,7 @@ class PolylogueConfig:
     def live_watcher_parse_stage_workers(self) -> int | None:
         """Worker cap for the watcher-owned pre-parse thread pool.
 
-        ``None``/absent or <=0 falls back to the adaptive ``cpu_count - 1``
+        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
         default. See ``polylogue.sources.live.parse_prefetch``.
         """
         value = self._data.get("live_watcher_parse_stage_workers")
@@ -1077,19 +1059,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Additional source roots watched by the daemon.",
-    ),
-    ConfigInventoryEntry(
-        "beads_roots",
-        toml_path="sources.beads_roots",
-        env_var="POLYLOGUE_BEADS_ROOTS",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description=(
-            "Repository roots (not .beads/ directories) whose append-only "
-            "interactions.jsonl ledger is watched and ingested as beads-issue "
-            "sessions. Opt-in; empty by default -- Beads ledgers are "
-            "repository-scoped, so there is no safe home-relative default."
-        ),
     ),
     ConfigInventoryEntry(
         "hermes_root",
@@ -1511,7 +1480,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         reload_behavior="daemon-loop",
         description=(
             "Worker cap for the daemon-owned pre-parse thread pool "
-            "(polylogue-m6tp phase (a)); default cpu_count-1. <=0 falls "
+            "(polylogue-m6tp phase (a)); default available-CPU-minus-one. <=0 falls "
             "back to the adaptive default."
         ),
     ),
@@ -1559,7 +1528,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         reload_behavior="daemon-loop",
         description=(
             "Worker cap for the watcher-owned pre-parse thread pool "
-            "(polylogue-wf8a); default cpu_count-1. <=0 falls back to the "
+            "(polylogue-wf8a); default available-CPU-minus-one. <=0 falls back to the "
             "adaptive default."
         ),
     ),
@@ -1854,7 +1823,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
         "source_roots": (),
-        "beads_roots": (),
         "hermes_root": "",
         "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
         "drive_token_path": str(captured.state_home / "token.json"),
@@ -2141,7 +2109,6 @@ class ResolvedSourcePaths:
     inbox: Path
     hooks_pending: Path
     explicit: tuple[Path, ...]
-    beads: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2278,9 +2245,6 @@ def resolve_runtime_config(
     explicit_roots = tuple(
         _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.source_roots
     )
-    beads_roots = tuple(
-        _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.beads_roots
-    )
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
         claude_code_todos=bootstrap.home / ".claude" / "todos",
@@ -2296,7 +2260,6 @@ def resolve_runtime_config(
         inbox=paths.inbox_root,
         hooks_pending=hook_sidecar / "pending",
         explicit=explicit_roots,
-        beads=beads_roots,
     )
     local_candidates = (
         ("claude-code", source_paths.claude_code),
@@ -2310,11 +2273,6 @@ def resolve_runtime_config(
         ("hooks", source_paths.hooks_pending),
     )
     sources = [Source(name=name, path=path) for name, path in local_candidates if path.exists()]
-    sources.extend(
-        Source(name=f"beads:{repository_root.name}", path=repository_root / ".beads" / "interactions.jsonl")
-        for repository_root in beads_roots
-        if (repository_root / ".beads" / "interactions.jsonl").exists()
-    )
     gemini_cache = drive_cache / "gemini"
     if gemini_cache.exists() or drive_credentials.exists() or drive_token.exists():
         sources.append(Source(name="aistudio", folder=GEMINI_DRIVE_FOLDER, path=gemini_cache))
@@ -2500,7 +2458,7 @@ def _config_diagnostic(
     return payload
 
 
-_MULTI_PATH_CONFIG_KEYS = frozenset({"source_roots", "beads_roots"})
+_MULTI_PATH_CONFIG_KEYS = frozenset({"source_roots"})
 
 
 def _iter_path_config_values(key: str, value: object) -> list[str]:
@@ -2574,21 +2532,6 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                         key=entry.key,
                         message=f"Configured source root does not exist: {raw_path}.",
                         next_action="Remove the stale source root or create/mount it before running the daemon.",
-                        cfg=resolved,
-                    )
-                )
-            if entry.key == "beads_roots" and not path.exists():
-                diagnostics.append(
-                    _config_diagnostic(
-                        code="configured_beads_root_missing",
-                        severity="warning",
-                        key=entry.key,
-                        message=f"Configured Beads repository root does not exist: {raw_path}.",
-                        next_action=(
-                            "Remove the stale beads root or point it at an existing repository checkout; "
-                            "the ledger itself (.beads/interactions.jsonl) may not exist yet -- only the "
-                            "repository root must."
-                        ),
                         cfg=resolved,
                     )
                 )

@@ -77,7 +77,6 @@ def _configured_roots(runtime: ResolvedRuntimeConfig) -> tuple[tuple[str, Path],
     roots: list[tuple[str, Path]] = [("archive", runtime.paths.archive_root)]
     roots.extend((f"configured:{source.name}", source.path) for source in runtime.sources if source.path is not None)
     roots.extend((f"source:{path}", path) for path in runtime.source_paths.explicit)
-    roots.extend((f"beads:{path}", path) for path in runtime.source_paths.beads)
     seen: set[Path] = set()
     result: list[tuple[str, Path]] = []
     for name, path in roots:

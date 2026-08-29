@@ -29,7 +29,7 @@ dependencies = [
   "textual>=8.2.8",
   "jinja2",
   "markdown-it-py>=4.2.0",
-  "pygments>=2.20",
+  "pygments>=2.21.0",
   "ijson",
   "lark>=1.3.1,<2.0",  # Query DSL grammar/parser substrate (#2006)
   "sqlite-vec>=0.1.9",  # Self-contained vector search
@@ -73,7 +73,7 @@ dev-common = [
   "pytest-testmon>=2.2.0,<2.3.0",  # Bootstrap reads the tested DATA_VERSION-14 schema
   "pytest-json-report>=1.5.0",  # Structured JSON report for verify pipeline + dashboard (#1026, #998)
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
-  "hypothesis>=6.165.8",
+  "hypothesis>=6.165.10",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.4.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
@@ -81,10 +81,10 @@ dev-common = [
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "pytest-timeout>=2.4.0",  # Per-test hang guard; fail fast with a stack instead of burning the CI job ceiling
   "mutmut>=3.7.0",  # Mutation testing for coverage verification
-  "mypy>=2.3.0,<2.4",
+  "mypy>=2.3.1,<2.4",
   "types-dateparser>=1.4.2.20260813",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.16.3",
+  "ruff>=0.16.4",
   "pre-commit>=4.6.2",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]

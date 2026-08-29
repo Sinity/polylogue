@@ -353,6 +353,46 @@ def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(run.run_id)
     assert Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) == artifacts.events_dir
+    assert Path(env["TESTMON_DATAFILE"]) == tmp_path / ".cache" / "testmon" / "testmondata"
+
+
+def test_production_testmon_selection_writes_only_to_owned_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A selected pytest step must not create testmon state at checkout root."""
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text("def test_sample():\n    assert True\n", encoding="utf-8")
+    (tmp_path / ".cache" / "testmon").mkdir(parents=True)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    run = VerifyRun(tier="affected", argv=[], git_head="head", root=tmp_path, mirror_current=False)
+
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--override-ini=addopts=",
+        "-p",
+        "testmon.pytest_testmon",
+        "-p",
+        "pytest_jsonreport.plugin",
+        "--json-report",
+        "--json-report-file=.cache/verify/last-pytest.json",
+        "--testmon",
+        "--testmon-forceselect",
+        "--testmon-env=selection-test",
+        "test_sample.py",
+    ]
+    artifacts = run.start_step(label="pytest native serial (affected)", cmd=command)
+    env = verify._subprocess_env()
+    verify._normalize_managed_pytest_environment(env)
+    env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / ".cache" / "testmon" / "testmondata").is_file()
+    assert not (tmp_path / ".testmondata").exists()
 
 
 def test_agentctl_verify_run_omits_mutable_current_receipt(tmp_path: Path) -> None:
@@ -444,6 +484,47 @@ def test_verify_records_early_native_terminal_paths(
     assert len(rows) == 1
     assert rows[0]["status"] == "failed"
     assert rows[0]["exit_code"] == expected_code
+
+
+def test_verify_reports_native_testmon_refusal_to_the_operator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing graph must be visible at the production command boundary."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _base, _head: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_args: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    monkeypatch.setattr(
+        verify,
+        "prepare_native_testmon_environment",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            selection_mode="bootstrap",
+            environment_name="expected-environment",
+            local_state=SimpleNamespace(
+                status="absent",
+                reason="native environment 'expected-environment' is absent",
+                missing_executable_paths=(),
+            ),
+        ),
+    )
+
+    assert verify._main([]) == 2
+
+    output = capsys.readouterr().err
+    assert "refusing to measure affected verification" in output
+    assert "selection: affected" in output
+    assert "environment: 'expected-environment' (absent)" in output
+    assert "native environment 'expected-environment' is absent" in output
+    assert "devtools verify --all" in output
 
 
 def test_verify_emits_shared_workload_receipt_for_step_timing(

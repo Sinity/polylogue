@@ -58,7 +58,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "empty_sessions",
                 "duplicate_sessions",
                 "fts_sync",
-                "schemas_missing",
                 "schemas_freshness",
             },
         ),
@@ -81,7 +80,6 @@ def test_health_check_dataclass_contract(name: str, status_name: str, detail: st
                 "retrieval_evidence",
                 "retrieval_inference",
                 "retrieval_enrichment",
-                "schemas_missing",
                 "schemas_freshness",
             },
         ),
@@ -99,6 +97,11 @@ def test_run_health_core_contract(
     names = {check.name for check in report.checks}
     assert report.timestamp > 0
     assert expected_checks.issubset(names)
+    # schemas_missing and schemas_coverage are mutually exclusive branches of one
+    # check: the first is emitted when a core provider schema is absent, the
+    # second when they are all present. Assert the check ran, not which way it
+    # went, so a healthy fixture and a degraded one both satisfy it.
+    assert len(names & {"schemas_missing", "schemas_coverage"}) == 1
     assert sum(report.summary.values()) == len(report.checks)
     assert report.raw_frontier_integrity["overall_status"] in {"healthy", "unknown", "violated"}
     convergence = report.to_dict()["archive_convergence"]

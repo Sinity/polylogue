@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.pytest_evidence import evaluate_pytest_evidence
+from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
@@ -417,6 +418,7 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
             "POLYLOGUE_PYTEST_EVENTS_PATH": str(artifacts.events_merged_path),
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(artifacts.selection_path),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(artifacts.summary_path),
+            "TESTMON_DATAFILE": str(run.root / TESTMON_DATA_RELPATH),
         }
     )
     return updated

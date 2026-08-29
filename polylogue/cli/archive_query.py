@@ -387,6 +387,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     limit = compiled_spec.limit if compiled_spec.limit is not None and compiled_spec.limit > 0 else _limit(params)
     offset = compiled_spec.offset if compiled_spec.offset > 0 else _offset(params)
     cursor = _decode_cursor(_optional_str(params.get("cursor")))
+    _validate_cursor_request_identity(cursor, cursor_request_identity)
     page_offset = cursor.r if cursor is not None else offset
     sample_count = _optional_int(params.get("sample"))
     if sample_count is not None:
@@ -1892,6 +1893,11 @@ def _paginate_rows(
     return page, _build_cursor(
         page[-1], rank=offset + len(page), retrieval_lane=retrieval_lane, request_identity=request_identity
     )
+
+
+def _validate_cursor_request_identity(cursor: SearchCursor | None, request_identity: str) -> None:
+    if cursor is not None and cursor.query_hash is not None and cursor.query_hash != request_identity:
+        raise click.UsageError("invalid --cursor: cursor belongs to a different ranked-search request")
 
 
 def _build_cursor(

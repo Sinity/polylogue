@@ -108,6 +108,44 @@ def test_matrix_reports_edge_totals_and_unresolved_rows() -> None:
     assert payload["unresolved_rows"] == ["event:append"]
 
 
+def test_matrix_exposes_authorized_exceptions() -> None:
+    policy = ClosurePolicy(
+        "event",
+        "polylogue.events.registry",
+        (EdgeKind.PRODUCER,),
+        definitions=(Definition("event:append", (EdgeKind.PRODUCER,)),),
+        exception_authority="bead:event",
+        intentional_absences={"event:append": "bead:event"},
+    )
+    payload = evaluate((policy,), {}).to_dict()
+    assert payload["exceptions"] == [{"family": "event", "definition_ref": "event:append", "authority": "bead:event"}]
+
+
+def test_graph_limits_fail_explicitly_instead_of_dropping_rows_or_edges() -> None:
+    too_many = tuple(Definition(f"event:{index}", (EdgeKind.PRODUCER,)) for index in range(1025))
+    with pytest.raises(ValueError, match="bounded definition limit"):
+        evaluate(
+            (
+                ClosurePolicy(
+                    "event",
+                    "polylogue.events.registry",
+                    (EdgeKind.PRODUCER,),
+                    definitions=too_many,
+                ),
+            )
+        )
+
+    policy = ClosurePolicy(
+        "event",
+        "polylogue.events.registry",
+        (EdgeKind.PRODUCER,),
+        definitions=(Definition("event:append", (EdgeKind.PRODUCER,)),),
+    )
+    evidence = {"event:append": {EdgeKind.PRODUCER: tuple(EvidenceRef(str(i)) for i in range(33))}}
+    with pytest.raises(ValueError, match="bounded edge limit"):
+        evaluate((policy,), evidence)
+
+
 def test_unknown_evidence_edge_is_not_silently_discarded() -> None:
     with pytest.raises(ValueError, match="unknown evidence edge"):
         evaluate((_policy(),), {"event:append": {"future-edge": ()}})  # type: ignore[dict-item]

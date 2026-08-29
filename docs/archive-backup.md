@@ -16,6 +16,7 @@ The configured archive root contains these durable paths:
 | `user.db` | Human/user/agent overlays stored as assertions, immutable annotation schema definitions and batch provenance, settings, and context-delivery receipts. | Always back up. This tier is irreplaceable user state. |
 | `audit.db` | Append-only mutation authority, authorizations, attempts, receipts, and continuity heads. | Always back up. Relocation full-evidence backups require it. |
 | `ops.db` | Daemon cursors, attempts, convergence debt, stage events, and operational telemetry. | Disposable for ordinary restore profiles, but required by the exact relocation full-evidence tier contract. |
+| `source-declared-absent.json` | Operator-authored declared-absent blob hashes for a pre-generation `source.db`. | Copy with `source.db`; never derive or replace it with GC observations. |
 | `blob/` | Content-addressed binary payloads keyed by SHA-256. | Back up referenced blobs with `source.db`/`user.db`; do not prune by age alone. |
 
 `polylogue ops maintenance archive-plan --output-format json` is the machine-readable
@@ -37,6 +38,43 @@ Use these profiles when choosing what to copy:
 When SQLite WAL files are present, either stop the daemon or run an explicit
 checkpoint before copying. Copying only `*.db` while an uncheckpointed `*-wal`
 contains recent writes creates an incomplete backup.
+
+### Pre-generation source assertions
+
+A source tier before the GC-generation migration may carry an optional
+`source-declared-absent.json` beside `source.db`:
+
+```json
+{
+  "format": "polylogue-source-declared-absent-v1",
+  "freeze_authority": "polylogue-2x6xu",
+  "source_db_sha256": "<sha256 of source.db>",
+  "declared_absent_blob_hashes": ["<64 lowercase hex characters>"]
+}
+```
+
+This is a durable metadata-only change: it adds no SQLite schema object and
+has no lifecycle migration. A sidecar is required because an audit row may not
+exist on the restored tier, while an additive migration cannot run before the
+backup gate it would unblock. GC member outcomes are observations and cannot
+provide operator intent. The verifier re-projects source references from the
+restored `source.db`, checks the declaration against that projection, and
+requires the effective reference scope to remain non-empty. The sidecar is
+included in the signed backup artifact inventory, so changing it invalidates
+the backup receipt.
+
+The declaration applies only to source-owned blob hashes. It does not excuse
+missing hashes referenced by `index.db` attachments. A `full_evidence` backup
+therefore cannot attest when an index attachment is missing, even if that hash
+also appears in the source declaration. Restore or otherwise resolve every
+missing index attachment before using that profile for relocation or audit
+adoption.
+
+After the source generation migration creates `source_generations` and
+`source_items`, a retained sidecar makes verified backups fail closed. Remove
+`source-declared-absent.json` from the archive root after the migration and
+before the next verified backup; it is valid only for the pre-generation
+source tier.
 
 ## Offline archive-root relocation
 
@@ -88,6 +126,8 @@ POLYLOGUE_ARCHIVE_ROOT=/new/archive/root \
 ```
 
 The route reads every SQLite file immutably and refuses copied files, WAL sidecars, moved-root backup receipts that do not authenticate the current tier paths, changed bytes/schema/version/tier inventory, fresh-bootstrap authority, or any incomplete released durable-train chain. A live source train whose historical content differs from the current source must first carry receipt-backed source-continuity authority. For the one pre-#3868 liveness receipt shape, create that authority with `source-continuity-recovery` using authenticated pre/post backups and a fresh zero-orphan census. That bridge is a separate offline transition, not an exception inside relocation. Relocation records both configured and resolved paths. A configured `index.db` active-generation symlink is permitted only through the existing `ArchiveLocation` resolver; the plan binds its resolved generation, every retained generation's absolute metadata and tier links, and apply remaps those exact objects before publishing the active pointer. Apply writes no SQLite rows, blobs, or sidecars. It CAS-revises released `source`, `user`, and `audit` train manifests when identity or continuity proof requires it, retains the exact plan, and records a prepared then committed receipt under `.maintenance-state/archive-root-relocations/`. Repeated relocations and intervening source refreshes must form one unbranched chain through typed predecessor authority and exact before/after manifest hashes. A prepared receipt blocks daemon startup and prints a shell-quoted exact retained-plan resume command. Live application and post-move observation remain operator evidence outside this code path.
+
+Active index pointer targets must resolve inside the configured archive root, with one exception for a target that is also the resolved target of the configured `index.db` symlink used by a symlink farm. Copied archives are refused by `ArchiveLocation`: an out-of-root pointer is admitted only when every durable tier at the root is also a symlink, so a symlink-preserving copy — which keeps real durable files inside itself — does not resolve into the archive it was copied from.
 
 For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
 

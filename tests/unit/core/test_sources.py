@@ -114,6 +114,7 @@ def test_originating_lab_attribution() -> None:
         Provider.GEMINI: "google",
         Provider.GEMINI_CLI: "google",
         Provider.ANTIGRAVITY: "google",
+        Provider.BEADS: "beads",
         Provider.DRIVE: "google",
         Provider.HERMES: "nous",
         Provider.GROK: "xai",

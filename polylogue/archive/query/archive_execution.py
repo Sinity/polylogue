@@ -189,6 +189,8 @@ def _coerce_title_source(value: str | None) -> TitleSource | None:
 
 
 def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
+    from polylogue.archive.session.branch_type import BranchType
+
     return SessionSummary(
         id=SessionId(summary.session_id),
         origin=Origin.from_string(summary.origin),
@@ -206,6 +208,7 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         message_count=summary.message_count,
         tags_m2m=summary.tags,
         parent_id=SessionId(summary.parent_id) if summary.parent_id else None,
+        branch_type=BranchType(summary.branch_type) if summary.branch_type else None,
         terminal_state=summary.terminal_state,
         total_cost_usd=summary.total_cost_usd,
         cost_provenance=summary.cost_provenance,

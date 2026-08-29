@@ -44,6 +44,7 @@ from polylogue.cli.archive_query import (
     _summary_payload,
     _tool_tokens,
     _tuple_tokens,
+    _validate_cursor_request_identity,
     execute_delete_by_session_ids,
 )
 from polylogue.config import Config
@@ -831,6 +832,23 @@ class TestPaginateRows:
         decoded = _decode_cursor(next_cursor)
         assert decoded is not None
         assert decoded.r == 15  # offset + len(page) = 5 + 10
+
+
+def test_validate_cursor_request_identity_rejects_query_change() -> None:
+    from polylogue.surfaces.payloads import SearchCursor
+
+    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a")
+
+    with pytest.raises(click.UsageError, match="different ranked-search request"):
+        _validate_cursor_request_identity(cursor, "query-b")
+
+
+def test_validate_cursor_request_identity_accepts_matching_query() -> None:
+    from polylogue.surfaces.payloads import SearchCursor
+
+    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a")
+
+    _validate_cursor_request_identity(cursor, "query-a")
 
 
 class TestEmitDeleteMachineModeNoPrompt:

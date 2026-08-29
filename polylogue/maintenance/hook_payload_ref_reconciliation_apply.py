@@ -23,6 +23,11 @@ This module never runs against the live archive as part of any automated
 pipeline -- applying it is an explicit operator action
 (``dry_run=False`` + a backup manifest), same as every other actuator in this
 package.
+
+Deletion trigger: remove this apply module, its CLI adapter, and its tests only
+after a read-only census reports zero orphaned ``raw_payload`` refs and zero
+``raw_hook_events`` rows with a missing ``blob_hash``. The storage matcher stays
+until its blob-liveness consumers no longer need it.
 """
 
 from __future__ import annotations

@@ -195,7 +195,9 @@ LIGHT_THEME = {
 # ``devtools render webui-design-system``.  Keeping the public Origin list and
 # palette here prevents the TypeScript client from growing a second provider
 # vocabulary while still leaving archive semantics on the server.
-PUBLIC_ORIGIN_TOKENS: tuple[Origin, ...] = tuple(origin for origin in Origin if origin is not Origin.UNKNOWN_EXPORT)
+PUBLIC_ORIGIN_TOKENS: tuple[Origin, ...] = tuple(
+    origin for origin in Origin if origin not in {Origin.UNKNOWN_EXPORT, Origin.BEADS_ISSUE}
+)
 
 WEBUI_SHARED_TOKENS: dict[str, str] = {
     "--pl-font-sans": 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
@@ -290,7 +292,6 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.GEMINI_CLI_SESSION: ("#93c5fd", "#142b4d"),
         Origin.HERMES_SESSION: ("#c4b5fd", "#2b1f4a"),
         Origin.ANTIGRAVITY_SESSION: ("#f9a8d4", "#421b34"),
-        Origin.BEADS_ISSUE: ("#fde68a", "#3d2e0c"),
         Origin.GROK_EXPORT: ("#d1d5db", "#29313a"),
         Origin.CHATGPT_EXPORT: ("#86efac", "#123522"),
         Origin.CLAUDE_AI_EXPORT: ("#fed7aa", "#3b2410"),
@@ -303,7 +304,6 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.GEMINI_CLI_SESSION: ("#1e40af", "#dbeafe"),
         Origin.HERMES_SESSION: ("#5b21b6", "#ede9fe"),
         Origin.ANTIGRAVITY_SESSION: ("#9d174d", "#fce7f3"),
-        Origin.BEADS_ISSUE: ("#854d0e", "#fef3c7"),
         Origin.GROK_EXPORT: ("#374151", "#e5e7eb"),
         Origin.CHATGPT_EXPORT: ("#166534", "#dcfce7"),
         Origin.CLAUDE_AI_EXPORT: ("#9a3412", "#ffedd5"),

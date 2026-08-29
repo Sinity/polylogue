@@ -39,7 +39,7 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
         "beads",
         ("beads-issue",),
         requires_package=False,
-        package_not_required_reason="Beads is admitted from repository issue records but has no harvested schema package",
+        package_not_required_reason="Reserved origin with no admitted Beads session wire format",
     ),
     SchemaSubjectSpec("grok", "grok", "grok", ("grok-export",)),
     SchemaSubjectSpec(

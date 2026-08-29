@@ -7,13 +7,10 @@ consequences.  The founding pilots (polylogue-2qx.1.1) deliberately covered a
 streaming runtime (Claude Code), a document export (ChatGPT), and a reserved
 origin (Grok, which had no confirmed export shape at the time). Grok has since
 shipped a real parser (polylogue-611 / #3201) and is admitted here as
-``lifecycle="executable"`` -- there is currently no origin genuinely in
-``lifecycle="reserved"``. The reserved-lifecycle path (an origin admitted with
-no parser/detector binding pending a fixture) remains part of this module's
-executable contract; ``tests/unit/sources/test_origin_specs.py`` exercises it
-with a synthetic declaration rather than a real Origin member, since every
-current public ``Origin`` token is already either executable or
-compatibility-only.
+``lifecycle="executable"``. Beads is retained as a reserved origin because its
+durable vocabulary predates the session-admission decision. It has no parser or
+detector binding; ``tests/unit/sources/test_origin_specs.py`` is its synthetic
+fixture declaration until a real wire format is intentionally adopted.
 """
 
 from __future__ import annotations
@@ -1239,20 +1236,30 @@ def _antigravity_spec() -> OriginSpec:
 
 
 def _beads_spec() -> OriginSpec:
-    return _executable_spec(
-        Origin.BEADS_ISSUE,
-        provider=Provider.BEADS,
-        tightness=40,
-        discovery="Beads issue export admission.",
-        acquisition_modes=("issue-jsonl",),
-        parser_paths=("polylogue/sources/parsers/beads.py",),
-        fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-        # dispatch.py:parse_stream_payload routes Provider.BEADS to the
-        # plain ``beads.parse`` entry point -- there is no dedicated
-        # ``parse_beads_stream`` function; this declaration must name the
-        # function dispatch actually calls.
-        stream_parser_path="polylogue/sources/parsers/beads.py:parse",
-        display_description="Beads issue exports (non-chat work artifacts)",
+    origin = Origin.BEADS_ISSUE
+    return OriginSpec(
+        origin=origin,
+        declaration=_declaration(
+            origin,
+            lifecycle="reserved",
+            discovery="Reserved Beads issue origin vocabulary; no session admission.",
+        ),
+        lifecycle="reserved",
+        acquisition_modes=("reserved",),
+        provider_wires=(Provider.BEADS,),
+        collision_policy=None,
+        detector_tightness=None,
+        parser_paths=(),
+        stream_parser_path=None,
+        assembly_paths=(),
+        fixture_paths=("tests/unit/sources/test_origin_specs.py",),
+        coverage_refs=("origin:beads-issue:reserved",),
+        fidelity_notes=(
+            "The durable origin and provider tokens remain available for historical CHECK vocabulary, "
+            "but no Beads issue record is admitted as a session.",
+        ),
+        semantic_reparse="no parser; retain the reserved vocabulary until a Beads session adapter is admitted",
+        display_description="Reserved Beads issue origin (not admitted)",
         public_filter=False,
     )
 
@@ -1498,31 +1505,20 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
     ),
     Origin.BEADS_ISSUE: (
         _completeness_mode(
-            "provider-package:beads-issue/issue-jsonl@v1",
-            "issue-jsonl",
+            "provider-package:beads-issue/reserved@v1",
+            "reserved",
             Provider.BEADS,
-            # Kept "proposed" (not "accepted") deliberately: the detector and
-            # parser are real and admitted (OriginSpec.lifecycle="executable"
-            # above), but no schema-discovery harvesting pass has run against
-            # a real Beads repository export sample -- the wire shape is
-            # reconstructed from independent secondary sources (see
-            # polylogue/sources/parsers/beads.py), not a harvested provider-
-            # package catalog. "accepted" would require schema_package evidence
-            # this origin does not yet have, and would fail `devtools provider-
-            # completeness --check`.
-            "proposed",
-            detector_paths=("polylogue/sources/parsers/beads.py", "polylogue/sources/dispatch.py"),
-            raw_model_paths=("polylogue/sources/parsers/beads.py",),
-            parser_paths=("polylogue/sources/parsers/beads.py",),
-            normalizer_paths=("polylogue/sources/parsers/base_support.py",),
-            fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
+            "reserved",
+            detector_paths=(),
+            raw_model_paths=(),
+            parser_paths=(),
+            normalizer_paths=(),
+            fixture_paths=("tests/unit/sources/test_origin_specs.py",),
             schema_paths=(),
-            docs_paths=("docs/architecture.md",),
+            docs_paths=("docs/provider-origin-identity.md",),
             caveats=(
-                "No schema-discovery harvesting pass has run against a real Beads repository export; "
-                "the wire shape is reconstructed from independent secondary sources (see "
-                "polylogue/sources/parsers/beads.py), not a harvested provider-package catalog. "
-                "Promote to accepted once real-sample schema evidence exists.",
+                "The reserved origin has durable vocabulary and declaration evidence only; no Beads session "
+                "wire format, parser, detector, or schema package is admitted.",
             ),
         ),
     ),
@@ -1757,24 +1753,6 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "antigravity.looks_like_markdown_export",
             fixed_provider=Provider.ANTIGRAVITY,
-        ),
-    ),
-    Origin.BEADS_ISSUE: (
-        DetectorBinding(
-            "beads-record",
-            DetectionMode.RECORD,
-            "polylogue.sources.dispatch:_looks_like_beads_record",
-            0,
-            "beads.looks_like",
-            fixed_provider=Provider.BEADS,
-        ),
-        DetectorBinding(
-            "beads-sequence",
-            DetectionMode.SEQUENCE_DOCUMENT,
-            "polylogue.sources.dispatch:_looks_like_beads_sequence",
-            0,
-            "beads.looks_like (sequence[0])",
-            fixed_provider=Provider.BEADS,
         ),
     ),
     Origin.CHATGPT_EXPORT: (

@@ -1723,6 +1723,7 @@ class MessageQueryRowPayload(SurfacePayloadModel):
     session_id: str
     origin: str
     title: str | None = None
+    repo: str | None = None
     role: str
     message_type: str
     material_origin: str = "unknown"

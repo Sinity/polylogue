@@ -16,7 +16,7 @@ This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`,
 
 ## Source coverage
 
-The authoritative `Origin` enum currently contains 12 tokens. Older plans that say ten predate `beads-issue`.
+The authoritative `Origin` enum contains the currently supported public source tokens.
 
 | Origin token | Meaning |
 |---|---|
@@ -25,7 +25,7 @@ The authoritative `Origin` enum currently contains 12 tokens. Older plans that s
 | `gemini-cli-session` | Gemini CLI local sessions (lab: Google) |
 | `hermes-session` | Hermes agent sessions |
 | `antigravity-session` | Antigravity language-server conversations |
-| `beads-issue` | Beads issue exports (non-chat work artifacts) |
+| `beads-issue` | Reserved Beads issue origin (not admitted) |
 | `grok-export` | Grok account-data exports (lab: xAI) |
 | `chatgpt-export` | ChatGPT web exports (lab: OpenAI) |
 | `claude-ai-export` | Claude web exports (lab: Anthropic) |

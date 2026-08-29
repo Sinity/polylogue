@@ -335,6 +335,7 @@ class _UsageTimelineAccumulator:
     subscription_credits: float = 0.0
     cost_provenance_counts: dict[str, int] = field(default_factory=dict)
     cost_session_ids: set[str] = field(default_factory=set)
+    event_session_ids: set[str] = field(default_factory=set)
     source_sort_key: float | None = None
 
     def note_sort_key(self, value: object) -> None:
@@ -390,6 +391,7 @@ class ArchiveSessionSummary:
     word_count: int
     tags: tuple[str, ...]
     parent_id: str | None = None
+    branch_type: str | None = None
     session_kind: str = "standard"
     reported_duration_ms: int | None = None
     tool_use_count: int = 0
@@ -2930,7 +2932,8 @@ class ArchiveStore:
                        COALESCE(SUM(e.last_cache_write_tokens), 0) AS cache_write_tokens,
                        COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
-                       MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key
+                       MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key,
+                       GROUP_CONCAT(DISTINCT e.session_id) AS session_ids
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
                 WHERE {where_clause}
@@ -2952,7 +2955,9 @@ class ArchiveStore:
                 ),
             )
             item.event_count += int(row["event_count"] or 0)
-            item.event_session_count += int(row["session_count"] or 0)
+            event_session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            item.event_session_ids.update(event_session_ids)
+            item.event_session_count = len(item.event_session_ids)
             item.usage = item.usage.plus(
                 CostUsagePayload(
                     input_tokens=int(row["input_tokens"] or 0),
@@ -3214,6 +3219,8 @@ class ArchiveStore:
         session_id: str | None = None,
         origin: str | None = None,
         only_stuck: bool = False,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3229,6 +3236,21 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
+        if tag is not None:
+            where.append(
+                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
+            )
+            params.append(tag)
+        if repo is not None:
+            where.append(
+                "EXISTS ("
+                "SELECT 1 FROM session_repos filter_session_repos "
+                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
+                "WHERE filter_session_repos.session_id = s.session_id "
+                "AND filter_repos.repo_name = ?"
+                ")"
+            )
+            params.append(repo)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -3258,6 +3280,8 @@ class ArchiveStore:
         self,
         *,
         origin: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -3270,6 +3294,8 @@ class ArchiveStore:
         """
         return self.list_session_latency_profile_insights(
             origin=origin,
+            tag=tag,
+            repo=repo,
             only_stuck=True,
             since_ms=since_ms,
             until_ms=until_ms,
@@ -3336,6 +3362,8 @@ class ArchiveStore:
         origin: str | None = None,
         workflow_shape: str | None = None,
         terminal_state: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         first_message_since: str | None = None,
@@ -3372,6 +3400,21 @@ class ArchiveStore:
         if terminal_state is not None:
             where.append("sp.terminal_state = ?")
             params.append(terminal_state)
+        if tag is not None:
+            where.append(
+                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
+            )
+            params.append(tag)
+        if repo is not None:
+            where.append(
+                "EXISTS ("
+                "SELECT 1 FROM session_repos filter_session_repos "
+                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
+                "WHERE filter_session_repos.session_id = s.session_id "
+                "AND filter_repos.repo_name = ?"
+                ")"
+            )
+            params.append(repo)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -3430,7 +3473,7 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id,
+                   s.parent_session_id, s.branch_type,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -3787,6 +3830,7 @@ class ArchiveStore:
             self._conn,
             normalize_origin=_origin_value,
             iso_from_milliseconds=_iso_from_ms,
+            tags_relation=self._tags_relation,
         )
 
     def list_tool_call_count_rows(self, query: ToolUsageInsightQuery | None = None) -> list[dict[str, object]]:
@@ -5625,7 +5669,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id,
+                   s.parent_session_id, s.branch_type,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -6833,10 +6877,22 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         parent_id = None
     else:
         parent_id = str(raw_parent_id) if raw_parent_id else None
+    branch_type: str | None
+    try:
+        raw_branch_type = row["branch_type"]
+    except IndexError:
+        # Same rationale as parent_id above: not every caller's SELECT projects
+        # branch_type. Absence is unknown, not an error. A summary that omits it
+        # cannot answer is_continuation/is_sidechain, which is why the branch
+        # predicates count zero when this column is missing (polylogue-r9x56).
+        branch_type = None
+    else:
+        branch_type = str(raw_branch_type) if raw_branch_type else None
     return ArchiveSessionSummary(
         session_id=session_id,
         native_id=str(row["native_id"]),
         origin=origin,
+        branch_type=branch_type,
         title=title,
         display_label=display_label,
         title_source=title_source,
@@ -8165,16 +8221,29 @@ def _session_latency_profile_from_archive_row(
         previous_at = occurred_at
     tool_counts = _latency_tool_category_counts(conn, session_id)
     materialization = _read_archive_materialization(conn, "latency", session_id)
+    # Tool latency facts are materialized into session_latency_profiles by
+    # storage/insights/session/latency_profiles.py, which derives stuck_tool_count
+    # from unpaired tool-start events. Read them rather than reporting zeros: the
+    # stuck_sessions projection filters on `stuck_tool_count > 0`, so zeroing here
+    # makes that projection unable to return any row at all.
+    tool_facts = conn.execute(
+        """
+        SELECT median_tool_call_ms, p90_tool_call_ms, max_tool_call_ms, stuck_tool_count
+        FROM session_latency_profiles
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
     return SessionLatencyProfileInsight(
         session_id=session_id,
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
         provenance=_archive_provenance(materialization),
         latency=SessionLatencyProfilePayload(
-            median_tool_call_ms=0,
-            p90_tool_call_ms=0,
-            max_tool_call_ms=0,
-            stuck_tool_count=0,
+            median_tool_call_ms=int(tool_facts["median_tool_call_ms"]) if tool_facts is not None else 0,
+            p90_tool_call_ms=int(tool_facts["p90_tool_call_ms"]) if tool_facts is not None else 0,
+            max_tool_call_ms=int(tool_facts["max_tool_call_ms"]) if tool_facts is not None else 0,
+            stuck_tool_count=int(tool_facts["stuck_tool_count"]) if tool_facts is not None else 0,
             median_agent_response_ms=_median_ms(agent_response_ms),
             median_user_response_ms=_median_ms(user_response_ms),
             tool_call_count_by_category=tool_counts,

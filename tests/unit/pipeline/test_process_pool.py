@@ -3,9 +3,11 @@ from __future__ import annotations
 import sys
 import threading
 from concurrent.futures import as_completed
+from pathlib import Path
 
 import pytest
 
+import polylogue.runtime
 from polylogue.pipeline.services.process_pool import (
     PoolKind,
     parallel_threads_effective,
@@ -44,6 +46,50 @@ def test_process_pool_context_is_spawn() -> None:
     # fresh per worker instead of forking a shared preloaded process, so no
     # inherited thread/lock state can cross into a worker.
     assert process_pool_context().get_start_method() == "spawn"
+
+
+def test_dispatch_caps_workers_to_process_cpu_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cgroup-limited process must not size its pool from host CPUs.
+
+    Mutating the dispatchers to use the host count directly makes this
+    assertion fail: the 24-host/2-budget scenario would select four workers.
+    """
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 24)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 2)
+
+    plan = resolve_validation_dispatch(record_count=24)
+
+    assert plan.worker_count == 2
+
+
+def test_dispatch_reads_nested_cgroup_quota_on_production_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A nested quota must cap production dispatch below the host CPU count.
+
+    If dispatch reads the host count directly, or the helper reads only the
+    cgroup root, this 24-host/2-CPU case selects more than two workers.
+    """
+    cgroup_root = tmp_path / "cgroup"
+    cgroup = cgroup_root / "worker"
+    cgroup.mkdir(parents=True)
+    (cgroup_root / "cpu.max").write_text("400000 100000", encoding="utf-8")
+    (cgroup / "cpu.max").write_text("200000 100000", encoding="utf-8")
+    proc_cgroup = tmp_path / "self-cgroup"
+    proc_cgroup.write_text("0::/worker\n", encoding="utf-8")
+
+    monkeypatch.setattr(polylogue.runtime, "_CGROUP_V2_CPU_MAX", cgroup_root / "cpu.max")
+    monkeypatch.setattr(polylogue.runtime, "_PROC_SELF_CGROUP", proc_cgroup)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 24)
+    monkeypatch.setattr("polylogue.runtime.os.sched_getaffinity", lambda _pid: set(range(24)))
+
+    validation = resolve_validation_dispatch(record_count=24)
+    ingest = resolve_ingest_batch_dispatch(
+        total_blob_bytes=100 * 1024 * 1024,
+        record_count=24,
+        worker_limit=16,
+    )
+
+    assert validation.worker_count == 2
+    assert ingest.worker_count == 2
 
 
 def test_process_pool_workers_initialize_info_logging() -> None:
@@ -128,7 +174,7 @@ def test_parallel_threads_effective_treats_missing_probe_as_gil_enabled(monkeypa
 def test_resolve_archive_ingest_dispatch_defaults_to_resolve_parse_worker_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 9)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 9)
     monkeypatch.setattr(sys, "_is_gil_enabled", lambda: True, raising=False)
     plan = resolve_archive_ingest_dispatch()
     assert plan.pool_kind is PoolKind.PROCESS
@@ -162,7 +208,7 @@ def test_resolve_validation_dispatch_matrix(
     process pool, ``min(record_count, cpus, 8)``, independent of
     ``parallel_threads_effective`` -- confirmed by never patching the GIL
     probe in this test at all."""
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: cpu_count)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: cpu_count)
     plan = resolve_validation_dispatch(record_count=record_count)
     assert plan.pool_kind is PoolKind.PROCESS
     assert plan.worker_count == expected_workers
@@ -188,7 +234,7 @@ def test_resolve_ingest_batch_dispatch_matrix(
     expected_kind: PoolKind,
     expected_workers: int,
 ) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: cpu_count)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: cpu_count)
     plan = resolve_ingest_batch_dispatch(
         total_blob_bytes=total_blob_bytes, record_count=record_count, worker_limit=worker_limit
     )

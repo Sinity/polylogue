@@ -1320,10 +1320,14 @@ describe("background receiver diagnostics", () => {
     let simulatedNowMs = Date.now();
     const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
     try {
+      const recovered = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+      expect(recovered, `backfill recovery failed: ${recovered.error || "unknown"}`).toMatchObject({ ok: true });
+      for (const activeJob of recovered.jobs.filter((job) => ["running", "paused"].includes(job.status))) {
+        const cancelled = await sendRuntimeMessage({ type: "polylogue.backfill.control", job_id: activeJob.id, action: "cancel" });
+        expect(cancelled, `backfill cleanup refused: ${cancelled.error || "unknown"}`).toMatchObject({ ok: true, job: { status: "cancelled" } });
+      }
       const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
-      // Name the refusal: reaching for `started.job.id` on a rejected start
-      // reports "undefined has no 'id'" and buries the reason.
-      expect(started).toMatchObject({ ok: true });
+      expect(started, `backfill start refused: ${started.error || "unknown"}`).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       // Each wake waits for the capture to land rather than for a fixed
       // interval: under CPU contention the coordinator can need longer than

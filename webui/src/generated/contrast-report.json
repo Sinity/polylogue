@@ -149,15 +149,6 @@
       "threshold": 4.5
     },
     {
-      "background": "#fef3c7",
-      "foreground": "#854d0e",
-      "mode": "light",
-      "pair": "origin-beads-issue",
-      "passes": true,
-      "ratio": 6.15,
-      "threshold": 4.5
-    },
-    {
       "background": "#e5e7eb",
       "foreground": "#374151",
       "mode": "light",
@@ -344,15 +335,6 @@
       "pair": "origin-antigravity-session",
       "passes": true,
       "ratio": 8.05,
-      "threshold": 4.5
-    },
-    {
-      "background": "#3d2e0c",
-      "foreground": "#fde68a",
-      "mode": "dark",
-      "pair": "origin-beads-issue",
-      "passes": true,
-      "ratio": 10.58,
       "threshold": 4.5
     },
     {

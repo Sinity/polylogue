@@ -79,9 +79,6 @@
   --pl-origin-antigravity-session-fg: #9d174d;
   --pl-origin-antigravity-session-bg: #fce7f3;
   --pl-origin-antigravity-session-border: #9d174d;
-  --pl-origin-beads-issue-fg: #854d0e;
-  --pl-origin-beads-issue-bg: #fef3c7;
-  --pl-origin-beads-issue-border: #854d0e;
   --pl-origin-grok-export-fg: #374151;
   --pl-origin-grok-export-bg: #e5e7eb;
   --pl-origin-grok-export-border: #374151;
@@ -147,9 +144,6 @@
   --pl-origin-antigravity-session-fg: #f9a8d4;
   --pl-origin-antigravity-session-bg: #421b34;
   --pl-origin-antigravity-session-border: #f9a8d4;
-  --pl-origin-beads-issue-fg: #fde68a;
-  --pl-origin-beads-issue-bg: #3d2e0c;
-  --pl-origin-beads-issue-border: #fde68a;
   --pl-origin-grok-export-fg: #d1d5db;
   --pl-origin-grok-export-bg: #29313a;
   --pl-origin-grok-export-border: #d1d5db;
@@ -215,9 +209,6 @@
   --pl-origin-antigravity-session-fg: #f9a8d4;
   --pl-origin-antigravity-session-bg: #421b34;
   --pl-origin-antigravity-session-border: #f9a8d4;
-  --pl-origin-beads-issue-fg: #fde68a;
-  --pl-origin-beads-issue-bg: #3d2e0c;
-  --pl-origin-beads-issue-border: #fde68a;
   --pl-origin-grok-export-fg: #d1d5db;
   --pl-origin-grok-export-bg: #29313a;
   --pl-origin-grok-export-border: #d1d5db;
@@ -284,11 +275,6 @@
 .pl-origin-badge[data-origin='antigravity-session'] {
   color: var(--pl-origin-antigravity-session-fg);
   background: var(--pl-origin-antigravity-session-bg);
-}
-
-.pl-origin-badge[data-origin='beads-issue'] {
-  color: var(--pl-origin-beads-issue-fg);
-  background: var(--pl-origin-beads-issue-bg);
 }
 
 .pl-origin-badge[data-origin='grok-export'] {

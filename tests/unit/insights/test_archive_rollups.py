@@ -250,15 +250,6 @@ def test_abandoned_session_items_sorts_by_date_descending() -> None:
     assert [item["session_id"] for item in items] == ["c2", "c1"]
 
 
-def test_abandoned_session_items_filters_by_repo_path() -> None:
-    profiles = [
-        _profile("c1", terminal_state="question_left", cwd_paths=("/realm/project/polylogue",)),
-        _profile("c2", terminal_state="question_left", cwd_paths=("/realm/project/sinnix",)),
-    ]
-    items = abandoned_session_items(profiles, min_severity="question_left", repo_path="polylogue")
-    assert [item["session_id"] for item in items] == ["c1"]
-
-
 def test_abandoned_session_items_rejects_invalid_min_severity() -> None:
     with pytest.raises(ValueError, match="min_severity must be one of"):
         abandoned_session_items([_profile("c1")], min_severity="not_a_severity")

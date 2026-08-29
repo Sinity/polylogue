@@ -140,3 +140,31 @@ def test_usage_timeline_still_buckets_timestamped_sessions_normally(tmp_path: Pa
 
     assert [row.bucket for row in rows] == ["2023-11"]
     assert rows[0].usage.input_tokens == 7
+
+
+def test_usage_timeline_unions_event_sessions_when_models_share_a_bucket(tmp_path: Path) -> None:
+    """A month-origin bucket counts each session once across model groups."""
+    with ArchiveStore(tmp_path / "archive") as facade:
+        conn = facade._conn
+        native_id = "multi-model-session"
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash, created_at_ms) VALUES (?, ?, ?, ?)",
+            (native_id, "codex-session", bytes(32), 1_700_000_000_000),
+        )
+        session_id = f"codex-session:{native_id}"
+        for position, model in enumerate(("gpt-5", "gpt-5-pro")):
+            conn.execute(
+                """
+                INSERT INTO session_provider_usage_events (
+                    session_id, position, provider_event_type, model_name,
+                    last_input_tokens, last_total_tokens
+                ) VALUES (?, ?, 'token_count', ?, 10, 10)
+                """,
+                (session_id, position, model),
+            )
+        conn.commit()
+
+        rows = facade.list_usage_timeline_insights(group_by="month-origin")
+
+    assert len(rows) == 1
+    assert rows[0].session_count == 1

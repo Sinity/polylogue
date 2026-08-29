@@ -2,13 +2,134 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.util
+import os
 import sys
 import sysconfig
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
+
+_CGROUP_V2_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_V1_QUOTA = Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+_CGROUP_V1_PERIOD = Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+_PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+
+
+def _cgroup_memberships(proc_cgroup_path: Path) -> tuple[tuple[str, str, str], ...]:
+    try:
+        lines = proc_cgroup_path.read_text().splitlines()
+    except OSError:
+        return ()
+    memberships: list[tuple[str, str, str]] = []
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3:
+            memberships.append((parts[0], parts[1], parts[2]))
+    return tuple(memberships)
+
+
+def _cgroup_ancestor_paths(root_file: Path, relative_path: str) -> tuple[Path, ...]:
+    """Return a cgroup file's leaf-to-root paths for one membership."""
+    components = tuple(part for part in PurePosixPath(relative_path).parts if part != "/")
+    return tuple(
+        root_file.parent.joinpath(*components[:depth], root_file.name) for depth in range(len(components), -1, -1)
+    )
+
+
+def _quota_from_v2_paths(paths: tuple[Path, ...]) -> int | None:
+    values: list[int] = []
+    for path in paths:
+        try:
+            fields = path.read_text().split()
+            if len(fields) != 2 or fields[0] == "max":
+                continue
+            quota, period = int(fields[0]), int(fields[1])
+        except (OSError, ValueError):
+            continue
+        if quota > 0 and period > 0:
+            values.append(max(1, quota // period))
+    return min(values) if values else None
+
+
+def _quota_from_v1_paths(quota_paths: tuple[Path, ...], period_paths: tuple[Path, ...]) -> int | None:
+    values: list[int] = []
+    for quota_path, period_path in zip(quota_paths, period_paths, strict=True):
+        try:
+            quota = int(quota_path.read_text().strip())
+            period = int(period_path.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if quota > 0 and period > 0:
+            values.append(max(1, quota // period))
+    return min(values) if values else None
+
+
+def _cgroup_cpu_quota(
+    *,
+    v2_path: Path | None = None,
+    v1_quota_path: Path | None = None,
+    v1_period_path: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> int | None:
+    """Return the tightest bounded CPU quota in this process's cgroup tree."""
+    v2_path = _CGROUP_V2_CPU_MAX if v2_path is None else v2_path
+    v1_quota_path = _CGROUP_V1_QUOTA if v1_quota_path is None else v1_quota_path
+    v1_period_path = _CGROUP_V1_PERIOD if v1_period_path is None else v1_period_path
+    proc_cgroup_path = _PROC_SELF_CGROUP if proc_cgroup_path is None else proc_cgroup_path
+
+    memberships = _cgroup_memberships(proc_cgroup_path)
+    v2_paths = [v2_path]
+    v1_quota_paths = [v1_quota_path]
+    v1_period_paths = [v1_period_path]
+    for hierarchy, controllers, relative_path in memberships:
+        if hierarchy == "0" and not controllers:
+            v2_paths.extend(_cgroup_ancestor_paths(v2_path, relative_path))
+        elif "cpu" in controllers.split(",") or "cpuacct" in controllers.split(","):
+            v1_quota_paths.extend(_cgroup_ancestor_paths(v1_quota_path, relative_path))
+            v1_period_paths.extend(_cgroup_ancestor_paths(v1_period_path, relative_path))
+
+    v2_quota = _quota_from_v2_paths(tuple(dict.fromkeys(v2_paths)))
+    if v2_quota is not None:
+        return v2_quota
+    return _quota_from_v1_paths(
+        tuple(dict.fromkeys(v1_quota_paths)),
+        tuple(dict.fromkeys(v1_period_paths)),
+    )
+
+
+def available_cpus(
+    *,
+    cpu_count: int | None = None,
+    affinity: int | None = None,
+    v2_path: Path | None = None,
+    v1_quota_path: Path | None = None,
+    v1_period_path: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> int | None:
+    """Return the smallest credible CPU budget available to this process.
+
+    The cgroup quota is authoritative for CPU admission; affinity and the
+    host count provide fallback and upper-bound signals when quota is absent.
+    Optional values are dependency seams for callers and tests.
+    """
+    host = os.cpu_count() if cpu_count is None else cpu_count
+    quota = _cgroup_cpu_quota(
+        v2_path=v2_path,
+        v1_quota_path=v1_quota_path,
+        v1_period_path=v1_period_path,
+        proc_cgroup_path=proc_cgroup_path,
+    )
+    candidates = [count for count in (host, quota) if count]
+    if affinity is None:
+        with contextlib.suppress(AttributeError, OSError):
+            affinity = len(os.sched_getaffinity(0))
+    if affinity:
+        candidates.append(affinity)
+    return min(candidates) if candidates else None
+
 
 MINIMUM_PYTHON = (3, 14)
 REQUIRED_NATIVE_PACKAGES: tuple[str, ...] = (
