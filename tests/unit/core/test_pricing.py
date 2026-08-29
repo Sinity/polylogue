@@ -525,24 +525,23 @@ def test_canonical_model_family_does_not_leak_pricing_catalog_routing_tag() -> N
     retain a routing tag."""
     from polylogue.archive.semantic.pricing import PRICING, pricing_catalog_source
 
-    # The curated override currently records Anthropic as the catalog source.
-    # The semantic-family assertion remains independent of that source label.
-    assert PRICING["claude-fable-5"].source_name == "anthropic"
-    assert pricing_catalog_source("claude-fable-5") == "anthropic"
-    assert canonical_model_family("claude-fable-5") == "anthropic"
+    routed_model = "vertex_ai/claude-fable-5"
+    assert PRICING[routed_model].source_name == "vertex_ai-anthropic_models"
+    assert pricing_catalog_source(routed_model) != "anthropic"
+    assert canonical_model_family(routed_model) == "anthropic"
 
 
 def test_semantic_model_vendor_and_pricing_catalog_source_can_diverge() -> None:
     """A marketplace/routed model name and its pricing-catalog provenance
-    are genuinely different axes -- the same vendor model routed through a
-    marketplace (openrouter) still has vendor=anthropic even though its
-    pricing-catalog source is the marketplace/routing layer, not the
-    vendor."""
-    from polylogue.archive.semantic.pricing import pricing_catalog_source, semantic_model_vendor
+    are genuinely different axes. The same vendor model routed through
+    Vertex AI still has vendor=anthropic even though its pricing-catalog
+    source is the routing layer, not the vendor."""
+    from polylogue.archive.semantic.pricing import canonical_model_family, pricing_catalog_source, semantic_model_vendor
 
-    marketplace_routed = "openrouter/anthropic/claude-3.5-sonnet"
-    assert semantic_model_vendor(marketplace_routed) == "anthropic"
-    assert pricing_catalog_source(marketplace_routed) != "anthropic"
+    routed_model = "vertex_ai/claude-fable-5"
+    assert semantic_model_vendor(routed_model) == "anthropic"
+    assert canonical_model_family(routed_model) == "anthropic"
+    assert pricing_catalog_source(routed_model) != "anthropic"
 
 
 def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
