@@ -12,7 +12,6 @@ from click import Command
 from click.testing import CliRunner as _ClickCliRunner
 from click.testing import Result
 
-import polylogue.cli.commands.maintenance._reindex_canary as reindex_canary_cli
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
@@ -60,7 +59,6 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
         selected_session_ids: tuple[str, ...],
         index_schema_version: int,
         schema_inference_receipt_path: Path,
-        message_owner_scope_backfill_receipt_path: Path | None = None,
     ) -> object:
         return rebuild_index_from_source_sync(
             RebuildIndexRequest(
@@ -70,7 +68,6 @@ def _run_cli_canary_tests_through_real_rebuild_service(monkeypatch: pytest.Monke
                 promote=False,
                 canary=True,
                 schema_inference_receipt_path=schema_inference_receipt_path,
-                message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
             )
         )
 
@@ -1377,70 +1374,6 @@ def test_reindex_canary_cli_runs_real_no_promote_route(
     assert json.loads(report_path.read_text(encoding="utf-8"))["review_status"] == "unreviewed"
 
 
-def test_reindex_canary_cli_forwards_an_explicit_owner_backfill_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The canary CLI passes its explicit ownership evidence into the service.
-
-    Anti-vacuity: this invokes the registered command with the production
-    option and captures the actual service call. Removing the option or its
-    forwarding leaves the canary unable to receive the receipt.
-    """
-
-    archive_root = tmp_path / "isolated-canary"
-    initialize_active_archive_root(archive_root)
-    schema_receipt = tmp_path / "schema-receipt.json"
-    owner_receipt = tmp_path / "owner-receipt.json"
-    schema_receipt.write_text("{}", encoding="utf-8")
-    owner_receipt.write_text("{}", encoding="utf-8")
-    report_path = tmp_path / "canary-report.json"
-    captured: dict[str, object] = {}
-
-    def capture_run(*args: object, **kwargs: object) -> CanaryRunResult:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return _run_result(archive_root / "index.db")
-
-    class DurableReport:
-        unclassified_count = 0
-        review_status = "reviewed"
-
-        def to_dict(self) -> dict[str, object]:
-            return {"status": "classified"}
-
-    monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", capture_run)
-    monkeypatch.setattr(
-        "polylogue.maintenance.reindex_canary.write_canary_report", lambda *_args, **_kwargs: DurableReport()
-    )
-    monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda *_args, **_kwargs: {})
-
-    result = CliRunner().invoke(
-        reindex_canary_cli.reindex_canary_command,
-        [
-            "--archive-root",
-            str(archive_root),
-            "--report",
-            str(report_path),
-            "--schema-inference-receipt",
-            str(schema_receipt),
-            "--message-owner-scope-backfill-receipt",
-            str(owner_receipt),
-            "--no-promote",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert captured["kwargs"] == {
-        "input_index": None,
-        "sessions_per_origin": 100,
-        "pathology_session_ids": (),
-        "sample_session_ids": (),
-        "no_promote": True,
-        "schema_inference_receipt_path": schema_receipt,
-        "message_owner_scope_backfill_receipt_path": owner_receipt,
-    }
-
-
 def test_reindex_canary_cli_refuses_to_write_unclassified_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1932,8 +1865,6 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     current_index = tmp_path / "index.db"
     candidate_index = tmp_path / ".index-generations" / "gen-test" / "index.db"
     current_index.touch()
-    owner_receipt = tmp_path / "owner-receipt.json"
-    owner_receipt.write_text("{}", encoding="utf-8")
     candidate_index.parent.mkdir(parents=True)
     candidate_index.touch()
     selection = _run_result(current_index).selection
@@ -2010,7 +1941,6 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
         tmp_path,
         input_index=current_index,
         schema_inference_receipt_path=tmp_path / "schema-inference-gate-receipt.json",
-        message_owner_scope_backfill_receipt_path=owner_receipt,
         sessions_per_origin=2,
         no_promote=True,
     )
@@ -2018,7 +1948,6 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     request = cast(dict[str, object], captured["request"])
     assert request["raw_ids"] == selection.selected_raw_ids
     assert request["selected_session_ids"] == selection.selected_session_ids
-    assert request["message_owner_scope_backfill_receipt_path"] == owner_receipt
     assert captured["compare"] == (current_index, candidate_index, selection.selected_session_ids)
     assert result.rebuild_receipt == {
         "archive_root": Receipt.archive_root,
