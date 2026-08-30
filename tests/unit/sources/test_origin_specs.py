@@ -34,6 +34,7 @@ from polylogue.sources.origin_specs import (
     validate_assembly_spec_parity,
     validate_stream_parser_parity,
 )
+from polylogue.sources.source_walk import census_source_root
 
 
 def test_hermes_source_class_recognition_is_structural_and_fails_closed(tmp_path: Path) -> None:
@@ -71,6 +72,36 @@ def test_hermes_source_class_recognition_accepts_atof_jsonl(tmp_path: Path) -> N
     result = recognize_source_class(Provider.HERMES, path)
     assert result is not None
     assert result.source_class == "session"
+
+
+def test_hermes_root_census_accounts_for_every_candidate_without_parsing(tmp_path: Path) -> None:
+    """A broad root has one declared disposition for every enumerated file.
+
+    Anti-vacuity: dropping a candidate from the walk or admitting every JSON
+    by suffix changes the denominator or the typed disposition counts.
+    """
+
+    for index in range(40):
+        (tmp_path / f"template-{index}.json").write_text('{"name":"optional skill"}', encoding="utf-8")
+    (tmp_path / "moved-atif.json").write_text(
+        '{"schema_version":"ATIF-v1.7","session_id":"s-1","steps":[]}', encoding="utf-8"
+    )
+    (tmp_path / "moved-atof.jsonl").write_text(
+        '{"atof_version":"0.1","kind":"mark","uuid":"u-1",'
+        '"timestamp":"2026-08-26T00:00:00Z","name":"hermes.turn.start"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "cache.sqlite").write_bytes(b"not sqlite")
+
+    census = census_source_root(tmp_path, provider=Provider.HERMES)
+
+    assert census.candidate_count == 43
+    assert census.disposition_counts == {"session": 2, "non_session": 0, "unsupported": 41}
+    assert census.accounted_count == census.candidate_count
+    assert census.unexplained_candidates == ()
+    assert census.is_complete
+    assert census.inspection_bytes > 0
+    assert census.inspection_seconds >= 0
 
 
 def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:

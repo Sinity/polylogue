@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,11 +14,66 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
+from .origin_specs import SourceClass, recognize_source_class
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 _HERMES_SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3"})
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRootCensus:
+    """Read-only accounting for every candidate visible to a source walk."""
+
+    provider: Provider
+    root: Path
+    candidate_count: int
+    disposition_counts: dict[SourceClass, int]
+    unexplained_candidates: tuple[Path, ...]
+    inspection_bytes: int
+    inspection_seconds: float
+
+    @property
+    def accounted_count(self) -> int:
+        return sum(self.disposition_counts.values())
+
+    @property
+    def is_complete(self) -> bool:
+        return self.accounted_count == self.candidate_count and not self.unexplained_candidates
+
+
+def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
+    """Classify the current candidate denominator without parsing or writing.
+
+    The walk and recognizer are the production discovery and admission
+    authorities.  This function only records their result, so a candidate
+    cannot disappear from the denominator merely because admission refuses it.
+    """
+    started = time.perf_counter()
+    candidates = _walk_source_paths(root, provider=provider)
+    counts: dict[SourceClass, int] = {"session": 0, "non_session": 0, "unsupported": 0}
+    unexplained: list[Path] = []
+    inspection_bytes = 0
+    for path in candidates:
+        try:
+            inspection_bytes += path.stat().st_size
+            recognition = recognize_source_class(provider, path)
+        except (OSError, ValueError):
+            recognition = None
+        if recognition is None:
+            unexplained.append(path)
+        else:
+            counts[recognition.source_class] += 1
+    return SourceRootCensus(
+        provider=provider,
+        root=root,
+        candidate_count=len(candidates),
+        disposition_counts=counts,
+        unexplained_candidates=tuple(unexplained),
+        inspection_bytes=inspection_bytes,
+        inspection_seconds=time.perf_counter() - started,
+    )
 
 
 def _empty_sidecar_data() -> SidecarData:
@@ -113,6 +169,7 @@ def _setup_source_walk(
 
 
 __all__ = [
+    "SourceRootCensus",
     "_SourceWalkSetup",
     "_SUPPORTED_DOUBLE_EXTENSIONS",
     "_SUPPORTED_EXTENSIONS",
@@ -122,4 +179,5 @@ __all__ = [
     "_resolve_source_paths",
     "_setup_source_walk",
     "_walk_source_paths",
+    "census_source_root",
 ]
