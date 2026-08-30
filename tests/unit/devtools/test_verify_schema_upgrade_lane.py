@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from devtools import verify_schema_upgrade_lane
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import BenignDDLEntry
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_schema_evolution_policy_lane_allows_durable_sql_migrations(capsys: pytest.CaptureFixture[str]) -> None:
@@ -34,6 +36,11 @@ def test_ddl_lifecycle_gate_rejects_deleted_create_table_without_declaration(
     patch = f"diff --git a/{source_path} b/{source_path}\n@@ -1 +1 @@\n-{removed_line}\n+"
 
     monkeypatch.setattr(verify_schema_upgrade_lane, "_diff_base", lambda: "base")
+    monkeypatch.setattr(
+        verify_schema_upgrade_lane,
+        "_render_archive_ddl",
+        lambda ref: dict(ARCHIVE_DDL_BY_TIER),
+    )
 
     def fake_git_text(*args: str) -> str:
         if args[:2] == ("diff", "--no-ext-diff"):
@@ -51,6 +58,35 @@ def test_ddl_lifecycle_gate_rejects_deleted_create_table_without_declaration(
     violations = verify_schema_upgrade_lane._ddl_lifecycle_report()
     assert [(item.tier, item.path) for item in violations] == [("source", source_path)]
     assert "schema-version bump" in violations[0].reason
+
+
+def test_ddl_lifecycle_gate_rejects_generated_ddl_change_outside_archive_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: generated durable DDL changes must enter the lifecycle gate."""
+    source_path = "polylogue/storage/sqlite/archive_tiers/source.py"
+    current_source = (Path(__file__).parents[3] / source_path).read_text(encoding="utf-8")
+    current_ddl = ARCHIVE_DDL_BY_TIER
+    previous_ddl = dict(current_ddl)
+    previous_ddl[ArchiveTier.SOURCE] = current_ddl[ArchiveTier.SOURCE].replace(
+        "source_generations", "old_source_generations", 1
+    )
+
+    monkeypatch.setattr(verify_schema_upgrade_lane, "_diff_base", lambda: "base")
+    monkeypatch.setattr(
+        verify_schema_upgrade_lane,
+        "_render_archive_ddl",
+        lambda ref: previous_ddl if ref == "base" else current_ddl,
+    )
+    monkeypatch.setattr(
+        verify_schema_upgrade_lane,
+        "_git_text",
+        lambda *args: current_source if args[:1] == ("show",) else "",
+    )
+
+    violations = verify_schema_upgrade_lane._ddl_lifecycle_report()
+
+    assert [(item.tier, item.path) for item in violations] == [("source", source_path)]
 
 
 @pytest.mark.parametrize(
