@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -75,11 +75,21 @@ class SourceSeal(SurfacePayloadModel):
     source_identity: str
     source_snapshot: str
     source_schema_version: StrictInt = Field(gt=0)
+    cut_identity: str
+    candidate_manifest_digest: str
+    carry_forward_manifest_digest: str
 
     @field_validator("archive_identity", "source_identity", "source_snapshot")
     @classmethod
     def validate_identity(cls, value: str, info: Any) -> str:
         return _identifier(value, label=info.field_name)
+
+    @field_validator("cut_identity", "candidate_manifest_digest", "carry_forward_manifest_digest")
+    @classmethod
+    def validate_digest(cls, value: str, info: Any) -> str:
+        if _DIGEST_RE.fullmatch(value) is None:
+            raise ValueError(f"{info.field_name} must be a SHA-256 hex digest")
+        return value.lower()
 
     @property
     def digest(self) -> str:
@@ -464,8 +474,11 @@ class CandidateBuildPlanningContext:
     obligations: tuple[CandidateBuildObligation, ...] = ()
     expected_check_plan_digest: str | None = None
     expected_check_plan_members: tuple[str, ...] = ()
+    recompute_source_seal: Callable[[], SourceSeal] | None = None
 
     def plan(self, request: CandidateBuildRequest, *, preview: bool = False) -> CandidateBuildPlan:
+        if self.recompute_source_seal is not None and self.recompute_source_seal() != self.source_seal:
+            raise ValueError("candidate source cut is stale")
         if request.source_seal != self.source_seal:
             raise ValueError("candidate request source seal is stale")
         if self.expected_check_plan_digest is not None:

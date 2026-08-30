@@ -50,7 +50,9 @@ from polylogue.maintenance.rebuild_index import (
     _REBUILD_TERMINAL_NOT_RESUMABLE,
     _reconcile_active_generation_transaction,
     candidate_build_schema_identity,
+    freeze_candidate_source_inputs,
     validate_rebuild_source_admission,
+    verify_frozen_candidate_source_inputs,
 )
 from polylogue.storage.archive_identity import (
     ArchiveLocation,
@@ -475,11 +477,35 @@ async def run_daemon_bulk_rebuild_pass(
         root_stat = root.stat()
         source_tier = location.configured_tier("source")
         source_schema_version, schema_declarations = candidate_build_schema_identity()
+        cut_destination = root / ".candidate-source-cuts" / transaction.generation_id
+        source_cut = await asyncio.to_thread(
+            freeze_candidate_source_inputs,
+            config,
+            destination=cut_destination,
+            request_id=f"candidate-{transaction.generation_id}",
+            fallback_source_path=source_tier.configured_path,
+        )
+
+        def recompute_source_seal() -> SourceSeal:
+            current_cut = verify_frozen_candidate_source_inputs(cut_destination)
+            return SourceSeal(
+                archive_identity=f"dev:{root_stat.st_dev}:ino:{root_stat.st_ino}",
+                source_identity=source_tier.stable_id,
+                source_snapshot=transaction.source_snapshot,
+                source_schema_version=source_schema_version,
+                cut_identity=current_cut.cut_identity,
+                candidate_manifest_digest=current_cut.candidate_manifest.digest,
+                carry_forward_manifest_digest=current_cut.carry_forward_manifest.digest,
+            )
+
         source_seal = SourceSeal(
             archive_identity=f"dev:{root_stat.st_dev}:ino:{root_stat.st_ino}",
             source_identity=source_tier.stable_id,
             source_snapshot=transaction.source_snapshot,
             source_schema_version=source_schema_version,
+            cut_identity=source_cut.cut_identity,
+            candidate_manifest_digest=source_cut.candidate_manifest.digest,
+            carry_forward_manifest_digest=source_cut.carry_forward_manifest.digest,
         )
         candidate_request = CandidateBuildRequest(
             source_seal=source_seal,
@@ -511,6 +537,7 @@ async def run_daemon_bulk_rebuild_pass(
                     CandidateBuildObligation(name="lineage"),
                     CandidateBuildObligation(name="inactive-generation"),
                 ),
+                recompute_source_seal=recompute_source_seal,
                 expected_check_plan_digest=check_plan.digest,
                 expected_check_plan_members=check_plan.member_identities,
             ),

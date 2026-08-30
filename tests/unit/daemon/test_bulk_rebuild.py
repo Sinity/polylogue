@@ -67,8 +67,8 @@ from polylogue.storage.index_generation import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
-from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 _RAW_COUNT = 6
 
@@ -105,18 +105,22 @@ def _config(root: Path) -> Config:
 
 def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
     initialize_active_archive_root(root)
-    paths = []
-    for index in range(count):
-        payload = _codex_session(
-            f"gd6v-session-{index}",
-            (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
-        )
-        path = root / "wire" / f"gd6v-corpus-{index}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(payload)
-        paths.append(path)
-    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)) for path in paths))
-    assert getattr(result, "parse_failures", 0) == 0
+    seeded: dict[str, bytes] = {}
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(count):
+            payload = _codex_session(
+                f"gd6v-session-{index}",
+                (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
+            )
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"gd6v-corpus-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+            seeded[raw_id] = payload
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     backfill_historical_revision_evidence(root)
 
 
@@ -516,6 +520,31 @@ def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
     assert persisted.status != "stale"
 
 
+def test_candidate_bulk_route_freezes_and_seals_source_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: bypassing AcquisitionService leaves no cut bound to the candidate request."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    try:
+        receipt = asyncio.run(
+            run_daemon_bulk_rebuild_pass(
+                config=_config(tmp_path),
+                parse_stage=stage,
+                batch_size=1,
+                max_payload_bytes=10_000_000,
+                candidate_build=True,
+            )
+        )
+    finally:
+        stage.shutdown()
+
+    assert receipt is not None
+    published = list((tmp_path / ".candidate-source-cuts").glob("*/.source-cut-complete"))
+    assert len(published) == 1
+
+
 def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -590,9 +619,11 @@ def test_daemon_bulk_rebuild_equivalent_to_cli_rebuild(tmp_path: Path, monkeypat
     _seed_corpus(daemon_root)
     cli_receipt_path = write_valid_rebuild_receipt(cli_root, tmp_path / "cli-receipt.json")
     daemon_receipt_path = write_valid_rebuild_receipt(daemon_root, tmp_path / "daemon-receipt.json")
-    # The source packages are admitted independently, so acquisition timestamps
-    # and absolute wire paths are allowed to differ. The final typed archive
-    # projection below is the equivalence oracle for this route.
+    # Compare the immutable source evidence, not every mutable column: parse
+    # and revision-governance state are post-acquisition interpretation that
+    # differs between two independently seeded corpora, which is precisely why
+    # rebuild_source_evidence_snapshot exists alongside the full-row hash.
+    assert rebuild_source_evidence_snapshot(cli_root) == rebuild_source_evidence_snapshot(daemon_root)
 
     # ArchiveStore.open_owned_inactive_generation validates generation
     # identity against the process-wide configured archive root (not merely
@@ -615,5 +646,4 @@ def test_daemon_bulk_rebuild_equivalent_to_cli_rebuild(tmp_path: Path, monkeypat
     cli_snapshot = _canonical_snapshot(cli_root / "index.db")
     daemon_snapshot = _canonical_snapshot(daemon_root / "index.db")
     assert cli_snapshot["session_count"] == _RAW_COUNT
-    for key in ("messages", "blocks", "session_links", "messages_fts_row_count", "session_count"):
-        assert cli_snapshot[key] == daemon_snapshot[key]
+    assert cli_snapshot == daemon_snapshot

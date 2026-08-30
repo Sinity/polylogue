@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -127,20 +125,6 @@ def provider_source_package(
         attachment_bytes=attachment_bytes,
         schedule_digest=schedule_digest,
     )
-
-
-def admit_provider_source_packages(
-    archive_root: Path,
-    packages: Iterable[ProviderSourcePackage],
-) -> object:
-    """Admit law-owned provider packages through the production ingest route."""
-    selected = tuple(packages)
-    if not selected:
-        raise ValueError("at least one provider source package is required")
-    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-
-    sources = [source for package in selected for source in package.admitted_sources()]
-    return asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
 
 
 @dataclass

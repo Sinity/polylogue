@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_fac
 if TYPE_CHECKING:
     from polylogue.operations.candidate_build import CandidateBuildRequest
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.sources.source_snapshot import SourceCutResult
     from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, IndexRebuildTransaction
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
@@ -76,6 +77,38 @@ def candidate_build_schema_identity() -> tuple[int, tuple[str, ...]]:
     source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
     index_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
     return source_version, (f"source:{source_version}", f"index:{index_version}")
+
+
+def freeze_candidate_source_inputs(
+    config: Config, *, destination: Path, request_id: str, fallback_source_path: Path
+) -> SourceCutResult:
+    """Freeze configured acquisition roots before candidate construction."""
+    from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+    from polylogue.pipeline.services.acquisition import AcquisitionService
+
+    configured_inputs = [source.path for source in config.sources if source.path is not None]
+    declarations = [
+        SourceDeclaration(
+            f"configured-{index}",
+            SourceRole.DIRECTORY if source.is_dir() else SourceRole.REWRITE_JSONL,
+            source,
+            True,
+        )
+        for index, source in enumerate(configured_inputs)
+    ]
+    if not declarations:
+        declarations = [SourceDeclaration("source-tier", SourceRole.MUTABLE_SQLITE, fallback_source_path, True)]
+    result: SourceCutResult = AcquisitionService.cut_source_inputs(declarations, destination, request_id=request_id)
+    return result
+
+
+def verify_frozen_candidate_source_inputs(destination: Path) -> SourceCutResult:
+    """Reload and hash-check the immutable inputs used by a candidate plan."""
+    from polylogue.sources.source_snapshot import load_source_cut, reacquire_candidate
+
+    result = load_source_cut(destination)
+    reacquire_candidate(result)
+    return result
 
 
 class RebuildProvenanceError(RuntimeError):

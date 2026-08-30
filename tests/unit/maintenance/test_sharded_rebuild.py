@@ -49,14 +49,13 @@ from polylogue.maintenance.sharded_rebuild import (
     shard_raw_ids,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
-from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 
 class _NoopProvenance:
@@ -96,15 +95,22 @@ def _raw_payload(native_id: str, text: str) -> bytes:
 
 def _seed_raw_archive(root: Path, count: int = 8) -> list[str]:
     initialize_active_archive_root(root)
-    paths = []
-    for index in range(count):
-        path = root / "wire" / "current" / f"{index}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_raw_payload(f"sharded-route-{index}", f"sharded route text {index}"))
-        paths.append(path)
-    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)) for path in paths))
-    assert getattr(result, "parse_failures", 0) == 0
-    backfill_historical_revision_evidence(root, ingest_workers=1)
+    seeded: dict[str, bytes] = {}
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(count):
+            payload = _raw_payload(f"sharded-route-{index}", f"sharded route text {index}")
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"current/{index}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+            seeded[raw_id] = payload
+    # Without a current-parser census the inactive-candidate gate refuses this
+    # corpus before any sharding runs, which masks whichever gate a case is
+    # actually about.
+    record_codex_parser_census(root, seeded)
+    decide_raw_revision_authority(root)
     with sqlite3.connect(root / "source.db") as conn:
         return [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
 
