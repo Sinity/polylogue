@@ -13,6 +13,10 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
 
     assert set(specs) == {
         "candidate-build",
+        "candidate-semantic-check",
+        "candidate-fidelity-conservation",
+        "candidate-population-coverage",
+        "candidate-transition-plan",
         "acquire-raw-sessions",
         "plan-validation-backlog",
         "plan-parse-backlog",

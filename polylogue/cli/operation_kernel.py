@@ -66,6 +66,14 @@ OperationCall = Callable[[OperationRequest], Mapping[str, Any] | None]
 DirectCall = Callable[[OperationRequest], object]
 
 
+def execute_candidate_semantic(request: object) -> object:
+    """Run the declared candidate semantic operation through the CLI seam."""
+
+    from polylogue.operations.candidate_proof import run_candidate_semantic
+
+    return run_candidate_semantic(request)  # type: ignore[arg-type]
+
+
 class OperationKernel:
     """Dispatch one declared operation without changing its semantics.
 
@@ -112,4 +120,5 @@ __all__ = [
     "OperationRequest",
     "OperationResult",
     "OperationUnavailableError",
+    "execute_candidate_semantic",
 ]
