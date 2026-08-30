@@ -1447,7 +1447,6 @@ class _RecoveryActuator:
             receipt_ref=str(report.receipt_path) if report.receipt_path is not None else None,
             applied_at="recovery",
             domain_receipt=report.to_dict(),
-            operation_id=args.operation_id,
         )
 
     def inspect_recovery(self, operation: RecoveryOperation, args: _RecoveryArgs) -> RecoveryDisposition:
