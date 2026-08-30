@@ -711,6 +711,16 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "POST",
+        "/api/demo/augment",
+        "maintenance",
+        "operational",
+        "bearer_if_configured_and_same_origin",
+        "demo augmentation result JSON",
+        notes="Applies deterministic demo writes through the write bridge; "
+        "exists for the demo archive, not for general archive mutation.",
+    ),
+    RouteContract(
+        "POST",
         "/api/maintenance/plan",
         "maintenance",
         "stable",
