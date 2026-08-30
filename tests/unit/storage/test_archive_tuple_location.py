@@ -20,6 +20,7 @@ from polylogue.storage.archive_tuple_location import (
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.schema import assert_supported_archive_layout
 
 
 def _archive(root: Path) -> None:
@@ -140,3 +141,17 @@ def test_candidate_path_cannot_be_reinterpreted_as_an_active_archive_root(tmp_pa
 
     with pytest.raises(ArchiveTupleError):
         initialize_active_archive_root(candidate.candidate_root)
+
+
+def test_current_index_version_does_not_hide_undeclared_schema_objects(tmp_path: Path) -> None:
+    """The schema shape, not only user_version, admits an index for reads."""
+    _archive(tmp_path)
+    index_path = ArchiveLocation.resolve(tmp_path).active_index_path
+    import sqlite3
+
+    with sqlite3.connect(index_path) as conn:
+        conn.execute("CREATE TABLE undeclared_schema_object (id INTEGER)")
+        conn.commit()
+    with sqlite3.connect(index_path) as conn:
+        with pytest.raises(RuntimeError, match="semantic manifest mismatch"):
+            assert_supported_archive_layout(conn)

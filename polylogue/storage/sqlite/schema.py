@@ -18,6 +18,7 @@ from polylogue.storage.sqlite.archive_tiers.index_convergence import (
     apply_index_benign_ddl_convergence,
     apply_index_benign_ddl_convergence_async,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
     PLANNER_STAT1_SEED_SQL,
@@ -30,6 +31,7 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     ensure_vec0_table_async,
     schema_version_mismatch_message,
 )
+from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
 
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
@@ -46,6 +48,8 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
             current_version=snapshot.current_version,
             expected_version=SCHEMA_VERSION,
         )
+    if snapshot.current_version == SCHEMA_VERSION:
+        assert_schema_manifest(conn, ArchiveTier.INDEX)
 
 
 def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: str | None = None) -> None:

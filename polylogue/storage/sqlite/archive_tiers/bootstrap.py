@@ -274,10 +274,18 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         if object_count == 0:
             if _restore_tier_prototype(conn, tier, spec.version):
                 conn.execute("PRAGMA foreign_keys = ON")
+                if tier is ArchiveTier.INDEX:
+                    from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+                    ensure_runtime_indexes_sync(conn)
                 _apply_archive_tier_convergence(conn, tier, spec)
                 _record_tier_init(tier, "prototype_hit")
                 return
             _initialize_archive_tier_ddl(conn, tier)
+            if tier is ArchiveTier.INDEX:
+                from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+                ensure_runtime_indexes_sync(conn)
             _record_tier_prototype(conn, tier, spec.version)
             _record_tier_init(tier, "ddl_fresh")
             return
@@ -545,6 +553,9 @@ def initialize_archive_database(
                 # archive converges without touching INDEX_SCHEMA_VERSION.
                 apply_index_benign_ddl_convergence(conn)
                 conn.commit()
+                from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+
+                assert_schema_manifest(conn, tier)
             return
         if current_version != 0:
             if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:
@@ -581,6 +592,10 @@ def initialize_archive_database(
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_fresh_archive_tier(conn, tier, required_version)
+        if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+
+            assert_schema_manifest(conn, tier)
     finally:
         conn.close()
 

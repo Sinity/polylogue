@@ -112,6 +112,14 @@ def publish_source_generation(
 
 def seal_source_generation(conn: sqlite3.Connection, *, source_generation_id: str, sealed_at_ms: int) -> None:
     """Seal only a complete, payload-backed manifest; otherwise fail closed."""
+    existing = conn.execute(
+        "SELECT sealed_at_ms FROM source_generations WHERE source_generation_id=?",
+        (source_generation_id,),
+    ).fetchone()
+    if existing is None:
+        raise KeyError(f"unknown source generation: {source_generation_id}")
+    if existing[0] is not None:
+        raise ValueError(f"source generation is already sealed: {source_generation_id}")
     census = source_generation_census(conn, source_generation_id)
     if not census["sealable"]:
         raise ValueError(f"source generation is not sealable: {source_generation_id}")
