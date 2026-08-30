@@ -433,9 +433,6 @@ def iter_source_sessions_with_raw(
         blob_store=blob_store,
     )
 
-    if Provider.from_string(source.name) is Provider.ANTIGRAVITY:
-        return
-
     walk = _setup_source_walk(
         source,
         cursor_state=cursor_state,
@@ -449,6 +446,11 @@ def iter_source_sessions_with_raw(
 
     failed_count = 0
     for path, file_mtime in walk.paths_to_process:
+        if (
+            Provider.from_string(source.name) is Provider.ANTIGRAVITY
+            and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+        ):
+            continue
         try:
             yield from parse_one_source_path(
                 str(path),
