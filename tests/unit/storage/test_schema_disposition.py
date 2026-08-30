@@ -78,6 +78,8 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     by_ref = {row.object_ref: row for row in rows}
 
     assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
+    assert by_ref["source:table:history_sidecars"].disposition == "KEEP"
+    assert by_ref["source:table:otlp_spans"].disposition == "KEEP"
     assert by_ref["source:table:raw_failure_disposition_receipts"].disposition == "KEEP"
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
     assert not any("raw_unknown_export_reclassification_receipts" in row.object_ref for row in rows)

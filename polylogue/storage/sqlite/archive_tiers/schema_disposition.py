@@ -266,7 +266,6 @@ _PURGE_TABLES = frozenset(
         "raw_non_session_duplicate_exclusion_receipts",
         "raw_quarantine_group_dedup_receipts",
         "raw_unknown_export_reclassification_receipts",
-        "history_sidecars",
     }
 )
 
@@ -415,6 +414,8 @@ def assert_complete_schema_dispositions(rows: Sequence[SchemaDisposition]) -> No
 
 def schema_disposition_report() -> dict[str, object]:
     """Return a generated review projection without storing live or campaign state."""
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
     rows = schema_dispositions()
     assert_complete_schema_dispositions(rows)
     counts: dict[str, int] = {}
@@ -450,7 +451,14 @@ def schema_disposition_report() -> dict[str, object]:
         "complete": True,
         "object_count": len(rows),
         "unknown_count": 0,
-        "disposition_counts": counts,
+        "disposition_counts": dict(sorted(counts.items())),
+        "schema_versions": {
+            tier.value: version
+            for tier, version in sorted(
+                ARCHIVE_VERSION_BY_TIER.items(),
+                key=lambda item: item[0].value,
+            )
+        },
         "tier_counts": tier_counts,
         "schema_fingerprints": schema_fingerprints,
         "objects": [
