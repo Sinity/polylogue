@@ -1,12 +1,27 @@
-"""Read-only replay of normalized live append acquisition units."""
+"""Read-only replay of live append acquisition units."""
 
 from __future__ import annotations
 
-from io import BytesIO
+from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import dumps_bytes as json_dumps_bytes
-from polylogue.sources.source_acquisition_components import iter_entry_payloads
+from polylogue.core.json import loads as json_loads
+from polylogue.sources.live.batch_support import codex_append_payload
+
+
+def _codex_session_meta_id(source_name: str) -> str | None:
+    try:
+        with Path(source_name).open("rb") as handle:
+            record = json_loads(handle.readline())
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(record, dict) or record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    identity = payload.get("id")
+    return identity if isinstance(identity, str) and identity else None
 
 
 def replay_append_acquisition_payload(
@@ -14,17 +29,28 @@ def replay_append_acquisition_payload(
     *,
     provider: Provider,
     source_name: str,
+    expected_size: int | None = None,
 ) -> tuple[bytes | None, str | None]:
-    """Reproduce the normalized payload stored for a provider append."""
+    """Reproduce the payload stored for a provider append.
+
+    Historical Codex append rows include a compact synthetic ``session_meta``
+    header. ``expected_size`` selects that historical shape when the caller
+    has the recorded row size; the no-size form is retained for direct replay
+    of historical rows and therefore uses the header when the source exposes
+    a session identity. New literal-delta rows select the literal shape by
+    their recorded size.
+    """
     if provider is not Provider.CODEX:
         return payload, None
-    try:
-        records = tuple(iter_entry_payloads(BytesIO(payload), stream_name=source_name, provider_hint=provider))
-    except Exception as exc:
-        return None, f"append_segment:decode:{exc}"
-    if not records:
-        return None, "append_segment:decode:no_records"
-    return b"".join(json_dumps_bytes(record.payload, append_newline=True) for record in records), None
+    identity = _codex_session_meta_id(source_name)
+    if identity is None:
+        return payload, None
+    historical = codex_append_payload(payload, identity=identity, legacy_header=True)
+    if expected_size is None or expected_size == len(historical):
+        return historical, None
+    if expected_size == len(payload):
+        return codex_append_payload(payload, identity=identity, legacy_header=False), None
+    return None, "append_segment:recorded_size_mismatch"
 
 
 __all__ = ["replay_append_acquisition_payload"]

@@ -679,14 +679,22 @@ def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | No
     return payload, None
 
 
-def _replay_append_payload(row: Mapping[str, object], payload: bytes) -> tuple[bytes | None, str | None]:
+def _replay_append_payload(
+    row: Mapping[str, object],
+    payload: bytes,
+    *,
+    source_name: str | None = None,
+) -> tuple[bytes | None, str | None]:
     provider = Provider.from_string(str(row.get("capture_mode") or ""))
     if provider is Provider.UNKNOWN:
         provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+    blob_size_value = row.get("blob_size")
+    expected_size = int(blob_size_value) if isinstance(blob_size_value, (int, str)) else None
     return replay_append_acquisition_payload(
         payload,
         provider=provider,
-        source_name=str(row.get("source_path") or "append.jsonl"),
+        source_name=source_name or str(row.get("source_path") or "append.jsonl"),
+        expected_size=expected_size,
     )
 
 
@@ -747,7 +755,7 @@ def _source_recoverability_proofs(
                     else:
                         payload, error = _append_segment_payload(resolved, start, end)
                         if error is None and payload is not None:
-                            payload, error = _replay_append_payload(row, payload)
+                            payload, error = _replay_append_payload(row, payload, source_name=resolved)
                 else:
                     payload, error = _current_raw_payload_bytes(
                         resolved,
@@ -1385,7 +1393,11 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                     else:
                         recovered_payload, recovery_error = _append_segment_payload(source_path, start, end)
                         if recovery_error is None and recovered_payload is not None:
-                            recovered_payload, recovery_error = _replay_append_payload(proof, recovered_payload)
+                            recovered_payload, recovery_error = _replay_append_payload(
+                                proof,
+                                recovered_payload,
+                                source_name=source_path,
+                            )
                 else:
                     recovered_payload, recovery_error = _current_raw_payload_bytes(
                         source_path,

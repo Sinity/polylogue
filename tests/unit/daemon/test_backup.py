@@ -697,16 +697,21 @@ def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(
     assert verified_after_growth["missing_canonical_blob_count"] == 0
 
 
-def test_backup_replays_codex_append_through_normalized_acquisition(
+def test_backup_replays_historical_codex_append_header(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """Codex append proof hashes the normalized acquisition payload."""
+    """Codex append proof reproduces the historical writer payload exactly."""
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / "codex.jsonl"
-    source_payload = '{"text":"e\u0301"}\n'.encode()
+    identity = "019f4d42-1794-7280-b329-ed31152df30e"
+    prefix = dumps_bytes({"type": "session_meta", "payload": {"id": identity}})
+    append = b'{"type":"event_msg","payload":{"type":"agent_message","message":"hello"}}\n'
+    source_payload = prefix + b"\n" + append
     source_path.write_bytes(source_payload)
-    expected_payload = dumps_bytes({"text": "é"}, append_newline=True)
+    from polylogue.sources.live.batch_support import codex_append_payload
+
+    expected_payload = codex_append_payload(append, identity=identity, legacy_header=True)
     blob_hash = hashlib.sha256(expected_payload).digest()
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
@@ -714,8 +719,15 @@ def test_backup_replays_codex_append_through_normalized_acquisition(
                 raw_id, origin, capture_mode, source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, validation_status, revision_kind,
                 append_start_offset, append_end_offset
-            ) VALUES (?, 'codex-session', 'codex', ?, 0, ?, ?, 1, 'passed', 'append', 0, ?)""",
-            ("codex-normalized", str(source_path), blob_hash, len(expected_payload), len(source_payload)),
+            ) VALUES (?, 'codex-session', 'codex', ?, 0, ?, ?, 1, 'passed', 'append', ?, ?)""",
+            (
+                "codex-historical-header",
+                str(source_path),
+                blob_hash,
+                len(expected_payload),
+                len(prefix) + 1,
+                len(source_payload),
+            ),
         )
 
     unproven: list[dict[str, str]] = []

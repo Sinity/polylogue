@@ -44,6 +44,28 @@ _BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
 _CURSOR_HASH_AUTHORITY_PREFIX = "sha256-prefix-v1"
 
 
+def codex_append_payload(
+    payload: bytes,
+    *,
+    identity: str,
+    legacy_header: bool,
+) -> bytes:
+    """Encode the payload shape used by Codex append acquisition.
+
+    New appends store the literal file delta. Rows written before the header
+    retirement stored a compact synthetic ``session_meta`` record followed by
+    that same delta. Keeping both shapes in one encoder lets replay reproduce
+    historical rows without creating a second serialization rule.
+    """
+    if not legacy_header:
+        return payload
+    session_meta = json.dumps(
+        {"type": "session_meta", "payload": {"id": identity}},
+        separators=(",", ":"),
+    ).encode()
+    return session_meta + b"\n" + payload
+
+
 def _sha256_hex(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 

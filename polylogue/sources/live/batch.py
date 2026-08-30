@@ -111,6 +111,7 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    codex_append_payload,
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     encode_cursor_hash_authority,
@@ -4122,7 +4123,8 @@ class LiveBatchProcessor:
                 "identity recovered from archived session / prior session_meta "
                 "line and carried as native_id_hint, not spliced into hashed bytes",
             )
-            return payload, identity, identity
+            assert identity is not None
+            return codex_append_payload(payload, identity=identity, legacy_header=False), identity, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(
             path, payload, existing_id=identity
         ):

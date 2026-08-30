@@ -17,7 +17,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
-from polylogue.material_protocol.v1.canonical import nfc_normalize
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -143,7 +142,7 @@ class _ZipEntrySplitState:
 
 def _artifact_payload(value: object) -> JSONValue:
     normalized = normalize_json_decimal(value)
-    return nfc_normalize(normalized) if is_json_value(normalized) else {}
+    return normalized if is_json_value(normalized) else {}
 
 
 def _heartbeat_label(source_path: str) -> str:
