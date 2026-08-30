@@ -5980,6 +5980,11 @@ def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     # values are filled only on the leaf's parent chain. The leaf evidence is
     # authoritative for that chain; an explicit False sibling remains provider
     # evidence and is never inferred at read time.
+    # The fallback leaf above is only a storage default. It is not provider
+    # evidence and must not override explicit active-path values.
+    if active_leaf_count != 1:
+        return normalized
+
     active_leaf = next((message for message in normalized if message.is_active_leaf), None)
     if active_leaf is None or not active_leaf.provider_message_id:
         return normalized
