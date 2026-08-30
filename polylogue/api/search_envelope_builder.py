@@ -69,6 +69,12 @@ async def build_search_envelope_for_spec(
         raise InvalidSearchCursorError(
             f"cursor was minted for retrieval_lane={decoded_cursor.lane!r} but this request is {spec.retrieval_lane!r}"
         )
+    if (
+        decoded_cursor is not None
+        and decoded_cursor.query_hash is not None
+        and decoded_cursor.query_hash != request_identity
+    ):
+        raise InvalidSearchCursorError("cursor belongs to a different ranked-search request")
 
     fetch_spec = spec
     if decoded_cursor is not None:

@@ -1,35 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from unittest.mock import AsyncMock
 
 import pytest
 
 from polylogue.api.search_envelope_builder import build_archive_search_envelope, build_search_envelope_for_spec
+from polylogue.archive.query.expression import compile_expression_into
 from polylogue.archive.query.search_hits import session_search_hit_from_summary
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.surfaces.payloads import SessionSearchHitPayload, build_search_cursor
+from polylogue.surfaces.cursor_identity import search_cursor_request_identity
+from polylogue.surfaces.payloads import (
+    InvalidSearchCursorError,
+    SessionSearchHitPayload,
+    build_search_cursor,
+)
 
 
 def _dialogue_cursor() -> str:
-    summary = SessionSummary(
-        id=SessionId("chatgpt:cursor-anchor"),
-        origin=Origin.CHATGPT_EXPORT,
-        title="Cursor anchor",
-    )
-    hit = session_search_hit_from_summary(
-        summary,
-        rank=1,
-        retrieval_lane="dialogue",
-        match_surface="message",
-        message_id="m1",
-        snippet="anchor",
-        score=-5.0,
-        score_kind="bm25",
-    )
-    token = build_search_cursor([SessionSearchHitPayload.from_search_hit(hit)])
+    token = build_search_cursor([_dialogue_cursor_payload()])
     assert token is not None
     return token
 
@@ -100,3 +92,49 @@ async def test_spec_builder_preserves_filters_when_advancing_cursor_fetch(
     assert fetch_spec.cursor == cursor
     assert envelope.limit == 10
     assert envelope.offset == 20
+
+
+@pytest.mark.asyncio
+async def test_spec_builder_rejects_cursor_from_a_different_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SessionQuerySpec, "count", _fake_count)
+    operations = AsyncMock()
+    operations.search_session_hits = AsyncMock(return_value=[])
+
+    first = compile_expression_into("needle", SessionQuerySpec.from_params({"limit": 1}))
+    cursor = build_search_cursor(
+        [_dialogue_cursor_payload()],
+        request_identity=search_cursor_request_identity(
+            {
+                field.name: getattr(first, field.name)
+                for field in fields(first)
+                if field.name not in {"cursor", "offset", "limit", "vector_provider", "predicates"}
+            }
+        ),
+    )
+    assert cursor is not None
+
+    second = compile_expression_into("other", SessionQuerySpec.from_params({"limit": 1, "cursor": cursor}))
+    with pytest.raises(InvalidSearchCursorError, match="different ranked-search request"):
+        await build_search_envelope_for_spec(operations, second, limit=1)
+    operations.search_session_hits.assert_not_awaited()
+
+
+def _dialogue_cursor_payload() -> SessionSearchHitPayload:
+    summary = SessionSummary(
+        id=SessionId("chatgpt:cursor-anchor"),
+        origin=Origin.CHATGPT_EXPORT,
+        title="Cursor anchor",
+    )
+    hit = session_search_hit_from_summary(
+        summary,
+        rank=1,
+        retrieval_lane="dialogue",
+        match_surface="message",
+        message_id="m1",
+        snippet="anchor",
+        score=-5.0,
+        score_kind="bm25",
+    )
+    return SessionSearchHitPayload.from_search_hit(hit)
