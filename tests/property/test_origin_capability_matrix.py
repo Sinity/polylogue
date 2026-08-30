@@ -38,6 +38,16 @@ def test_each_positive_witness_has_one_cross_origin_runtime_claim(witness: Capab
     claim = witness.parser_claims[0]
     payload = load_witness_fixture(witness)
 
+    if witness.route == "vendor":
+        assert isinstance(payload, dict)
+        assert payload.get("source") == "antigravity_language_server"
+        assert isinstance(payload.get("cascadeId"), str)
+        assert isinstance(payload.get("markdown"), str)
+        assert claim.provider is Provider.ANTIGRAVITY
+        assert claim.provider in executable_provider_wires()
+        assert origin_from_provider(claim.provider) is witness.origin
+        return
+
     detected, evidence = detect_provider_evidence(payload, witness.fixture_path)
 
     if witness.route == "detected":
