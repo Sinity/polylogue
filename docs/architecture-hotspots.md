@@ -171,7 +171,7 @@ This pass investigated extraction candidates in #3 and #1 before choosing
   browser-origin-only. A same-day extraction without first building the
   full helper-dependency graph risks either an import cycle or, worse, a
   receipt/proof-semantics bug in code whose entire job is to be a trusted
-  attestation of a data-integrity decision. That graph-building is real,
+  record of a data-integrity decision. That graph-building is real,
   separate work — tracked as a child bead (see below) rather than rushed.
 - **#1 was investigated second.** It is the single biggest number, but it
   is also the widest-fan-in module in the whole codebase (see "Call

@@ -41,7 +41,7 @@ Identity is computed, never stored redundantly (SQLite generated columns):
 
 Sessions → messages → blocks, all `STRICT`. Load-bearing semantics:
 
-- `messages.material_origin` is the authoredness axis roles can't express —
+- `messages.material_origin` records who or what authored the content, which roles can't express —
   what makes honest cost/user-word accounting possible.
 - `blocks.tool_result_is_error` / `tool_result_exit_code` are provider-reported
   outcomes read from structure; `NULL` = unknown, never regex-guessed.
