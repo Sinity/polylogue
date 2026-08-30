@@ -874,6 +874,13 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
+    revision_kind_column = "revision_kind" if _column_exists(conn, "raw_sessions", "revision_kind") else "NULL"
+    append_start_offset_column = (
+        "append_start_offset" if _column_exists(conn, "raw_sessions", "append_start_offset") else "NULL"
+    )
+    append_end_offset_column = (
+        "append_end_offset" if _column_exists(conn, "raw_sessions", "append_end_offset") else "NULL"
+    )
     capture_mode_column = "capture_mode" if _column_exists(conn, "raw_sessions", "capture_mode") else "NULL"
     has_container_coordinates = _table_exists(conn, "raw_container_coordinates")
     coordinate_join = (
@@ -901,6 +908,9 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                {capture_mode_column} AS capture_mode,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
+               {revision_kind_column} AS revision_kind,
+               {append_start_offset_column} AS append_start_offset,
+               {append_end_offset_column} AS append_end_offset,
                {blob_size_column} AS size_bytes,
                {parse_error_column} AS parse_error,
                {validation_status_column} AS validation_status,

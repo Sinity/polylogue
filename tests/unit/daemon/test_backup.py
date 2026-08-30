@@ -542,7 +542,7 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
             """,
             (
                 raw_id,
-                "chatgpt-export",
+                "claude-ai-export" if source_kind == "zip" else "chatgpt-export",
                 "recoverable",
                 recorded_path,
                 source_index,
@@ -552,6 +552,8 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
                 "passed",
             ),
         )
+        if source_kind == "zip":
+            conn.execute("UPDATE raw_sessions SET capture_mode = 'unknown' WHERE raw_id = ?", (raw_id,))
         conn.execute(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash, raw_id, "raw_payload", recorded_path, len(payload), 1),
@@ -641,6 +643,58 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     assert result.ok, result.error
     assert result.verified
     assert result.verification["recoverable_source_blob_count"] == 1
+
+
+def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """An append raw is proved from its recorded byte window, not file length."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "live.jsonl"
+    prefix = b'{"id":"prior"}\n'
+    append = b'{"id":"new"}\n'
+    source_path.write_bytes(prefix + append)
+    blob_hash = hashlib.sha256(append).digest()
+    raw_id = "append-recoverable"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status, revision_kind,
+                append_start_offset, append_end_offset
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "codex-session",
+                "codex",
+                "session",
+                str(source_path),
+                0,
+                blob_hash,
+                len(append),
+                1,
+                "passed",
+                "append",
+                len(prefix),
+                len(prefix) + len(append),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, raw_id, "raw_payload", str(source_path), len(append), 1),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verification["recoverable_source_blob_count"] == 1
+    source_path.write_bytes(prefix + append + b'{"id":"later"}\n')
+    verified_after_growth = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
+    assert verified_after_growth["ok"] is True
+    assert verified_after_growth["missing_canonical_blob_count"] == 0
 
 
 def test_backup_archive_full_evidence_profile_includes_all_tiers(
@@ -1211,7 +1265,18 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
     assert result.verified is False
     assert result.verification["canonical_blobs_resolved"] is False
     assert result.verification["missing_canonical_blob_count"] == 2
+    assert result.verification["unproven_source_blob_count"] == 1
     assert result.verification["blob_inventory_exact"] is True
+    evidence = json.loads((Path(result.output_path or "") / "blob-reference-evidence.json").read_text(encoding="utf-8"))
+    assert evidence["recoverability_unproven"] == [
+        {
+            "blob_hash": missing_reference_hash.hex(),
+            "kind": "source_missing",
+            "raw_id": "missing-raw",
+            "reason": "source_missing",
+            "source_path": "/tmp/missing.jsonl",
+        }
+    ]
 
 
 def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
