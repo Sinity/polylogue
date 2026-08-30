@@ -183,6 +183,6 @@ anchored code; stale sections are re-verified or deleted.
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
 `CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,
 `docs/search.md`, `docs/cost-model.md`, `docs/provider-origin-identity.md`,
-`docs/material-protocol-v1.md`. `AGENTS.md` is a symlink to this file — edit
+`docs/material-protocol-v1.md`, `docs/sidecars.md`. `AGENTS.md` is a symlink to this file — edit
 CLAUDE.md only. This file must not carry campaign state, tracker rosters, or
 operational history — Beads and dated scratch notes own those.

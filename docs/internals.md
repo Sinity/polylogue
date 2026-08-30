@@ -1235,3 +1235,28 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
 - `.local/`: untracked outputs (campaigns, demo artifacts, build artifacts)
 - `.local/result`: out-link for `devtools release build-package`
+
+## Blobstore mechanics
+
+The blob store is content-addressed (`storage/blob_store.py`): writes stream
+into a staging file, hash, then publish under `blob/<h[:2]>/<h[2:]>`;
+identical content is deduplicated by construction. Blob publication and
+reference insertion are NOT one transaction — the blob is a filesystem
+object published before its `blob_refs`/`raw_*` rows commit, so a crash in
+between strands an unreferenced blob. That is benign (the next identical
+write converges on the same hash) but it makes "no blob without an owning
+row" a checked invariant, never an assumption.
+
+References live in source.db (`blob_refs`, `raw_sessions`, `raw_hook_events`,
+`blob_publication_reservations`, `verified_blob_receipts`) and index.db
+(`attachments`). Retention, integrity repair, and reconciliation operations
+delete references without deleting blobs (`storage/raw_retention.py`,
+`storage/blob_integrity.py`, `archive_tiers/source_write.py` hook-payload
+replacement); physical deletion is daemon-owned GC. While the daemon is
+masked, unreferenced blobs accumulate by design.
+
+Live SQLite sources (Hermes `state.db`, Codex state databases) are acquired
+through the SQLite backup API (`sources/sqlite_snapshot.py`), never raw byte
+reads — a live WAL database snapshots consistently. Revision identity is a
+filesystem fingerprint over main+`-wal` (dev, inode, size, mtime_ns), chosen
+so acquisition never reads mutable DB bytes to decide whether to acquire.
