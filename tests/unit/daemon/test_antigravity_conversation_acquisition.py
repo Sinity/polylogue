@@ -8,6 +8,7 @@ route as batch acquisition.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,11 +17,13 @@ from typing import Any, cast
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
-from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
+from polylogue.sources.source_walk import _walk_source_paths
 
 
 def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
@@ -71,6 +74,46 @@ def test_shared_source_iterator_never_promotes_brain_artifacts(
     assert all("metadata" not in item[1].provider_session_id for item in admitted)
 
 
+def test_single_path_parser_uses_vendor_route_for_conversation_protobuf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque protobuf")
+    session = antigravity.parse_markdown_export(
+        "### User Input\n\nhello",
+        antigravity.AntigravitySessionSummary(cascade_id="cascade"),
+    )
+    calls: list[Path] = []
+
+    def vendor_route(source: Source, **_kwargs: object) -> Iterator[tuple[object, object]]:
+        assert source.path is not None
+        calls.append(source.path)
+        yield (None, session)
+
+    monkeypatch.setattr(
+        "polylogue.sources.source_parsing.iter_antigravity_language_server_sessions",
+        vendor_route,
+    )
+
+    assert conversation in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
+
+    admitted = list(
+        parse_one_source_path(
+            str(conversation),
+            file_mtime=None,
+            source_name="antigravity",
+            sidecar_data={},
+            capture_raw=False,
+        )
+    )
+
+    assert calls == [root]
+    assert [item[1].provider_session_id for item in admitted] == ["cascade"]
+
+
 def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> None:
     root = tmp_path / "antigravity"
     conversations = root / "conversations"
@@ -101,7 +144,7 @@ def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> N
     assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["healthy"]
     failed = next(outcome for outcome in outcomes if not outcome.obtained)
     assert failed.error is not None
-    assert "empty" in failed.error
+    assert "partial" in failed.error or "empty" in failed.error
 
 
 def test_common_live_batch_admits_conversation_through_vendor_route(
@@ -142,3 +185,67 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
 
     assert result.succeeded == [conversation]
     assert result.failed == []
+
+
+def test_common_live_batch_retries_a_failed_vendor_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque protobuf")
+
+    class Client:
+        attempts = 0
+
+        def start(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def search_sessions(
+            self, *, limit: int = 10000, query: str = ""
+        ) -> list[antigravity.AntigravitySessionSummary]:
+            return []
+
+        def export_markdown(self, cascade_id: str) -> str:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise antigravity.AntigravityExportError("transient conversion failure")
+            return "### User Input\n\nhello"
+
+    client = Client()
+    monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: client)
+    initialize_active_archive_root(tmp_path)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
+    index_db = tmp_path / "cursor.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    try:
+        first = asyncio.run(processor.ingest_files([conversation], emit_event=False))
+        failed_cursor = processor._cursor.get_record(conversation)
+
+        assert first.failed_file_count == 1
+        assert failed_cursor is not None
+        assert failed_cursor.failure_count == 1
+        assert failed_cursor.next_retry_at is not None
+
+        second = asyncio.run(processor.ingest_files([conversation], emit_event=False))
+        recovered_cursor = processor._cursor.get_record(conversation)
+    finally:
+        clear_degraded()
+
+    assert second.failed_file_count == 0
+    assert recovered_cursor is not None
+    assert recovered_cursor.failure_count == 0
+    assert recovered_cursor.next_retry_at is None

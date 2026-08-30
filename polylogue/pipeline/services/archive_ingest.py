@@ -26,6 +26,7 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
     zip_entry_session_artifact,
 )
+from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
     has_decoded_session_evidence,
@@ -336,6 +337,12 @@ async def parse_sources_archive(
                     if walk is None:
                         continue
                     for path, file_mtime in walk.paths_to_process:
+                        if (
+                            Provider.from_string(source.name) is Provider.ANTIGRAVITY
+                            and antigravity.classify_source_path(path).role
+                            is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+                        ):
+                            continue
                         future = pool.submit(
                             _parse_source_path_worker,
                             str(path),

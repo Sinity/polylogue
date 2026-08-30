@@ -8,6 +8,7 @@ language server to be installed.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Iterator
 from pathlib import Path
@@ -182,6 +183,19 @@ def test_post_wraps_url_errors(
     with pytest.raises(AntigravityExportError) as exc_info:
         fake_client._post("/endpoint", {"q": "x"})
     assert "connection refused" in str(exc_info.value)
+
+
+def test_post_wraps_transport_timeouts(
+    fake_client: AntigravityLanguageServerClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(*_a: object, **_k: object) -> _FakeHTTPResponse:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", raise_timeout)
+
+    with pytest.raises(AntigravityExportError, match="timed out"):
+        fake_client._post("/endpoint", {})
 
 
 def test_post_rejects_non_object_responses(
@@ -381,6 +395,50 @@ def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
     assert sessions == []
 
 
+def test_iter_language_server_exports_discovers_nested_conversation_files(
+    tmp_path: Path,
+) -> None:
+    _touch_conversation_pb(tmp_path, "top-level")
+    nested = tmp_path / "conversations" / "workspace" / "nested.pb"
+    nested.parent.mkdir()
+    nested.write_bytes(b"")
+    fake = _FakeClientForExports(
+        [
+            AntigravitySessionSummary(cascade_id="top-level"),
+            AntigravitySessionSummary(cascade_id="nested"),
+        ],
+        {
+            "top-level": "### User Input\n\ntop\n",
+            "nested": "### User Input\n\nnested\n",
+        },
+    )
+
+    sessions = list(antigravity.iter_language_server_exports(tmp_path, client=fake))
+
+    assert [session.provider_session_id for session in sessions] == ["top-level", "nested"]
+
+
+def test_export_results_surfaces_duplicate_identity_without_suppressing_other_items(tmp_path: Path) -> None:
+    _touch_conversation_pb(tmp_path, "duplicate", "healthy")
+    nested = tmp_path / "conversations" / "workspace" / "duplicate.pb"
+    nested.parent.mkdir()
+    nested.write_bytes(b"")
+    fake = _FakeClientForExports(
+        [AntigravitySessionSummary(cascade_id="duplicate"), AntigravitySessionSummary(cascade_id="healthy")],
+        {
+            "duplicate": "### User Input\n\nduplicate\n",
+            "healthy": "### User Input\n\nhealthy\n",
+        },
+    )
+
+    outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=fake))
+
+    assert [outcome.cascade_id for outcome in outcomes] == ["duplicate", "healthy", "duplicate"]
+    duplicate_failures = [outcome for outcome in outcomes if outcome.error == "duplicate conversation identity"]
+    assert len(duplicate_failures) == 1
+    assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["duplicate", "healthy"]
+
+
 def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _touch_conversation_pb(tmp_path, "cascade-1")
     summaries = [
@@ -427,6 +485,31 @@ def test_iter_language_server_exports_closes_client_on_error(tmp_path: Path, mon
     assert fake.closed is True
 
 
+@pytest.mark.parametrize("control_flow", [asyncio.CancelledError, KeyboardInterrupt])
+def test_owned_export_client_closes_on_cancellation_and_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: type[BaseException],
+) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
+    class _InterruptedClient(_FakeClientForExports):
+        def export_markdown(self, cascade_id: str) -> str:
+            raise control_flow("conversion interrupted")
+
+    fake = _InterruptedClient([AntigravitySessionSummary(cascade_id="cascade-1")], {})
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        lambda root: fake,
+    )
+
+    with pytest.raises(control_flow):
+        list(antigravity.iter_language_server_export_results(tmp_path))
+
+    assert fake.started is True
+    assert fake.closed is True
+
+
 def test_export_results_reject_source_mutation_during_conversion(tmp_path: Path) -> None:
     _touch_conversation_pb(tmp_path, "cascade-1")
 
@@ -449,6 +532,33 @@ def test_export_results_reject_source_mutation_during_conversion(tmp_path: Path)
     assert len(outcomes) == 1
     assert outcomes[0].obtained is False
     assert outcomes[0].error == "conversation protobuf changed during conversion"
+
+
+def test_export_results_surfaces_search_handshake_failure(tmp_path: Path) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
+    class _BrokenSearchClient(_FakeClientForExports):
+        def search_sessions(self, **_kwargs: object) -> list[AntigravitySessionSummary]:
+            raise AntigravityExportError("server capability mismatch")
+
+    client = _BrokenSearchClient([], {})
+    with pytest.raises(AntigravityExportError, match="SearchConversations handshake failed"):
+        list(antigravity.iter_language_server_export_results(tmp_path, client=client))
+
+
+@pytest.mark.parametrize("markdown", ["", "### User Input\n\n", "plain text without a section"])
+def test_export_results_rejects_partial_or_untyped_markdown(tmp_path: Path, markdown: str) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+    client = _FakeClientForExports(
+        [AntigravitySessionSummary(cascade_id="cascade-1")],
+        {"cascade-1": markdown},
+    )
+
+    outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=client))
+
+    assert len(outcomes) == 1
+    assert outcomes[0].obtained is False
+    assert outcomes[0].error
 
 
 def test_language_server_version_handshake_accepts_declared_vendor_version(

@@ -131,7 +131,7 @@ def iter_antigravity_language_server_sessions(
             assert outcome.session is not None
             session = outcome.session
             raw_data = _antigravity_raw_snapshot(
-                source.path,
+                outcome.source_path,
                 session,
                 capture_raw=capture_raw,
                 blob_root=blob_root,
@@ -174,7 +174,7 @@ def iter_antigravity_language_server_sessions(
 
 
 def _antigravity_raw_snapshot(
-    root: Path,
+    source_path: Path,
     session: ParsedSession,
     *,
     capture_raw: bool,
@@ -184,7 +184,8 @@ def _antigravity_raw_snapshot(
     """Snapshot the raw ``.pb`` bytes backing an exported session, if requested."""
     if not capture_raw:
         return None
-    pb_path = root / "conversations" / f"{session.provider_session_id}.pb"
+    del session
+    pb_path = source_path
     if not pb_path.is_file():
         return None
     resolved_blob_root = blob_root
@@ -208,6 +209,14 @@ def _antigravity_raw_snapshot(
         blob_size=blob_size,
         blob_publication_receipt_id=receipt_id,
     )
+
+
+def _antigravity_source_root(path: Path) -> Path:
+    """Resolve the source root for a path below any ``conversations`` level."""
+    for parent in (path.parent, *path.parents):
+        if parent.name.lower() == "conversations":
+            return parent.parent
+    return path.parent.parent
 
 
 def parse_one_source_path(
@@ -237,6 +246,18 @@ def parse_one_source_path(
     """
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
+    if (
+        provider_hint is Provider.ANTIGRAVITY
+        and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ):
+        yield from iter_antigravity_language_server_sessions(
+            Source(name=source_name, path=_antigravity_source_root(path)),
+            capture_raw=capture_raw,
+            blob_root=blob_root,
+            blob_store=blob_store,
+            only_cascade_ids=frozenset({path.stem}),
+        )
+        return
     source_class = recognize_source_class(provider_hint, path)
     if source_class is not None and source_class.source_class != "session":
         logger.info(
@@ -411,6 +432,9 @@ def iter_source_sessions_with_raw(
         blob_root=blob_root,
         blob_store=blob_store,
     )
+
+    if Provider.from_string(source.name) is Provider.ANTIGRAVITY:
+        return
 
     walk = _setup_source_walk(
         source,
