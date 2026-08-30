@@ -874,6 +874,16 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
+    capture_mode_column = "capture_mode" if _column_exists(conn, "raw_sessions", "capture_mode") else "NULL"
+    has_container_coordinates = _table_exists(conn, "raw_container_coordinates")
+    coordinate_join = (
+        "LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id"
+        if has_container_coordinates
+        else ""
+    )
+    coordinate_format_column = "coordinate.coordinate_format" if has_container_coordinates else "NULL"
+    entry_ordinal_column = "coordinate.entry_ordinal" if has_container_coordinates else "NULL"
+    split_index_column = "coordinate.split_index" if has_container_coordinates else "NULL"
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
     parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
     validation_status_column = (
@@ -881,20 +891,26 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     )
     rows = conn.execute(
         f"""
-        SELECT lower(hex(blob_hash)) AS blob_hash,
+        SELECT lower(hex(raw_sessions.blob_hash)) AS blob_hash,
                'raw_sessions' AS table_name,
                'raw_payload' AS ref_type,
-               raw_id AS ref_id,
+               raw_sessions.raw_id AS ref_id,
+               raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
                {native_id_column} AS native_id,
+               {capture_mode_column} AS capture_mode,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
                {blob_size_column} AS size_bytes,
                {parse_error_column} AS parse_error,
                {validation_status_column} AS validation_status,
+               {coordinate_format_column} AS coordinate_format,
+               {entry_ordinal_column} AS entry_ordinal,
+               {split_index_column} AS split_index,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
-        WHERE blob_hash IS NOT NULL
+        {coordinate_join}
+        WHERE raw_sessions.blob_hash IS NOT NULL
         """
     ).fetchall()
     return [dict(row) for row in rows]
@@ -1417,6 +1433,8 @@ def _current_raw_payload_bytes(
                     source_bytes_cache[cache_key] = member_bytes
         except KeyError:
             return None, "source_missing"
+        except (OSError, zipfile.BadZipFile) as exc:
+            return None, f"error:{exc}"
         except ZipBombError:
             return None, "container_member_rejected"
         if split_index is None:

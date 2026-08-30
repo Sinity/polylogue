@@ -88,7 +88,7 @@ class SerializedSplitPayload:
 
     provider: Provider
     payload_bytes: bytes
-    source_index: int
+    source_index: int | None
 
 
 @dataclass(slots=True)
@@ -132,6 +132,12 @@ class SplitPayloadBuffer:
         self._next_source_index += len(emitted)
         self._pending.clear()
         return emitted
+
+
+@dataclass(slots=True)
+class _ZipEntrySplitState:
+    did_split: bool = False
+    detected_provider: Provider = Provider.UNKNOWN
 
 
 def _artifact_payload(value: object) -> JSONValue:
@@ -516,17 +522,14 @@ def stream_preserved_zip_entry_raw_data(
     )
 
 
-def iter_zip_entry_raw_data(
+def _iter_zip_entry_split_payloads(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
-) -> Iterable[RawSessionData]:
-    """Yield raw records for one ZIP entry, splitting multi-session payloads."""
+    state: _ZipEntrySplitState,
+) -> Iterable[SerializedSplitPayload]:
+    """Yield the split payloads produced by the production ZIP acquisition."""
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS:
-        yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
-        return
-
-    detected_provider = entry_provider_hint
+    state.detected_provider = entry_provider_hint
     split_buffer = SplitPayloadBuffer()
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         for detected in iter_entry_payloads(
@@ -541,7 +544,7 @@ def iter_zip_entry_raw_data(
             # with a per-payload UNKNOWN is what stamped those members
             # `unknown-export` (polylogue-hs3y).
             if detected.provider is not Provider.UNKNOWN:
-                detected_provider = detected.provider
+                state.detected_provider = detected.provider
             if detected.provider in GROUP_PROVIDERS:
                 # A grouped-provider record can occur after ordinary session
                 # records in a mixed export.  Breaking here used to discard
@@ -551,15 +554,10 @@ def iter_zip_entry_raw_data(
                 # emitted split siblings remain valid and must not be rolled
                 # back.
                 if split_buffer.did_split:
-                    yield make_split_entry_raw_data(
-                        blob_store=context.blob_store,
-                        split_payload=SerializedSplitPayload(
-                            provider=detected.provider,
-                            payload_bytes=json_dumps_bytes(detected.payload),
-                            source_index=split_buffer.pending_index,
-                        ),
-                        source_path=context.source_path,
-                        file_mtime=context.file_mtime,
+                    yield SerializedSplitPayload(
+                        provider=detected.provider,
+                        payload_bytes=json_dumps_bytes(detected.payload),
+                        source_index=split_buffer.pending_index,
                     )
                     continue
                 break
@@ -588,20 +586,75 @@ def iter_zip_entry_raw_data(
                 classify_ms=round(classify_ms, 3),
                 serialize_ms=round(serialize_ms, 3),
             )
-            for split_payload in split_buffer.add(detected.provider, payload_bytes):
-                yield make_split_entry_raw_data(
-                    blob_store=context.blob_store,
-                    split_payload=split_payload,
-                    source_path=context.source_path,
-                    file_mtime=context.file_mtime,
-                )
+            yield from split_buffer.add(detected.provider, payload_bytes)
 
-    if split_buffer.did_split:
+
+def replay_zip_entry_acquisition_payloads(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+) -> Iterable[SerializedSplitPayload]:
+    """Replay the exact payload units produced by ZIP acquisition.
+
+    A bundle member is acquired as one preserved artifact unless the
+    production splitter recognizes at least two session payloads. In that
+    case each emitted payload uses the splitter's source index and serialized
+    bytes. Backup verification uses this read-only replay instead of inventing
+    a JSON-array indexing rule.
+    """
+    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
+    if entry_provider_hint in GROUP_PROVIDERS:
+        with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+            yield SerializedSplitPayload(
+                provider=entry_provider_hint,
+                payload_bytes=handle.read(),
+                source_index=None,
+            )
         return
 
-    # Preserve original ZIP entry bytes when the entry is grouped,
-    # non-session metadata, or a single session document.
-    yield _stream_preserved_zip_entry(zf, context, provider_hint=detected_provider)
+    state = _ZipEntrySplitState()
+    split_payloads = _iter_zip_entry_split_payloads(zf, context, state)
+    for payload in split_payloads:
+        state.did_split = True
+        yield payload
+    if state.did_split:
+        return
+
+    # Preserve original ZIP entry bytes when it is metadata or a single
+    # session document, matching the ordinary acquisition fallback.
+    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+        yield SerializedSplitPayload(
+            provider=state.detected_provider,
+            payload_bytes=handle.read(),
+            source_index=None,
+        )
+
+
+def iter_zip_entry_raw_data(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+) -> Iterable[RawSessionData]:
+    """Yield raw records for one ZIP entry, splitting multi-session payloads."""
+    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
+    if entry_provider_hint in GROUP_PROVIDERS:
+        yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
+        return
+
+    state = _ZipEntrySplitState()
+    for split_payload in _iter_zip_entry_split_payloads(zf, context, state):
+        state.did_split = True
+        yield make_split_entry_raw_data(
+            blob_store=context.blob_store,
+            split_payload=split_payload,
+            source_path=context.source_path,
+            file_mtime=context.file_mtime,
+        )
+
+    if state.did_split:
+        return
+
+    # Preserve original ZIP entry bytes when the entry is metadata or a
+    # single session document.
+    yield _stream_preserved_zip_entry(zf, context, provider_hint=state.detected_provider)
 
 
 __all__ = [
@@ -615,6 +668,7 @@ __all__ = [
     "StatusCallback",
     "ZipEntryReadContext",
     "iter_entry_payloads",
+    "replay_zip_entry_acquisition_payloads",
     "iter_zip_entry_raw_data",
     "make_status_heartbeat",
     "observe_acquisition",

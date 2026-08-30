@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.logging import get_logger
+from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
@@ -38,6 +39,8 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.blob_integrity import (
     BlobLivenessProjection,
     BlobReferenceDebtReport,
+    _current_raw_payload_bytes,
+    _raw_session_reference_rows,
     blob_reference_debt_from_projection,
     project_source_blob_liveness,
 )
@@ -635,6 +638,86 @@ def _blob_reference_evidence(
     }
 
 
+def _resolved_source_path(source_path: str, root: Path) -> str:
+    """Resolve an acquisition path against the archive root in force."""
+    outer, separator, member = source_path.partition(":")
+    path = Path(outer)
+    if not path.exists():
+        parts = path.parts
+        for directory in ("inbox", "browser-capture", "hooks"):
+            if directory in parts:
+                candidate = root.joinpath(*parts[parts.index(directory) :])
+                if candidate.exists():
+                    path = candidate
+                    break
+    return f"{path}:{member}" if separator else str(path)
+
+
+def _source_recoverability_proofs(
+    source_db: Path,
+    *,
+    root: Path,
+    missing_hashes: set[str],
+    source_bytes_cache: dict[str, bytes] | None = None,
+    decoded_payload_cache: dict[str, object] | None = None,
+    zip_payload_cache: dict[str, dict[int, bytes]] | None = None,
+) -> list[dict[str, str]]:
+    """Prove missing source-owned bytes by replaying their acquisition payload."""
+    if not missing_hashes:
+        return []
+    source_bytes_cache = source_bytes_cache if source_bytes_cache is not None else {}
+    decoded_payload_cache = decoded_payload_cache if decoded_payload_cache is not None else {}
+    zip_payload_cache = zip_payload_cache if zip_payload_cache is not None else {}
+    by_hash: dict[str, list[dict[str, object]]] = {}
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+        for row in _raw_session_reference_rows(conn):
+            blob_hash = str(row.get("blob_hash") or "")
+            if blob_hash in missing_hashes:
+                by_hash.setdefault(blob_hash, []).append(row)
+    proofs: list[dict[str, str]] = []
+    for blob_hash, rows in by_hash.items():
+        for row in rows:
+            source_path = row.get("source_path")
+            if not isinstance(source_path, str) or not source_path:
+                continue
+            source_index_value = row.get("source_index")
+            source_index = int(source_index_value) if isinstance(source_index_value, (int, str)) else None
+            resolved = _resolved_source_path(source_path, root)
+            if ":" in resolved:
+                payload, error = zip_reacquisition_payload(
+                    row,
+                    source_path=resolved,
+                    zip_payload_cache=zip_payload_cache,
+                )
+            else:
+                payload, error = _current_raw_payload_bytes(
+                    resolved,
+                    source_index,
+                    raw_id=str(row.get("ref_id") or "") or None,
+                    blob_hash=blob_hash,
+                    source_bytes_cache=source_bytes_cache,
+                    decoded_payload_cache=decoded_payload_cache,
+                )
+            if error is None and payload is not None and hashlib.sha256(payload).hexdigest() == blob_hash:
+                kind = "zip_reacquired_payload" if ":" in resolved else "direct_file_sha256"
+                proofs.append(
+                    {
+                        "blob_hash": blob_hash,
+                        "kind": kind,
+                        "source_path": resolved,
+                        "raw_id": str(row.get("ref_id") or ""),
+                        "source_index": str(row.get("source_index")) if row.get("source_index") is not None else "",
+                        "origin": str(row.get("origin") or ""),
+                        "capture_mode": str(row.get("capture_mode") or ""),
+                        "coordinate_format": str(row.get("coordinate_format") or ""),
+                        "entry_ordinal": str(row.get("entry_ordinal")) if row.get("entry_ordinal") is not None else "",
+                        "split_index": str(row.get("split_index")) if row.get("split_index") is not None else "",
+                    }
+                )
+                break
+    return proofs
+
+
 def _write_blob_reference_evidence(backup_root: Path, evidence: dict[str, object]) -> Path:
     path = backup_root / _BLOB_REFERENCE_EVIDENCE_FILE
     path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
@@ -695,7 +778,6 @@ def _copy_referenced_blobs(
     reference_evidence = _blob_reference_evidence(
         projection, index_db=index_db, source_generation_id=source_generation_id
     )
-    _write_blob_reference_evidence(backup_root, reference_evidence)
     inventory = _inventory_from_liveness(projection, reservations)
     hashes = set(inventory)
     store = BlobStore(source_blob_root)
@@ -704,6 +786,21 @@ def _copy_referenced_blobs(
         store=store,
         sample_size=_MISSING_BLOB_WARNING_SAMPLE_LIMIT,
     )
+    missing_hashes: set[str] = set()
+    if debt_report.missing_referenced_blobs:
+        missing_hashes = {blob_hash for blob_hash in hashes if not store.exists(blob_hash)}
+    source_owners = reference_evidence["source_owner_hashes"]
+    assert isinstance(source_owners, dict)
+    source_hashes = set().union(*(set(owner_hashes) for owner_hashes in source_owners.values()))
+    reference_evidence["recoverability_proofs"] = _source_recoverability_proofs(
+        source_db,
+        root=source_db.parent,
+        missing_hashes=missing_hashes & source_hashes,
+        source_bytes_cache={},
+        decoded_payload_cache={},
+        zip_payload_cache={},
+    )
+    _write_blob_reference_evidence(backup_root, reference_evidence)
     if not hashes:
         return 0, 0, debt_report
 
@@ -1097,6 +1194,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         expected_reference_blobs: set[str] = set()
         expected_attachment_hashes: set[str] = set()
         observed_attachment_hashes: set[str] = set()
+        recoverable_source_hashes: set[str] = set()
         if source_included:
             evidence_path = restored / str(manifest.get("blob_reference_evidence_file", _BLOB_REFERENCE_EVIDENCE_FILE))
             if not evidence_path.exists() and not evidence_path.is_symlink():
@@ -1109,14 +1207,64 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             source_evidence_hashes = {
                 blob_hash for hashes in evidence["source_owner_hashes"].values() for blob_hash in hashes
             }
+            recoverability_proofs = evidence.get("recoverability_proofs", [])
+            if not isinstance(recoverability_proofs, list):
+                reference_evidence_ok = False
+                recoverability_proofs = []
+            source_bytes_cache: dict[str, bytes] = {}
+            decoded_payload_cache: dict[str, object] = {}
+            zip_payload_cache: dict[str, dict[int, bytes]] = {}
+            for proof in recoverability_proofs:
+                if not isinstance(proof, dict):
+                    reference_evidence_ok = False
+                    continue
+                blob_hash_value = proof.get("blob_hash")
+                source_path_value = proof.get("source_path")
+                kind = proof.get("kind")
+                if (
+                    not isinstance(blob_hash_value, str)
+                    or blob_hash_value not in source_evidence_hashes
+                    or not isinstance(source_path_value, str)
+                    or kind not in {"direct_file_sha256", "zip_reacquired_payload"}
+                ):
+                    reference_evidence_ok = False
+                    continue
+                blob_hash = blob_hash_value
+                source_path = source_path_value
+                source_index_value = proof.get("source_index")
+                source_index = (
+                    int(source_index_value) if isinstance(source_index_value, str) and source_index_value else None
+                )
+                if kind == "zip_reacquired_payload":
+                    recovered_payload, recovery_error = zip_reacquisition_payload(
+                        proof,
+                        source_path=source_path,
+                        zip_payload_cache=zip_payload_cache,
+                    )
+                else:
+                    recovered_payload, recovery_error = _current_raw_payload_bytes(
+                        source_path,
+                        source_index,
+                        raw_id=str(proof.get("raw_id") or "") or None,
+                        blob_hash=blob_hash,
+                        source_bytes_cache=source_bytes_cache,
+                        decoded_payload_cache=decoded_payload_cache,
+                    )
+                payload_matches = (
+                    recovered_payload is not None and hashlib.sha256(recovered_payload).hexdigest() == blob_hash
+                )
+                if recovery_error is not None or not payload_matches:
+                    reference_evidence_ok = False
+                else:
+                    recoverable_source_hashes.add(blob_hash)
             expected_attachment_hashes = set(evidence["index_attachment_hashes"])
             if evidence["index_attachment_evidence"] == "consulted":
                 if not index_path.exists():
                     raise RuntimeError("backup index attachment evidence was consulted but index.db is missing")
                 observed_attachment_hashes = _index_attachment_hashes(index_path)
-                reference_evidence_ok = observed_attachment_hashes == expected_attachment_hashes
-            else:
-                reference_evidence_ok = True
+                reference_evidence_ok = (
+                    reference_evidence_ok and observed_attachment_hashes == expected_attachment_hashes
+                )
             source_generation_id = evidence.get("source_generation_id")
             if source_generation_id is not None and not isinstance(source_generation_id, str):
                 raise RuntimeError("backup blob reference evidence has invalid source generation identity")
@@ -1137,9 +1285,9 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 declared_absent = _load_source_declared_absent(restored / "source.db", assertion_path)
                 if not declared_absent.issubset(restored_source_hashes):
                     reference_evidence_ok = False
-                effective_source_hashes = restored_source_hashes - declared_absent
+                effective_source_hashes = restored_source_hashes - declared_absent - recoverable_source_hashes
             else:
-                effective_source_hashes = restored_source_hashes
+                effective_source_hashes = restored_source_hashes - recoverable_source_hashes
             reservations = _source_blob_reservations(restored / "source.db")
             expected_reference_blobs = effective_source_hashes | expected_attachment_hashes | reservations
             if assertion_path.exists() or assertion_path.is_symlink():
@@ -1161,6 +1309,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "blob_inventory_exact": blobs_ok,
             "canonical_blobs_resolved": canonical_blobs_resolved,
             "missing_canonical_blob_count": len(missing_canonical_blobs),
+            "recoverable_source_blob_count": len(recoverable_source_hashes),
             "reference_evidence_resolved": reference_evidence_ok,
             "source_effective_scope_nonempty": source_scope_ok,
             "expected_index_attachment_count": len(expected_attachment_hashes),

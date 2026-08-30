@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 import sqlite3
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.core.json import dumps_bytes
+from polylogue.core.raw_coordinates import zip_member_raw_id
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -488,6 +491,156 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     )
     assert manifest["omitted_tiers"] == _tier_files(ArchiveTier.INDEX, ArchiveTier.OPS)
     assert manifest["blob_count"] == 1
+
+
+@pytest.mark.contract
+@pytest.mark.parametrize("source_kind", ["direct", "zip"])
+def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    """A pruned raw blob is valid backup evidence only when reacquisition matches it."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / ("source.json" if source_kind == "direct" else "source.zip")
+    member_payload = b""
+    if source_kind == "direct":
+        source_path.write_bytes(b'{"messages":[]}')
+        recorded_path = str(source_path)
+        source_index = 0
+        payload = source_path.read_bytes()
+    else:
+        records = [
+            {"metadata": "bundle sibling"},
+            {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+            {"id": "second", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        ]
+        member_payload = json.dumps(records, separators=(",", ":")).encode()
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("conversations.json", member_payload)
+        recorded_path = f"{source_path}:conversations.json"
+        source_index = 0
+        payload = dumps_bytes(records[1])
+    blob_hash = hashlib.sha256(payload).digest()
+    raw_id = (
+        zip_member_raw_id(
+            source_path=recorded_path,
+            entry_ordinal=0,
+            split_index=0,
+            blob_hash=blob_hash.hex(),
+        )
+        if source_kind == "zip"
+        else "recoverable-raw"
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "chatgpt-export",
+                "recoverable",
+                recorded_path,
+                source_index,
+                blob_hash,
+                len(payload),
+                1,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, raw_id, "raw_payload", recorded_path, len(payload), 1),
+        )
+        if source_kind == "zip":
+            conn.execute(
+                "INSERT INTO raw_container_coordinates VALUES (?, 'zip-v2', ?, ?)",
+                (raw_id, 0, 0),
+            )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["missing_canonical_blob_count"] == 0
+    assert result.verification["recoverable_source_blob_count"] == 1
+
+    if source_kind == "direct":
+        source_path.write_bytes(b"changed source bytes")
+    else:
+        drifted_records = [
+            {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "assistant"}}}}},
+            {"id": "second", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        ]
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("conversations.json", json.dumps(drifted_records, separators=(",", ":")))
+    drifted_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
+    assert drifted_source["ok"] is False
+    assert drifted_source["missing_canonical_blob_count"] == 1
+
+    if source_kind == "direct":
+        source_path.write_bytes(payload)
+    else:
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("conversations.json", member_payload)
+    source_path.unlink()
+    missing_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
+    assert missing_source["ok"] is False
+    assert missing_source["missing_canonical_blob_count"] == 1
+
+
+def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A legacy ZIP row still replays through acquisition without coordinate metadata."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "legacy.zip"
+    records = [
+        {"metadata": "bundle sibling"},
+        {"id": "first", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+    ]
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps(records, separators=(",", ":")))
+    payload = dumps_bytes(records[2])
+    blob_hash = hashlib.sha256(payload).digest()
+    recorded_path = f"{source_path}:conversations.json"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DROP TABLE raw_container_coordinates")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hashlib.sha256(payload).hexdigest(),
+                "chatgpt-export",
+                "recoverable",
+                recorded_path,
+                1,
+                blob_hash,
+                len(payload),
+                1,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, hashlib.sha256(payload).hexdigest(), "raw_payload", recorded_path, len(payload), 1),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["recoverable_source_blob_count"] == 1
 
 
 def test_backup_archive_full_evidence_profile_includes_all_tiers(
