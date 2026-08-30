@@ -31,18 +31,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
-from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.core.protocols import ProgressCallback
     from polylogue.storage.repair import RepairResult
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 
 def _codex_session(native_id: str) -> bytes:
@@ -64,15 +63,12 @@ def _codex_session(native_id: str) -> bytes:
 def _seed_one_codex_session(root: Path) -> None:
     initialize_active_archive_root(root)
     payload = _codex_session("sess-lease-lifecycle")
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path="lease-lifecycle-test/0.jsonl",
-            acquired_at_ms=1,
-        )
-    record_codex_parser_census(root, {raw_id: payload})
-    decide_raw_revision_authority(root)
+    path = root / "wire" / "lease-lifecycle-test" / "0.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)),))
+    assert getattr(result, "parse_failures", 0) == 0
+    backfill_historical_revision_evidence(root, ingest_workers=1)
 
 
 def _receipt(root: Path) -> Path:
