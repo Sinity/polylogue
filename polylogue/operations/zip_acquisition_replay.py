@@ -24,24 +24,34 @@ def zip_reacquisition_payload(
 ) -> tuple[bytes | None, str | None]:
     """Replay one ZIP member through the production acquisition splitter."""
     coordinate = _zip_coordinate(row)
-    if coordinate is None:
+    split_index = coordinate[1] if coordinate is not None else _legacy_split_index(row)
+    if split_index is None:
         return None, "container_coordinate_missing"
-    entry_ordinal, split_index = coordinate
     zip_path_text, _separator, member = source_path.partition(":")
     zip_path = Path(zip_path_text)
     if not zip_path.exists():
         return None, "source_missing"
-    cache_key = source_path
-    payloads = zip_payload_cache.get(cache_key)
-    if payloads is None:
-        try:
-            with zipfile.ZipFile(zip_path) as archive:
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            if coordinate is None:
+                central_directory = archive.infolist()
+                matching = [
+                    (ordinal, entry) for ordinal, entry in enumerate(central_directory) if entry.filename == member
+                ]
+                if len(matching) != 1:
+                    return None, "ambiguous_container_member"
+                entry_ordinal, entry = matching[0]
+            else:
+                entry_ordinal = coordinate[0]
                 central_directory = archive.infolist()
                 if entry_ordinal >= len(central_directory):
                     return None, "container_coordinate_mismatch"
                 entry = central_directory[entry_ordinal]
                 if entry.filename != member:
                     return None, "container_coordinate_mismatch"
+            cache_key = f"{source_path}\0{entry_ordinal}"
+            payloads = zip_payload_cache.get(cache_key)
+            if payloads is None:
                 provider = Provider.from_string(str(row.get("capture_mode") or ""))
                 if provider is Provider.UNKNOWN:
                     provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
@@ -57,12 +67,12 @@ def zip_reacquisition_payload(
                 for acquired in replay_zip_entry_acquisition_payloads(archive, context):
                     acquired_index = acquired.source_index if acquired.source_index is not None else 0
                     payloads[acquired_index] = acquired.payload_bytes
-        except Exception as exc:
-            # Source replay is evidence, not a prerequisite for constructing
-            # the backup. Any unreadable or unparseable container therefore
-            # leaves this reference unproven and lets verification fail closed.
-            return None, f"error:{exc}"
-        zip_payload_cache[cache_key] = payloads
+                zip_payload_cache[cache_key] = payloads
+    except Exception as exc:
+        # Source replay is evidence, not a prerequisite for constructing
+        # the backup. Any unreadable or unparseable container therefore
+        # leaves this reference unproven and lets verification fail closed.
+        return None, f"error:{exc}"
     return payloads.get(split_index), None if split_index in payloads else "source_index:unmatched"
 
 
@@ -91,6 +101,16 @@ def _zip_coordinate(row: Mapping[str, object]) -> tuple[int, int] | None:
         source_index=int(source_index),
         blob_hash=blob_hash,
     )
+
+
+def _legacy_split_index(row: Mapping[str, object]) -> int | None:
+    source_index = row.get("source_index")
+    if not isinstance(source_index, (int, str)):
+        return None
+    try:
+        return int(source_index)
+    except ValueError:
+        return None
 
 
 __all__ = ["zip_reacquisition_payload"]

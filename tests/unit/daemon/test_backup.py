@@ -593,6 +593,56 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
     assert missing_source["missing_canonical_blob_count"] == 1
 
 
+def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A legacy ZIP row still replays through acquisition without coordinate metadata."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "legacy.zip"
+    records = [
+        {"metadata": "bundle sibling"},
+        {"id": "first", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+    ]
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps(records, separators=(",", ":")))
+    payload = dumps_bytes(records[2])
+    blob_hash = hashlib.sha256(payload).digest()
+    recorded_path = f"{source_path}:conversations.json"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DROP TABLE raw_container_coordinates")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hashlib.sha256(payload).hexdigest(),
+                "chatgpt-export",
+                "recoverable",
+                recorded_path,
+                1,
+                blob_hash,
+                len(payload),
+                1,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, hashlib.sha256(payload).hexdigest(), "raw_payload", recorded_path, len(payload), 1),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["recoverable_source_blob_count"] == 1
+
+
 def test_backup_archive_full_evidence_profile_includes_all_tiers(
     workspace_env: dict[str, Path],
     tmp_path: Path,
