@@ -46,16 +46,21 @@ evidence that no reparse is needed.
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import os
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from devtools import repo_root as _get_root
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index_convergence import (
     INDEX_BENIGN_DDL_REGISTRY,
@@ -171,6 +176,43 @@ def _registry_covers_changed_line(line: str) -> bool:
     return False
 
 
+def _render_archive_ddl(ref: str | None) -> dict[ArchiveTier, str]:
+    """Render every tier's fresh-init DDL from ``ref`` or this checkout."""
+    if ref is None:
+        return dict(ARCHIVE_DDL_BY_TIER)
+
+    archive = subprocess.run(
+        ["git", "archive", ref],
+        check=True,
+        capture_output=True,
+        cwd=ROOT,
+    ).stdout
+    with tempfile.TemporaryDirectory(prefix="polylogue-schema-", dir="/realm/tmp/work") as checkout:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            tar.extractall(checkout, filter="data")
+        (Path(checkout) / "polylogue" / "_build_info.py").write_text(
+            f'BUILD_COMMIT = "{ref}"\nBUILD_DIRTY = False\n',
+            encoding="utf-8",
+        )
+        script = (
+            "import json\n"
+            "from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER\n"
+            "print(json.dumps({tier.value: ddl for tier, ddl in ARCHIVE_DDL_BY_TIER.items()}))\n"
+        )
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = checkout
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            cwd=checkout,
+            env=environment,
+            text=True,
+        )
+    rendered = json.loads(result.stdout)
+    return {ArchiveTier(tier): ddl for tier, ddl in rendered.items()}
+
+
 def _diff_base() -> str:
     try:
         return _git_text("rev-parse", "--verify", "origin/master").strip()
@@ -188,17 +230,34 @@ def _ddl_lifecycle_report() -> list[DDLLifecycleViolation]:
     base = _diff_base()
     patch = _git_text("diff", "--no-ext-diff", "--unified=0", base, "--", "polylogue/storage/sqlite/archive_tiers")
     name_status = _git_text("diff", "--name-status", base, "--", "polylogue/storage/sqlite")
+    rendered_ddl_changes: dict[str, str] = {}
+    try:
+        previous_ddl = _render_archive_ddl(base)
+        current_ddl = _render_archive_ddl(None)
+        for archive_tier in ArchiveTier:
+            if previous_ddl.get(archive_tier) != current_ddl.get(archive_tier):
+                rendered_ddl_changes[f"polylogue/storage/sqlite/archive_tiers/{archive_tier.value}.py"] = (
+                    f"rendered {archive_tier.value} tier DDL differs from {base}"
+                )
+    except (OSError, json.JSONDecodeError, KeyError, subprocess.SubprocessError, tarfile.TarError) as exc:
+        return [
+            DDLLifecycleViolation(
+                "unknown",
+                "<rendered archive DDL>",
+                f"cannot compare rendered DDL against {base}: {exc}",
+            )
+        ]
     versions: dict[str, tuple[int | None, int | None]] = {}
     ddl_lines: dict[str, tuple[set[int], set[int]]] = {}
-    for filename, tier in _TIER_FILES.items():
+    for filename, tier_name in _TIER_FILES.items():
         tier_path = ROOT / "polylogue" / "storage" / "sqlite" / "archive_tiers" / filename
         try:
             current = tier_path.read_text(encoding="utf-8")
             previous = _git_text("show", f"{base}:polylogue/storage/sqlite/archive_tiers/{filename}")
         except (OSError, subprocess.CalledProcessError):
             continue
-        versions[tier] = (_schema_version(previous, tier), _schema_version(current, tier))
-        ddl_lines[tier] = (_ddl_line_numbers(previous), _ddl_line_numbers(current))
+        versions[tier_name] = (_schema_version(previous, tier_name), _schema_version(current, tier_name))
+        ddl_lines[tier_name] = (_ddl_line_numbers(previous), _ddl_line_numbers(current))
 
     added_migrations = {
         match.group(2)
@@ -263,6 +322,22 @@ def _ddl_lifecycle_report() -> list[DDLLifecycleViolation]:
                 changed_tier,
                 path,
                 "DDL changed without a schema-version bump, added durable migration, "
+                "DerivedDeltaClass declaration, benign-DDL registry entry, or "
+                "ddl-lifecycle-waiver comment naming the applicable option and reason",
+            )
+        )
+    for path in rendered_ddl_changes:
+        if path in changed:
+            continue
+        changed_tier = path.rsplit("/", 1)[-1][:-3]
+        old_version, new_version = versions.get(changed_tier, (None, None))
+        if old_version != new_version and new_version is not None:
+            continue
+        violations.append(
+            DDLLifecycleViolation(
+                changed_tier,
+                path,
+                "rendered DDL changed without a schema-version bump, added durable migration, "
                 "DerivedDeltaClass declaration, benign-DDL registry entry, or "
                 "ddl-lifecycle-waiver comment naming the applicable option and reason",
             )
