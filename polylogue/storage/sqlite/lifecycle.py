@@ -1068,6 +1068,19 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # collide are deliberately downgraded to positional identity.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=79,
+        # Global recent-session listings order without an origin predicate.
+        # The existing origin-leading index cannot satisfy that global ORDER BY.
+        classes=(DerivedDeltaClass.INDEX_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v79-global-session-sort-index",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_sessions_sort_key"),),
+            ),
+        ),
+    ),
 )
 
 

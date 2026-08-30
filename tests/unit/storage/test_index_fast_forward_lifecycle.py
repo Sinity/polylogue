@@ -113,6 +113,17 @@ def test_v72_freshness_evidence_is_a_clone_safe_replace_table() -> None:
     assert declaration.operations[0].objects == (("table", "fts_freshness_state"),)
 
 
+def test_v79_global_session_sort_index_is_clone_safe() -> None:
+    """The recent-session planner index upgrades existing index generations."""
+    plan = lifecycle.index_fast_forward_plan(78, 79)
+
+    assert plan is not None
+    declaration = plan.declarations[0]
+    assert declaration.classes == (DerivedDeltaClass.INDEX_ONLY,)
+    assert declaration.operations[0].kind is FastForwardOperationKind.CREATE_INDEX
+    assert declaration.operations[0].objects == (("index", "idx_sessions_sort_key"),)
+
+
 def test_v65_action_result_state_is_view_only_fast_forward() -> None:
     declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 65)
 
