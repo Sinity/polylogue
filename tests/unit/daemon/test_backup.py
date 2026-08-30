@@ -697,6 +697,77 @@ def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(
     assert verified_after_growth["missing_canonical_blob_count"] == 0
 
 
+def test_backup_replays_codex_append_through_normalized_acquisition(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Codex append proof hashes the normalized acquisition payload."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "codex.jsonl"
+    source_payload = '{"text":"e\u0301"}\n'.encode()
+    source_path.write_bytes(source_payload)
+    expected_payload = dumps_bytes({"text": "é"}, append_newline=True)
+    blob_hash = hashlib.sha256(expected_payload).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status, revision_kind,
+                append_start_offset, append_end_offset
+            ) VALUES (?, 'codex-session', 'codex', ?, 0, ?, ?, 1, 'passed', 'append', 0, ?)""",
+            ("codex-normalized", str(source_path), blob_hash, len(expected_payload), len(source_payload)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "live_append_segment_sha256"
+    assert unproven == []
+
+
+def test_backup_reanchors_dead_root_before_zip_member_replay(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A stale absolute ZIP root is replaced by the active archive root."""
+    archive_root = workspace_env["archive_root"]
+    inbox = archive_root / "inbox"
+    inbox.mkdir()
+    zip_path = inbox / "bundle.zip"
+    member_payload = dumps_bytes({"id": "recoverable"})
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversation.json", member_payload)
+    blob_hash = hashlib.sha256(member_payload).digest()
+    stale_source_path = f"{tmp_path / 'old-clone' / 'inbox' / 'bundle.zip'}:conversation.json"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status
+            ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, 1, 'passed')""",
+            ("zip-dead-root", stale_source_path, blob_hash, len(member_payload)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "zip_reacquired_payload"
+    assert proofs[0]["source_path"] == f"{zip_path}:conversation.json"
+    assert unproven == []
+
+
 def test_backup_archive_full_evidence_profile_includes_all_tiers(
     workspace_env: dict[str, Path],
     tmp_path: Path,
