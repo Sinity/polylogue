@@ -41,6 +41,7 @@ from tests.infra.workload_artifacts import (
     _recover_obsolete_staging,
     _recover_stale_handoffs,
     _recover_stale_staging,
+    _sqlite_integrity,
     acquire_query_only_seeded_archive,
     benchmark_corpus_specs,
     benchmark_workload_profile,
@@ -59,6 +60,21 @@ from tests.infra.workload_artifacts import (
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) -> None:
+    """The six-tier artifact check must not silently omit audit.db.
+
+    Anti-vacuity: removing ``audit.db`` from the integrity inventory lets this
+    deliberately corrupt durable tier pass while every rebuildable tier still
+    checks green.
+    """
+    for name in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+        sqlite3.connect(tmp_path / name).close()
+    (tmp_path / "audit.db").write_bytes(b"not sqlite")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        _sqlite_integrity(tmp_path)
 
 
 def test_benchmark_profiles_are_semantic_mixed_origin_exact_message_projections() -> None:
