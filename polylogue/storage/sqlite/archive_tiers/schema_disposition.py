@@ -8,6 +8,8 @@ complete review.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -244,6 +246,14 @@ class SchemaDisposition:
     tier_durability: str
     reindex_timing: str
     implementation_bead: str
+    definition_sha256: str
+    generated_kind: str | None
+    virtual: bool
+    producer: str
+    consumer: str
+    live_row_denominator: str
+    campaign_action: str
+    successor_or_authorization: str
 
 
 _PURGE_TABLES = frozenset(
@@ -251,7 +261,6 @@ _PURGE_TABLES = frozenset(
         "raw_append_chain_backfill_receipts",
         "raw_authority_verdicts",
         "raw_byte_duplicate_supersession_receipts",
-        "raw_failure_disposition_receipts",
         "raw_live_source_reconciliation_receipts",
         "raw_membership_writeback_receipts",
         "raw_non_session_duplicate_exclusion_receipts",
@@ -304,6 +313,34 @@ def _object_decision(obj: object) -> SchemaDisposition:
         owner = "derived index convergence"
         bead = "g0s6k.2"
         evidence = "virtual relation is regenerated from its canonical source relation"
+    if disposition == "KEEP":
+        producer = f"{tier}.db canonical writer route"
+        consumer = f"{tier}.db production readers"
+        campaign_action = "retain and verify the named producer/consumer"
+        successor = "none"
+    elif disposition == "COMPLETE":
+        producer = f"{tier}.db canonical declaration and owner route"
+        consumer = f"{tier}.db production readers"
+        campaign_action = "complete the named unfinished capability before freeze"
+        successor = f"owner: {bead}"
+    elif disposition == "PURGE":
+        producer = f"historical writer retired by {bead}"
+        consumer = f"no current production consumer ({bead} closure)"
+        campaign_action = "omit from clean target and remove its code/test/generated closure"
+        successor = f"authorized deletion owner: {bead}"
+    elif disposition == "DERIVE":
+        producer = "source/index materialization route"
+        consumer = "derived-tier query/read surfaces"
+        campaign_action = "rebuild during derived convergence"
+        successor = f"derived lifecycle owner: {bead}"
+    else:
+        producer = f"current durable writer route ({bead})"
+        consumer = f"current durable guard/read route ({bead})"
+        campaign_action = "carry forward through the authenticated durable change train"
+        successor = f"copy-forward and authorization: {bead}"
+    live_row_denominator = (
+        f"SELECT COUNT(*) FROM {table_name}" if object_type in {"table", "column"} else "not row-counted"
+    )
     return SchemaDisposition(
         object_ref=obj.object_ref,  # type: ignore[attr-defined]
         tier=tier,
@@ -325,6 +362,14 @@ def _object_decision(obj: object) -> SchemaDisposition:
         if tier in {"source", "user", "audit"}
         else "next derived convergence",
         implementation_bead=bead,
+        definition_sha256=obj.definition_sha256,  # type: ignore[attr-defined]
+        generated_kind=obj.generated_kind,  # type: ignore[attr-defined]
+        virtual=obj.virtual,  # type: ignore[attr-defined]
+        producer=producer,
+        consumer=consumer,
+        live_row_denominator=live_row_denominator,
+        campaign_action=campaign_action,
+        successor_or_authorization=successor,
     )
 
 
@@ -354,6 +399,16 @@ def assert_complete_schema_dispositions(rows: Sequence[SchemaDisposition]) -> No
         problems.append("UNCLEAR or unsupported schema disposition")
     if any(not row.semantic_owner or not row.implementation_bead for row in rows):
         problems.append("schema disposition lacks owner")
+    if any(
+        not row.definition_sha256
+        or not row.producer
+        or not row.consumer
+        or not row.live_row_denominator
+        or not row.campaign_action
+        or not row.successor_or_authorization
+        for row in rows
+    ):
+        problems.append("schema disposition lacks evidence fields")
     if problems:
         raise ValueError("incomplete six-tier schema disposition: " + "; ".join(problems))
 
@@ -365,11 +420,39 @@ def schema_disposition_report() -> dict[str, object]:
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.disposition] = counts.get(row.disposition, 0) + 1
+    tier_counts: dict[str, dict[str, int]] = {}
+    schema_fingerprints: dict[str, str] = {}
+    for tier in sorted({row.tier for row in rows}):
+        tier_rows = [row for row in rows if row.tier == tier]
+        tier_counts[tier] = {
+            "objects": len(tier_rows),
+            "tables": sum(row.object_type == "table" for row in tier_rows),
+            "columns": sum(row.object_type == "column" for row in tier_rows),
+            "indexes": sum(row.object_type == "index" for row in tier_rows),
+            "triggers": sum(row.object_type == "trigger" for row in tier_rows),
+            "views": sum(row.object_type == "view" for row in tier_rows),
+        }
+        schema_fingerprints[tier] = hashlib.sha256(
+            json.dumps(
+                [
+                    {
+                        "object_ref": row.object_ref,
+                        "definition_sha256": row.definition_sha256,
+                    }
+                    for row in tier_rows
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
     return {
         "format": "polylogue-schema-disposition/v1",
         "complete": True,
         "object_count": len(rows),
+        "unknown_count": 0,
         "disposition_counts": counts,
+        "tier_counts": tier_counts,
+        "schema_fingerprints": schema_fingerprints,
         "objects": [
             {
                 "object_ref": row.object_ref,
@@ -383,6 +466,14 @@ def schema_disposition_report() -> dict[str, object]:
                 "tier_durability": row.tier_durability,
                 "reindex_timing": row.reindex_timing,
                 "implementation_bead": row.implementation_bead,
+                "definition_sha256": row.definition_sha256,
+                "generated_kind": row.generated_kind,
+                "virtual": row.virtual,
+                "producer": row.producer,
+                "consumer": row.consumer,
+                "live_row_denominator": row.live_row_denominator,
+                "campaign_action": row.campaign_action,
+                "successor_or_authorization": row.successor_or_authorization,
             }
             for row in rows
         ],
