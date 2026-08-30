@@ -120,7 +120,7 @@ paths:
       description: When ``query`` is supplied, returns a ranked search envelope (``SearchEnvelope``) with per-hit match evidence
         and pagination handles. When ``query`` is omitted, returns ``SessionListResponse``. Ranked search exposes the opaque
         ``next_cursor`` handle; the current list mode remains offset-based.
-      operationId: findSessions
+      operationId: find
       security:
       - machineBearer: []
       - webCredentialCookie: []
@@ -516,6 +516,12 @@ paths:
           total_property: total
           kind: qualified
           qualification: page
+      x-polylogue-declaration:
+        declaration_id: daemon.query.units
+        request_contract: QueryUnitQuery
+        response_contract: QueryUnitResultEnvelope
+        auth_policy: credential_if_configured
+        owner_path: polylogue/daemon/http.py
   /api/sessions/{session_id}/read:
     get:
       summary: Execute a session read-view
@@ -4583,7 +4589,9 @@ x-polylogue-route-contracts:
   kind: operational
   stability: stable
   auth_policy: credential_if_configured
-  response_contract: Daemon status JSON
+  response_contract: DaemonStatusPayload
+  notes: declaration=daemon.status; request=StatusQuery
+  domain_operation: daemon.status
 - method: GET
   pattern: /api/webui/observability
   kind: observability
@@ -4625,6 +4633,7 @@ x-polylogue-route-contracts:
   auth_policy: credential_if_configured
   response_contract: SearchEnvelope | SessionListResponse
   notes: declaration=daemon.find.sessions; request=SessionSearchQuery
+  domain_operation: sessions.find
 - method: POST
   pattern: /api/cli/query
   kind: read_query
@@ -4708,6 +4717,8 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_if_configured
   response_contract: QueryUnitResultEnvelope
+  notes: declaration=daemon.query.units; request=QueryUnitQuery
+  domain_operation: query.units
 - method: GET
   pattern: /api/provider-usage
   kind: operational
@@ -4785,7 +4796,8 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_if_configured
   response_contract: SessionReadViewEnvelope
-  notes: Executes supported single-session read profiles over shared DTO/facade payload helpers.
+  notes: declaration=daemon.read.session; request=SessionReadQuery
+  domain_operation: sessions.read
 - method: GET
   pattern: /api/sessions/:id/raw
   kind: read_detail

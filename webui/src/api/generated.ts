@@ -765,7 +765,7 @@ export type BootstrapWebCredentialParameters = Record<string, never>;
 export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
 export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
 
-export type FindSessionsParameters = {
+export type FindParameters = {
   readonly cursor?: string;
   readonly limit?: number;
   readonly offset?: number;
@@ -774,9 +774,9 @@ export type FindSessionsParameters = {
   readonly retrieval_lane?: "auto" | "dialogue" | "actions" | "hybrid" | "semantic";
   readonly since?: string;
 };
-export type FindSessionsResponse = SearchEnvelope | SessionListResponse;
-export type FindSessionsError = QueryErrorPayload | WebCredentialFailurePayload;
-export type SearchParameters = Omit<FindSessionsParameters, "cursor" | "query"> & { readonly query: string };
+export type FindResponse = SearchEnvelope | SessionListResponse;
+export type FindError = QueryErrorPayload | WebCredentialFailurePayload;
+export type SearchParameters = Omit<FindParameters, "cursor" | "query"> & { readonly query: string };
 export type SearchPage = Page<SessionSearchHitPayload, SearchEnvelope>;
 
 export type ListAssertionClaimsParameters = {
@@ -893,11 +893,11 @@ export class PolylogueClient {
     );
   }
 
-  findSessions(
-    parameters: FindSessionsParameters = {},
+  find(
+    parameters: FindParameters = {},
     options: RequestOptions = {},
-  ): Promise<FindSessionsResponse> {
-    return this.#transport.request<FindSessionsResponse, FindSessionsError>(
+  ): Promise<FindResponse> {
+    return this.#transport.request<FindResponse, FindError>(
       {
         method: "GET",
         path: "/api/sessions",
@@ -925,9 +925,9 @@ export class PolylogueClient {
         cursor === null
           ? parameters
           : { ...continuedParameters, cursor: cursor };
-      const envelope = await this.findSessions(requestParameters, options);
+      const envelope = await this.find(requestParameters, options);
       if (!(isSearchEnvelope(envelope))) {
-        throw new TypeError("findSessions returned a non-page envelope");
+        throw new TypeError("find returned a non-page envelope");
       }
       const exactTotal = typeof envelope.total === "number";
       const exactCoverage = exactTotal && (envelope.exactness === "exact" || envelope.exactness == null);

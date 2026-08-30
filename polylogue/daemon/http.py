@@ -316,7 +316,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
     return (
         _static_get_route("/api/health/check", "_handle_health_check"),
         _static_get_route("/api/health", "_handle_health"),
-        _static_get_route("/api/status", "_handle_status", passes_params=True),
+        _declared_static_get_route("GET", "/api/status"),
         _static_get_route("/api/webui/observability", "_handle_webui_observability"),
         _static_get_route("/api/webui/freshness", "_handle_webui_source_freshness", passes_params=True),
         _static_get_route("/api/overview", "_handle_overview"),
@@ -325,7 +325,7 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _declared_static_get_route("GET", "/api/sessions"),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
-        _static_get_route("/api/query-units", "_handle_query_units", passes_params=True),
+        _declared_static_get_route("GET", "/api/query-units"),
         _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
         _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
         _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
@@ -356,11 +356,27 @@ def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
     )
 
 
+def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedGetRoute:
+    """Build a parameterized adapter entirely from a declared route spec."""
+
+    declaration = daemon_route_declaration(method, path)
+    binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    parts = _route_segments(declaration.path)
+    parameter_index = next(index for index, part in enumerate(parts) if part.startswith(":"))
+    return _ParameterizedGetRoute(
+        contract=route_contract_for_pattern(method, path),
+        prefix=parts[:parameter_index],
+        suffix=parts[parameter_index + 1 :],
+        handler_name=binding.symbol,
+        passes_params=True,
+    )
+
+
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     return (
         _parameterized_get_route("/api/sessions/:id", "_handle_get_session", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
-        _parameterized_get_route("/api/sessions/:id/read", "_handle_get_session_read", passes_params=True),
+        _declared_parameterized_get_route("GET", "/api/sessions/:id/read"),
         _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
         _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
         _parameterized_get_route("/api/sessions/:id/evidence-summary", "_handle_get_session_evidence_summary"),
