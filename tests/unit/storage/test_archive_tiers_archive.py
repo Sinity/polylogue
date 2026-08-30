@@ -14,6 +14,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
@@ -36,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ReadOnlyArchiveError,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_metadata,
@@ -56,6 +58,26 @@ def test_active_archive_root_creation_is_private_under_permissive_umask(tmp_path
         os.umask(previous_umask)
 
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
+
+
+def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:
+    """A stale read must refuse before query SQL can leak a raw SQLite error."""
+    generation_root = tmp_path / ".index-generations" / "gen-stale-read"
+    generation_root.mkdir(parents=True)
+    index_path = generation_root / "index.db"
+    with sqlite3.connect(index_path) as conn:
+        conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION - 1}")
+
+    with pytest.raises(SchemaVersionMismatchError) as exc_info:
+        ArchiveStore.open_existing(tmp_path, index_path=index_path)
+
+    refusal = exc_info.value
+    assert refusal.current_version == INDEX_SCHEMA_VERSION - 1
+    assert refusal.expected_version == INDEX_SCHEMA_VERSION
+    assert refusal.generation_id == "gen-stale-read"
+    assert refusal.lifecycle_action == "rebuild_index"
+    assert "gen-stale-read" in str(refusal)
+    assert "polylogue ops maintenance rebuild-index" in str(refusal)
 
 
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(

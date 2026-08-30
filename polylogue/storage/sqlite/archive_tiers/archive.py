@@ -828,6 +828,14 @@ class ArchiveStore:
         for statement in pragma_statements:
             self._conn.execute(statement)
         if read_only:
+            from polylogue.storage.sqlite.schema import assert_readable_archive_layout
+
+            resolved_index = self.index_db_path.resolve()
+            generation_id = (
+                resolved_index.parent.name if resolved_index.parent.parent.name == ".index-generations" else None
+            )
+            assert_readable_archive_layout(self._conn, generation_id=generation_id)
+        if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
         elif not self._pinned_read:
             # Fresh-bootstrap and same-version reopen both skip runtime-index

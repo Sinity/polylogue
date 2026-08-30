@@ -45,17 +45,22 @@ class SchemaBootstrapDecision:
     current_version: int | None = None
 
 
-def schema_version_mismatch_message(current_version: int) -> str:
+def schema_version_mismatch_message(current_version: int, *, generation_id: str | None = None) -> str:
     if current_version > SCHEMA_VERSION:
-        return (
+        message = (
             f"Database schema version {current_version} is newer than this Polylogue runtime expects "
             f"({SCHEMA_VERSION}). Update the installed Polylogue runtime to the build that created the "
             "database before opening it."
         )
-    return (
-        f"Database schema version {current_version} is not the expected archive version {SCHEMA_VERSION}. "
-        "Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`."
-    )
+    else:
+        message = (
+            f"Database schema version {current_version} is not the expected archive version {SCHEMA_VERSION}. "
+            "Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`."
+        )
+    if generation_id is not None:
+        action = "upgrade_runtime" if current_version > SCHEMA_VERSION else "rebuild_index"
+        message += f" Generation {generation_id} requires lifecycle action `{action}`."
+    return message
 
 
 def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision:
