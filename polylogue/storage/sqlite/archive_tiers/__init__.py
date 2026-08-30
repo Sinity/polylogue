@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     schema_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
 
@@ -54,4 +55,5 @@ __all__ = [
     "ARCHIVE_VERSION_BY_TIER",
     "archive_ddl_for_tier",
     "SCHEMA_DISPOSITIONS",
+    "SourceAttachment",
 ]

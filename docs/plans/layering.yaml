@@ -69,6 +69,12 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints: [publish_source_generation, seal_source_generation, transition_source_item]
+    - path: polylogue/storage/sqlite/archive_tiers/source_attachments.py
+      surfaces:
+        - tier: source
+          durability: durable
+          interruption: atomic
+      entrypoints: [record_source_attachments]
     - path: polylogue/storage/sqlite/archive_tiers/write.py
       surfaces:
         - tier: index
