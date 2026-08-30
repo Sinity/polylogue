@@ -13,6 +13,7 @@ import contextlib
 import contextvars
 import json
 import os
+import shutil
 import sqlite3
 import time
 from collections.abc import Iterable, Sequence
@@ -79,14 +80,20 @@ def candidate_build_schema_identity() -> tuple[int, tuple[str, ...]]:
     return source_version, (f"source:{source_version}", f"index:{index_version}")
 
 
+def _candidate_source_cut_capacity(destination: Path) -> int:
+    return shutil.disk_usage(destination.parent).free
+
+
 def freeze_candidate_source_inputs(
     config: Config, *, destination: Path, request_id: str, fallback_source_path: Path
 ) -> SourceCutResult:
     """Freeze configured acquisition roots before candidate construction."""
     from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
     from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.sources.source_snapshot import SnapshotMode, SourceCutPolicy
 
     configured_inputs = [source.path for source in config.sources if source.path is not None]
+    capacity_bytes = _candidate_source_cut_capacity(destination)
     declarations = [
         SourceDeclaration(
             f"configured-{index}",
@@ -96,9 +103,22 @@ def freeze_candidate_source_inputs(
         )
         for index, source in enumerate(configured_inputs)
     ]
+    policies = {
+        declaration.source_id: SourceCutPolicy(
+            SnapshotMode.DIRECTORY_COPY if declaration.root.is_dir() else SnapshotMode.COMPLETE_COPY,
+            adapter_version="daemon-candidate-v1",
+            capacity_bytes=capacity_bytes,
+        )
+        for declaration in declarations
+    }
     if not declarations:
         declarations = [SourceDeclaration("source-tier", SourceRole.MUTABLE_SQLITE, fallback_source_path, True)]
-    result: SourceCutResult = AcquisitionService.cut_source_inputs(declarations, destination, request_id=request_id)
+    result: SourceCutResult = AcquisitionService.cut_source_inputs(
+        declarations,
+        destination,
+        request_id=request_id,
+        policies=policies,
+    )
     return result
 
 

@@ -33,7 +33,7 @@ from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, 
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_source_revision
 
 _FICLONE = 0x40049409
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
 _COMPLETE_MARKER = ".source-cut-complete"
 
 
@@ -98,8 +98,10 @@ class SourceCutPreflight:
     request_id: str
     binding_digest: str
 
-    def verify_roots(self) -> None:
+    def verify_roots(self, *, allow_handed_off_spools: bool = False) -> None:
         for binding in self.bindings:
+            if allow_handed_off_spools and binding.policy.mode is SnapshotMode.SPOOL_HANDOFF:
+                continue
             observed = _root_identity(binding.source.root)
             if observed != binding.root_identity:
                 raise SourceMutationError(f"source root identity changed: {binding.source.source_id}")
@@ -114,6 +116,7 @@ class CutItem:
     size_bytes: int
     snapshot_path: str | None = None
     readmission: bool = False
+    post_cut_arrival: bool = False
 
     @property
     def key(self) -> tuple[str, str, str, str]:
@@ -130,6 +133,7 @@ class CutManifest:
     item_count: int
     byte_count: int
     digest: str
+    version: int = _MANIFEST_VERSION
 
     def __post_init__(self) -> None:
         if self.item_count != len(self.items):
@@ -141,7 +145,7 @@ class CutManifest:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "version": _MANIFEST_VERSION,
+            "version": self.version,
             "kind": self.kind,
             "items": [
                 {
@@ -152,6 +156,7 @@ class CutManifest:
                     "size_bytes": item.size_bytes,
                     "snapshot_path": item.snapshot_path,
                     "readmission": item.readmission,
+                    "post_cut_arrival": item.post_cut_arrival,
                 }
                 for item in self.items
             ],
@@ -161,15 +166,17 @@ class CutManifest:
         }
 
     def verify_integrity(self) -> None:
-        expected = _manifest_digest(self.kind, self.items)
+        expected = _manifest_digest(self.kind, self.items, version=self.version)
         if expected != self.digest:
             raise SourceSnapshotError(f"{self.kind} manifest integrity check failed")
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> CutManifest:
         raw_items = payload.get("items")
-        if payload.get("version") != _MANIFEST_VERSION or not isinstance(raw_items, list):
+        version = payload.get("version")
+        if isinstance(version, bool) or version not in {1, _MANIFEST_VERSION} or not isinstance(raw_items, list):
             raise SourceSnapshotError("invalid source cut manifest")
+        assert isinstance(version, int)
         items = tuple(
             CutItem(
                 str(item["source_id"]),
@@ -179,6 +186,7 @@ class CutManifest:
                 int(item["size_bytes"]),
                 None if item.get("snapshot_path") is None else str(item["snapshot_path"]),
                 bool(item.get("readmission", False)),
+                bool(item.get("post_cut_arrival", False)),
             )
             for item in raw_items
             if isinstance(item, dict)
@@ -189,6 +197,7 @@ class CutManifest:
             _required_int(payload, "item_count"),
             _required_int(payload, "byte_count"),
             str(payload.get("digest")),
+            version,
         )
         result.verify_integrity()
         return result
@@ -556,7 +565,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
         root = Path(binding.source.root)
         if not root.is_dir():
             raise SourceSnapshotError("spool handoff requires a directory root")
-        retired = root.with_name(f".{root.name}.{binding.source.source_id}.cut")
+        retired = _retired_spool_root(binding)
         if retired.exists():
             raise SourceSnapshotError(f"stale spool handoff generation exists: {retired}")
         os.replace(root, retired)
@@ -573,9 +582,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
             # The old generation is still the only copy of pre-cut spool
             # material. Keep it for recovery if candidate copying fails.
             raise
-        else:
-            shutil.rmtree(retired, ignore_errors=True)
-            return copied
+        return copied
 
 
 def _default_policy(role: SourceRole) -> SourceCutPolicy:
@@ -628,10 +635,10 @@ def _required_int(payload: Mapping[str, object], field: str) -> int:
     return value
 
 
-def _manifest_digest(kind: str, items: Iterable[CutItem]) -> str:
+def _manifest_digest(kind: str, items: Iterable[CutItem], *, version: int = _MANIFEST_VERSION) -> str:
     return _sha256(
         {
-            "version": _MANIFEST_VERSION,
+            "version": version,
             "kind": kind,
             "items": [
                 (
@@ -642,6 +649,7 @@ def _manifest_digest(kind: str, items: Iterable[CutItem]) -> str:
                     item.size_bytes,
                     item.snapshot_path,
                     item.readmission,
+                    *(() if version == 1 else (item.post_cut_arrival,)),
                 )
                 for item in sorted(items, key=lambda value: value.key)
             ],
@@ -649,10 +657,15 @@ def _manifest_digest(kind: str, items: Iterable[CutItem]) -> str:
     )
 
 
-def _manifest(kind: str, items: Iterable[CutItem]) -> CutManifest:
+def _manifest(kind: str, items: Iterable[CutItem], *, version: int = _MANIFEST_VERSION) -> CutManifest:
     ordered = tuple(sorted(items, key=lambda value: value.key))
     return CutManifest(
-        kind, ordered, len(ordered), sum(item.size_bytes for item in ordered), _manifest_digest(kind, ordered)
+        kind,
+        ordered,
+        len(ordered),
+        sum(item.size_bytes for item in ordered),
+        _manifest_digest(kind, ordered, version=version),
+        version,
     )
 
 
@@ -717,6 +730,67 @@ def _cut_identity(preflight: SourceCutPreflight, candidate: CutManifest, carry: 
     )
 
 
+def _retired_spool_root(binding: SourceCutBinding) -> Path:
+    root = Path(binding.source.root)
+    return root.with_name(f".{root.name}.{binding.source.source_id}.cut")
+
+
+def _recover_markerless_spool_handoffs(preflight: SourceCutPreflight) -> None:
+    """Restore pre-cut spool roots before reclaiming incomplete output."""
+    for binding in preflight.bindings:
+        if binding.policy.mode is not SnapshotMode.SPOOL_HANDOFF:
+            continue
+        retired = _retired_spool_root(binding)
+        if not retired.exists():
+            continue
+        root = Path(binding.source.root)
+        arrivals = root.with_name(f".{root.name}.{binding.source.source_id}.arrivals")
+        if arrivals.exists():
+            raise SourceSnapshotError(f"spool recovery arrivals path already exists: {arrivals}")
+        if root.exists():
+            os.replace(root, arrivals)
+        os.replace(retired, root)
+        if arrivals.exists():
+            os.replace(arrivals, root / arrivals.name)
+            _fsync_directory(root)
+        _fsync_directory(root.parent)
+
+
+def _retire_published_spool_handoffs(preflight: SourceCutPreflight) -> None:
+    """Release retired spool roots only after the candidate is durable."""
+    for binding in preflight.bindings:
+        if binding.policy.mode is not SnapshotMode.SPOOL_HANDOFF:
+            continue
+        retired = _retired_spool_root(binding)
+        if retired.exists():
+            shutil.rmtree(retired)
+            _fsync_directory(retired.parent)
+
+
+def _preflight_copy_capacity(
+    preflight: SourceCutPreflight,
+    baselines: Mapping[str, tuple[CutItem, ...]],
+    staging_parent: Path,
+) -> None:
+    """Reject daemon-bounded fallback copies before any candidate bytes publish."""
+    capacity_limits = [
+        binding.policy.capacity_bytes for binding in preflight.bindings if binding.policy.capacity_bytes is not None
+    ]
+    if not capacity_limits:
+        return
+    required_bytes = sum(item.size_bytes for items in baselines.values() for item in items)
+    capacity = min(capacity_limits)
+    if required_bytes > capacity:
+        raise SourceSnapshotError(
+            f"capacity preflight rejects source cut: requires {required_bytes} bytes, policy permits {capacity}"
+        )
+    available_bytes = shutil.disk_usage(staging_parent).free
+    if required_bytes > available_bytes:
+        raise SourceSnapshotError(
+            f"capacity preflight rejects source cut: requires {required_bytes} bytes, only {available_bytes} available"
+        )
+
+
 def preflight_source_cut(
     declarations: Iterable[SourceDeclaration],
     *,
@@ -779,18 +853,20 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reclaim_orphaned_staging(destination.parent, preflight.request_id)
     if destination.exists():
-        preflight.verify_roots()
         try:
+            preflight.verify_roots(allow_handed_off_spools=True)
             return _load_published_source_cut(destination, preflight)
         except FileNotFoundError:
-            # A destination without the final marker was never published. It
-            # contains only this operation's private output and is safe to
-            # reclaim before repeating the immutable request.
+            # A moved spool's retired root remains the only authoritative
+            # pre-cut population until this destination's marker is durable.
+            _recover_markerless_spool_handoffs(preflight)
+            preflight.verify_roots()
             shutil.rmtree(destination)
     preflight.verify_roots()
     staging = Path(tempfile.mkdtemp(prefix=f".{preflight.request_id}.", dir=destination.parent))
     try:
         baselines = {binding.source.source_id: _observe(binding) for binding in preflight.bindings}
+        _preflight_copy_capacity(preflight, baselines, staging.parent)
         candidate_items: list[CutItem] = []
         for binding in preflight.bindings:
             source_destination = staging / "candidate" / binding.source.source_id
@@ -829,13 +905,22 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         carry_items: list[CutItem] = []
         for item in post_items:
             mode = modes[item.source_id]
-            if mode is SnapshotMode.COMPLETE_COPY and (item.source_id, item.coordinate) in baseline_coordinates:
+            if (
+                mode in {SnapshotMode.COMPLETE_COPY, SnapshotMode.DIRECTORY_COPY}
+                and (
+                    item.source_id,
+                    item.coordinate,
+                )
+                in baseline_coordinates
+            ):
                 # Complete copies define the cut boundary for live JSONL. The
                 # active path remains a normal, idempotent future read rather
                 # than a second logically-owned byte population.
                 carry_items.append(replace(item, readmission=True))
             elif _ownership_key(item, mode=mode) not in candidate_keys:
-                carry_items.append(item)
+                carry_items.append(
+                    replace(item, post_cut_arrival=(item.source_id, item.coordinate) not in baseline_coordinates)
+                )
         candidate = _manifest("candidate", candidate_items)
         carry = _manifest("carry-forward", carry_items)
         observed_items = [item for items in baselines.values() for item in items]
@@ -869,7 +954,8 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         os.replace(staging, destination)
         _fsync_directory(destination.parent)
         _write_durable(destination / _COMPLETE_MARKER, f"{cut_identity}\n")
-        _fsync_directory(destination.parent)
+        _fsync_directory(destination)
+        _retire_published_spool_handoffs(preflight)
         return result
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

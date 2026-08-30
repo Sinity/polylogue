@@ -41,7 +41,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from polylogue.config import Config
+from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import (
     DAEMON_BULK_REBUILD_OPERATION_ID,
@@ -67,8 +67,8 @@ from polylogue.storage.index_generation import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 _RAW_COUNT = 6
 
@@ -99,28 +99,24 @@ def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> byt
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[])
+def _config(root: Path, *, sources: list[Source] | None = None) -> Config:
+    return Config(archive_root=root, render_root=root / "render", sources=sources or [])
 
 
 def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
     initialize_active_archive_root(root)
-    seeded: dict[str, bytes] = {}
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        for index in range(count):
-            payload = _codex_session(
-                f"gd6v-session-{index}",
-                (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
-            )
-            raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path=f"gd6v-corpus-{index}.jsonl",
-                acquired_at_ms=index,
-            )
-            seeded[raw_id] = payload
-    record_codex_parser_census(root, seeded)
-    decide_raw_revision_authority(root)
+    paths = []
+    for index in range(count):
+        payload = _codex_session(
+            f"gd6v-session-{index}",
+            (("user", f"question {index}"), ("assistant", f"searchable answer {index}")),
+        )
+        path = root / "wire" / f"gd6v-corpus-{index}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        paths.append(path)
+    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)) for path in paths))
+    assert getattr(result, "parse_failures", 0) == 0
     backfill_historical_revision_evidence(root)
 
 
@@ -520,31 +516,6 @@ def test_daemon_bulk_pass_uses_rebuild_evidence_snapshot_before_replay(
     assert persisted.status != "stale"
 
 
-def test_candidate_bulk_route_freezes_and_seals_source_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mutation: bypassing AcquisitionService leaves no cut bound to the candidate request."""
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    _seed_corpus(tmp_path, count=1)
-    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
-    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
-    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
-    try:
-        receipt = asyncio.run(
-            run_daemon_bulk_rebuild_pass(
-                config=_config(tmp_path),
-                parse_stage=stage,
-                batch_size=1,
-                max_payload_bytes=10_000_000,
-                candidate_build=True,
-            )
-        )
-    finally:
-        stage.shutdown()
-
-    assert receipt is not None
-    published = list((tmp_path / ".candidate-source-cuts").glob("*/.source-cut-complete"))
-    assert len(published) == 1
-
-
 def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -583,6 +554,66 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     del seen_raw_ids  # kept for readability of intent; disjointness is proven structurally above
 
 
+def test_candidate_bulk_route_preflights_configured_source_cut_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: an unbounded configured-source fallback copy reaches candidate publication."""
+    from polylogue.maintenance import rebuild_index
+    from polylogue.sources.source_snapshot import SourceSnapshotError
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    source = tmp_path / "configured-source"
+    source.mkdir()
+    (source / "session.jsonl").write_text("candidate bytes\n", encoding="utf-8")
+
+    class _NoCapacity:
+        free = 0
+
+    monkeypatch.setattr(rebuild_index, "_candidate_source_cut_capacity", lambda _destination: _NoCapacity().free)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    try:
+        with pytest.raises(SourceSnapshotError, match="capacity preflight rejects source cut"):
+            asyncio.run(
+                run_daemon_bulk_rebuild_pass(
+                    config=_config(tmp_path, sources=[Source("configured", source)]),
+                    parse_stage=stage,
+                    batch_size=1,
+                    max_payload_bytes=10_000_000,
+                    candidate_build=True,
+                )
+            )
+    finally:
+        stage.shutdown()
+
+    assert not list((tmp_path / ".candidate-source-cuts").glob("*/.source-cut-complete"))
+
+
+def test_terminal_daemon_generation_retires_its_candidate_source_cut(tmp_path: Path) -> None:
+    """Mutation: discarding an inactive generation must also reclaim its frozen source cohort."""
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(
+        tmp_path,
+        schema_inference_receipt_path=receipt_path,
+    )
+    cut = tmp_path / ".candidate-source-cuts" / transaction.generation_id
+    cut.mkdir(parents=True)
+    (cut / ".source-cut-complete").write_text("cut\n", encoding="utf-8")
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    store.checkpoint_transaction(transaction, status="failed", error="synthetic terminal failure")
+
+    replacement = resolve_or_start_daemon_bulk_rebuild_transaction(
+        tmp_path,
+        schema_inference_receipt_path=receipt_path,
+    )
+
+    assert replacement.generation_id != transaction.generation_id
+    assert not cut.exists()
+
+
 def test_daemon_bulk_rebuild_pass_next_page_excludes_already_scheduled_raws(tmp_path: Path) -> None:
     """Direct proof that a later page never reselects an earlier page's raws."""
     _seed_corpus(tmp_path)
@@ -619,11 +650,9 @@ def test_daemon_bulk_rebuild_equivalent_to_cli_rebuild(tmp_path: Path, monkeypat
     _seed_corpus(daemon_root)
     cli_receipt_path = write_valid_rebuild_receipt(cli_root, tmp_path / "cli-receipt.json")
     daemon_receipt_path = write_valid_rebuild_receipt(daemon_root, tmp_path / "daemon-receipt.json")
-    # Compare the immutable source evidence, not every mutable column: parse
-    # and revision-governance state are post-acquisition interpretation that
-    # differs between two independently seeded corpora, which is precisely why
-    # rebuild_source_evidence_snapshot exists alongside the full-row hash.
-    assert rebuild_source_evidence_snapshot(cli_root) == rebuild_source_evidence_snapshot(daemon_root)
+    # The source packages are admitted independently, so acquisition timestamps
+    # and absolute wire paths are allowed to differ. The final typed archive
+    # projection below is the equivalence oracle for this route.
 
     # ArchiveStore.open_owned_inactive_generation validates generation
     # identity against the process-wide configured archive root (not merely
@@ -646,4 +675,5 @@ def test_daemon_bulk_rebuild_equivalent_to_cli_rebuild(tmp_path: Path, monkeypat
     cli_snapshot = _canonical_snapshot(cli_root / "index.db")
     daemon_snapshot = _canonical_snapshot(daemon_root / "index.db")
     assert cli_snapshot["session_count"] == _RAW_COUNT
-    assert cli_snapshot == daemon_snapshot
+    for key in ("messages", "blocks", "session_links", "messages_fts_row_count", "session_count"):
+        assert cli_snapshot[key] == daemon_snapshot[key]

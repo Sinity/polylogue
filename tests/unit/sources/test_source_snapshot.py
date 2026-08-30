@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.config import Config, Source
+from polylogue.maintenance.rebuild_index import freeze_candidate_source_inputs, verify_frozen_candidate_source_inputs
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
 from polylogue.sources import source_snapshot
 from polylogue.sources.source_snapshot import (
@@ -51,11 +53,41 @@ def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, mon
     assert result.counts.conserved
     assert {item.coordinate for item in result.carry_forward_manifest.items} == {"arrived.jsonl", "first.jsonl"}
     assert next(item for item in result.carry_forward_manifest.items if item.coordinate == "first.jsonl").readmission
+    assert next(
+        item for item in result.carry_forward_manifest.items if item.coordinate == "arrived.jsonl"
+    ).post_cut_arrival
     assert result.counts.observed_bytes == len("before\n") + len("after\n")
     candidate = reacquire_candidate(result)
     assert candidate[0].path.read_text(encoding="utf-8") == "before\n"
     with pytest.raises(CandidateCohortError):
         reacquire_candidate(result, coordinates=["not-in-cut.jsonl"])
+
+
+def test_directory_cut_readmits_a_grown_live_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: counting a grown directory member twice inflates observed bytes."""
+    root = tmp_path / "source"
+    root.mkdir()
+    path = root / "live.jsonl"
+    path.write_text("first\n", encoding="utf-8")
+    preflight = preflight_source_cut([SourceDeclaration("source", SourceRole.DIRECTORY, root, True)])
+    original_observe = source_snapshot._observe
+    calls = 0
+
+    def observe_after_growth(binding: source_snapshot.SourceCutBinding) -> tuple[source_snapshot.CutItem, ...]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.write_text("first\nextra\n", encoding="utf-8")
+        return original_observe(binding)
+
+    monkeypatch.setattr(source_snapshot, "_observe", observe_after_growth)
+    result = execute_source_cut(preflight, tmp_path / "cut")
+
+    assert result.counts.conserved
+    assert result.counts.observed_bytes == len("first\n")
+    assert result.counts.candidate_bytes == len("first\n")
+    assert result.counts.carry_forward_bytes == 0
+    assert result.carry_forward_manifest.items[0].readmission is True
 
 
 def test_candidate_bytes_are_checked_after_publication(tmp_path: Path) -> None:
@@ -69,6 +101,56 @@ def test_candidate_bytes_are_checked_after_publication(tmp_path: Path) -> None:
     candidate_path.write_text("tampered", encoding="utf-8")
     with pytest.raises(SourceMutationError, match="candidate snapshot mutated"):
         reacquire_candidate(result)
+
+
+def test_completion_marker_fsyncs_its_destination_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: syncing only the parent can lose a marker written inside the destination."""
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "one.json").write_text("one", encoding="utf-8")
+    destination = tmp_path / "cut"
+    original_write = source_snapshot._write_durable
+    original_fsync_directory = source_snapshot._fsync_directory
+    marker_written = False
+    fsyncs_after_marker: list[Path] = []
+
+    def write_marker(path: Path, payload: str) -> None:
+        nonlocal marker_written
+        original_write(path, payload)
+        if path.name == ".source-cut-complete":
+            marker_written = True
+
+    def record_directory_fsync(path: Path) -> None:
+        if marker_written:
+            fsyncs_after_marker.append(path)
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(source_snapshot, "_write_durable", write_marker)
+    monkeypatch.setattr(source_snapshot, "_fsync_directory", record_directory_fsync)
+    execute_source_cut(
+        preflight_source_cut([SourceDeclaration("source", SourceRole.IMMUTABLE_EXPORT, root)]), destination
+    )
+
+    assert destination in fsyncs_after_marker
+
+
+def test_verify_frozen_candidate_source_inputs_rejects_tampered_candidate(tmp_path: Path) -> None:
+    """Mutation: accepting a changed cut file would let candidate planning read unsealed bytes."""
+    source = tmp_path / "configured-source"
+    source.mkdir()
+    (source / "session.jsonl").write_text("before\n", encoding="utf-8")
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[Source("configured", source)])
+    destination = tmp_path / "cut"
+    frozen = freeze_candidate_source_inputs(
+        config,
+        destination=destination,
+        request_id="tamper-check",
+        fallback_source_path=tmp_path / "source.db",
+    )
+    (frozen.candidate_root / "configured-0" / "session.jsonl").write_text("tampered\n", encoding="utf-8")
+
+    with pytest.raises(SourceMutationError, match="candidate snapshot mutated"):
+        verify_frozen_candidate_source_inputs(destination)
 
 
 def test_repeating_a_published_cut_reuses_its_manifest(tmp_path: Path) -> None:
@@ -278,6 +360,44 @@ def test_cut_reclaims_incomplete_publication_and_orphaned_staging(
     with pytest.raises(FileNotFoundError):
         source_snapshot.load_source_cut(destination)
     assert execute_source_cut(preflight, destination).cut_identity == recovered.cut_identity
+
+
+def test_spool_handoff_recovers_retired_generation_after_marker_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: reclaiming a markerless spool cut before restoration loses its only pre-cut events."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "before.json").write_text("before", encoding="utf-8")
+    preflight = preflight_source_cut(
+        [SourceDeclaration("spool", SourceRole.SPOOL, spool, True)], request_id="spool-marker-crash"
+    )
+    destination = tmp_path / "cut"
+    original_write = source_snapshot._write_durable
+
+    def crash_before_marker(path: Path, payload: str) -> None:
+        if path.name == ".source-cut-complete":
+            raise OSError("simulated marker crash")
+        original_write(path, payload)
+
+    monkeypatch.setattr(source_snapshot, "_write_durable", crash_before_marker)
+    with pytest.raises(OSError, match="simulated marker crash"):
+        execute_source_cut(preflight, destination)
+
+    retired = tmp_path / ".spool.spool.cut"
+    assert retired.is_dir()
+    assert (retired / "before.json").read_text(encoding="utf-8") == "before"
+    (spool / "after.json").write_text("after", encoding="utf-8")
+
+    monkeypatch.setattr(source_snapshot, "_write_durable", original_write)
+    recovered = execute_source_cut(preflight, destination)
+
+    assert recovered.counts.conserved
+    assert {item.coordinate for item in recovered.candidate_manifest.items} == {
+        ".spool.spool.arrivals/after.json",
+        "before.json",
+    }
+    assert not retired.exists()
 
 
 def test_source_id_cannot_escape_candidate_staging(tmp_path: Path) -> None:

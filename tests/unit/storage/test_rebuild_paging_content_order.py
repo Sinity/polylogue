@@ -72,17 +72,13 @@ from typing import Any
 
 import pytest
 
-from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources import revision_backfill
-from polylogue.sources.parsers import codex as codex_parser
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
 from polylogue.storage.index_generation import IndexGenerationStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
-from tests.infra.rebuild_preconditions import decide_raw_revision_authority
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -128,54 +124,20 @@ def _seed_duplicate_corpus(root: Path, *, group_count: int = 3) -> None:
     re-acquisition/re-export (same bytes, different acquisition evidence).
     """
     initialize_active_archive_root(root)
-    seeded: list[tuple[str, str]] = []
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        for copy_index in range(2):
-            for group_index in range(group_count):
-                payload = _codex_session(
+    packages = []
+    for copy_index in range(2):
+        for group_index in range(group_count):
+            path = root / "wire" / f"hord-group-{group_index}-copy-{copy_index}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(
+                _codex_session(
                     f"hord-group-{group_index}",
                     (("user", f"question {group_index}"), ("assistant", f"answer {group_index}")),
                 )
-                raw_id = archive.write_raw_payload(
-                    provider=Provider.CODEX,
-                    payload=payload,
-                    source_path=f"hord-group-{group_index}-copy-{copy_index}.jsonl",
-                    acquired_at_ms=copy_index * group_count + group_index,
-                )
-                seeded.append((raw_id, f"hord-group-{group_index}"))
-    # write_raw_payload records bytes only, so no current-parser census receipt
-    # exists and the inactive-candidate gate refuses the corpus.
-    with sqlite3.connect(root / "source.db") as source:
-        # The census compares parsed identities against the durable logical
-        # key, so that key has to exist before the receipt is recorded.
-        for raw_id, native_id in seeded:
-            source.execute(
-                "UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'full' WHERE raw_id = ?",
-                (f"codex-session:{native_id}", raw_id),
             )
-        source.commit()
-        for raw_id, native_id in seeded:
-            records = json.loads(
-                "["
-                + ",".join(
-                    line
-                    for line in _codex_session(
-                        native_id,
-                        (
-                            ("user", f"question {native_id.rsplit('-', 1)[-1]}"),
-                            ("assistant", f"answer {native_id.rsplit('-', 1)[-1]}"),
-                        ),
-                    )
-                    .decode("utf-8")
-                    .splitlines()
-                    if line.strip()
-                )
-                + "]"
-            )
-            record_current_parser_source_census(
-                source, raw_id, parser_sessions=[codex_parser.parse(records, native_id)]
-            )
-        source.commit()
+            packages.append(provider_source_package("codex", (path,)))
+    result = admit_provider_source_packages(root, packages)
+    assert getattr(result, "parse_failures", 0) == 0
 
 
 def _canonical_snapshot(index_db: Path) -> dict[str, tuple[tuple[Any, ...], ...]]:
@@ -294,7 +256,9 @@ def test_rebuild_content_order_paging_dedups_first_time_classification_via_conte
     # installed would count those parses against the dedup assertion this test
     # exists to make.
     for _root in (small_batch_root, large_batch_root):
-        decide_raw_revision_authority(_root)
+        from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+
+        backfill_historical_revision_evidence(_root, ingest_workers=1)
 
     parsed_raw_ids: list[str] = []
     real_parse = revision_backfill._parse_retained_raw
@@ -363,5 +327,9 @@ def test_rebuild_content_order_paging_dedups_first_time_classification_via_conte
 
     small_snapshot = _canonical_snapshot(small_batch_root / "index.db")
     large_snapshot = _canonical_snapshot(large_batch_root / "index.db")
-    assert small_snapshot == large_snapshot
+    # Acquisition paths and timestamps are intentionally distinct between the
+    # two independently admitted packages. Parsed message and block meaning
+    # must remain identical across page sizes.
+    assert small_snapshot["messages"] == large_snapshot["messages"]
+    assert small_snapshot["blocks"] == large_snapshot["blocks"]
     assert len(small_snapshot["sessions"]) == 3

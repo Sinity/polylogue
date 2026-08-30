@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -73,6 +75,25 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _candidate_source_cut_path(root: Path, generation_id: str) -> Path:
+    return root / ".candidate-source-cuts" / generation_id
+
+
+def _retire_candidate_source_cut(root: Path, generation_id: str) -> None:
+    """Remove a frozen cut when its owning generation leaves the candidate lifecycle."""
+    cut = _candidate_source_cut_path(root, generation_id)
+    if not cut.exists() and not cut.is_symlink():
+        return
+    if cut.is_symlink():
+        raise RuntimeError(f"candidate source cut is a symlink: {cut}")
+    shutil.rmtree(cut)
+    parent_fd = os.open(cut.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def _validate_rebuild_provenance_receipt(root: Path, receipt_path: Path | None) -> None:
     """Validate daemon rebuild provenance at the current ownership boundary."""
     from polylogue.maintenance.schema_inference_gate import (
@@ -100,17 +121,25 @@ def _discard_daemon_transaction_after_provenance_failure(
     candidate.
     """
     errors: list[BaseException] = []
+    candidate_retired = False
     try:
         generation = store.load(transaction.generation_id)
         if generation.state != "inactive":
             errors.append(RuntimeError(f"candidate {generation.generation_id} is not inactive"))
         elif not store.discard_if_inactive(generation):
             errors.append(RuntimeError(f"candidate {generation.generation_id} was not discarded"))
+        else:
+            candidate_retired = True
     except BaseException as exc:
         logger.error("bulk-rebuild: candidate discard raised", exc_info=True)
         cleanup_error = RuntimeError(f"candidate {transaction.generation_id} discard failed: {exc}")
         cleanup_error.__cause__ = exc
         errors.append(cleanup_error)
+    if candidate_retired:
+        try:
+            _retire_candidate_source_cut(store.archive_root, transaction.generation_id)
+        except BaseException as exc:
+            errors.append(RuntimeError(f"candidate source cut {transaction.generation_id} retirement failed: {exc}"))
     try:
         if not store.discard_transaction(transaction.operation_id):
             errors.append(RuntimeError(f"transaction {transaction.operation_id} was not discarded"))
@@ -278,6 +307,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
                     raise RuntimeError(
                         f"transaction {DAEMON_BULK_REBUILD_OPERATION_ID} was not discarded after source drift"
                     )
+                _retire_candidate_source_cut(root, transaction.generation_id)
                 transaction = None
             if transaction is None:
                 pass
@@ -288,6 +318,7 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
                 # already the active index (nothing to discard); "stale/failed"
                 # candidates are still inactive and safe to discard.
                 cleanup_errors: list[BaseException] = []
+                candidate_retired = transaction.status in {"promoted", "promoted-attestation-failed"}
                 if transaction.status not in {"promoted", "promoted-attestation-failed"}:
                     try:
                         generation = store.load(transaction.generation_id)
@@ -303,6 +334,8 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
                                     cleanup_errors.append(
                                         RuntimeError(f"candidate {generation.generation_id} was not discarded")
                                     )
+                                else:
+                                    candidate_retired = True
                             except BaseException as exc:
                                 logger.error("bulk-rebuild: terminal candidate discard raised", exc_info=True)
                                 cleanup_error = RuntimeError(
@@ -310,6 +343,13 @@ def resolve_or_start_daemon_bulk_rebuild_transaction(
                                 )
                                 cleanup_error.__cause__ = exc
                                 cleanup_errors.append(cleanup_error)
+                if candidate_retired:
+                    try:
+                        _retire_candidate_source_cut(root, transaction.generation_id)
+                    except BaseException as exc:
+                        cleanup_errors.append(
+                            RuntimeError(f"candidate source cut {transaction.generation_id} retirement failed: {exc}")
+                        )
                 try:
                     if not store.discard_transaction(DAEMON_BULK_REBUILD_OPERATION_ID):
                         cleanup_errors.append(

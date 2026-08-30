@@ -17,13 +17,13 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.rebuild_preconditions import record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 
 class InjectedInterruptError(RuntimeError):
@@ -61,41 +61,19 @@ def _payload(native_id: str, text: str, *, parent_native_id: str | None = None) 
 
 def _seed(root: Path, *, monkeypatch: pytest.MonkeyPatch) -> None:
     initialize_active_archive_root(root)
-    seeded: dict[str, bytes] = {}
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        for index, native_id, parent_native_id in (
-            (0, "resume-parent", None),
-            (1, "resume-child", "resume-parent"),
-            (2, "resume-standalone", None),
-        ):
-            payload = _payload(native_id, f"resume-token-{index}", parent_native_id=parent_native_id)
-            raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path=f"resume/{index}.jsonl",
-                acquired_at_ms=index + 1,
-            )
-            seeded[raw_id] = payload
-    with sqlite3.connect(root / "source.db") as source:
-        source.execute(
-            """
-            UPDATE raw_sessions
-            SET logical_source_key = CASE
-                    WHEN source_path LIKE '%/0.jsonl' THEN 'codex:resume-parent'
-                    WHEN source_path LIKE '%/1.jsonl' THEN 'codex:resume-child'
-                    ELSE 'codex:resume-standalone'
-                END,
-                revision_kind = 'full',
-                source_revision = raw_id,
-                baseline_raw_id = raw_id,
-                acquisition_generation = 0,
-                revision_authority = 'byte_proven'
-            """
-        )
-        source.commit()
-    # The census compares each parsed identity against the durable logical key
-    # the UPDATE above sets, so it has to run after it.
-    record_codex_parser_census(root, seeded)
+    packages = []
+    for index, native_id, parent_native_id in (
+        (0, "resume-parent", None),
+        (1, "resume-child", "resume-parent"),
+        (2, "resume-standalone", None),
+    ):
+        path = root / "wire" / "resume" / f"{index}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_payload(native_id, f"resume-token-{index}", parent_native_id=parent_native_id))
+        packages.append(provider_source_package("codex", (path,)))
+    result = admit_provider_source_packages(root, packages)
+    assert getattr(result, "parse_failures", 0) == 0
+    backfill_historical_revision_evidence(root, ingest_workers=1)
     receipt_path = write_valid_rebuild_receipt(root, root.parent / f"{root.name}-schema-receipt.json")
     monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
 
