@@ -39,9 +39,9 @@ from polylogue.archive.viewport import (
     read_view_http_query_params,
 )
 from polylogue.daemon.route_contracts import (
+    DAEMON_ROUTE_DECLARATIONS,
     ROUTE_CONTRACTS,
     RouteContract,
-    daemon_route_declaration,
 )
 from polylogue.daemon.web_auth import (
     WebCredentialBootstrapPayload,
@@ -106,6 +106,8 @@ def _route_contract_payload(contract: RouteContract) -> dict[str, str]:
     }
     if contract.notes:
         payload["notes"] = contract.notes
+    if contract.domain_operation:
+        payload["domain_operation"] = contract.domain_operation
     return payload
 
 
@@ -921,21 +923,22 @@ def _build_openapi_document() -> dict[str, Any]:
             ),
         },
     }
-    # The find route is registered in the shared declaration kernel. Keep the
-    # large hand-authored parameter detail above readable, but bind the
-    # executable operation's identity, security, schemas, and owner to that
-    # declaration so declaration-only mutations cannot silently drift docs.
-    declaration = daemon_route_declaration("GET", "/api/sessions")
-    operation = document["paths"][declaration.path][declaration.method.lower()]
-    operation["operationId"] = declaration.kernel.public_name + "Sessions"
-    operation["security"] = _protected_read_security()
-    operation["x-polylogue-declaration"] = {
-        "declaration_id": declaration.kernel.declaration_id,
-        "request_contract": declaration.request_contract,
-        "response_contract": declaration.response_contract,
-        "auth_policy": declaration.auth_policy,
-        "owner_path": declaration.kernel.owner_path,
-    }
+    # Route identity and transport metadata are generated for every migrated
+    # route. The surrounding operation details remain schema-owned above.
+    for declaration in DAEMON_ROUTE_DECLARATIONS:
+        operation = document["paths"].get(declaration.path, {}).get(declaration.method.lower())
+        if operation is None:
+            continue
+        words = declaration.kernel.public_name.split("-")
+        operation["operationId"] = words[0] + "".join(word.title() for word in words[1:])
+        operation["security"] = _protected_read_security()
+        operation["x-polylogue-declaration"] = {
+            "declaration_id": declaration.kernel.declaration_id,
+            "request_contract": declaration.request_contract,
+            "response_contract": declaration.response_contract,
+            "auth_policy": declaration.auth_policy,
+            "owner_path": declaration.kernel.owner_path,
+        }
     return document
 
 
