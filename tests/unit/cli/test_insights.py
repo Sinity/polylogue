@@ -332,19 +332,24 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     payload = extract_json_result(result.output)
     costs = json_object_list(payload["session_costs"])
     exact = next(item for item in costs if item["session_id"] == NID_EXACT_COST)
-    priced = next(item for item in costs if item["session_id"] == NID_PRICED_COST)
+    reported = next(item for item in costs if item["session_id"] == NID_PRICED_COST)
     unavailable = next(item for item in costs if item["session_id"] == NID_UNAVAILABLE_COST)
     exact_estimate = json_object(exact["estimate"])
-    priced_estimate = json_object(priced["estimate"])
+    reported_estimate = json_object(reported["estimate"])
     unavailable_estimate = json_object(unavailable["estimate"])
     assert exact["insight_kind"] == "session_cost"
-    assert exact_estimate["status"] == "priced"
+    # Both carry provider-reported dollars: session-level reported_cost_usd
+    # for the first, an origin_reported usage-lane row for the second.
+    # Catalog-priced ("priced") coverage lives in tests/unit/core/test_pricing.py.
+    assert exact_estimate["status"] == "exact"
     assert json_number(exact_estimate["total_usd"]) == pytest.approx(1.25)
-    assert priced_estimate["status"] == "exact"
-    assert priced_estimate["normalized_model"] == "gpt-4o"
-    assert json_number(priced_estimate["total_usd"]) == pytest.approx(0.0075)
+    assert reported_estimate["status"] == "exact"
+    # The stored scalar keeps no model identity and the seeded messages carry
+    # no token usage for re-derivation, so model identity is absent here.
+    assert reported_estimate["normalized_model"] is None
+    assert json_number(reported_estimate["total_usd"]) == pytest.approx(0.0075)
     assert unavailable_estimate["status"] == "unavailable"
-    assert "missing_token_usage" in json_array(unavailable_estimate["missing_reasons"])
+    assert "no_tokens" in json_array(unavailable_estimate["missing_reasons"])
 
 
 def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
