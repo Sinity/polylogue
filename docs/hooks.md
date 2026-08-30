@@ -187,8 +187,8 @@ polylogue hooks status --json
 
 Status distinguishes configured wiring from observed events. The coverage
 table reports the enrichment role for each event and only treats missing event
-types as a liveness gap when the archive supplies a defensible opportunity
-denominator (session start, authored prompt, or tool use). Conditional events
+types as a liveness gap when the archive supplies a defensible count of
+opportunities (session start, authored prompt, or tool use). Conditional events
 such as `Stop` remain observational.
 
 Uninstall is symmetric and removes only handlers whose command invokes

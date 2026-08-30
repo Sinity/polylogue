@@ -1002,8 +1002,8 @@ defense-in-depth and never proves a publisher is dead.
    or live referent/reservation retains the bytes.
 3. **Intent before unlink.** Commit `gc_generations` and one exact
    `gc_generation_members` row per candidate, including the observed namespace
-   identity, before an unlink is attempted. The member row is the durable
-   recovery denominator, not a second ownership authority.
+   identity, before an unlink is attempted. The member row is the durable,
+   complete inventory for recovery, not a second owner of the blobs.
 4. **Age floor.** A candidate must be older than
    `max(MIN_AGE_S, now - prev_generation.completed_at)`
    (`polylogue/storage/blob_gc.py:run_blob_gc_report`). `MIN_AGE_S` is 60
