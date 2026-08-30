@@ -133,6 +133,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Material Protocol v1", "material-protocol-v1.md", "Normalized-session interchange wire format.", "reference"
     ),
     _entry(
+        "Sidecars",
+        "sidecars.md",
+        "Every sidecar kind, its handling contract, and the failure mode when mishandled.",
+        "reference",
+    ),
+    _entry(
         "Schema Annotations", "schema-annotations.md", "Versioned annotation schemas and batch provenance.", "reference"
     ),
     _entry(
