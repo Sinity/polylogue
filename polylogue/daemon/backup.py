@@ -28,7 +28,10 @@ from typing import Literal
 from pydantic import BaseModel
 
 from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
+from polylogue.operations.append_acquisition_replay import replay_append_acquisition_payload
 from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -652,14 +655,13 @@ def _resolved_source_path(source_path: str, root: Path) -> str:
     """Resolve an acquisition path against the archive root in force."""
     outer, separator, member = source_path.partition(":")
     path = Path(outer)
-    if not path.exists():
-        parts = path.parts
-        for directory in ("inbox", "browser-capture", "hooks"):
-            if directory in parts:
-                candidate = root.joinpath(*parts[parts.index(directory) :])
-                if candidate.exists():
-                    path = candidate
-                    break
+    parts = path.parts
+    for directory in ("inbox", "browser-capture", "hooks"):
+        if directory in parts:
+            candidate = root.joinpath(*parts[parts.index(directory) :])
+            if candidate.exists():
+                path = candidate
+                break
     return f"{path}:{member}" if separator else str(path)
 
 
@@ -675,6 +677,25 @@ def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | No
     if len(payload) != end - start:
         return None, "append_segment:short_read"
     return payload, None
+
+
+def _replay_append_payload(
+    row: Mapping[str, object],
+    payload: bytes,
+    *,
+    source_name: str | None = None,
+) -> tuple[bytes | None, str | None]:
+    provider = Provider.from_string(str(row.get("capture_mode") or ""))
+    if provider is Provider.UNKNOWN:
+        provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+    blob_size_value = row.get("blob_size")
+    expected_size = int(blob_size_value) if isinstance(blob_size_value, (int, str)) else None
+    return replay_append_acquisition_payload(
+        payload,
+        provider=provider,
+        source_name=source_name or str(row.get("source_path") or "append.jsonl"),
+        expected_size=expected_size,
+    )
 
 
 def _source_recoverability_proofs(
@@ -733,6 +754,8 @@ def _source_recoverability_proofs(
                         payload, error = None, f"append_segment:{exc}"
                     else:
                         payload, error = _append_segment_payload(resolved, start, end)
+                        if error is None and payload is not None:
+                            payload, error = _replay_append_payload(row, payload, source_name=resolved)
                 else:
                     payload, error = _current_raw_payload_bytes(
                         resolved,
@@ -1369,6 +1392,12 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                         recovered_payload, recovery_error = None, f"append_segment:{exc}"
                     else:
                         recovered_payload, recovery_error = _append_segment_payload(source_path, start, end)
+                        if recovery_error is None and recovered_payload is not None:
+                            recovered_payload, recovery_error = _replay_append_payload(
+                                proof,
+                                recovered_payload,
+                                source_name=source_path,
+                            )
                 else:
                     recovered_payload, recovery_error = _current_raw_payload_bytes(
                         source_path,
