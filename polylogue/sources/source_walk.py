@@ -14,7 +14,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
-from .origin_specs import SourceClass, recognize_source_class
+from .origin_specs import SourceClass, artifact_rule_for_path, recognize_source_class
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -110,6 +110,12 @@ def _has_supported_extension(path: Path) -> bool:
 
 def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     if _has_supported_extension(path):
+        return True
+    if (
+        provider is Provider.ANTIGRAVITY
+        and path.suffix.lower() == ".pb"
+        and artifact_rule_for_path(provider, str(path)) is not None
+    ):
         return True
     if (
         provider is Provider.ANTIGRAVITY

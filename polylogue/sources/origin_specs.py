@@ -1206,7 +1206,7 @@ def _antigravity_spec() -> OriginSpec:
         artifact_rules=(
             OriginArtifactRule(
                 kind="session_document",
-                path_pattern=r"(?:^|/)conversations/[^/]+\.pb$",
+                path_pattern=r"(?:^|/)conversations/(?:[^/]+/)*[^/]+\.pb$",
                 parse_policy="session",
                 parser_path="polylogue/sources/parsers/antigravity.py:iter_language_server_exports",
                 coverage_role="conversation_protobuf",

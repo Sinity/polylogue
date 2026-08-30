@@ -9,6 +9,8 @@ classification and become synthetic conversation sessions.
 from __future__ import annotations
 
 import logging
+import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,11 @@ def test_source_census_accounts_for_all_roles_and_unknown_items(tmp_path: Path) 
         antigravity.AntigravitySourceRole.UNKNOWN: 1,
     }
     assert source_census.unknown_count == 1
+    assert source_census.inspection_counts == {
+        antigravity.AntigravitySourceInspection.REGULAR: 4,
+        antigravity.AntigravitySourceInspection.NON_REGULAR: 0,
+        antigravity.AntigravitySourceInspection.UNREADABLE: 0,
+    }
     assert source_census.unexplained_items == ()
     source_census.assert_conserved()
 
@@ -103,3 +110,62 @@ def test_source_census_rejects_mutation_during_read(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(antigravity, "_file_digest", digest_then_mutate)
     with pytest.raises(antigravity.AntigravitySourceMutationError):
         antigravity.census_source(root)
+
+
+def test_source_census_rejects_an_unclassified_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "antigravity"
+    root.mkdir()
+    (root / "settings.bin").write_bytes(b"unknown")
+
+    monkeypatch.setattr(antigravity, "classify_source_path", lambda _path: None)
+
+    with pytest.raises(ValueError, match="unexplained"):
+        antigravity.census_source(root)
+
+
+def test_source_census_counts_non_regular_and_unreadable_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "antigravity"
+    root.mkdir()
+    readable = root / "readable.bin"
+    readable.write_bytes(b"readable")
+    fifo = root / "pipe"
+    os.mkfifo(fifo)
+    dangling = root / "dangling"
+    dangling.symlink_to(root / "missing")
+    socket_path = root / "socket"
+    server = socket.socket(socket.AF_UNIX)
+    original_cwd = Path.cwd()
+    os.chdir(root)
+    try:
+        server.bind("socket")
+    finally:
+        os.chdir(original_cwd)
+    unreadable = root / "unreadable.bin"
+    unreadable.write_bytes(b"unreadable")
+    original_digest = antigravity._file_digest
+
+    def fail_one(path: Path) -> str:
+        if path == unreadable:
+            raise PermissionError("synthetic unreadable source")
+        return original_digest(path)
+
+    monkeypatch.setattr(antigravity, "_file_digest", fail_one)
+    try:
+        census = antigravity.census_source(root)
+    finally:
+        server.close()
+        socket_path.unlink()
+
+    assert len(census.items) == 5
+    assert census.inspection_counts == {
+        antigravity.AntigravitySourceInspection.REGULAR: 1,
+        antigravity.AntigravitySourceInspection.NON_REGULAR: 3,
+        antigravity.AntigravitySourceInspection.UNREADABLE: 1,
+    }
+    assert census.unknown_count == 5
+    assert {item.classification.reason for item in census.items if item.classification is not None} == {
+        "non-regular Antigravity source item",
+        "source item is unreadable: synthetic unreadable source",
+        "unrecognized Antigravity source item",
+    }
+    assert census.unexplained_items == ()

@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import socket
+import stat as stat_module
 import subprocess
 import time
 from collections import Counter
@@ -82,6 +83,14 @@ class AntigravitySourceRole(StrEnum):
     UNKNOWN = "unknown"
 
 
+class AntigravitySourceInspection(StrEnum):
+    """How the census inspected one filesystem entry."""
+
+    REGULAR = "regular"
+    NON_REGULAR = "non_regular"
+    UNREADABLE = "unreadable"
+
+
 @dataclass(frozen=True, slots=True)
 class AntigravitySourceClassification:
     """Positive source-role evidence shared by batch and resident routes."""
@@ -98,9 +107,10 @@ class AntigravitySourceItem:
 
     path: Path
     relative_path: str
-    classification: AntigravitySourceClassification
+    classification: AntigravitySourceClassification | None
+    inspection: AntigravitySourceInspection
     size_bytes: int
-    content_sha256: str
+    content_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +122,13 @@ class AntigravitySourceCensus:
 
     @property
     def counts(self) -> dict[AntigravitySourceRole, int]:
-        counts = Counter(item.classification.role for item in self.items)
+        counts = Counter(item.classification.role for item in self.items if item.classification is not None)
         return {role: counts.get(role, 0) for role in AntigravitySourceRole}
+
+    @property
+    def inspection_counts(self) -> dict[AntigravitySourceInspection, int]:
+        counts = Counter(item.inspection for item in self.items)
+        return {inspection: counts.get(inspection, 0) for inspection in AntigravitySourceInspection}
 
     @property
     def unknown_count(self) -> int:
@@ -121,8 +136,7 @@ class AntigravitySourceCensus:
 
     @property
     def unexplained_items(self) -> tuple[Path, ...]:
-        roles = frozenset(AntigravitySourceRole)
-        return tuple(item.path for item in self.items if item.classification.role not in roles)
+        return tuple(item.path for item in self.items if item.classification is None)
 
     def assert_conserved(self) -> None:
         if self.unexplained_items:
@@ -132,22 +146,68 @@ class AntigravitySourceCensus:
 
 
 def census_source(root: Path) -> AntigravitySourceCensus:
-    """Capture every regular file below ``root`` and assign one source role.
+    """Capture every filesystem entry below ``root`` and assign one source role.
 
     This is preparation evidence only. It does not open the archive or blob
     store, and a change during hashing is a visible source failure.
     """
     root = root.expanduser()
     items: list[AntigravitySourceItem] = []
-    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+
+    def record_unreadable(path: Path, detail: str) -> None:
+        items.append(
+            AntigravitySourceItem(
+                path=path,
+                relative_path=_relative_path(path, root),
+                classification=AntigravitySourceClassification(
+                    AntigravitySourceRole.UNKNOWN,
+                    False,
+                    ArtifactKind.UNKNOWN,
+                    detail,
+                ),
+                inspection=AntigravitySourceInspection.UNREADABLE,
+                size_bytes=0,
+                content_sha256=None,
+            )
+        )
+
+    def on_walk_error(error: OSError) -> None:
+        path = Path(error.filename) if error.filename else root
+        record_unreadable(path, f"source item is unreadable: {error}")
+
+    for directory, dirnames, filenames in os.walk(root, followlinks=True, onerror=on_walk_error):
         dirnames.sort()
         for filename in sorted(filenames):
             path = Path(directory) / filename
-            if not path.is_file():
+            try:
+                link_stat = path.lstat()
+            except OSError as exc:
+                record_unreadable(path, f"source item is unreadable: {exc}")
                 continue
-            before = path.stat()
-            digest = _file_digest(path)
-            after = path.stat()
+            if not stat_module.S_ISREG(link_stat.st_mode):
+                items.append(
+                    AntigravitySourceItem(
+                        path=path,
+                        relative_path=_relative_path(path, root),
+                        classification=AntigravitySourceClassification(
+                            AntigravitySourceRole.UNKNOWN,
+                            False,
+                            ArtifactKind.UNKNOWN,
+                            "non-regular Antigravity source item",
+                        ),
+                        inspection=AntigravitySourceInspection.NON_REGULAR,
+                        size_bytes=link_stat.st_size,
+                        content_sha256=None,
+                    )
+                )
+                continue
+            try:
+                before = path.stat()
+                digest = _file_digest(path)
+                after = path.stat()
+            except OSError as exc:
+                record_unreadable(path, f"source item is unreadable: {exc}")
+                continue
             if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
                 after.st_dev,
                 after.st_ino,
@@ -158,8 +218,9 @@ def census_source(root: Path) -> AntigravitySourceCensus:
             items.append(
                 AntigravitySourceItem(
                     path=path,
-                    relative_path=path.relative_to(root).as_posix(),
+                    relative_path=_relative_path(path, root),
                     classification=classify_source_path(path),
+                    inspection=AntigravitySourceInspection.REGULAR,
                     size_bytes=after.st_size,
                     content_sha256=digest,
                 )
@@ -167,6 +228,13 @@ def census_source(root: Path) -> AntigravitySourceCensus:
     census = AntigravitySourceCensus(root=root, items=tuple(items))
     census.assert_conserved()
     return census
+
+
+def _relative_path(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,11 +605,14 @@ def iter_language_server_export_results(
 
 
 def _conversation_pb_paths(root: Path) -> list[Path]:
-    """List real conversation trajectory files, sorted for deterministic order."""
-    conversations_dir = root / "conversations"
-    if not conversations_dir.is_dir():
-        return []
-    return sorted(conversations_dir.glob("*.pb"))
+    """List every production-discovered conversation trajectory."""
+    from polylogue.sources.source_walk import _walk_source_paths
+
+    return [
+        path
+        for path in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
+        if classify_source_path(path).role is AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ]
 
 
 def _file_digest(path: Path) -> str:
@@ -720,6 +791,7 @@ __all__ = [
     "AntigravityLanguageServerInfo",
     "AntigravitySourceClassification",
     "AntigravitySourceRole",
+    "AntigravitySourceInspection",
     "AntigravitySourceItem",
     "AntigravitySourceCensus",
     "AntigravitySourceMutationError",
