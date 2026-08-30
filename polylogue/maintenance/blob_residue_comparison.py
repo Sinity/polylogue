@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
@@ -31,7 +33,11 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES
-from polylogue.sources.live.batch_support import _parse_payload_as_session_artifact
+from polylogue.sources.live.batch_support import (
+    _detect_provider_from_path_sample,
+    _parse_path_as_session_artifact,
+    _parse_payload_as_session_artifact,
+)
 from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, looks_like_sqlite_bytes
@@ -192,8 +198,6 @@ def compare_normalized_contributions(
     for session_id in sorted(set(stored_by_id) & set(current_by_id)):
         stored_projection = stored_by_id[session_id].projection
         current_projection = current_by_id[session_id].projection
-        from polylogue.archive.session_revision_membership import _relation
-
         relation = _relation(current_projection, stored_projection)
         if relation == "equal":
             continue
@@ -227,7 +231,30 @@ def _stable_bytes(path: Path) -> tuple[bytes, dict[str, object]]:
         "inode": before.st_ino,
         "size_bytes": before.st_size,
         "mtime_ns": before.st_mtime_ns,
+        "ctime_ns": before.st_ctime_ns,
         "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _stable_stream_observation(path: Path, before: os.stat_result) -> dict[str, object]:
+    """Hash a streamed parse input and reject a changed file boundary."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            hasher.update(chunk)
+    after = path.stat()
+    before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+    after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    if before_identity != after_identity:
+        raise RuntimeError("source changed while being read")
+    return {
+        "path": str(path.resolve(strict=False)),
+        "device": after.st_dev,
+        "inode": after.st_ino,
+        "size_bytes": after.st_size,
+        "mtime_ns": after.st_mtime_ns,
+        "ctime_ns": after.st_ctime_ns,
+        "sha256": hasher.hexdigest(),
     }
 
 
@@ -268,8 +295,10 @@ def parse_production_route(
     path: Path, *, provider_hint: Provider, logical_path: Path | None = None
 ) -> tuple[RouteResult, dict[str, object]]:
     """Parse one file using the live detector/parser route without writes."""
-    payload, observation = _stable_bytes(path)
     logical = logical_path or path
+    if path.stat().st_size >= _STREAMING_FULL_INGEST_BYTES:
+        return _parse_large_production_route(path, logical=logical, provider_hint=provider_hint)
+    payload, observation = _stable_bytes(path)
     fallback_id = logical.stem
     if is_sqlite_path(logical) or looks_like_sqlite_bytes(payload):
         sqlite_result = _parse_sqlite(path, provider=provider_hint, fallback_id=fallback_id)
@@ -326,6 +355,72 @@ def parse_production_route(
         ), observation
 
 
+def _parse_large_production_route(
+    path: Path, *, logical: Path, provider_hint: Provider
+) -> tuple[RouteResult, dict[str, object]]:
+    """Run the production streaming branch without materializing the file."""
+    before = path.stat()
+    fallback_id = logical.stem
+    provider = provider_hint
+    detector_evidence = "path_sample"
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(8192)
+        if is_sqlite_path(logical) or looks_like_sqlite_bytes(prefix):
+            sqlite_result = _parse_sqlite(path, provider=provider_hint, fallback_id=fallback_id)
+            route = sqlite_result or RouteResult(
+                provider_hint, "sqlite.unrecognized", "sqlite.refused", error="unrecognized SQLite source"
+            )
+            return route, _stable_stream_observation(path, before)
+
+        if path == logical:
+            provider = _detect_provider_from_path_sample(path, provider_hint)
+        else:
+            provider, detector_evidence = detect_provider_from_raw_bytes_evidence(
+                prefix, logical.name, provider_hint, truncated_tail_ok=True
+            )
+        if (
+            path == logical
+            and provider is not Provider.UNKNOWN
+            and not _parse_path_as_session_artifact(path, provider=provider)
+        ):
+            route = RouteResult(
+                provider,
+                detector_evidence,
+                "artifact.refused",
+                error="production artifact admission refused session parsing",
+            )
+            return route, _stable_stream_observation(path, before)
+
+        with path.open("rb") as handle:
+            payloads = _iter_json_stream(handle, logical.name, fail_on_decode_error=provider is Provider.UNKNOWN)
+            if is_stream_record_provider(str(logical), provider):
+                sessions = parse_stream_payload(provider, payloads, fallback_id, source_path=str(logical))
+                route_name = "stream.parse"
+            else:
+                sessions = parse_payload(provider, list(payloads), fallback_id, source_path=str(logical))
+                route_name = "document.parse"
+        admitted = require_positive_conversational_evidence(sessions, provider=provider, source_path=str(logical))
+        route = (
+            RouteResult(
+                provider,
+                detector_evidence,
+                f"{route_name}.accepted",
+                tuple(admitted),
+            )
+            if admitted
+            else RouteResult(
+                provider,
+                detector_evidence,
+                f"{route_name}.refused",
+                error="positive conversational admission produced no sessions",
+            )
+        )
+    except Exception as exc:
+        route = RouteResult(provider, detector_evidence, "parser.error", error=f"{type(exc).__name__}: {exc}")
+    return route, _stable_stream_observation(path, before)
+
+
 def _normalize_route(route: RouteResult) -> tuple[RouteResult, NormalizedContribution]:
     if route.error is not None:
         return route, NormalizedContribution.from_sessions(())
@@ -351,6 +446,7 @@ def _cached_source_matches(path: Path, observation: dict[str, object]) -> bool:
         and stat.st_ino == observation.get("inode")
         and stat.st_size == observation.get("size_bytes")
         and stat.st_mtime_ns == observation.get("mtime_ns")
+        and stat.st_ctime_ns == observation.get("ctime_ns")
     )
 
 
@@ -485,6 +581,10 @@ def main(argv: list[str] | None = None) -> int:
     counts = comparison["outcome_counts"] if isinstance(comparison, dict) else {}
     print(f"normalized-comparison present=577 outcomes={counts}")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 
 
 __all__ = [

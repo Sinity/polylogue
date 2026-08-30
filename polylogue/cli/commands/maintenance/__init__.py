@@ -231,6 +231,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "cursor_authority_reconcile_command",
         "Plan or apply one backup-gated cursor-authority reconciliation.",
     ),
+    (
+        "blob-residue-compare",
+        "_blob_residue_compare",
+        "blob_residue_compare_command",
+        "Compare present blob-residue candidates through the production parse route.",
+    ),
 )
 
 _NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "source-continuity-recovery"})
