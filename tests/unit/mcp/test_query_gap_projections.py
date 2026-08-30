@@ -186,11 +186,39 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
                 )
             ],
         ),
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-tool-episode-late",
+            title="Query gap tool episode late",
+            working_directories=["/realm/project/polylogue"],
+            git_repository_url="https://github.com/Sinity/polylogue.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    timestamp="2026-01-05T12:00:00Z",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="tool-3",
+                            tool_input={"command": "pwd"},
+                        ),
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="tool-3",
+                            text="/realm/project/polylogue",
+                        ),
+                    ],
+                )
+            ],
+        ),
     )
     with ArchiveStore(archive_root) as archive:
         session_ids = [archive.write_parsed(session) for session in sessions]
         archive.add_user_tags((session_ids[0],), ("episode-filter",))
         archive.add_user_tags((session_ids[1],), ("other-filter",))
+        archive.add_user_tags((session_ids[2],), ("episode-filter",))
     return session_ids[0]
 
 
