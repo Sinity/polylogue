@@ -34,6 +34,8 @@ class EmbeddingGenerationError(RuntimeError):
 
 
 class EmbeddingGenerationState(StrEnum):
+    IN_PROGRESS = "in_progress"
+    ACCEPTED = "accepted"
     ACTIVE = "active"
     RETAINED = "retained"
     ELIGIBLE = "eligible"
@@ -61,6 +63,8 @@ class EmbeddingGeneration:
     physical_root: str = ""
     sealed: bool = False
     membership_digest: str = ""
+    lease_owner: str | None = None
+    reservation_owner: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +233,7 @@ class EmbeddingGenerationStore:
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise EmbeddingGenerationError(f"malformed embedding database: {path}") from exc
 
-    def _database_contract(self, path: Path) -> dict[str, Any]:
+    def _database_contract(self, path: Path, *, physical_root: Path | None = None) -> dict[str, Any]:
         """Derive the immutable contract carried by a published database.
 
         The database is rebuildable, but its publication must still be
@@ -286,7 +290,7 @@ class EmbeddingGenerationStore:
             "source_generation": stable(source),
             "index_generation": stable(index),
             "schema_version": EMBEDDINGS_SCHEMA_VERSION,
-            "physical_root": str(self.archive_root),
+            "physical_root": str((physical_root or path.parent).absolute()),
             "sealed": True,
             "membership_digest": digest.hexdigest(),
         }
@@ -345,7 +349,8 @@ class EmbeddingGenerationStore:
                 or not generation.source_generation
                 or not generation.index_generation
                 or generation.schema_version != EMBEDDINGS_SCHEMA_VERSION
-                or generation.physical_root != str(self.archive_root)
+                or Path(generation.physical_root) != expected_dir
+                or not _under(self.root, Path(generation.physical_root))
                 or generation.sealed is not True
                 or not re.fullmatch(r"[0-9a-f]{64}", generation.membership_digest)
             ):
@@ -354,10 +359,13 @@ class EmbeddingGenerationStore:
                 generation.predecessor_generation_id
             ):
                 raise ValueError("invalid predecessor identity")
+            for label, owner in (("lease", generation.lease_owner), ("reservation", generation.reservation_owner)):
+                if owner is not None and not _OWNER.fullmatch(owner):
+                    raise ValueError(f"invalid {label} owner identity")
             if not _regular_file(expected_db):
                 raise ValueError("generation database is missing")
             self._validate_database(expected_db)
-            actual_contract = self._database_contract(expected_db)
+            actual_contract = self._database_contract(expected_db, physical_root=expected_db.parent)
             for field in (
                 "recipe_hash",
                 "source_generation",
@@ -657,7 +665,7 @@ class EmbeddingGenerationStore:
             uuid.uuid4().hex,
             "promoting",
             now,
-            **self._database_contract(destination),
+            **self._database_contract(destination, physical_root=destination.parent),
         )
         self._write_generation(generation)
         _fsync_dir(self.root)
@@ -702,7 +710,7 @@ class EmbeddingGenerationStore:
                 "promoting",
                 now,
                 predecessor_generation_id=current.generation_id if current else None,
-                **self._database_contract(destination),
+                **self._database_contract(destination, physical_root=destination.parent),
             )
             self._write_generation(generation)
             _fsync_dir(self.root)
@@ -734,10 +742,16 @@ class EmbeddingGenerationStore:
             return None
         if active.state not in {"active", "promoting"}:
             raise EmbeddingGenerationError("active embedding pointer names non-active metadata")
+        # Only the whole inventory can establish liveness.  In particular,
+        # accepted candidates and work carrying a lease or reservation remain
+        # protected even when they are not named by the active pointer.
         predecessors = [
             g
             for g in generations
-            if g.generation_id != active.generation_id and g.state in {"active", "retained", "eligible"}
+            if g.generation_id != active.generation_id
+            and g.state in {"active", "retained", "eligible"}
+            and g.lease_owner is None
+            and g.reservation_owner is None
         ]
         predecessors.sort(
             key=lambda g: (g.promoted_at_ns or g.created_at_ns, g.created_at_ns, g.generation_id), reverse=True
@@ -756,16 +770,24 @@ class EmbeddingGenerationStore:
         # deliberately an identity check, not a timestamp/newest-file
         # heuristic: a newly arrived candidate, lease, or promotion makes the
         # old plan stale and therefore harmlessly aborts this pass.
+        retained_ids = {item.generation_id for item in retained}
+        eligible_ids = {item.generation_id for item in eligible}
+
+        def inventory_state(generation: EmbeddingGeneration) -> str:
+            if generation.generation_id == active.generation_id:
+                return EmbeddingGenerationState.ACTIVE.value
+            if generation.generation_id in retained_ids:
+                return EmbeddingGenerationState.RETAINED.value
+            if generation.generation_id in eligible_ids:
+                return EmbeddingGenerationState.ELIGIBLE.value
+            return generation.state
+
         planned_inventory = tuple(
             sorted(
                 (
                     g.generation_id,
                     g.owner_id,
-                    "active"
-                    if g.generation_id == active.generation_id
-                    else "retained"
-                    if g.generation_id in {item.generation_id for item in retained}
-                    else "eligible",
+                    inventory_state(g),
                 )
                 for g in generations
             )
