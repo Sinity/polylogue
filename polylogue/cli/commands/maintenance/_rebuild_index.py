@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -45,7 +44,6 @@ def _run_daemon_rebuild(
     no_promote: bool,
     operation_id: str | None,
     schema_inference_receipt_path: Path | None,
-    message_owner_scope_backfill_receipt_path: Path | None,
     raw_batch_size: int,
     pass_byte_budget_mb: float | None,
     pass_deadline_seconds: float | None,
@@ -67,8 +65,6 @@ def _run_daemon_rebuild(
         "pass_byte_budget_mb": pass_byte_budget_mb,
         "pass_deadline_seconds": pass_deadline_seconds,
     }
-    if message_owner_scope_backfill_receipt_path is not None:
-        body_payload["message_owner_scope_backfill_receipt_path"] = str(message_owner_scope_backfill_receipt_path)
     body = json.dumps(body_payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     cfg = load_polylogue_config()
@@ -344,13 +340,6 @@ def _rebuild_index_selection_plan(
     help="Fresh schema-inference PASS receipt; policy fallback is POLYLOGUE_SCHEMA_INFERENCE_RECEIPT.",
 )
 @click.option(
-    "--message-owner-scope-backfill-receipt",
-    "message_owner_scope_backfill_receipt_path",
-    type=click.Path(path_type=Path, dir_okay=False),
-    default=None,
-    help="Complete zero-unresolved message-owner backfill receipt consumed before index replacement.",
-)
-@click.option(
     "--raw-batch-size",
     type=int,
     default=500,
@@ -411,7 +400,6 @@ def rebuild_index_command(
     plan_limit: int,
     operation_id: str | None,
     schema_inference_receipt_path: Path | None,
-    message_owner_scope_backfill_receipt_path: Path | None,
     raw_batch_size: int,
     pass_byte_budget_mb: float | None,
     pass_deadline_seconds: float | None,
@@ -492,22 +480,6 @@ def rebuild_index_command(
             )
         except SchemaInferenceGateError as exc:
             raise click.ClickException(str(exc)) from exc
-    from polylogue.maintenance.message_owner_scope_backfill import (
-        MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV,
-        MessageOwnerScopeBackfillError,
-        resolve_message_owner_scope_backfill_receipt_reference,
-    )
-
-    if (
-        message_owner_scope_backfill_receipt_path is not None
-        or os.environ.get(MESSAGE_OWNER_SCOPE_BACKFILL_RECEIPT_ENV, "").strip()
-    ):
-        try:
-            message_owner_scope_backfill_receipt_path = resolve_message_owner_scope_backfill_receipt_reference(
-                root, message_owner_scope_backfill_receipt_path
-            )
-        except MessageOwnerScopeBackfillError as exc:
-            raise click.ClickException(str(exc)) from exc
     if use_daemon:
         payload = _run_daemon_rebuild(
             daemon_url,
@@ -517,7 +489,6 @@ def rebuild_index_command(
             no_promote=no_promote,
             operation_id=operation_id,
             schema_inference_receipt_path=schema_inference_receipt_path,
-            message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
             raw_batch_size=raw_batch_size,
             pass_byte_budget_mb=pass_byte_budget_mb,
             pass_deadline_seconds=pass_deadline_seconds,
@@ -602,7 +573,6 @@ def rebuild_index_command(
                 promote=not no_promote,
                 operation_id=operation_id,
                 schema_inference_receipt_path=schema_inference_receipt_path,
-                message_owner_scope_backfill_receipt_path=message_owner_scope_backfill_receipt_path,
                 raw_batch_size=raw_batch_size,
                 pass_byte_budget_mb=pass_byte_budget_mb,
                 pass_deadline_seconds=pass_deadline_seconds,

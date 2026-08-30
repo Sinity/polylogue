@@ -7441,8 +7441,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 scope_session_id = await self._resolve_user_state_session_id(session_id)
             except SessionNotFoundError:
                 # A durable user assertion can outlive the rebuildable
-                # session row. Keep the caller's canonical token so the
-                # archive read can use its durable message owner scope.
+                # session row. Keep the caller's canonical token.
                 scope_session_id = session_id
         return await run_archive_read(
             _active_archive_root(self.config),
