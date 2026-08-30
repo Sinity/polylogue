@@ -15,7 +15,7 @@ from enum import StrEnum
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 
-from .source_attachments import source_attachment_census
+from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
 
 
 class AcquisitionDisposition(StrEnum):
@@ -63,6 +63,7 @@ def publish_source_generation(
     observed_at_ms: int,
     origin: Origin | str | None = None,
     source_paths: Mapping[str, str] | None = None,
+    attachments: tuple[SourceAttachment, ...] = (),
 ) -> tuple[str, ...]:
     """Publish every manifest coordinate before any read/decode/admission work."""
     if len(manifest_digest) != 64:
@@ -100,7 +101,12 @@ def publish_source_generation(
                 observed_at_ms,
             ),
         )
-    conn.commit()
+    record_source_attachments(
+        conn,
+        source_generation_id=source_generation_id,
+        attachments=attachments,
+        observed_at_ms=observed_at_ms,
+    )
     return ids
 
 
