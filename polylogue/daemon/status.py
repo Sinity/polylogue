@@ -1081,9 +1081,9 @@ def raw_failure_lifecycle_for_root(root: Path) -> Any:
 def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int, str | None]:
     """Read routed maintenance failures into typed daemon samples (#1198).
 
-    Returns a ``(samples, total_count)`` pair so the caller can both
-    surface bounded samples and report the absolute count to the
-    raw-failures health check.
+    Returns ``(samples, total_count, read_error)`` so the caller can surface
+    bounded samples, report the absolute count to the raw-failures health
+    check, and distinguish an empty ledger from an unreadable one.
     """
     from polylogue.maintenance.failure_routing import (
         count_maintenance_failures,

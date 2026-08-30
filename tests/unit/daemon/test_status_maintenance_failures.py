@@ -103,7 +103,7 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
             read_maintenance_failures,
         )
 
-        def _real() -> tuple[list[RawFailureSample], int]:
+        def _real() -> tuple[list[RawFailureSample], int, str | None]:
             records = read_maintenance_failures(archive_root)
             samples = [
                 RawFailureSample(
@@ -116,7 +116,9 @@ def test_raw_failure_info_surfaces_maintenance_with_no_db(tmp_path: Path) -> Non
                 )
                 for r in records
             ]
-            return samples, count_maintenance_failures(archive_root)
+            # The third element is the ledger read error; None means the
+            # ledger was readable, which is this test's case.
+            return samples, count_maintenance_failures(archive_root), None
 
         mock_mf.side_effect = _real
         info = _raw_failure_info()

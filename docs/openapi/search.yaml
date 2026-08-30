@@ -4973,6 +4973,14 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: ingest result JSON
 - method: POST
+  pattern: /api/demo/augment
+  kind: maintenance
+  stability: operational
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: demo augmentation result JSON
+  notes: Applies deterministic demo writes through the write bridge; exists for the demo archive, not for general archive
+    mutation.
+- method: POST
   pattern: /api/maintenance/plan
   kind: maintenance
   stability: stable
