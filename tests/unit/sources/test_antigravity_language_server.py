@@ -184,6 +184,19 @@ def test_post_wraps_url_errors(
     assert "connection refused" in str(exc_info.value)
 
 
+def test_post_wraps_transport_timeouts(
+    fake_client: AntigravityLanguageServerClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(*_a: object, **_k: object) -> _FakeHTTPResponse:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", raise_timeout)
+
+    with pytest.raises(AntigravityExportError, match="timed out"):
+        fake_client._post("/endpoint", {})
+
+
 def test_post_rejects_non_object_responses(
     fake_client: AntigravityLanguageServerClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -449,6 +462,33 @@ def test_export_results_reject_source_mutation_during_conversion(tmp_path: Path)
     assert len(outcomes) == 1
     assert outcomes[0].obtained is False
     assert outcomes[0].error == "conversation protobuf changed during conversion"
+
+
+def test_export_results_surfaces_search_handshake_failure(tmp_path: Path) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
+    class _BrokenSearchClient(_FakeClientForExports):
+        def search_sessions(self, **_kwargs: object) -> list[AntigravitySessionSummary]:
+            raise AntigravityExportError("server capability mismatch")
+
+    client = _BrokenSearchClient([], {})
+    with pytest.raises(AntigravityExportError, match="SearchConversations handshake failed"):
+        list(antigravity.iter_language_server_export_results(tmp_path, client=client))
+
+
+@pytest.mark.parametrize("markdown", ["", "### User Input\n\n", "plain text without a section"])
+def test_export_results_rejects_partial_or_untyped_markdown(tmp_path: Path, markdown: str) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+    client = _FakeClientForExports(
+        [AntigravitySessionSummary(cascade_id="cascade-1")],
+        {"cascade-1": markdown},
+    )
+
+    outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=client))
+
+    assert len(outcomes) == 1
+    assert outcomes[0].obtained is False
+    assert outcomes[0].error
 
 
 def test_language_server_version_handshake_accepts_declared_vendor_version(

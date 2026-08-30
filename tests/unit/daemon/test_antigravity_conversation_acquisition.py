@@ -20,7 +20,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
-from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
 
 
 def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
@@ -71,6 +71,44 @@ def test_shared_source_iterator_never_promotes_brain_artifacts(
     assert all("metadata" not in item[1].provider_session_id for item in admitted)
 
 
+def test_single_path_parser_uses_vendor_route_for_conversation_protobuf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque protobuf")
+    session = antigravity.parse_markdown_export(
+        "### User Input\n\nhello",
+        antigravity.AntigravitySessionSummary(cascade_id="cascade"),
+    )
+    calls: list[Path] = []
+
+    def vendor_route(source: Source, **_kwargs: object) -> Iterator[tuple[object, object]]:
+        assert source.path is not None
+        calls.append(source.path)
+        yield (None, session)
+
+    monkeypatch.setattr(
+        "polylogue.sources.source_parsing.iter_antigravity_language_server_sessions",
+        vendor_route,
+    )
+
+    admitted = list(
+        parse_one_source_path(
+            str(conversation),
+            file_mtime=None,
+            source_name="antigravity",
+            sidecar_data={},
+            capture_raw=False,
+        )
+    )
+
+    assert calls == [root]
+    assert [item[1].provider_session_id for item in admitted] == ["cascade"]
+
+
 def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> None:
     root = tmp_path / "antigravity"
     conversations = root / "conversations"
@@ -101,7 +139,7 @@ def test_poison_conversation_isolated_from_sibling_progress(tmp_path: Path) -> N
     assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["healthy"]
     failed = next(outcome for outcome in outcomes if not outcome.obtained)
     assert failed.error is not None
-    assert "empty" in failed.error
+    assert "partial" in failed.error or "empty" in failed.error
 
 
 def test_common_live_batch_admits_conversation_through_vendor_route(

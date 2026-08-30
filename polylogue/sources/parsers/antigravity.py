@@ -9,8 +9,8 @@ import shutil
 import socket
 import subprocess
 import time
+from collections import Counter
 from collections.abc import Iterable
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -18,7 +18,6 @@ from glob import glob
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
@@ -70,6 +69,10 @@ class AntigravityPartialExportError(AntigravityExportError):
         super().__init__(f"{message} (obtained {obtained} of {expected} sessions)")
 
 
+class AntigravitySourceMutationError(AntigravityExportError):
+    """Raised when a source item changes while read-only evidence is captured."""
+
+
 class AntigravitySourceRole(StrEnum):
     """The admission role of one item below Antigravity's source root."""
 
@@ -87,6 +90,83 @@ class AntigravitySourceClassification:
     parse_as_session: bool
     artifact_kind: ArtifactKind
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravitySourceItem:
+    """One immutable source-census item and its positive admission role."""
+
+    path: Path
+    relative_path: str
+    classification: AntigravitySourceClassification
+    size_bytes: int
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravitySourceCensus:
+    """Complete, read-only accounting for one Antigravity source root."""
+
+    root: Path
+    items: tuple[AntigravitySourceItem, ...]
+
+    @property
+    def counts(self) -> dict[AntigravitySourceRole, int]:
+        counts = Counter(item.classification.role for item in self.items)
+        return {role: counts.get(role, 0) for role in AntigravitySourceRole}
+
+    @property
+    def unknown_count(self) -> int:
+        return self.counts[AntigravitySourceRole.UNKNOWN]
+
+    @property
+    def unexplained_items(self) -> tuple[Path, ...]:
+        roles = frozenset(AntigravitySourceRole)
+        return tuple(item.path for item in self.items if item.classification.role not in roles)
+
+    def assert_conserved(self) -> None:
+        if self.unexplained_items:
+            raise ValueError("Antigravity source census contains unexplained items")
+        if sum(self.counts.values()) != len(self.items):
+            raise ValueError("Antigravity source census does not conserve its item denominator")
+
+
+def census_source(root: Path) -> AntigravitySourceCensus:
+    """Capture every regular file below ``root`` and assign one source role.
+
+    This is preparation evidence only. It does not open the archive or blob
+    store, and a change during hashing is a visible source failure.
+    """
+    root = root.expanduser()
+    items: list[AntigravitySourceItem] = []
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for filename in sorted(filenames):
+            path = Path(directory) / filename
+            if not path.is_file():
+                continue
+            before = path.stat()
+            digest = _file_digest(path)
+            after = path.stat()
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise AntigravitySourceMutationError(f"Antigravity source changed during census: {path}")
+            items.append(
+                AntigravitySourceItem(
+                    path=path,
+                    relative_path=path.relative_to(root).as_posix(),
+                    classification=classify_source_path(path),
+                    size_bytes=after.st_size,
+                    content_sha256=digest,
+                )
+            )
+    census = AntigravitySourceCensus(root=root, items=tuple(items))
+    census.assert_conserved()
+    return census
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,7 +368,7 @@ class AntigravityLanguageServerClient:
         try:
             with urlopen(request, timeout=10.0) as response:
                 loaded = loads(response.read())
-        except URLError as exc:
+        except (OSError, TimeoutError, ValueError) as exc:
             raise AntigravityExportError(str(exc)) from exc
         if not isinstance(loaded, dict):
             raise AntigravityExportError(f"Antigravity endpoint {endpoint} returned non-object JSON")
@@ -301,6 +381,19 @@ def looks_like_markdown_export(payload: JSONDocument) -> bool:
         and isinstance(payload.get("cascadeId"), str)
         and isinstance(payload.get("markdown"), str)
     )
+
+
+def _validate_language_server_markdown(markdown: str, cascade_id: str) -> None:
+    """Reject a successful RPC response that is not a transcript export."""
+    sections = list(_SECTION_RE.finditer(markdown))
+    if not sections:
+        raise AntigravityExportError(f"language server returned partial conversation export for cascade {cascade_id}")
+    has_content = any(
+        markdown[section.end() : (sections[index + 1].start() if index + 1 < len(sections) else len(markdown))].strip()
+        for index, section in enumerate(sections)
+    )
+    if not has_content:
+        raise AntigravityExportError(f"language server returned an empty conversation export for cascade {cascade_id}")
 
 
 def markdown_export_payload(summary: AntigravitySessionSummary, markdown: str) -> JSONDocument:
@@ -386,17 +479,18 @@ def iter_language_server_export_results(
     """
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
-    if owned_client:
-        runtime_client.start()
     try:
+        if owned_client:
+            runtime_client.start()
         pb_paths = _conversation_pb_paths(root)
         if only_cascade_ids is not None:
             pb_paths = [pb_path for pb_path in pb_paths if pb_path.stem in only_cascade_ids]
         if not pb_paths:
             return
-        summaries_by_id = {}
-        with suppress(AntigravityExportError):
+        try:
             summaries_by_id = {summary.cascade_id: summary for summary in runtime_client.search_sessions()}
+        except Exception as exc:
+            raise AntigravityExportError(f"Antigravity SearchConversations handshake failed: {exc}") from exc
         seen_ids: set[str] = set()
         for pb_path in pb_paths:
             cascade_id = pb_path.stem
@@ -416,6 +510,7 @@ def iter_language_server_export_results(
                     last_modified_time=_iso_mtime(pb_path),
                 )
                 markdown = runtime_client.export_markdown(cascade_id)
+                _validate_language_server_markdown(markdown, cascade_id)
                 session = parse_markdown_export_payload(markdown_export_payload(summary, markdown), cascade_id)
                 if not session.messages or not any((message.text or "").strip() for message in session.messages):
                     raise AntigravityExportError("language server returned an empty or partial conversation export")
@@ -625,6 +720,10 @@ __all__ = [
     "AntigravityLanguageServerInfo",
     "AntigravitySourceClassification",
     "AntigravitySourceRole",
+    "AntigravitySourceItem",
+    "AntigravitySourceCensus",
+    "AntigravitySourceMutationError",
+    "census_source",
     "classify_source_path",
     "conversation_pb_paths",
     "discover_language_server",

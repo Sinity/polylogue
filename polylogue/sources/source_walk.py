@@ -51,6 +51,26 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
     cannot disappear from the denominator merely because admission refuses it.
     """
     started = time.perf_counter()
+    if provider is Provider.ANTIGRAVITY:
+        from polylogue.sources.parsers.antigravity import AntigravitySourceRole, census_source
+
+        source_census = census_source(root)
+        antigravity_counts = source_census.counts
+        disposition_counts: dict[SourceClass, int] = {
+            "session": antigravity_counts[AntigravitySourceRole.CONVERSATION_PROTOBUF],
+            "non_session": antigravity_counts[AntigravitySourceRole.BRAIN_DOCUMENT]
+            + antigravity_counts[AntigravitySourceRole.METADATA_SIDECAR],
+            "unsupported": antigravity_counts[AntigravitySourceRole.UNKNOWN],
+        }
+        return SourceRootCensus(
+            provider=provider,
+            root=root,
+            candidate_count=len(source_census.items),
+            disposition_counts=disposition_counts,
+            unexplained_candidates=source_census.unexplained_items,
+            inspection_bytes=sum(item.size_bytes for item in source_census.items),
+            inspection_seconds=time.perf_counter() - started,
+        )
     candidates = _walk_source_paths(root, provider=provider)
     counts: dict[SourceClass, int] = {"session": 0, "non_session": 0, "unsupported": 0}
     unexplained: list[Path] = []

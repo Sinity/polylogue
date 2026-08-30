@@ -237,6 +237,18 @@ def parse_one_source_path(
     """
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
+    if (
+        provider_hint is Provider.ANTIGRAVITY
+        and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ):
+        yield from iter_antigravity_language_server_sessions(
+            Source(name=source_name, path=path.parent.parent),
+            capture_raw=capture_raw,
+            blob_root=blob_root,
+            blob_store=blob_store,
+            only_cascade_ids=frozenset({path.stem}),
+        )
+        return
     source_class = recognize_source_class(provider_hint, path)
     if source_class is not None and source_class.source_class != "session":
         logger.info(
