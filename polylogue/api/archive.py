@@ -1166,7 +1166,7 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     if not path.exists():
         return ReadinessCheck(name, VerifyStatus.WARNING, summary=f"missing: {path}")
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, timeout_class="interactive-read")
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             version = int(row[0] or 0) if row is not None else 0
@@ -1396,10 +1396,10 @@ def _archive_correlate_hermes_context_deliveries(
     if not source_db.exists() or not user_db.exists():
         return ()
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            user_conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+            user_conn = open_readonly_connection(user_db, timeout_class="background-read")
             user_conn.row_factory = sqlite3.Row
             try:
                 return correlate_hermes_context_deliveries(
@@ -1521,10 +1521,10 @@ def _archive_reconcile_hermes_session_lifecycle(
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
             index_conn.row_factory = sqlite3.Row
             try:
                 return reconcile_hermes_session_lifecycle(
@@ -1570,10 +1570,10 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
             index_conn.row_factory = sqlite3.Row
             try:
                 return reconcile_codex_spawn_edges(source_conn, index_conn)

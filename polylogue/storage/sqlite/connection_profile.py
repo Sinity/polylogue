@@ -51,7 +51,7 @@ class SQLiteConnectionProfile:
     """SQLite timeout and PRAGMA profile for one connection role."""
 
     role: Literal["read", "write"]
-    timeout_seconds: int
+    timeout_seconds: float
     busy_timeout_ms: int
     cache_size_kib: int
     mmap_size_bytes: int
@@ -64,6 +64,7 @@ class SQLiteConnectionProfile:
     query_only: bool = False
     locking_mode: str | None = None
     generation_identity: Literal["live", "sealed"] = "live"
+    immutable: bool = False
     max_snapshot_age_s: float | None = None
     cancellation_supported: bool = False
 
@@ -153,7 +154,10 @@ BOUNDED_REPAIR_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
 # Schema inference keeps its own WAL journal connection alive while it scans
 # provider artifacts. It has no mmap allowance, only this page-cache limit.
 OBSERVATION_JOURNAL_CACHE_SIZE_KIB = _scale_profile_size(65536)  # 64 MiB
-WAL_AUTOCHECKPOINT_PAGES = 10000
+# Automatic checkpoints are disabled on every production writer.  The
+# checkpoint coordinator owns cadence and escalation so publication cannot
+# hide an unbudgeted checkpoint hold.
+WAL_AUTOCHECKPOINT_PAGES = 0
 # #1614: soft cap on the WAL file. After any checkpoint that frees
 # pages, SQLite truncates the WAL down to this size. Without this cap
 # the WAL grows unbounded when a TRUNCATE checkpoint is blocked by a
@@ -253,23 +257,42 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     cancellation_supported=True,
 )
 
-# Named timeout classes are the only profiles production readers and writers
-# should select.  Keeping the values in one table makes queue and snapshot
-# policy inspectable without duplicating connection factories.
-TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
+# Named timeout classes are the only supported policy vocabulary.  Callers
+# select a role, not an arbitrary lock-wait duration.
+TIMEOUT_CLASSES: dict[str, float] = {
+    "interactive-read": 5.0,
+    "background-read": 30.0,
+    "publication": 30.0,
+    "offline-bulk": 30.0,
+}
+READ_PROFILES: dict[str, SQLiteConnectionProfile] = {
     "interactive-read": READ_CONNECTION_PROFILE,
     "background-read": SQLiteConnectionProfile(
         role="read",
-        timeout_seconds=DB_TIMEOUT,
-        busy_timeout_ms=DB_TIMEOUT * 1000,
+        timeout_seconds=30.0,
+        busy_timeout_ms=30_000,
         cache_size_kib=READ_CACHE_SIZE_KIB,
         mmap_size_bytes=READ_MMAP_SIZE_BYTES,
         query_only=True,
-        generation_identity="live",
         max_snapshot_age_s=30.0,
-        cancellation_supported=True,
+        generation_identity="live",
     ),
-    "publication": WRITE_CONNECTION_PROFILE,
+    "offline-bulk": SQLiteConnectionProfile(
+        role="read",
+        timeout_seconds=30.0,
+        busy_timeout_ms=30_000,
+        cache_size_kib=READ_CACHE_SIZE_KIB,
+        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+        query_only=True,
+        immutable=True,
+        max_snapshot_age_s=None,
+        generation_identity="sealed",
+        cancellation_supported=False,
+    ),
+}
+TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
+    **READ_PROFILES,
+    "publication": DAEMON_WRITE_CONNECTION_PROFILE,
     "offline-bulk": BULK_BUILD_WRITE_CONNECTION_PROFILE,
 }
 
@@ -726,6 +749,7 @@ def open_readonly_connection(
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
+    timeout_class: str = "interactive-read",
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -754,6 +778,11 @@ def open_readonly_connection(
     """
     if profile.role != "read" or not profile.query_only:
         raise ValueError("open_readonly_connection requires a query-only read profile")
+    if timeout_class not in TIMEOUT_CLASSES:
+        raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
+    if profile is READ_CONNECTION_PROFILE and timeout_class != "interactive-read":
+        profile = READ_PROFILES["offline-bulk" if immutable else timeout_class]
+    timeout = profile.timeout_seconds if timeout == READ_DB_TIMEOUT else timeout
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
@@ -848,7 +877,9 @@ __all__ = [
     "READ_CONNECTION_PROFILE",
     "READ_DB_TIMEOUT",
     "READ_MMAP_SIZE_BYTES",
+    "READ_PROFILES",
     "SQLiteConnectionProfile",
+    "TIMEOUT_CLASSES",
     "TIMEOUT_PROFILES",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",

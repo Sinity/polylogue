@@ -24,6 +24,7 @@ from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 TOOL_VERSION = "raw-failure-disposition-apply-v1"
 _TERMINAL_KINDS = frozenset(
@@ -140,7 +141,7 @@ def _validate_candidate(conn: sqlite3.Connection, candidate: RawFailureDispositi
 
 def _checkpoint_live_tier(conn: sqlite3.Connection) -> None:
     try:
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        row = checkpoint_connection(conn, "TRUNCATE")
     except sqlite3.Error as exc:
         raise RawFailureDispositionApplyError("could not checkpoint source.db before backup validation") from exc
     if row is None:

@@ -26,6 +26,7 @@ from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 logger = logging.getLogger(__name__)
 
@@ -1720,12 +1721,12 @@ def _checkpoint_truncate(path: Path, *, label: str) -> None:
         os.close(reopened_fd)
         reopened_fd = -1
         with closing(sqlite3.connect(f"/proc/self/fd/{fd}")) as conn:
-            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            checkpoint = checkpoint_connection(conn, "TRUNCATE")
     finally:
         if reopened_fd >= 0:
             os.close(reopened_fd)
         os.close(fd)
-    if checkpoint is None or int(checkpoint[0]) != 0:
+    if int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 
 
