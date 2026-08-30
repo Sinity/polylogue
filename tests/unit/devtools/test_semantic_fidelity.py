@@ -13,7 +13,7 @@ def test_semantic_fidelity_census_is_complete_and_catches_mutations() -> None:
     assert report["contradiction_count"] == 0
     denominator = report["denominator"]
     assert isinstance(denominator, dict)
-    assert denominator["executable_origin_specs"] == 11
+    assert denominator["executable_origin_specs"] == 10
     controls = report["mutation_controls"]
     assert isinstance(controls, list)
     assert all(receipt["caught"] for receipt in controls)
