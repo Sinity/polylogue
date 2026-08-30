@@ -139,6 +139,10 @@ class AntigravitySourceCensus:
         return tuple(item.path for item in self.items if item.classification is None)
 
     def assert_conserved(self) -> None:
+        # Totality holds by construction: every census producer assigns a real
+        # classification and classify_source_path is total, so no filesystem
+        # state reaches either branch today. This is a guard against a future
+        # partial classifier, not a measurement.
         if self.unexplained_items:
             raise ValueError("Antigravity source census contains unexplained items")
         if sum(self.counts.values()) != len(self.items):
