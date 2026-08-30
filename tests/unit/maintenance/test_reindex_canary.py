@@ -1390,8 +1390,12 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     _prepare_candidate_ready_archive(root)
     external_index_root = tmp_path / "external-index-root"
     external_index_root.mkdir()
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        shutil.move(root / name, external_index_root / name)
+        (root / name).symlink_to(external_index_root / name)
     external_index = external_index_root / "index.db"
     shutil.move(root / "index.db", external_index)
+    (root / "index.db").symlink_to(external_index)
     (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
     active_digest = hashlib.sha256(external_index.read_bytes()).hexdigest()
@@ -1536,7 +1540,7 @@ def test_run_reindex_canary_rejects_active_index_rotation_after_replay(
     _prepare_candidate_ready_archive(root)
     location = ArchiveLocation.resolve(root)
     current_index = location.active_index_path
-    rotated_index = tmp_path / "rotated" / "index.db"
+    rotated_index = root / "rotated" / "index.db"
     rotated_index.parent.mkdir(parents=True)
     shutil.copy2(current_index, rotated_index)
     receipt_path = _write_candidate_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
