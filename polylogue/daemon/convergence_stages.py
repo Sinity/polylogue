@@ -497,10 +497,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             return _archive_insights_check(archive_db, path, archive_root=db_path.parent)
         if not db_path.exists():
             return False
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
         try:
-            conn = open_connection(db_path, timeout=5.0)
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return False
