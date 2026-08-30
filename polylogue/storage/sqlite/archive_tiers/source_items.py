@@ -15,6 +15,8 @@ from enum import StrEnum
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 
+from .source_attachments import source_attachment_census
+
 
 class AcquisitionDisposition(StrEnum):
     PENDING = "pending"
@@ -111,8 +113,6 @@ def seal_source_generation(conn: sqlite3.Connection, *, source_generation_id: st
         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='source_attachments'"
     ).fetchone()
     if attachment_table is not None:
-        from .source_attachments import source_attachment_census
-
         attachment_census = source_attachment_census(conn, source_generation_id)
         if not attachment_census["sealable"]:
             raise ValueError(f"source generation has pending attachments: {source_generation_id}")
