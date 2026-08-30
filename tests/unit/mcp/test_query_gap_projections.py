@@ -186,11 +186,39 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
                 )
             ],
         ),
+        ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="query-gap-tool-episode-late",
+            title="Query gap tool episode late",
+            working_directories=["/realm/project/polylogue"],
+            git_repository_url="https://github.com/Sinity/polylogue.git",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    timestamp="2026-01-05T12:00:00Z",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Bash",
+                            tool_id="tool-3",
+                            tool_input={"command": "pwd"},
+                        ),
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="tool-3",
+                            text="/realm/project/polylogue",
+                        ),
+                    ],
+                )
+            ],
+        ),
     )
     with ArchiveStore(archive_root) as archive:
         session_ids = [archive.write_parsed(session) for session in sessions]
         archive.add_user_tags((session_ids[0],), ("episode-filter",))
         archive.add_user_tags((session_ids[1],), ("other-filter",))
+        archive.add_user_tags((session_ids[2],), ("episode-filter",))
     return session_ids[0]
 
 
@@ -462,11 +490,37 @@ class TestInsightProjections:
     @pytest.mark.asyncio
     async def test_tool_episode_projection_forwards_all_session_filters(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
-        session_id = _seed_tool_episode_archive(archive_root)
+        matching_session_id = _seed_tool_episode_archive(archive_root)
         query_fn = build_tools()["query"]
+        origin = matching_session_id.split(":", 1)[0]
+
+        def session_id(native_id: str) -> str:
+            return f"{origin}:{native_id}"
 
         with installed_runtime_services(archive_root):
-            result = json.loads(
+
+            async def episode_session_ids(**filters: str) -> set[str]:
+                result = json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", **filters))
+                assert result.get("is_error") is not True, result
+                return {item["session_id"] for item in result["tool_episodes"]}
+
+            assert await episode_session_ids(tag="episode-filter") == {
+                session_id("query-gap-tool-episode-match"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(repo="polylogue") == {
+                session_id("query-gap-tool-episode-match"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(since="2026-01-03") == {
+                session_id("query-gap-tool-episode-other"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(until="2026-01-02") == {
+                session_id("query-gap-tool-episode-match"),
+            }
+
+            combined = json.loads(
                 await invoke_surface_async(
                     query_fn,
                     projection="tool-episodes",
@@ -477,10 +531,10 @@ class TestInsightProjections:
                 )
             )
 
-        assert result.get("is_error") is not True, result
-        assert result["total"] == 1
-        assert result["tool_episodes"][0]["session_id"] == session_id
-        assert result["tool_episodes"][0]["followup_class"] == "acknowledged"
+        assert combined.get("is_error") is not True, combined
+        assert combined["total"] == 1
+        assert combined["tool_episodes"][0]["session_id"] == matching_session_id
+        assert combined["tool_episodes"][0]["followup_class"] == "acknowledged"
 
     @pytest.mark.asyncio
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
