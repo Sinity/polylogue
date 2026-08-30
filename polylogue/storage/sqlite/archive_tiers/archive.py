@@ -132,6 +132,7 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
     trigram_delete_session_rows_sql,
 )
+from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
@@ -1404,6 +1405,10 @@ class ArchiveStore:
         """Delete a hook event and its source-tier payload reference."""
         self._require_writable("delete source.db hook evidence")
         return delete_source_hook_event(self._ensure_source_conn(), hook_event_id)
+
+    def census_hook_event_authority(self) -> HookEventAuthorityCensus:
+        """Classify all durable hook payload evidence without mutating it."""
+        return census_hook_event_authority(self._ensure_source_conn())
 
     def write_raw_blob_ref(
         self,
