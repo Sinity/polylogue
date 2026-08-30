@@ -176,6 +176,7 @@ MESSAGE_COLUMNS = (
     "session_id",
     "origin",
     "title",
+    "repo",
     "role",
     "message_type",
     "material_origin",
