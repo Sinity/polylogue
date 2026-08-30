@@ -6,12 +6,15 @@ import hashlib
 import json
 import os
 import sqlite3
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
+from polylogue.core.json import dumps_bytes
+from polylogue.core.raw_coordinates import zip_member_raw_id
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -500,21 +503,35 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
     """A pruned raw blob is valid backup evidence only when reacquisition matches it."""
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / ("source.json" if source_kind == "direct" else "source.zip")
+    member_payload = b""
     if source_kind == "direct":
         source_path.write_bytes(b'{"messages":[]}')
         recorded_path = str(source_path)
         source_index = 0
         payload = source_path.read_bytes()
     else:
-        import zipfile
-
-        member_payload = b'[{"messages":[]}]'
+        records = [
+            {"metadata": "bundle sibling"},
+            {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+            {"id": "second", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        ]
+        member_payload = json.dumps(records, separators=(",", ":")).encode()
         with zipfile.ZipFile(source_path, "w") as archive:
             archive.writestr("conversations.json", member_payload)
         recorded_path = f"{source_path}:conversations.json"
         source_index = 0
-        payload = b'{"messages":[]}'
+        payload = dumps_bytes(records[1])
     blob_hash = hashlib.sha256(payload).digest()
+    raw_id = (
+        zip_member_raw_id(
+            source_path=recorded_path,
+            entry_ordinal=0,
+            split_index=0,
+            blob_hash=blob_hash.hex(),
+        )
+        if source_kind == "zip"
+        else "recoverable-raw"
+    )
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
             """
@@ -524,7 +541,7 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "recoverable-raw",
+                raw_id,
                 "chatgpt-export",
                 "recoverable",
                 recorded_path,
@@ -537,8 +554,13 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
         )
         conn.execute(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
-            (blob_hash, "recoverable-raw", "raw_payload", recorded_path, len(payload), 1),
+            (blob_hash, raw_id, "raw_payload", recorded_path, len(payload), 1),
         )
+        if source_kind == "zip":
+            conn.execute(
+                "INSERT INTO raw_container_coordinates VALUES (?, 'zip-v2', ?, ?)",
+                (raw_id, 0, 0),
+            )
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -546,6 +568,25 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
     assert result.verified
     assert result.verification["missing_canonical_blob_count"] == 0
     assert result.verification["recoverable_source_blob_count"] == 1
+
+    if source_kind == "direct":
+        source_path.write_bytes(b"changed source bytes")
+    else:
+        drifted_records = [
+            {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "assistant"}}}}},
+            {"id": "second", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        ]
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("conversations.json", json.dumps(drifted_records, separators=(",", ":")))
+    drifted_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
+    assert drifted_source["ok"] is False
+    assert drifted_source["missing_canonical_blob_count"] == 1
+
+    if source_kind == "direct":
+        source_path.write_bytes(payload)
+    else:
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("conversations.json", member_payload)
     source_path.unlink()
     missing_source = backup_mod._verify_archive_file_set_backup(Path(result.output_path or ""))
     assert missing_source["ok"] is False
