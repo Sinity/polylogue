@@ -316,13 +316,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_setting",
         "list_settings",
         "set_setting",
-        "emit_decision",
-        "get_effective_context",
-        "list_command_shape_usage",
-        "list_context_injection_ledger",
-        "list_tool_episode_insights",
-        "record_manual_continuation",
-        "record_work_event",
     }
 )
 
@@ -4692,10 +4685,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             codex_id = archive_db.write_parsed(codex)
             archive_db.write_parsed(chatgpt)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.row_factory = sqlite3.Row
-            from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-
-            rebuild_session_insights_sync(conn, session_ids=[codex_id])
             upsert_session_profile_costs(
                 conn,
                 codex_id,
@@ -4704,10 +4693,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 priced_with="fixture",
                 priced_at_ms=1_770_000_000_000,
             )
-            conn.execute(
-                "UPDATE session_profiles SET total_duration_ms = 60000, wall_duration_ms = 60000 WHERE session_id = ?",
-                (codex_id,),
-            )
+            conn.execute("UPDATE session_profiles SET duration_ms = 60000 WHERE session_id = ?", (codex_id,))
             upsert_session_work_event(
                 conn,
                 session_id=codex_id,
@@ -5602,10 +5588,11 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                     session_id, workflow_shape, workflow_shape_confidence,
                     terminal_state, terminal_state_confidence, total_duration_ms,
                     substantive_count, attachment_count, work_event_count,
-                    phase_count, tool_calls_per_minute, evidence_payload_json,
+                    phase_count, tool_calls_per_minute, total_cost_usd,
+                    cost_is_estimated, cost_provenance, evidence_payload_json,
                     inference_payload_json
                 ) VALUES (?, 'implementation', 0.82, 'completed', 0.91, 120000,
-                          1, 0, 2, 1, 3.5, ?, ?)
+                          1, 0, 2, 1, 3.5, 1.25, 0, 'priced', ?, ?)
                 """,
                 (
                     session_id,
@@ -5613,6 +5600,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                         {
                             "canonical_session_date": "2026-02-02",
                             "total_duration_ms": 120000,
+                            "total_cost_usd": 1.25,
                             "workflow_shape": "implementation",
                             "workflow_shape_confidence": 0.82,
                             "terminal_state": "completed",

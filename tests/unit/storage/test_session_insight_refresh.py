@@ -876,27 +876,30 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
         row = conn.execute(
             """
             SELECT
-                model_name,
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_write_tokens,
-                cost_usd,
-                cost_provenance
-            FROM session_model_usage
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_tokens,
+                total_cache_write_tokens,
+                total_cost_usd,
+                total_credit_cost,
+                cost_provenance,
+                per_model_cost_json
+            FROM session_profiles
             WHERE session_id = ?
             """,
             (_sid("conv-token-costs", "claude-code-session"),),
         ).fetchone()
 
     assert row is not None
-    assert row["input_tokens"] == 1_000
-    assert row["output_tokens"] == 500
-    assert row["cache_read_tokens"] == 200
-    assert row["cache_write_tokens"] == 100
-    assert row["cost_usd"] > 0
-    assert row["cost_provenance"] == "priced"
-    assert row["model_name"] == "claude-sonnet-4-5"
+    assert row["total_input_tokens"] == 1_000
+    assert row["total_output_tokens"] == 500
+    assert row["total_cache_read_tokens"] == 200
+    assert row["total_cache_write_tokens"] == 100
+    assert row["total_cost_usd"] > 0
+    assert row["total_credit_cost"] > 0
+    assert row["cost_provenance"] == "provider_reported"
+    per_model = json.loads(row["per_model_cost_json"])
+    assert per_model[0]["provider_model_name"] == "claude-sonnet-4-5"
 
 
 def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path) -> None:
@@ -933,18 +936,18 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
         rebuild_session_insights_sync(conn)
         row = conn.execute(
             """
-            SELECT model_name, input_tokens, output_tokens, cache_read_tokens,
-                   cache_write_tokens, cost_usd, cost_provenance
-            FROM session_model_usage
+            SELECT total_cost_usd, cost_provenance, per_model_cost_json
+            FROM session_profiles
             WHERE session_id = ?
             """,
             (_sid("conv-provider-cost", "claude-code-session"),),
         ).fetchone()
 
     assert row is not None
-    assert row["cost_usd"] > 0
-    assert row["cost_provenance"] == "priced"
-    assert row["model_name"] == "claude-opus-4-5"
+    assert row["total_cost_usd"] > 0
+    assert row["cost_provenance"] == "provider_reported"
+    per_model = json.loads(row["per_model_cost_json"])
+    assert per_model[0]["provider_model_name"] == "claude-opus-4-5"
 
 
 def test_stale_provider_usage_self_heals_via_session_insight_rebuild(

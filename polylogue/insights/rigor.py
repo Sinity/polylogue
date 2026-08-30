@@ -30,7 +30,7 @@ from typing import get_args, get_origin
 
 from pydantic import BaseModel
 
-from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
+from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.command_shapes import COMMAND_SHAPES_INSIGHT_VERSION
 from polylogue.insights.tool_usage import TOOL_USAGE_INSIGHT_VERSION
 from polylogue.storage.runtime.store_constants import (
@@ -637,7 +637,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "is_error",
             "exit_code",
         ),
-        version_fields=(RigorVersionField(name="contract_version", current_version=ARCHIVE_INSIGHT_CONTRACT_VERSION),),
     ),
     RigorContract(
         insight_name="command_shapes",

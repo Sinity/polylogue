@@ -442,8 +442,8 @@ class ArchiveReadInsights:
                 SUM(s.word_count) AS total_words,
                 SUM(COALESCE((SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd)
                               FROM session_model_usage u WHERE u.session_id = s.session_id), 0.0)) AS total_cost_usd,
-                SUM(COALESCE(sp.total_duration_ms, 0)) AS total_duration_ms,
-                SUM(COALESCE(sp.wall_duration_ms, 0)) AS total_wall_duration_ms,
+                SUM(COALESCE(sp.duration_ms, 0)) AS total_duration_ms,
+                SUM(COALESCE(sp.duration_ms, 0)) AS total_wall_duration_ms,
                 MAX(s.sort_key_ms) AS source_sort_key_ms
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
