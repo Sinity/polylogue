@@ -8,6 +8,7 @@ language server to be installed.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Iterator
 from pathlib import Path
@@ -394,6 +395,50 @@ def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
     assert sessions == []
 
 
+def test_iter_language_server_exports_discovers_nested_conversation_files(
+    tmp_path: Path,
+) -> None:
+    _touch_conversation_pb(tmp_path, "top-level")
+    nested = tmp_path / "conversations" / "workspace" / "nested.pb"
+    nested.parent.mkdir()
+    nested.write_bytes(b"")
+    fake = _FakeClientForExports(
+        [
+            AntigravitySessionSummary(cascade_id="top-level"),
+            AntigravitySessionSummary(cascade_id="nested"),
+        ],
+        {
+            "top-level": "### User Input\n\ntop\n",
+            "nested": "### User Input\n\nnested\n",
+        },
+    )
+
+    sessions = list(antigravity.iter_language_server_exports(tmp_path, client=fake))
+
+    assert [session.provider_session_id for session in sessions] == ["top-level", "nested"]
+
+
+def test_export_results_surfaces_duplicate_identity_without_suppressing_other_items(tmp_path: Path) -> None:
+    _touch_conversation_pb(tmp_path, "duplicate", "healthy")
+    nested = tmp_path / "conversations" / "workspace" / "duplicate.pb"
+    nested.parent.mkdir()
+    nested.write_bytes(b"")
+    fake = _FakeClientForExports(
+        [AntigravitySessionSummary(cascade_id="duplicate"), AntigravitySessionSummary(cascade_id="healthy")],
+        {
+            "duplicate": "### User Input\n\nduplicate\n",
+            "healthy": "### User Input\n\nhealthy\n",
+        },
+    )
+
+    outcomes = list(antigravity.iter_language_server_export_results(tmp_path, client=fake))
+
+    assert [outcome.cascade_id for outcome in outcomes] == ["duplicate", "healthy", "duplicate"]
+    duplicate_failures = [outcome for outcome in outcomes if outcome.error == "duplicate conversation identity"]
+    assert len(duplicate_failures) == 1
+    assert [outcome.cascade_id for outcome in outcomes if outcome.obtained] == ["duplicate", "healthy"]
+
+
 def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _touch_conversation_pb(tmp_path, "cascade-1")
     summaries = [
@@ -435,6 +480,31 @@ def test_iter_language_server_exports_closes_client_on_error(tmp_path: Path, mon
 
     with pytest.raises(AntigravityExportError):
         list(_consume())
+
+    assert fake.started is True
+    assert fake.closed is True
+
+
+@pytest.mark.parametrize("control_flow", [asyncio.CancelledError, KeyboardInterrupt])
+def test_owned_export_client_closes_on_cancellation_and_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    control_flow: type[BaseException],
+) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
+    class _InterruptedClient(_FakeClientForExports):
+        def export_markdown(self, cascade_id: str) -> str:
+            raise control_flow("conversion interrupted")
+
+    fake = _InterruptedClient([AntigravitySessionSummary(cascade_id="cascade-1")], {})
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+        lambda root: fake,
+    )
+
+    with pytest.raises(control_flow):
+        list(antigravity.iter_language_server_export_results(tmp_path))
 
     assert fake.started is True
     assert fake.closed is True

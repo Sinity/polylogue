@@ -1893,9 +1893,18 @@ class LiveBatchProcessor:
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ]
         if antigravity_pb_paths:
-            from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+            from polylogue.sources.source_parsing import (
+                _antigravity_source_root,
+                iter_antigravity_language_server_sessions,
+            )
 
-            source = Source(name="antigravity", path=antigravity_pb_paths[0].parent.parent)
+            configured_source = deepest_source_for_path(antigravity_pb_paths[0], self._sources)
+            source_root = (
+                configured_source.root
+                if configured_source is not None
+                else _antigravity_source_root(antigravity_pb_paths[0])
+            )
+            source = Source(name="antigravity", path=source_root)
             try:
                 for raw_data, session in iter_antigravity_language_server_sessions(
                     source,
