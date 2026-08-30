@@ -135,6 +135,44 @@ def test_generation_metadata_must_match_published_database_contract(tmp_path: Pa
         store.collect()
 
 
+def test_collection_preserves_accepted_and_in_progress_inventory_members(tmp_path: Path) -> None:
+    """Retention cannot reclaim candidates protected by lifecycle state."""
+    store = EmbeddingGenerationStore(tmp_path)
+    for number in range(3):
+        candidate = tmp_path / f"candidate-{number}.db"
+        _sqlite(candidate, str(number))
+        store.replace(candidate, owner_id=f"owner-{number}")
+
+    retained_path = next(
+        path
+        for path in (tmp_path / ".embeddings-generations").glob("gen-*/generation.json")
+        if json.loads(path.read_text(encoding="utf-8"))["state"] == "retained"
+    )
+    payload = json.loads(retained_path.read_text(encoding="utf-8"))
+    payload["state"] = "accepted"
+    retained_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    candidate = tmp_path / "candidate-3.db"
+    _sqlite(candidate, "3")
+    store.replace(candidate, owner_id="owner-3")
+    retained_path = next(
+        path
+        for path in (tmp_path / ".embeddings-generations").glob("gen-*/generation.json")
+        if json.loads(path.read_text(encoding="utf-8"))["state"] == "retained"
+    )
+    payload = json.loads(retained_path.read_text(encoding="utf-8"))
+    payload["state"] = "in_progress"
+    retained_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    store.collect()
+
+    states = {
+        json.loads(path.read_text(encoding="utf-8"))["state"]
+        for path in (tmp_path / ".embeddings-generations").glob("gen-*/generation.json")
+    }
+    assert {"accepted", "in_progress", "active"} <= states
+
+
 def test_malformed_receipt_blocks_replacement_before_pointer_swap(tmp_path: Path) -> None:
     store = EmbeddingGenerationStore(tmp_path)
     first = tmp_path / "first.db"
