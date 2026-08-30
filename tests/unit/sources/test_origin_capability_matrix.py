@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.config import Source
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.dispatch import (
@@ -18,12 +20,39 @@ from polylogue.sources.dispatch import (
     parse_payload,
     require_positive_conversational_evidence,
 )
+from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 from tests.infra.origin_capability_matrix import (
     MANIFEST_PATH,
     load_manifest,
     load_manifest_payload,
     load_witness_fixture,
 )
+
+
+class _MatrixAntigravityLanguageServerClient:
+    """Fake vendor server used to exercise the production adapter route."""
+
+    def __init__(self, root: Path, payload: JSONDocument) -> None:
+        self.root = root
+        self.payload = payload
+
+    def start(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def search_sessions(self, *, limit: int = 10000, query: str = "") -> list[AntigravitySessionSummary]:
+        del limit, query
+        summary = AntigravitySessionSummary.from_payload(self.payload)
+        assert summary is not None
+        return [summary]
+
+    def export_markdown(self, cascade_id: str) -> str:
+        assert cascade_id == self.payload["cascadeId"]
+        markdown = self.payload["markdown"]
+        assert isinstance(markdown, str)
+        return markdown
 
 
 def test_manifest_covers_every_origin_with_typed_support_state() -> None:
@@ -60,7 +89,14 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
         for witness in entry.witnesses:
             assert len(witness.parser_claims) == 1
             claim = witness.parser_claims[0]
-            payload = load_witness_fixture(witness)
+            payload = cast(JSONDocument, load_witness_fixture(witness))
+            if witness.route == "vendor":
+                assert isinstance(payload, dict)
+                assert payload.get("source") == "antigravity_language_server"
+                assert isinstance(payload.get("cascadeId"), str)
+                assert isinstance(payload.get("markdown"), str)
+                continue
+
             detected, evidence = detect_provider_evidence(payload, witness.fixture_path)
 
             if witness.route == "detected":
@@ -90,16 +126,31 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
 async def test_supported_witnesses_reach_the_production_archive_ingest_seam(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """The matrix positives pass through configured-source archive ingestion."""
     manifest = load_manifest()
     supported = [entry for entry in manifest.entries if entry.unsupported is None]
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
-    sources = [
-        Source(name=witness.parser_claims[0].provider.value, path=Path(witness.fixture_path))
-        for entry in supported
-        for witness in entry.witnesses
-    ]
+    sources: list[Source] = []
+    for entry in supported:
+        for witness in entry.witnesses:
+            if witness.route != "vendor":
+                sources.append(Source(name=witness.parser_claims[0].provider.value, path=Path(witness.fixture_path)))
+                continue
+            payload = load_witness_fixture(witness)
+            assert isinstance(payload, dict)
+            source_root = tmp_path / witness.fallback_id
+            conversations = source_root / "conversations"
+            conversations.mkdir(parents=True)
+            cascade_id = payload.get("cascadeId")
+            assert isinstance(cascade_id, str)
+            (conversations / f"{cascade_id}.pb").write_bytes(b"synthetic trajectory")
+            monkeypatch.setattr(
+                "polylogue.sources.parsers.antigravity.AntigravityLanguageServerClient",
+                lambda root, payload=payload: _MatrixAntigravityLanguageServerClient(root, payload),
+            )
+            sources.append(Source(name=witness.parser_claims[0].provider.value, path=source_root))
 
     result = await parse_sources_archive(
         workspace_env["archive_root"],

@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "tests" / "data" / "origin_capability_matrix.json"
 
 UnsupportedReason = Literal["compatibility-only", "no-parser"]
-WitnessRoute = Literal["detected", "source-hint"]
+WitnessRoute = Literal["detected", "source-hint", "vendor"]
 _LiteralValue = TypeVar("_LiteralValue", bound=str)
 
 
@@ -197,7 +197,11 @@ def _witness(payload: object, origin: Origin) -> CapabilityWitness:
         fallback_id=_string(raw.get("fallback_id"), f"{origin.value}.witness.fallback_id"),
         route=cast(
             WitnessRoute,
-            _literal(raw.get("route", "detected"), ("detected", "source-hint"), f"{origin.value}.witness.route"),
+            _literal(
+                raw.get("route", "detected"),
+                ("detected", "source-hint", "vendor"),
+                f"{origin.value}.witness.route",
+            ),
         ),
     )
 
