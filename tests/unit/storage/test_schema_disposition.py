@@ -76,10 +76,10 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     assert {row.disposition for row in rows} <= {"KEEP", "COMPLETE", "PURGE", "DERIVE", "TRANSITION"}
     by_ref = {row.object_ref: row for row in rows}
 
-    assert by_ref["source:column:raw_unknown_export_reclassification_receipts.raw_id"].disposition == "PURGE"
     assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
-    assert by_ref["index:column:threads.dominant_repo_id"].disposition == "PURGE"
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
+    assert not any("raw_unknown_export_reclassification_receipts" in row.object_ref for row in rows)
+    assert not any("dominant_repo_id" in row.object_ref for row in rows)
     assert all(row.semantic_owner and row.implementation_bead for row in rows)
 
 

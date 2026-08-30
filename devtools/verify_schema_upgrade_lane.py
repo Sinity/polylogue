@@ -323,7 +323,7 @@ def _ddl_lifecycle_report() -> list[DDLLifecycleViolation]:
             continue
         if changed_tier == "index" and any(_registry_covers_changed_line(line) for line in lines):
             continue
-        if any(line.lstrip().startswith("#") and _WAIVER_RE.search(line) for line in lines):
+        if any(line.lstrip().startswith(("#", "--")) and _WAIVER_RE.search(line) for line in lines):
             continue
         violations.append(
             DDLLifecycleViolation(

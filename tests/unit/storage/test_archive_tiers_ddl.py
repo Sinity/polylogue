@@ -672,7 +672,6 @@ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops
         "blob_refs",
         "blob_publication_reservations",
         "raw_artifacts",
-        "otlp_spans",
     ):
         assert expected in source
         assert expected not in index

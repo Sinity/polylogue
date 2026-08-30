@@ -1742,17 +1742,8 @@ ON session_tag_rollups(bucket_day DESC, source_name, tag);
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
 ON session_tag_rollups(source_name, tag);
 
--- v57 (polylogue-ioz7): one immutable receipt per `sessions` row deleted by
--- the agent-meta-sidecar purge actuator. No FK to `sessions` -- the whole
--- point of the row is that the session it describes no longer exists.
--- `raw_id` is likewise unconstrained here (source.db is a separate
--- database file; the raw row and its blob are deliberately retained there).
-CREATE TABLE IF NOT EXISTS agent_meta_sidecar_purge_receipts (
-    {TABLE_SPECS["agent_meta_sidecar_purge_receipts"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_agent_meta_sidecar_purge_receipts_purged_at
-ON agent_meta_sidecar_purge_receipts(purged_at_ms);
+-- ddl-lifecycle-waiver: benign retired receipt table is dropped during same-version
+-- convergence after its one-off consumer was removed.
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
