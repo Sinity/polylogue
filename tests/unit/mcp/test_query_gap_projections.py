@@ -490,11 +490,37 @@ class TestInsightProjections:
     @pytest.mark.asyncio
     async def test_tool_episode_projection_forwards_all_session_filters(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
-        session_id = _seed_tool_episode_archive(archive_root)
+        matching_session_id = _seed_tool_episode_archive(archive_root)
         query_fn = build_tools()["query"]
+        origin = matching_session_id.split(":", 1)[0]
+
+        def session_id(native_id: str) -> str:
+            return f"{origin}:{native_id}"
 
         with installed_runtime_services(archive_root):
-            result = json.loads(
+
+            async def episode_session_ids(**filters: str) -> set[str]:
+                result = json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", **filters))
+                assert result.get("is_error") is not True, result
+                return {item["session_id"] for item in result["tool_episodes"]}
+
+            assert await episode_session_ids(tag="episode-filter") == {
+                session_id("query-gap-tool-episode-match"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(repo="polylogue") == {
+                session_id("query-gap-tool-episode-match"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(since="2026-01-03") == {
+                session_id("query-gap-tool-episode-other"),
+                session_id("query-gap-tool-episode-late"),
+            }
+            assert await episode_session_ids(until="2026-01-02") == {
+                session_id("query-gap-tool-episode-match"),
+            }
+
+            combined = json.loads(
                 await invoke_surface_async(
                     query_fn,
                     projection="tool-episodes",
@@ -505,10 +531,10 @@ class TestInsightProjections:
                 )
             )
 
-        assert result.get("is_error") is not True, result
-        assert result["total"] == 1
-        assert result["tool_episodes"][0]["session_id"] == session_id
-        assert result["tool_episodes"][0]["followup_class"] == "acknowledged"
+        assert combined.get("is_error") is not True, combined
+        assert combined["total"] == 1
+        assert combined["tool_episodes"][0]["session_id"] == matching_session_id
+        assert combined["tool_episodes"][0]["followup_class"] == "acknowledged"
 
     @pytest.mark.asyncio
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
