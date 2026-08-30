@@ -63,6 +63,16 @@ _SOURCE_DECLARED_ABSENT_FORMAT = "polylogue-source-declared-absent-v1"
 _SOURCE_DECLARED_ABSENT_AUTHORITY = "polylogue-2x6xu"
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+_RECOVERABILITY_FAILURE_KINDS = frozenset(
+    {
+        "no_replay_candidate",
+        "source_missing",
+        "append_segment",
+        "acquisition_coordinate",
+        "replay_error",
+        "hash_mismatch",
+    }
+)
 
 
 class BackupResult(BaseModel):
@@ -653,11 +663,26 @@ def _resolved_source_path(source_path: str, root: Path) -> str:
     return f"{path}:{member}" if separator else str(path)
 
 
+def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | None, str | None]:
+    if start < 0 or end < start:
+        return None, "append_segment:invalid_range"
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(start)
+            payload = handle.read(end - start)
+    except OSError as exc:
+        return None, f"append_segment:{exc}"
+    if len(payload) != end - start:
+        return None, "append_segment:short_read"
+    return payload, None
+
+
 def _source_recoverability_proofs(
     source_db: Path,
     *,
     root: Path,
     missing_hashes: set[str],
+    unproven: list[dict[str, str]] | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
     zip_payload_cache: dict[str, dict[int, bytes]] | None = None,
@@ -675,10 +700,13 @@ def _source_recoverability_proofs(
             if blob_hash in missing_hashes:
                 by_hash.setdefault(blob_hash, []).append(row)
     proofs: list[dict[str, str]] = []
-    for blob_hash, rows in by_hash.items():
+    for blob_hash in sorted(missing_hashes):
+        rows = by_hash.get(blob_hash, [])
+        errors: list[str] = []
         for row in rows:
             source_path = row.get("source_path")
             if not isinstance(source_path, str) or not source_path:
+                errors.append("no_source_path")
                 continue
             source_index_value = row.get("source_index")
             source_index = int(source_index_value) if isinstance(source_index_value, (int, str)) else None
@@ -690,16 +718,38 @@ def _source_recoverability_proofs(
                     zip_payload_cache=zip_payload_cache,
                 )
             else:
-                payload, error = _current_raw_payload_bytes(
-                    resolved,
-                    source_index,
-                    raw_id=str(row.get("ref_id") or "") or None,
-                    blob_hash=blob_hash,
-                    source_bytes_cache=source_bytes_cache,
-                    decoded_payload_cache=decoded_payload_cache,
-                )
+                revision_kind = str(row.get("revision_kind") or "")
+                append_start = row.get("append_start_offset")
+                append_end = row.get("append_end_offset")
+                if (
+                    revision_kind == "append"
+                    and isinstance(append_start, (int, str))
+                    and isinstance(append_end, (int, str))
+                ):
+                    try:
+                        start = int(append_start)
+                        end = int(append_end)
+                    except ValueError as exc:
+                        payload, error = None, f"append_segment:{exc}"
+                    else:
+                        payload, error = _append_segment_payload(resolved, start, end)
+                else:
+                    payload, error = _current_raw_payload_bytes(
+                        resolved,
+                        source_index,
+                        raw_id=str(row.get("ref_id") or "") or None,
+                        blob_hash=blob_hash,
+                        source_bytes_cache=source_bytes_cache,
+                        decoded_payload_cache=decoded_payload_cache,
+                    )
             if error is None and payload is not None and hashlib.sha256(payload).hexdigest() == blob_hash:
-                kind = "zip_reacquired_payload" if ":" in resolved else "direct_file_sha256"
+                kind = (
+                    "zip_reacquired_payload"
+                    if ":" in resolved
+                    else "live_append_segment_sha256"
+                    if str(row.get("revision_kind") or "") == "append"
+                    else "direct_file_sha256"
+                )
                 proofs.append(
                     {
                         "blob_hash": blob_hash,
@@ -712,10 +762,66 @@ def _source_recoverability_proofs(
                         "coordinate_format": str(row.get("coordinate_format") or ""),
                         "entry_ordinal": str(row.get("entry_ordinal")) if row.get("entry_ordinal") is not None else "",
                         "split_index": str(row.get("split_index")) if row.get("split_index") is not None else "",
+                        "revision_kind": str(row.get("revision_kind") or ""),
+                        "append_start_offset": (
+                            str(row.get("append_start_offset")) if row.get("append_start_offset") is not None else ""
+                        ),
+                        "append_end_offset": (
+                            str(row.get("append_end_offset")) if row.get("append_end_offset") is not None else ""
+                        ),
                     }
                 )
                 break
+            errors.append(error or "hash_mismatch")
+        else:
+            if unproven is not None:
+                first_row = rows[0] if rows else {}
+                failure_kinds = {_recoverability_failure_kind(error) for error in errors}
+                failure_kind = _recoverability_failure_kind_for_attempts(failure_kinds)
+                unproven.append(
+                    {
+                        "blob_hash": blob_hash,
+                        "kind": failure_kind,
+                        "reason": "; ".join(sorted(set(errors))) if errors else "no_raw_session_reference",
+                        "raw_id": str(first_row.get("ref_id") or ""),
+                        "source_path": str(first_row.get("source_path") or ""),
+                    }
+                )
     return proofs
+
+
+def _recoverability_failure_kind(error: str) -> str:
+    if error == "no_raw_session_reference":
+        return "no_replay_candidate"
+    if error == "no_source_path":
+        return "no_replay_candidate"
+    if error == "source_missing":
+        return "source_missing"
+    if error.startswith("append_segment:"):
+        return "append_segment"
+    if error.startswith("source_index:") or error in {
+        "container_coordinate_missing",
+        "container_coordinate_mismatch",
+        "ambiguous_container_member",
+    }:
+        return "acquisition_coordinate"
+    if error.startswith("error:"):
+        return "replay_error"
+    return "hash_mismatch"
+
+
+def _recoverability_failure_kind_for_attempts(kinds: set[str]) -> str:
+    for kind in (
+        "replay_error",
+        "append_segment",
+        "acquisition_coordinate",
+        "source_missing",
+        "no_replay_candidate",
+        "hash_mismatch",
+    ):
+        if kind in kinds:
+            return kind
+    return "no_replay_candidate"
 
 
 def _write_blob_reference_evidence(backup_root: Path, evidence: dict[str, object]) -> Path:
@@ -792,14 +898,17 @@ def _copy_referenced_blobs(
     source_owners = reference_evidence["source_owner_hashes"]
     assert isinstance(source_owners, dict)
     source_hashes = set().union(*(set(owner_hashes) for owner_hashes in source_owners.values()))
+    unproven: list[dict[str, str]] = []
     reference_evidence["recoverability_proofs"] = _source_recoverability_proofs(
         source_db,
         root=source_db.parent,
         missing_hashes=missing_hashes & source_hashes,
+        unproven=unproven,
         source_bytes_cache={},
         decoded_payload_cache={},
         zip_payload_cache={},
     )
+    reference_evidence["recoverability_unproven"] = unproven
     _write_blob_reference_evidence(backup_root, reference_evidence)
     if not hashes:
         return 0, 0, debt_report
@@ -1195,6 +1304,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         expected_attachment_hashes: set[str] = set()
         observed_attachment_hashes: set[str] = set()
         recoverable_source_hashes: set[str] = set()
+        unproven_hashes: set[str] = set()
         if source_included:
             evidence_path = restored / str(manifest.get("blob_reference_evidence_file", _BLOB_REFERENCE_EVIDENCE_FILE))
             if not evidence_path.exists() and not evidence_path.is_symlink():
@@ -1211,9 +1321,14 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             if not isinstance(recoverability_proofs, list):
                 reference_evidence_ok = False
                 recoverability_proofs = []
+            recoverability_unproven = evidence.get("recoverability_unproven", [])
+            if not isinstance(recoverability_unproven, list):
+                reference_evidence_ok = False
+                recoverability_unproven = []
             source_bytes_cache: dict[str, bytes] = {}
             decoded_payload_cache: dict[str, object] = {}
             zip_payload_cache: dict[str, dict[int, bytes]] = {}
+            proof_hashes: set[str] = set()
             for proof in recoverability_proofs:
                 if not isinstance(proof, dict):
                     reference_evidence_ok = False
@@ -1225,11 +1340,14 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                     not isinstance(blob_hash_value, str)
                     or blob_hash_value not in source_evidence_hashes
                     or not isinstance(source_path_value, str)
-                    or kind not in {"direct_file_sha256", "zip_reacquired_payload"}
+                    or kind not in {"direct_file_sha256", "zip_reacquired_payload", "live_append_segment_sha256"}
                 ):
                     reference_evidence_ok = False
                     continue
                 blob_hash = blob_hash_value
+                if blob_hash in proof_hashes:
+                    reference_evidence_ok = False
+                proof_hashes.add(blob_hash)
                 source_path = source_path_value
                 source_index_value = proof.get("source_index")
                 source_index = (
@@ -1241,6 +1359,16 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                         source_path=source_path,
                         zip_payload_cache=zip_payload_cache,
                     )
+                elif kind == "live_append_segment_sha256":
+                    start_value = proof.get("append_start_offset")
+                    end_value = proof.get("append_end_offset")
+                    try:
+                        start = int(start_value) if isinstance(start_value, str) and start_value else -1
+                        end = int(end_value) if isinstance(end_value, str) and end_value else -1
+                    except ValueError as exc:
+                        recovered_payload, recovery_error = None, f"append_segment:{exc}"
+                    else:
+                        recovered_payload, recovery_error = _append_segment_payload(source_path, start, end)
                 else:
                     recovered_payload, recovery_error = _current_raw_payload_bytes(
                         source_path,
@@ -1257,6 +1385,21 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                     reference_evidence_ok = False
                 else:
                     recoverable_source_hashes.add(blob_hash)
+            for failure in recoverability_unproven:
+                if not isinstance(failure, dict):
+                    reference_evidence_ok = False
+                    continue
+                failure_blob_hash = failure.get("blob_hash")
+                failure_kind = failure.get("kind")
+                if (
+                    not isinstance(failure_blob_hash, str)
+                    or failure_blob_hash not in source_evidence_hashes
+                    or failure_blob_hash in unproven_hashes
+                    or failure_kind not in _RECOVERABILITY_FAILURE_KINDS
+                ):
+                    reference_evidence_ok = False
+                    continue
+                unproven_hashes.add(failure_blob_hash)
             expected_attachment_hashes = set(evidence["index_attachment_hashes"])
             if evidence["index_attachment_evidence"] == "consulted":
                 if not index_path.exists():
@@ -1290,6 +1433,8 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 effective_source_hashes = restored_source_hashes - recoverable_source_hashes
             reservations = _source_blob_reservations(restored / "source.db")
             expected_reference_blobs = effective_source_hashes | expected_attachment_hashes | reservations
+            expected_unproven_hashes = source_evidence_hashes - restored_hash_set - recoverable_source_hashes
+            reference_evidence_ok = reference_evidence_ok and unproven_hashes == expected_unproven_hashes
             if assertion_path.exists() or assertion_path.is_symlink():
                 source_scope_ok = bool(effective_source_hashes)
         missing_canonical_blobs = expected_reference_blobs - restored_hash_set
@@ -1310,6 +1455,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             "canonical_blobs_resolved": canonical_blobs_resolved,
             "missing_canonical_blob_count": len(missing_canonical_blobs),
             "recoverable_source_blob_count": len(recoverable_source_hashes),
+            "unproven_source_blob_count": len(unproven_hashes),
             "reference_evidence_resolved": reference_evidence_ok,
             "source_effective_scope_nonempty": source_scope_ok,
             "expected_index_attachment_count": len(expected_attachment_hashes),
