@@ -3833,10 +3833,6 @@ class ArchiveStore:
 
     def _read_insights(self) -> ArchiveReadInsights:
         """Bind insight SQL to this store's caller-owned read snapshot."""
-        # Release any transaction opened by a prior read/write boundary before
-        # constructing the next read view so externally committed derived rows
-        # are visible to this long-lived store connection.
-        self._conn.commit()
         return ArchiveReadInsights(
             self._conn,
             normalize_origin=_origin_value,

@@ -837,9 +837,6 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     )
 
     session_id = write_parsed_session_to_archive(conn, session)
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-
-    rebuild_session_insights_sync(conn, session_ids=[session_id])
     upsert_session_profile_costs(
         conn,
         session_id,
@@ -859,6 +856,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
         SELECT workflow_shape, workflow_shape_method, workflow_shape_confidence, terminal_state,
             terminal_state_method, terminal_state_confidence, duration_ms, substantive_count,
             attachment_count, work_event_count, phase_count, tool_calls_per_minute,
+            cost_credits, cost_usd, cost_is_estimated, cost_provenance, priced_with, priced_at_ms,
             search_text
         FROM session_profiles
         WHERE session_id = ?
@@ -867,10 +865,27 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     ).fetchone()
     assert profile is not None
 
-    assert profile["duration_ms"] is None
-    assert profile["substantive_count"] >= 0
-    assert profile["work_event_count"] >= 0
-    assert isinstance(profile["search_text"], str)
+    assert dict(profile) == {
+        "workflow_shape": None,
+        "workflow_shape_method": None,
+        "workflow_shape_confidence": None,
+        "terminal_state": None,
+        "terminal_state_method": None,
+        "terminal_state_confidence": None,
+        "duration_ms": None,
+        "substantive_count": 0,
+        "attachment_count": 0,
+        "work_event_count": 0,
+        "phase_count": 0,
+        "tool_calls_per_minute": None,
+        "cost_credits": 12.34,
+        "cost_usd": 0.056,
+        "cost_is_estimated": 1,
+        "cost_provenance": "estimated",
+        "priced_with": "gpt-5-mini",
+        "priced_at_ms": 1_700_000_006_000,
+        "search_text": "",
+    }
 
 
 def test_archive_tiers_insight_materialization_upsert_refreshes_shared_state(tmp_path: Path) -> None:
@@ -1630,7 +1645,7 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
         "output_tokens": 11,
         "cache_read_tokens": 2,
         "cache_write_tokens": 3,
-        "cost_provenance": None,
+        "cost_provenance": "priced",
     }
 
 
