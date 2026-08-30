@@ -41,7 +41,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from polylogue.config import Config
+from polylogue.config import Config, Source
 from polylogue.core.enums import Provider
 from polylogue.daemon.bulk_rebuild import (
     DAEMON_BULK_REBUILD_OPERATION_ID,
@@ -99,8 +99,8 @@ def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> byt
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _config(root: Path) -> Config:
-    return Config(archive_root=root, render_root=root / "render", sources=[])
+def _config(root: Path, *, sources: list[Source] | None = None) -> Config:
+    return Config(archive_root=root, render_root=root / "render", sources=sources or [])
 
 
 def _seed_corpus(root: Path, *, count: int = _RAW_COUNT) -> None:
@@ -552,6 +552,66 @@ def test_daemon_bulk_rebuild_pass_resumes_without_reprocessing_raw_ids(
     assert final_transaction.last_raw_id is not None
 
     del seen_raw_ids  # kept for readability of intent; disjointness is proven structurally above
+
+
+def test_candidate_bulk_route_preflights_configured_source_cut_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: an unbounded configured-source fallback copy reaches candidate publication."""
+    from polylogue.maintenance import rebuild_index
+    from polylogue.sources.source_snapshot import SourceSnapshotError
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_INFERENCE_RECEIPT", str(receipt_path))
+    source = tmp_path / "configured-source"
+    source.mkdir()
+    (source / "session.jsonl").write_text("candidate bytes\n", encoding="utf-8")
+
+    class _NoCapacity:
+        free = 0
+
+    monkeypatch.setattr(rebuild_index, "_candidate_source_cut_capacity", lambda _destination: _NoCapacity().free)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000)
+    try:
+        with pytest.raises(SourceSnapshotError, match="capacity preflight rejects source cut"):
+            asyncio.run(
+                run_daemon_bulk_rebuild_pass(
+                    config=_config(tmp_path, sources=[Source("configured", source)]),
+                    parse_stage=stage,
+                    batch_size=1,
+                    max_payload_bytes=10_000_000,
+                    candidate_build=True,
+                )
+            )
+    finally:
+        stage.shutdown()
+
+    assert not list((tmp_path / ".candidate-source-cuts").glob("*/.source-cut-complete"))
+
+
+def test_terminal_daemon_generation_retires_its_candidate_source_cut(tmp_path: Path) -> None:
+    """Mutation: discarding an inactive generation must also reclaim its frozen source cohort."""
+    _seed_corpus(tmp_path, count=1)
+    receipt_path = write_valid_rebuild_receipt(tmp_path, tmp_path.parent / f"{tmp_path.name}-receipt.json")
+    transaction = resolve_or_start_daemon_bulk_rebuild_transaction(
+        tmp_path,
+        schema_inference_receipt_path=receipt_path,
+    )
+    cut = tmp_path / ".candidate-source-cuts" / transaction.generation_id
+    cut.mkdir(parents=True)
+    (cut / ".source-cut-complete").write_text("cut\n", encoding="utf-8")
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    store.checkpoint_transaction(transaction, status="failed", error="synthetic terminal failure")
+
+    replacement = resolve_or_start_daemon_bulk_rebuild_transaction(
+        tmp_path,
+        schema_inference_receipt_path=receipt_path,
+    )
+
+    assert replacement.generation_id != transaction.generation_id
+    assert not cut.exists()
 
 
 def test_daemon_bulk_rebuild_pass_next_page_excludes_already_scheduled_raws(tmp_path: Path) -> None:

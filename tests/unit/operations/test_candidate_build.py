@@ -35,6 +35,9 @@ def _seal() -> SourceSeal:
         source_identity="source-identity",
         source_snapshot="source-snapshot",
         source_schema_version=35,
+        cut_identity="0" * 64,
+        candidate_manifest_digest="1" * 64,
+        carry_forward_manifest_digest="2" * 64,
     )
 
 
@@ -61,6 +64,22 @@ def _generation(*, state: str = "inactive") -> IndexGeneration:
         state=state,
         created_at_ms=1,
     )
+
+
+def test_candidate_plan_refuses_a_recomputed_cut_mismatch() -> None:
+    """Mutation: changing the cut after request construction must reject the candidate."""
+    request = _request()
+    stale = request.source_seal.model_copy(update={"cut_identity": "f" * 64})
+    context = CandidateBuildPlanningContext(
+        archive_root=Path("/archive"),
+        source_seal=request.source_seal,
+        generation=_generation(),
+        budget=CandidateBuildBudget(source_bytes=1, work_units=1, memory_bytes=1),
+        recompute_source_seal=lambda: stale,
+    )
+
+    with pytest.raises(ValueError, match="source cut is stale"):
+        plan_candidate_build(request, context)
 
 
 def test_catalog_names_every_candidate_contract_type() -> None:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument
@@ -16,12 +17,19 @@ from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stre
 from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_snapshot import (
+    SourceCutPolicy,
+    SourceCutResult,
+    execute_source_cut,
+    preflight_source_cut,
+)
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
 
 if TYPE_CHECKING:
     from polylogue.config import DriveConfig, Source
+    from polylogue.maintenance.source_manifest_continuity import SourceDeclaration
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -53,6 +61,18 @@ class AcquisitionService:
         from polylogue.storage.repository import SessionRepository
 
         self.repository: SessionRepository = SessionRepository(backend=backend)
+
+    @staticmethod
+    def cut_source_inputs(
+        declarations: list[SourceDeclaration],
+        destination: Path,
+        *,
+        request_id: str = "source-cut",
+        policies: Mapping[str, SourceCutPolicy] | None = None,
+    ) -> SourceCutResult:
+        """Create an immutable candidate boundary for the acquisition owner."""
+        preflight = preflight_source_cut(declarations, request_id=request_id, policies=policies)
+        return execute_source_cut(preflight, destination)
 
     async def _persist_record(
         self,

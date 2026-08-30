@@ -18,12 +18,15 @@ class SourceContinuityError(ValueError):
 
 class SourceRole(StrEnum):
     IMMUTABLE_EXPORT = "immutable-export"
+    ARCHIVE_MEMBER = "archive-member"
     APPEND_JSONL = "append-jsonl"
     REWRITE_JSONL = "rewrite-leading-jsonl"
     MUTABLE_SQLITE = "mutable-sqlite"
     SPOOL = "spool"
     QUEUE = "queue"
     ATTACHMENT = "attachment"
+    SIDECAR = "sidecar"
+    PROVIDER_CACHE = "provider-cache"
     DIRECTORY = "directory"
 
 
@@ -52,6 +55,8 @@ class SourceDeclaration:
             SourceRole.MUTABLE_SQLITE,
             SourceRole.SPOOL,
             SourceRole.QUEUE,
+            SourceRole.SIDECAR,
+            SourceRole.PROVIDER_CACHE,
         }
         if self.role in mutable_roles and not self.mutable:
             raise SourceContinuityError(f"mutable source {self.source_id} must be marked mutable")
@@ -135,6 +140,8 @@ def canonical_source_declarations(
     restored_spools: Iterable[Path] = (),
     browser_queue: Path | None = None,
     attachments: Path | None = None,
+    sidecars: Iterable[Path] = (),
+    provider_caches: Iterable[Path] = (),
     exports: Iterable[Path] = (),
     live_sources: Iterable[Path] = (),
 ) -> tuple[SourceDeclaration, ...]:
@@ -152,6 +159,11 @@ def canonical_source_declarations(
         rows.append(SourceDeclaration("browser-queue", SourceRole.QUEUE, browser_queue, True))
     if attachments is not None:
         rows.append(SourceDeclaration("attachments", SourceRole.ATTACHMENT, attachments))
+    rows.extend(SourceDeclaration(f"sidecar-{n}", SourceRole.SIDECAR, path, True) for n, path in enumerate(sidecars))
+    rows.extend(
+        SourceDeclaration(f"provider-cache-{n}", SourceRole.PROVIDER_CACHE, path, True)
+        for n, path in enumerate(provider_caches)
+    )
     rows.extend(SourceDeclaration(f"export-{n}", SourceRole.IMMUTABLE_EXPORT, path) for n, path in enumerate(exports))
     rows.extend(
         SourceDeclaration(f"live-source-{n}", SourceRole.DIRECTORY, path, True) for n, path in enumerate(live_sources)
