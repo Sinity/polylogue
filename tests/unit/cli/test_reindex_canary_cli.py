@@ -13,7 +13,6 @@ from click.testing import CliRunner as _ClickCliRunner
 from click.testing import Result
 
 from polylogue.cli.click_app import cli
-from polylogue.core.enums import Provider
 from polylogue.maintenance import reindex_canary as reindex_canary_module
 from polylogue.maintenance.archive_verification import archive_verification_names_for_route
 
@@ -39,11 +38,10 @@ from polylogue.maintenance.reindex_canary import (
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
-from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 _DEFAULT_CANARY_TEMPLATE: Path | None = None
 
@@ -243,17 +241,14 @@ def _seed_isolated_canary(
     if session_names == ("isolated-canary",) and not membership_names and _clone_default_canary_template(root):
         return
     initialize_active_archive_root(root)
-    seeded: dict[str, bytes] = {}
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        for acquired_at_ms, name in enumerate(session_names, start=1):
-            payload = _codex_session(name)
-            raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path=f"{name}.jsonl",
-                acquired_at_ms=acquired_at_ms,
-            )
-            seeded[raw_id] = payload
+    paths = []
+    for name in session_names:
+        path = root / "wire" / f"{name}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_codex_session(name))
+        paths.append(path)
+    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)) for path in paths))
+    assert getattr(result, "parse_failures", 0) == 0
     if membership_names:
         with sqlite3.connect(root / "source.db") as connection:
             for name in membership_names:
@@ -272,8 +267,6 @@ def _seed_isolated_canary(
                     (raw_id, f"codex-session:{name}", name, "1", blob_hash, 2),
                 )
             connection.commit()
-    record_codex_parser_census(root, seeded)
-    decide_raw_revision_authority(root)
     backfill_historical_revision_evidence(root)
     receipt_path = write_valid_rebuild_receipt(root, _schema_receipt_path(root))
     receipt = rebuild_index_from_source_sync(
@@ -927,6 +920,10 @@ def test_cli_rejects_membership_and_logical_key_expansion_drift(
         selected_blob_hash = connection.execute(
             "SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (selected_raw_id,)
         ).fetchone()[0]
+        connection.execute(
+            "DELETE FROM raw_session_memberships WHERE raw_id IN (?, ?)",
+            (selected_raw_id, unselected_raw_id),
+        )
         connection.executemany(
             """
             INSERT INTO raw_session_memberships(

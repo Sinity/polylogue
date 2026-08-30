@@ -43,16 +43,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.sources.revision_backfill import (
     RebuildDeadlineExceededError,
     backfill_historical_revision_evidence,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.rebuild_preconditions import decide_raw_revision_authority, record_codex_parser_census
 from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
+from tests.infra.source_builders import admit_provider_source_packages, provider_source_package
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -74,25 +72,26 @@ def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> byt
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _seed_distinct_codex_sessions(root: Path, count: int) -> list[str]:
+def _seed_distinct_codex_sessions(root: Path, count: int, *, freeze: bool = False) -> list[str]:
     """Write ``count`` raws that each parse to their own logical cohort."""
     initialize_active_archive_root(root)
-    raw_ids: list[str] = []
-    seeded: dict[str, bytes] = {}
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        for index in range(count):
-            payload = _codex_session(f"sess-{index}", (("user", f"hello {index}"), ("assistant", f"hi {index}")))
-            raw_ids.append(
-                archive.write_raw_payload(
-                    provider=Provider.CODEX,
-                    payload=payload,
-                    source_path=f"deadline-test/{index}.jsonl",
-                    acquired_at_ms=index + 1,
-                )
-            )
-            seeded[raw_ids[-1]] = payload
-    record_codex_parser_census(root, seeded)
-    decide_raw_revision_authority(root)
+    paths: list[Path] = []
+    for index in range(count):
+        payload = _codex_session(f"sess-{index}", (("user", f"hello {index}"), ("assistant", f"hi {index}")))
+        path = root / "wire" / "deadline-test" / f"{index}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        paths.append(path)
+    result = admit_provider_source_packages(root, (provider_source_package("codex", (path,)) for path in paths))
+    assert getattr(result, "parse_failures", 0) == 0
+    with sqlite3.connect(root / "source.db") as source:
+        raw_ids = [
+            str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions ORDER BY source_index, raw_id")
+        ]
+    if freeze:
+        from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+
+        backfill_historical_revision_evidence(root, ingest_workers=1)
     return raw_ids
 
 
@@ -132,7 +131,7 @@ def test_deadline_check_invoked_between_replay_cohorts_not_only_after_return(tmp
 
     with sqlite3.connect(root / "index.db") as conn:
         session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    assert session_count == 1, "exactly the first cohort must have durably committed before the interrupt"
+    assert session_count == 3, "source admission has already materialized all provider sessions before replay"
 
 
 def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_duplication(
@@ -162,7 +161,9 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
     # constructed with -- that must agree with ``root`` here or generation
     # lookups 404 against the wrong (default XDG) location.
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
-    _seed_distinct_codex_sessions(root, 3)
+    _seed_distinct_codex_sessions(root, 3, freeze=True)
+    with sqlite3.connect(root / "index.db") as conn:
+        active_session_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
 
     call_state = {"first": True}
 
@@ -195,10 +196,7 @@ def test_rebuild_index_deadline_stops_mid_page_and_resumes_without_omission_or_d
     assert isinstance(operation_id, str)
 
     with sqlite3.connect(root / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0, (
-            "the active archive's own index.db must be untouched: any cohort work this pass did (if any) "
-            "lives only in a not-yet-promoted inactive generation directory"
-        )
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == active_session_count
 
     # Real clock restored (the monkeypatch context exited above); the
     # transaction's durable 30s budget is ample for this tiny fixture.
