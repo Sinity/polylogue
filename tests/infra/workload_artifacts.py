@@ -115,7 +115,7 @@ _RECIPE_INPUT_ROOTS = (
     _REPOSITORY_ROOT / "polylogue" / "insights" / "claude_workflow_materializer.py",
 )
 _RECIPE_PROVIDER_ROOT = _REPOSITORY_ROOT / "polylogue" / "schemas" / "providers"
-_ARCHIVE_DB_NAMES = ("source.db", "index.db", "user.db", "ops.db", "embeddings.db")
+_ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
 _KNOWN_PROVIDERS = frozenset(SyntheticCorpus.available_providers())
 _PROVIDER_COMPONENT = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
