@@ -6,7 +6,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
@@ -26,6 +26,132 @@ from polylogue.core.types import ContentHash, MessageId, SessionId
 if TYPE_CHECKING:
     from polylogue.sources import ParsedMessage, ParsedSession
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedSessionEvent
+
+
+# Content identity is an explicit partition of parser fields.  Keep transport
+# evidence and provider measurements out of this identity only when an
+# independent owner derives them; adding a parser field without deciding its
+# identity is an error, not an accidental compatibility behavior.
+_HASHED_FIELDS: dict[str, frozenset[str]] = {
+    "ParsedContentBlock": frozenset(
+        {
+            "type",
+            "text",
+            "tool_name",
+            "tool_id",
+            "tool_input",
+            "media_type",
+            "metadata",
+            "is_error",
+            "exit_code",
+            "outcome_unknown_reason",
+            "file_edit",
+            "web_constructs",
+        }
+    ),
+    "ParsedMessage": frozenset(
+        {
+            "provider_message_id",
+            "role",
+            "text",
+            "timestamp",
+            "occurred_at_ms",
+            "blocks",
+            "message_type",
+            "material_origin",
+            "parent_message_provider_id",
+            "position",
+            "branch_index",
+            "variant_index",
+            "is_active_path",
+            "is_active_leaf",
+            "model_name",
+            "model_effort",
+            "sender_name",
+            "recipient",
+            "delivery_status",
+            "end_turn",
+            "user_context_text",
+            "paste_spans",
+            "stop_reason",
+        }
+    ),
+    "ParsedSession": frozenset(
+        {
+            "source_name",
+            "provider_session_id",
+            "title",
+            "session_kind",
+            "created_at",
+            "updated_at",
+            "messages",
+            "active_leaf_message_provider_id",
+            "attachments",
+            "session_events",
+            "parent_session_provider_id",
+            "parent_tool_use_provider_id",
+            "branch_type",
+            "title_source",
+            "title_ref",
+            "title_confidence",
+            "instructions_text",
+            "working_directories",
+            "git_branch",
+            "git_repository_url",
+            "provider_project_ref",
+            "git_commit_hash",
+            "display_name",
+            "run_settings",
+            "pending_drafts",
+            "session_refs",
+        }
+    ),
+}
+
+_EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
+    "ParsedContentBlock": {
+        "signature": "provider cryptographic signatures are re-issued on replay",
+    },
+    "ParsedMessage": {
+        "parent_message_position": "parser-only linkage resolved to the stored parent identity",
+        "owner_coordinate": "parser-only ownership evidence resolved before storage",
+        "input_tokens": "provider usage measurement is owned by usage/cost derivation",
+        "output_tokens": "provider usage measurement is owned by usage/cost derivation",
+        "cache_read_tokens": "provider usage measurement is owned by usage/cost derivation",
+        "cache_write_tokens": "provider usage measurement is owned by usage/cost derivation",
+        "duration_ms": "provider timing measurement is owned by usage/cost derivation",
+    },
+    "ParsedSession": {
+        "created_at_provenance": "timestamp authority provenance is independent metadata",
+        "updated_at_provenance": "timestamp authority provenance is independent metadata",
+        "unit_accounting": "parser admission accounting is validated independently before lowering",
+        "reported_duration_ms": "provider timing measurement is owned by usage/cost derivation",
+        "reported_cost_usd": "provider monetary measurement is owned by usage/cost derivation",
+        "models_used": "provider usage summary is derived from message model fields",
+        "ingest_flags": "parser quality annotations are independent session tags",
+    },
+}
+
+
+def validate_semantic_hash_partition() -> None:
+    """Fail if parsed model fields are missing from the identity decision."""
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    models = (
+        ("ParsedContentBlock", ParsedContentBlock),
+        ("ParsedMessage", ParsedMessage),
+        ("ParsedSession", ParsedSession),
+    )
+    for name, model in models:
+        fields = frozenset(cast(Mapping[str, object], model.model_fields))
+        hashed = _HASHED_FIELDS[name]
+        excluded = frozenset(_EXCLUDED_FIELDS[name])
+        if hashed & excluded or hashed | excluded != fields:
+            raise AssertionError(
+                f"{name} semantic hash partition drift: missing={sorted(fields - hashed - excluded)}, "
+                f"duplicate={sorted(hashed & excluded)}, stale={sorted((hashed | excluded) - fields)}"
+            )
+
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
@@ -142,6 +268,10 @@ def _normalize_nested_for_hash(value: object) -> object:
     carrying an NFD form, and an un-normalized key would split the hash the
     same way.
     """
+    if value is None:
+        return _NULL_SENTINEL
+    if value == "":
+        return _EMPTY_SENTINEL
     if isinstance(value, str):
         return unicodedata.normalize("NFC", value)
     if isinstance(value, Mapping):
@@ -198,19 +328,18 @@ def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
 
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
-    """Build a hash-stable payload for a single content block."""
-    payload: dict[str, JSONValue] = {
-        "type": str(block.type),
-        "text": _normalize_for_hash(block.text),
-    }
-    if block.tool_name:
-        payload["tool_name"] = _normalize_for_hash(block.tool_name)
-    if block.tool_id:
-        payload["tool_id"] = _normalize_for_hash(block.tool_id)
-    if block.tool_input is not None:
-        payload["tool_input"] = hash_payload(_normalize_nested_for_hash(dict(block.tool_input)))
-    if block.media_type:
-        payload["media_type"] = _normalize_for_hash(block.media_type)
+    """Build the declared semantic payload for a single content block."""
+    validate_semantic_hash_partition()
+    payload: dict[str, JSONValue] = {}
+    for field in sorted(_HASHED_FIELDS["ParsedContentBlock"]):
+        value = getattr(block, field)
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(mode="json")
+        elif isinstance(value, list):
+            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+        if isinstance(value, Mapping):
+            value = dict(value)
+        payload[field] = cast(JSONValue, _normalize_nested_for_hash(value))
     return payload
 
 
@@ -247,14 +376,21 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 
 
 def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
-    """Build the content payload that distinguishes an idless message."""
-    payload: dict[str, JSONValue] = {
-        "role": str(message.role),
-        "text": _normalize_for_hash(message.text),
-        "timestamp": _normalize_for_hash(message.timestamp),
-    }
+    """Build the declared semantic payload that distinguishes a message."""
+    validate_semantic_hash_partition()
+    payload: dict[str, JSONValue] = {}
+    for field in sorted(_HASHED_FIELDS["ParsedMessage"] - {"blocks", "provider_message_id"}):
+        value = getattr(message, field)
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(mode="json")
+        elif isinstance(value, list):
+            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+        payload[field] = cast(JSONValue, _normalize_nested_for_hash(value))
+    payload["provider_message_id"] = _normalize_for_hash(message.provider_message_id)
     if message.blocks and not _is_redundant_text_only_block(message):
-        payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
+        payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
+    else:
+        payload["blocks"] = _EMPTY_SENTINEL
     return payload
 
 
@@ -727,7 +863,7 @@ def _session_hash_payload(
     attachments: list[dict[str, JSONValue]],
     session_events: list[dict[str, JSONValue]],
 ) -> dict[str, object]:
-    """Build the content-hash payload dict shared by pipeline and async write paths."""
+    """Build the content-hash payload using the complete declared tree."""
     return {
         "title": _normalize_for_hash(title),
         "created_at": _normalize_for_hash(created_at),
@@ -793,6 +929,14 @@ def _session_tree_hash(
     attachments_payload: list[dict[str, JSONValue]],
     session_events_payload: list[dict[str, JSONValue]],
 ) -> str:
+    session_fields: dict[str, object] = {}
+    for field in sorted(_HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}):
+        value = getattr(convo, field)
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(mode="json")
+        elif isinstance(value, list):
+            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+        session_fields[field] = _normalize_nested_for_hash(value)
     return hash_payload(
         _session_hash_payload(
             title=convo.title,
@@ -802,17 +946,17 @@ def _session_tree_hash(
             attachments=attachments_payload,
             session_events=session_events_payload,
         )
+        | {"semantic_session_fields": session_fields}
     )
 
 
 def session_content_hash(convo: ParsedSession) -> ContentHash:
-    """Generate the content hash for a session.
+    """Generate semantic content identity from the declared field partition.
 
-    Uses sentinel values to distinguish None from empty/missing fields. The
-    hash incorporates the per-message payload (id, role, text, timestamp,
-    content blocks), attachments, and session events, so any change to a
-    message also changes the session hash.
+    Fields excluded from identity have an independent owner documented in
+    ``_EXCLUDED_FIELDS``; parsed fields may not silently fall through.
     """
+    validate_semantic_hash_partition()
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     return ContentHash(
         _session_tree_hash(
