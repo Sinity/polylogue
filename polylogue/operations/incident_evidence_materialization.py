@@ -14,7 +14,7 @@ materializer and work-effect reconciliation already use.
 
 Loading uses :func:`~polylogue.analysis.transforms.compile_session_run_projection`
 against each full :class:`~polylogue.archive.session.domain_models.Session`
-(the same function ``storage.insights.session.rebuild`` already uses for its
+(the same function ``storage.derived.session.rebuild`` already uses for its
 materialization-ledger stamp), not the thinner ``query_runs``/
 ``query_observed_events`` read-model routes. Those routes are deliberately
 CTE/source-derived-only after polylogue-dab/itvd and only ever emit
