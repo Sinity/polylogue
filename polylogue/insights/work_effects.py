@@ -69,6 +69,9 @@ from polylogue.insights.work_reconciliation import (
     ReconciliationJudgment,
     reconcile_work_effects,
 )
+from polylogue.logging import get_logger
+
+logger = get_logger(__name__)
 
 # ── Identifier matching ──────────────────────────────────────────────
 
@@ -240,6 +243,7 @@ class BeadsIssueEffectAdapter:
             object_id=f"beads:{_file_identity(self.jsonl_path)}",
         )
         effects: list[ObservedRepositoryEffect] = []
+        undecodable_lines = 0
         for line in self.jsonl_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -247,6 +251,7 @@ class BeadsIssueEffectAdapter:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
+                undecodable_lines += 1
                 continue
             if not looks_like_beads_interaction(record):
                 continue
@@ -269,6 +274,12 @@ class BeadsIssueEffectAdapter:
                     repository_snapshot_ref=snapshot_ref,
                     occurred_at_ms=occurred_at_ms,
                 )
+            )
+        if undecodable_lines:
+            logger.warning(
+                "beads_ledger_lines_undecodable",
+                path=str(self.jsonl_path),
+                count=undecodable_lines,
             )
         return tuple(effects)
 

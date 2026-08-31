@@ -37,12 +37,15 @@ from polylogue.declarations import (
     OutputSpec,
     validate_registry,
 )
+from polylogue.logging import get_logger
 from polylogue.sources.detection import (
     CompiledDetectorRegistry,
     DetectionMode,
     DetectorBinding,
     compile_detector_registry,
 )
+
+logger = get_logger(__name__)
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
@@ -417,7 +420,8 @@ def schema_observed_leaf_values(provider: str, field_path: str, *, schema_root: 
     for path in sorted(provider_dir.glob("versions/*/elements/*.schema.json.gz")):
         try:
             document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-        except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError):
+        except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as error:
+            logger.warning("schema_package_unreadable", path=str(path), error=str(error))
             continue
         for node in _resolve_schema_path(document, segments):
             observed = node.get("x-polylogue-values")
