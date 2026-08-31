@@ -212,7 +212,10 @@ def test_shutdown_is_process_bounded_with_wedged_parse_worker(tmp_path: Path) ->
         started_shutdown = time.perf_counter()
         stage.shutdown()
         elapsed = time.perf_counter() - started_shutdown
-        assert elapsed < 0.5
+        # The wedged worker holds its slot for 5s; a shutdown that awaited it
+        # would take that long. The ceiling only needs to sit clearly below
+        # that signal while tolerating scheduler delay on a loaded host.
+        assert elapsed < 2.0
         assert all(thread.daemon for thread in stage._executor._threads)
         assert not future.done()
     finally:
@@ -666,7 +669,7 @@ def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
 
     def hanging_worker(*args: object, **kwargs: object) -> object:
         dispatched.set()
-        time.sleep(0.3)  # far longer than the test's tiny warm timeout below
+        time.sleep(5.0)  # far longer than the test's tiny warm timeout below
         pytest.fail("hung worker must not be awaited past the warm() timeout")
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", hanging_worker)
@@ -683,8 +686,8 @@ def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
     assert warmed == 0
     assert len(stage.cache) == 0
     # warm() returned close to its own timeout, not after the hung worker's
-    # sleep -- proving the wait is genuinely bounded, not merely reordered.
-    assert elapsed < 0.3
+    # 5s sleep -- proving the wait is genuinely bounded, not merely reordered.
+    assert elapsed < 1.0
 
 
 def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:

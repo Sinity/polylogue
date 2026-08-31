@@ -12,7 +12,15 @@ let sessionStored;
 let fetchCalls;
 let tabs;
 
+let mockGeneration = 0;
+
 function installChromeMock(storagePatch = {}) {
+  // Each background instance binds this mock at import. A previous test's
+  // instance can still be flushing fire-and-forget persistence (recovery
+  // checkpoints, debug logs) when the next test installs a fresh mock; those
+  // stale writes must not reach the fresh test's storage.
+  const generation = ++mockGeneration;
+  const live = () => generation === mockGeneration;
   stored = {
     receiverAuthToken: "token-1",
     receiverBaseUrl: "http://127.0.0.1:8875",
@@ -73,11 +81,13 @@ function installChromeMock(storagePatch = {}) {
     },
     storage: {
       local: {
-        get: vi.fn(async (defaults) => ({ ...defaults, ...stored })),
+        get: vi.fn(async (defaults) => (live() ? { ...defaults, ...stored } : { ...defaults })),
         set: vi.fn(async (patch) => {
+          if (!live()) return;
           stored = { ...stored, ...patch };
         }),
         remove: vi.fn(async (key) => {
+          if (!live()) return;
           const keys = Array.isArray(key) ? key : [key];
           const next = { ...stored };
           for (const item of keys) delete next[item];
@@ -85,11 +95,13 @@ function installChromeMock(storagePatch = {}) {
         }),
       },
       session: {
-        get: vi.fn(async (defaults) => ({ ...defaults, ...sessionStored })),
+        get: vi.fn(async (defaults) => (live() ? { ...defaults, ...sessionStored } : { ...defaults })),
         set: vi.fn(async (patch) => {
+          if (!live()) return;
           sessionStored = { ...sessionStored, ...patch };
         }),
         remove: vi.fn(async (key) => {
+          if (!live()) return;
           const keys = Array.isArray(key) ? key : [key];
           for (const item of keys) delete sessionStored[item];
         }),
@@ -98,18 +110,18 @@ function installChromeMock(storagePatch = {}) {
     tabs: {
       create: vi.fn(async ({ url, active = false }) => {
         const created = { id: 99, url, active, status: "complete" };
-        tabs = [...tabs, created];
+        if (live()) tabs = [...tabs, created];
         return created;
       }),
       get: vi.fn(async (tabId) => tabs.find((tab) => tab.id === tabId)),
       update: vi.fn(async (tabId, patch) => {
         const current = tabs.find((tab) => tab.id === tabId);
         const updated = { ...current, ...patch, status: "complete" };
-        tabs = tabs.map((tab) => (tab.id === tabId ? updated : tab));
+        if (live()) tabs = tabs.map((tab) => (tab.id === tabId ? updated : tab));
         return updated;
       }),
       remove: vi.fn(async (tabId) => {
-        tabs = tabs.filter((tab) => tab.id !== tabId);
+        if (live()) tabs = tabs.filter((tab) => tab.id !== tabId);
       }),
       onActivated: {
         addListener: vi.fn((fn) => {
@@ -206,6 +218,11 @@ function captureJobFixtureResponse(url, options = {}) {
 
 async function loadBackground(storagePatch = {}) {
   vi.resetModules();
+  // Let the previous instance's pending fire-and-forget chains settle before
+  // the fresh mock exists; anything later is silenced by the generation guard.
+  for (let turn = 0; turn < 25; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   globalThis.indexedDB = new IDBFactory();
   installChromeMock(storagePatch);
   await import("../src/background.js");
