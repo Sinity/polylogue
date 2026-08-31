@@ -1758,9 +1758,9 @@ def _model_row_counts(conn: sqlite3.Connection, origin: str | None) -> dict[str,
     rows = conn.execute(
         f"""
         SELECT s.origin AS origin,
-               COALESCE(SUM(CASE WHEN u.cost_provenance = 'priced' THEN 1 ELSE 0 END), 0) AS priced_model_row_count,
-               COALESCE(SUM(CASE WHEN u.cost_provenance = 'origin_reported' THEN 1 ELSE 0 END), 0) AS origin_reported_model_row_count,
-               COALESCE(SUM(CASE WHEN u.cost_provenance = 'estimated' THEN 1 ELSE 0 END), 0) AS estimated_model_row_count
+               COALESCE(SUM(CASE WHEN u.catalog_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS priced_model_row_count,
+               COALESCE(SUM(CASE WHEN u.provider_cost_usd IS NOT NULL THEN 1 ELSE 0 END), 0) AS origin_reported_model_row_count,
+               0 AS estimated_model_row_count
         FROM session_model_usage u
         JOIN sessions s ON s.session_id = u.session_id
         {_where_origin(origin, table_alias="s")}
@@ -1810,7 +1810,7 @@ def _pricing_lane_reports(
         session_count_rows = conn.execute(
             f"""
             WITH logical_model AS (
-                SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name
                 FROM session_model_usage u
@@ -1829,7 +1829,7 @@ def _pricing_lane_reports(
     else:
         session_count_rows = conn.execute(
             f"""
-            SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+            SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                    COUNT(DISTINCT u.session_id) AS session_count
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
@@ -1843,7 +1843,7 @@ def _pricing_lane_reports(
         rows = conn.execute(
             f"""
             WITH physical_model AS (
-                SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+                SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
@@ -1887,7 +1887,7 @@ def _pricing_lane_reports(
     else:
         rows = conn.execute(
             f"""
-            SELECT COALESCE(u.cost_provenance, 'unknown') AS provenance,
+            SELECT CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS provenance,
                    COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                    COUNT(*) AS row_count,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
@@ -1896,7 +1896,7 @@ def _pricing_lane_reports(
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    0 AS reasoning_output_tokens,
                    COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS total_tokens,
-                   COALESCE(SUM(u.cost_usd), 0.0) AS stored_cost_usd
+                   COALESCE(SUM(u.catalog_cost_usd), 0.0) AS stored_cost_usd
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             {_where_origin(origin, table_alias="s")}
@@ -2751,11 +2751,13 @@ def session_usage_costs_for_connection(
                COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
                COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
-               SUM(u.cost_usd) AS catalog_cost_usd,
-               COUNT(u.cost_usd) AS priced_model_count,
+               SUM(u.provider_cost_usd) AS provider_cost_usd,
+               SUM(u.catalog_cost_usd) AS catalog_cost_usd,
+               COUNT(u.catalog_cost_usd) AS priced_model_count,
                SUM(u.cost_credits) AS stored_credits,
                GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
-               MAX(u.cost_provenance) AS cost_provenance
+               MAX(CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                        WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' END) AS cost_provenance
         FROM sessions AS s
         LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
         WHERE s.session_id IN ({placeholders})
@@ -2787,7 +2789,12 @@ def session_usage_costs_for_connection(
         cache_read_tokens = int(row["cache_read_tokens"] or 0)
         cache_write_tokens = int(row["cache_write_tokens"] or 0)
         total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-        provider_money = None if row["reported_cost_usd"] is None else float(row["reported_cost_usd"])
+        if row["provider_cost_usd"] is not None:
+            provider_money = float(row["provider_cost_usd"])
+        elif row["reported_cost_usd"] is not None:
+            provider_money = float(row["reported_cost_usd"])
+        else:
+            provider_money = None
         catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
         catalog_cost = (
             None
@@ -2964,22 +2971,12 @@ def session_usage_reconciliation_for_connection(
     profile_total_output_tokens = 0
     profile_total_cache_read_tokens = 0
     profile_total_cache_write_tokens = 0
+    # Session profiles no longer persist usage or cost mirrors. The pure
+    # reconciliation policy still accepts profile evidence for callers that
+    # provide it explicitly, but an archive read has no such lower-authority
+    # source to load.
     profile_cost_usd = 0.0
     profile_cost_provenance = "unknown"
-    if _table_exists(conn, "session_profiles"):
-        profile_row = conn.execute(
-            "SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, "
-            "total_cache_write_tokens, total_cost_usd, cost_provenance "
-            "FROM session_profiles WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if profile_row is not None:
-            profile_total_input_tokens = _int(profile_row["total_input_tokens"])
-            profile_total_output_tokens = _int(profile_row["total_output_tokens"])
-            profile_total_cache_read_tokens = _int(profile_row["total_cache_read_tokens"])
-            profile_total_cache_write_tokens = _int(profile_row["total_cache_write_tokens"])
-            profile_cost_usd = float(profile_row["total_cost_usd"] or 0.0)
-            profile_cost_provenance = str(profile_row["cost_provenance"] or "unknown")
 
     reconciled_model: str | None = None
     if model_usage_rows:

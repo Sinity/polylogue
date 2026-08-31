@@ -1179,32 +1179,13 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
         _raw_column(
             "message_count", """message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0)"""
         ),
-        _raw_column("cost_usd", """cost_usd                REAL"""),
+        _raw_column("provider_cost_usd", """provider_cost_usd       REAL"""),
+        _raw_column("catalog_cost_usd", """catalog_cost_usd        REAL"""),
         _raw_column("cost_credits", """cost_credits            REAL"""),
-        _raw_column(
-            "cost_provenance",
-            f"""cost_provenance         TEXT CHECK({literal_check("cost_provenance", "origin_reported", "priced", "estimated")} OR cost_provenance IS NULL)""",
-        ),
     ),
     table_constraints=(
-        """-- polylogue-shnc (v49): a provenance label that ASSERTS pricing evidence
-    -- must actually carry that evidence -- the forensic audit found 5,016
-    -- live rows with cost_provenance='priced' and cost_usd NULL (a
-    -- self-contradiction worse than an honest NULL provenance) and 3,417
-    -- 'origin_reported' rows with cost_usd NULL despite the rollup writer's
-    -- own naming implying a reported dollar figure existed.
-    -- 'origin_reported' is reserved for a genuine provider-reported dollar
-    -- total (sessions.reported_cost_usd, polylogue-gt1z) copied onto a
-    -- session_model_usage row; provider-usage-event TOKEN rollups (Codex
-    -- cumulative token_count) are catalog-priced under 'priced' instead (see
-    -- write.py's _price_provider_usage_tokens) -- conflating the two made a
-    -- catalog estimate read as if the provider itself reported that dollar
-    -- figure downstream (archive.py's list_cost_rollup_insights basis split).
-    -- polylogue-resk (v61): the CHECK's ``priced_with IS NOT NULL`` half was
-    -- dropped along with the column itself; ``cost_usd IS NOT NULL`` alone
-    -- still makes the shnc self-contradiction unrepresentable.
-    CHECK (cost_provenance != 'priced' OR cost_usd IS NOT NULL)""",
-        """CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL)""",
+        """CHECK (provider_cost_usd IS NULL OR provider_cost_usd >= 0)""",
+        """CHECK (catalog_cost_usd IS NULL OR catalog_cost_usd >= 0)""",
         """PRIMARY KEY(session_id, model_name)""",
     ),
 )

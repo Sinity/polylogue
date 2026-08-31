@@ -2188,7 +2188,7 @@ def test_archive_coverage_origin_group_includes_model_usage_cost(tmp_path: Path)
     with ArchiveStore(root) as facade:
         session_id = facade.write_parsed(session)
         facade._conn.execute(
-            "UPDATE session_model_usage SET cost_usd = ?, cost_provenance = 'priced' WHERE session_id = ?",
+            "UPDATE session_model_usage SET catalog_cost_usd = ? WHERE session_id = ?",
             (1.25, session_id),
         )
         facade._conn.commit()

@@ -249,6 +249,10 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
         wall_duration_ms=44_100,
         terminal_state="clean_finish",
     )
+    conn.execute(
+        "UPDATE session_model_usage SET provider_cost_usd = ?, catalog_cost_usd = ? WHERE session_id = ?",
+        (0.42, 0.01, child_id),
+    )
 
     _insert_session_link(
         conn,

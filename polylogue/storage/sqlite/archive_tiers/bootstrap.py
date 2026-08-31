@@ -605,15 +605,15 @@ def initialize_archive_database(
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_fresh_archive_tier(conn, tier, required_version)
-        if tier is ArchiveTier.INDEX:
-            from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
-
-            assert_schema_manifest(conn, tier)
         if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
             from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
             stamp_derived_schema_identity(conn, tier.value)
             conn.commit()
+        if tier is ArchiveTier.INDEX:
+            from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+
+            assert_schema_manifest(conn, tier)
     finally:
         conn.close()
 

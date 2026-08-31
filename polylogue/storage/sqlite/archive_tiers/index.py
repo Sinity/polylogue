@@ -448,7 +448,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-oqc6c: session-kind admission is parser-derived and existing rows
 # must be replayed so primary/subagent/prompt-suggestion values are recovered
 # from durable source evidence.
-INDEX_SCHEMA_VERSION = 80
+# polylogue-4jcof: v81 splits provider and catalog cost columns; existing rows
+# require regeneration because the old cost label cannot distinguish provider
+# dollars from catalog computation.
+INDEX_SCHEMA_VERSION = 81
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1596,12 +1599,12 @@ SELECT
     pp.terminal_state                           AS parent_terminal_state,
     cp.primary_model_name                       AS child_session_dominant_model,
     cp.primary_model_family                     AS child_session_dominant_model_family,
-    (SELECT COALESCE(SUM(u.cost_usd),
+    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd),
                      (SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id))
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,
     (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
-                 WHEN COUNT(u.cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
+                 WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,
     (SELECT SUM(COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0)

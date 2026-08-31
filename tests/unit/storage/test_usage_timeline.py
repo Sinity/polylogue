@@ -58,7 +58,7 @@ def test_usage_timeline_includes_timeless_session_cost_in_unknown_bucket(tmp_pat
         conn = facade._conn
         session_id = _insert_timeless_session(conn, native_id="timeless-usage-cost")
         conn.execute(
-            "INSERT INTO session_model_usage (session_id, model_name, input_tokens, output_tokens, cost_usd) "
+            "INSERT INTO session_model_usage (session_id, model_name, input_tokens, output_tokens, catalog_cost_usd) "
             "VALUES (?, 'gpt-5', 10, 5, 0.02)",
             (session_id,),
         )
@@ -91,7 +91,7 @@ def test_usage_timeline_paginated_first_page_still_includes_timeless_event(tmp_p
                 (f"cost-month-{index}", "codex-session", bytes(32), month_ms),
             )
             conn.execute(
-                "INSERT INTO session_model_usage (session_id, model_name, input_tokens, cost_usd) VALUES (?, 'gpt-5', 1, 0.01)",
+                "INSERT INTO session_model_usage (session_id, model_name, input_tokens, catalog_cost_usd) VALUES (?, 'gpt-5', 1, 0.01)",
                 (f"codex-session:cost-month-{index}",),
             )
         timeless = _insert_timeless_session(conn, native_id="timeless-paginated-event")

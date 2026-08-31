@@ -1087,6 +1087,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # need semantic replay to recover it from source evidence.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=81,
+        # Existing rows require regeneration because the old cost label
+        # cannot distinguish provider dollars from catalog computation.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
