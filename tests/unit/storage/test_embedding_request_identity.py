@@ -1,5 +1,7 @@
 """Production contract tests for complete embedding request identity."""
 
+from pytest import MonkeyPatch
+
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingRequestSpec
 
 
@@ -56,4 +58,20 @@ def test_complete_requests_deduplicate_without_message_identity() -> None:
     assert (
         EmbeddingRequestSpec(recipe=_recipe(input_type="query"), input_text="same").vector_derivation_hash
         != first.vector_derivation_hash
+    )
+
+
+def test_default_recipe_is_independent_of_index_schema_version(monkeypatch: MonkeyPatch) -> None:
+    """Fresh index rebuilds retain cache addresses for unchanged provider input."""
+    import polylogue.storage.sqlite.archive_tiers.index as index
+
+    before = _recipe()
+    monkeypatch.setattr(index, "INDEX_SCHEMA_VERSION", index.INDEX_SCHEMA_VERSION + 1)
+    after = _recipe()
+
+    assert after.input_schema_version == before.input_schema_version
+    assert after.recipe_hash == before.recipe_hash
+    assert (
+        EmbeddingRequestSpec(recipe=after, input_text="same").vector_derivation_hash
+        == EmbeddingRequestSpec(recipe=before, input_text="same").vector_derivation_hash
     )
