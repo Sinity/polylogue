@@ -221,7 +221,7 @@ async function loadBackground(storagePatch = {}) {
   // Let the previous instance's pending fire-and-forget chains settle before
   // the fresh mock exists; anything later is silenced by the generation guard.
   for (let turn = 0; turn < 25; turn += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
   }
   globalThis.indexedDB = new IDBFactory();
   installChromeMock(storagePatch);
@@ -729,7 +729,10 @@ describe("background receiver diagnostics", () => {
       cutoff,
       policy: { baseCadenceMs: 1000 },
     }));
-    await Promise.all(requests);
+    const responses = await Promise.all(requests);
+    expect(responses).toHaveLength(2);
+    expect(responses.every((response) => response.ok)).toBe(true);
+    expect(responses[0].job.id).toBe(responses[1].job.id);
 
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();

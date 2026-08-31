@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "../backfill/coordinator.js";
-import { BACKFILL_ALARM, DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "../backfill/models.js";
+import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "../backfill/storage.js";
@@ -17,12 +17,14 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
+import { BACKGROUND_ALARMS } from "./adapters.js";
+import { registerBackgroundEvents } from "./events.js";
 
 // These bindings are supplied by the composition root. Keeping them here
 // makes every domain function use the same seams in tests and in the worker;
 // no controller discovers a second Chrome or network client.
-let runtimeChrome = globalThis.chrome;
-let runtimeNetwork = globalThis.fetch;
+let runtimeChrome = null;
+let runtimeNetwork = null;
 
 // Must match src/common.js's TEMPORARY_CHAT_ID_KEY-adjacent sentinel exactly
 // (sessionIdFromUrl's `__polylogue_temporary_chat__` return value) -- this
@@ -50,9 +52,9 @@ const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
 const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const CONVERSATION_TIMELINE_CONVERSATION_LIMIT = 80;
-const BROWSER_ACTION_ALARM = "polylogueBrowserActionWake";
-const CAPTURE_FRESHNESS_ALARM = "polylogueCaptureFreshnessWake";
-const CAPTURE_FRESHNESS_SWEEP_ALARM = "polylogueCaptureFreshnessSweep";
+const BROWSER_ACTION_ALARM = BACKGROUND_ALARMS.browserActions;
+const CAPTURE_FRESHNESS_ALARM = BACKGROUND_ALARMS.captureFreshness;
+const CAPTURE_FRESHNESS_SWEEP_ALARM = BACKGROUND_ALARMS.captureFreshnessSweep;
 const CAPTURE_FRESHNESS_QUEUE_KEY = "polylogueCaptureFreshnessQueue";
 const CAPTURE_FRESHNESS_LEASE_MS = 2 * 60 * 1000;
 const CAPTURE_FRESHNESS_SWEEP_MINUTES = 15;
@@ -61,12 +63,13 @@ const BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
-const BACKFILL_TRANSPORT_CLEANUP_PREFIX = "polylogueBackfillTransportCleanup";
+const BACKFILL_TRANSPORT_CLEANUP_PREFIX = BACKGROUND_ALARMS.backfillTransportCleanup;
 const PROVIDER_TRANSPORT_SESSION_PREFIX = "polylogueProviderTransportTab";
 const PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX = "polylogueProviderTransportOperatorTaken";
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 let backfillCoordinatorPromise = null;
+const backfillStartPromises = new Map();
 let extensionInstanceIdPromise = null;
 let browserActionExecutorIdPromise = null;
 const providerTransportPromises = new Map();
@@ -376,6 +379,29 @@ async function backfillCoordinator() {
   return backfillCoordinatorPromise;
 }
 
+async function startBackfill(request) {
+  const provider = String(request.provider || "");
+  const inFlight = backfillStartPromises.get(provider);
+  if (inFlight) return inFlight;
+  const pending = (async () => {
+    const coordinator = await backfillCoordinator();
+    const job = await coordinator.start({
+      provider,
+      cutoff: request.cutoff,
+      policy: request.policy || {},
+      provider_options: request.provider_options || {},
+    });
+    void coordinator.wake(job.id);
+    return job;
+  })();
+  backfillStartPromises.set(provider, pending);
+  try {
+    return await pending;
+  } finally {
+    if (backfillStartPromises.get(provider) === pending) backfillStartPromises.delete(provider);
+  }
+}
+
 // ---- Capture retry queue --------------------------------------------------
 //
 // When the receiver is unreachable or returns a 5xx/429, a capture envelope
@@ -388,7 +414,7 @@ const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
 const CAPTURE_QUEUE_MAX_ENTRIES = 20;
 const CAPTURE_QUEUE_MAX_BYTES = 40 * 1024 * 1024;
 const CAPTURE_QUEUE_EMPTY = Object.freeze({ entries: [], dropped_count: 0 });
-const CAPTURE_RETRY_ALARM = "polylogueCaptureRetry";
+const CAPTURE_RETRY_ALARM = BACKGROUND_ALARMS.captureRetry;
 const CAPTURE_RETRY_BASE_DELAY_MS = 30000;
 const CAPTURE_RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
 const CAPTURE_RETRY_ALARM_PERIOD_MINUTES = 1;
@@ -3074,6 +3100,7 @@ export function startBackgroundRuntime(adapters) {
   providerTransportPromises.clear();
   providerTransportOperations.clear();
   backfillCoordinatorPromise = null;
+  backfillStartPromises.clear();
   extensionInstanceIdPromise = null;
   browserActionExecutorIdPromise = null;
   browserActionPollPromise = null;
@@ -3082,72 +3109,38 @@ export function startBackgroundRuntime(adapters) {
   captureQueueMutationQueue = Promise.resolve();
   trustedReceiverHealthCache = null;
   cachedQueueLength = 0;
-  runtimeChrome = adapters?.storage ? adapters : {
-    ...adapters,
-    runtime: globalThis.chrome?.runtime,
-  };
-  runtimeNetwork = adapters?.network || globalThis.fetch;
+  runtimeChrome = adapters;
+  runtimeNetwork = adapters.network;
 void loadCaptureQueueIntoCache();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
 
-runtimeChrome.alarms?.onAlarm?.addListener((alarm) => {
-  if (alarm?.name === BROWSER_ACTION_ALARM) {
-    void pollBrowserActions();
-    return;
-  }
-  if (alarm?.name === CAPTURE_FRESHNESS_ALARM) {
-    void processCaptureFreshnessQueue();
-    return;
-  }
-  if (alarm?.name === CAPTURE_FRESHNESS_SWEEP_ALARM) {
-    void runCaptureFreshnessSweep();
-    return;
-  }
-  if (alarm?.name?.startsWith(`${BACKFILL_TRANSPORT_CLEANUP_PREFIX}:`)) {
-    void cleanupBackfillTransportTab(alarm.name);
-    return;
-  }
-  if (alarm?.name === CAPTURE_RETRY_ALARM) {
-    void drainCaptureQueue("alarm");
-  }
-  if (alarm?.name?.startsWith(`${BACKFILL_ALARM}:`)) {
-    const jobId = alarm.name.slice(BACKFILL_ALARM.length + 1);
-    void backfillCoordinator().then((coordinator) => coordinator.wake(jobId));
-  }
-});
-
-runtimeChrome.runtime.onInstalled?.addListener(() => {
-  void captureSupportedTabs("extension_installed_or_updated");
-});
-
-runtimeChrome.runtime.onStartup?.addListener(() => {
-  void captureSupportedTabs("browser_startup");
-  void backfillCoordinator().then((coordinator) => coordinator.wake());
-  void ensureCaptureFreshnessAlarms();
-});
-
-runtimeChrome.tabs?.onActivated?.addListener((activeInfo) => {
-  void (async () => {
-    const tab = await runtimeChrome.tabs.get(activeInfo.tabId);
-    await refreshActiveTabArchiveState(tab, "tab_activated");
-  })();
-});
-
-runtimeChrome.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo?.status !== "complete" && !changeInfo?.url) return;
-  void (async () => {
-    const resolvedTab = tab?.id ? tab : await runtimeChrome.tabs.get(tabId);
-    await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
-  })();
-});
-
-runtimeChrome.tabs?.onRemoved?.addListener((tabId) => {
-  void Promise.all([
-    forgetProviderTransport("chatgpt", tabId),
-    forgetProviderTransport("claude-ai", tabId),
-  ]);
-});
+  registerBackgroundEvents(runtimeChrome, {
+    browserActions: () => pollBrowserActions(),
+    captureFreshness: () => processCaptureFreshnessQueue(),
+    captureFreshnessSweep: () => runCaptureFreshnessSweep(),
+    providerTransportCleanup: (alarmName) => cleanupBackfillTransportTab(alarmName),
+    captureRetry: () => drainCaptureQueue("alarm"),
+    backfill: (jobId) => backfillCoordinator().then((coordinator) => coordinator.wake(jobId)),
+    installed: () => captureSupportedTabs("extension_installed_or_updated"),
+    startup: () => Promise.all([
+      captureSupportedTabs("browser_startup"),
+      backfillCoordinator().then((coordinator) => coordinator.wake()),
+      ensureCaptureFreshnessAlarms(),
+    ]),
+    activated: async (activeInfo) => {
+      const tab = await runtimeChrome.tabs.get(activeInfo.tabId);
+      await refreshActiveTabArchiveState(tab, "tab_activated");
+    },
+    updated: async (tabId, tab) => {
+      const resolvedTab = tab?.id ? tab : await runtimeChrome.tabs.get(tabId);
+      await refreshActiveTabArchiveState(resolvedTab, "tab_updated");
+    },
+    removed: (tabId) => Promise.all([
+      forgetProviderTransport("chatgpt", tabId),
+      forgetProviderTransport("claude-ai", tabId),
+    ]),
+  });
 
 runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
@@ -3218,14 +3211,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.backfill.start") {
-      const coordinator = await backfillCoordinator();
-      const job = await coordinator.start({
-        provider: message.provider,
-        cutoff: message.cutoff,
-        policy: message.policy || {},
-        provider_options: message.provider_options || {},
-      });
-      void coordinator.wake(job.id);
+      const job = await startBackfill(message);
       sendResponse({ ok: true, job });
       return;
     }
