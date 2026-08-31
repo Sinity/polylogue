@@ -7,9 +7,15 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.hashing import hash_payload
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import (
+    _EXCLUDED_FIELDS,
+    _HASHED_FIELDS,
     _attachment_hash_payload,
+    _content_block_payload,
+    _message_comparison_payload,
     _message_hash_payload,
+    _model_hash_payload,
     _normalize_for_hash,
     _session_hash_payload,
     attachment_identity_hash,
@@ -19,6 +25,7 @@ from polylogue.pipeline.ids import (
     session_content_hash,
     session_id,
     session_revision_projection,
+    validate_semantic_hash_partition,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
@@ -184,6 +191,59 @@ def test_session_hash_empty_messages_is_valid() -> None:
     assert len(session_content_hash(session)) == 64
 
 
+def test_semantic_hash_partition_covers_parser_fields_and_excludes_position() -> None:
+    """Every parser field has one identity decision; position is owner evidence."""
+    validate_semantic_hash_partition()
+
+    from polylogue.sources.parsers.base_models import ParsedContentBlock as BlockModel
+    from polylogue.sources.parsers.base_models import ParsedMessage as MessageModel
+    from polylogue.sources.parsers.base_models import ParsedSession as SessionModel
+
+    for name, model in (
+        ("ParsedContentBlock", BlockModel),
+        ("ParsedMessage", MessageModel),
+        ("ParsedSession", SessionModel),
+    ):
+        fields = frozenset(model.model_fields)
+        assert fields == _HASHED_FIELDS[name] | frozenset(_EXCLUDED_FIELDS[name])
+
+    assert "position" not in _HASHED_FIELDS["ParsedMessage"]
+    assert "position" in _EXCLUDED_FIELDS["ParsedMessage"]
+
+    block = ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="shell", tool_input={"command": "echo hi"})
+    message = _parsed_message("m1", "assistant", "hello", "2024-01-01")
+    assert set(_content_block_payload(block)) == _HASHED_FIELDS["ParsedContentBlock"]
+    assert set(_message_comparison_payload(message)) == (_HASHED_FIELDS["ParsedMessage"] - {"provider_message_id"})
+    assert set(
+        _model_hash_payload(
+            _parsed_session("s1", "title", [message], created_at=None, updated_at=None),
+            _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+        )
+    ) == _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+
+
+def test_duplicate_idless_messages_with_only_position_difference_keep_owner_ambiguous() -> None:
+    """Position must not turn indistinguishable owner evidence into identity."""
+    messages = [
+        _parsed_message("", "assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
+        for position in (0, 1)
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="attachment-1",
+        message_provider_id="",
+        message_position=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_content_hash(
+            _parsed_session("s1", "title", messages, created_at=None, updated_at=None).model_copy(
+                update={"attachments": [attachment]}
+            )
+        )
+
+
 def test_session_hash_timestamps_affect_hash() -> None:
     message = _parsed_message("m1", "user", "hi", None)
     session_one = _parsed_session("conv-1", "Test", [message], created_at="2024-01-01", updated_at=None)
@@ -236,33 +296,14 @@ def _golden_session() -> ParsedSession:
 
 
 def test_session_revision_projection_golden_hashes() -> None:
-    """Pin exact hash bytes (polylogue-fqp0's dedup refactor must not change them).
-
-    These digests were captured from the pre-refactor double-serialization
-    implementation. ``session_revision_projection`` now builds each hash-stable
-    payload once and reuses it for both the whole-tree hash and the per-item
-    hashes -- a pure elimination of redundant computation, not an identity-hash
-    change. If this test ever needs updating, that is an evidence epoch and
-    requires the migration/fingerprint-bump story in polylogue-fqp0's design,
-    not a routine test-fixture update.
-
-    The session, message and event digests below are deliberately unchanged by
-    polylogue-bu1i's attachment split, which is what proves that change did not
-    move the content-hash boundary: it replaced the single ``attachment_hashes``
-    projection with an identity axis and an acquisition axis used only for
-    revision comparison, and left every hash that feeds ``session_content_hash``
-    byte-identical. Pinning ``session_hash`` here is what would catch a future
-    attempt to "simplify" that split by excluding acquisition state from the
-    content hash too -- which would silently make a newly-fetched attachment
-    look like an unchanged session and skip its re-ingest.
-    """
+    """Pin the canonical digest for the complete semantic field payload."""
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "4d768f0de553d68aa26dd2a3edc137cebbbcc147ec51ab75a5b55e05bd563f87"
+    assert projection.session_hash.hex() == "8cd118f8bf6b5cf4df70d71fdfd0dce1a48b00618c6bc14f044baf6e723b26f1"
     assert [h.hex() for h in projection.message_hashes] == [
-        "65a99313c3ed8b81e69ecc0b36f314b3bf7848bc10fcea11415ddb9b07188941",
-        "8efbf7b5b70bef4d73ec3550fe97e6f4d456cd724550bc5621a36766fe7f1f8b",
+        "b18ab4ba054f11ca84f6b32d1d38da9a84f116cd67f0bfbb5d4cef4840accf17",
+        "8b2e45a989cd949b3762e018977590d3ce409fe57a3e1a11020f9102fd9c4ce5",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
@@ -320,6 +361,11 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
             attachments=independent_attachment_payloads,
             session_events=independent_event_payloads,
         )
+        | {
+            "semantic_session_fields": _model_hash_payload(
+                session, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+            )
+        }
     )
 
     assert projection.session_hash.hex() == independent_session_hash
