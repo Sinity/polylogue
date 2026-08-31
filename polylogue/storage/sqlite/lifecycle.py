@@ -1081,6 +1081,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=80,
+        # Session kind is parser-derived admission state. Existing index rows
+        # need semantic replay to recover it from source evidence.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

@@ -142,10 +142,17 @@ class Provider(PolylogueStrEnum):
 
 
 class SessionKind(PolylogueStrEnum):
-    """Closed session lifecycle/type vocabulary."""
+    """Closed session admission vocabulary.
+
+    ``standard`` and ``temporary`` remain readable for older parsed payloads.
+    New archive writes normalize ordinary sessions to ``primary``.
+    """
 
     STANDARD = "standard"
     TEMPORARY = "temporary"
+    PRIMARY = "primary"
+    SUBAGENT = "subagent"
+    PROMPT_SUGGESTION = "prompt_suggestion"
 
     @classmethod
     def normalize(cls, value: object) -> SessionKind:
@@ -158,6 +165,23 @@ class SessionKind(PolylogueStrEnum):
             return cls(str(value).strip().lower())
         except ValueError:
             return cls.STANDARD
+
+
+def admitted_session_kind(
+    session_kind: SessionKind | str | None,
+    *,
+    branch_type: BranchType | str | None = None,
+) -> SessionKind:
+    """Resolve parser evidence to the kind stored for an admitted session."""
+    kind = SessionKind.normalize(session_kind)
+    if kind is SessionKind.PROMPT_SUGGESTION:
+        return kind
+    if kind is SessionKind.TEMPORARY:
+        return kind
+    branch = str(branch_type).strip().lower() if branch_type is not None else ""
+    if branch == BranchType.SUBAGENT.value or kind is SessionKind.SUBAGENT:
+        return SessionKind.SUBAGENT
+    return SessionKind.PRIMARY
 
 
 #: Role synonym vocabulary — single source of truth for role normalization.

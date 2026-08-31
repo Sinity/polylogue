@@ -445,7 +445,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # execution-context refs in work-evidence nodes. Existing graph rows cannot
 # recover role from their prior shape, so the normal derived rebuild route
 # must regenerate them from projected-run evidence.
-INDEX_SCHEMA_VERSION = 79
+# polylogue-oqc6c: session-kind admission is parser-derived and existing rows
+# must be replayed so primary/subagent/prompt-suggestion values are recovered
+# from durable source evidence.
+INDEX_SCHEMA_VERSION = 80
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

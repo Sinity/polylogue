@@ -38,7 +38,15 @@ from polylogue.archive.topology.edge import (
     topology_status_composes_sql,
 )
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
-from polylogue.core.enums import BlockType, LinkType, Origin, PasteBoundary, Provider, SessionKind
+from polylogue.core.enums import (
+    BlockType,
+    LinkType,
+    Origin,
+    PasteBoundary,
+    Provider,
+    SessionKind,
+    admitted_session_kind,
+)
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -797,7 +805,10 @@ def write_parsed_session_to_archive(
                     _enum_value(session.branch_type),
                     active_leaf_message_id,
                     _sqlite_text(session.title),
-                    _enum_value(session.session_kind) or SessionKind.STANDARD.value,
+                    admitted_session_kind(
+                        session.session_kind,
+                        branch_type=session.branch_type,
+                    ).value,
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
                     session.title_confidence,

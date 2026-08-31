@@ -3930,6 +3930,43 @@ def test_session_kind_is_persisted_and_read_back(tmp_path: Path) -> None:
     assert envelope.session_kind == SessionKind.TEMPORARY.value
 
 
+@pytest.mark.parametrize(
+    ("session_kind", "branch_type", "expected"),
+    [
+        (SessionKind.STANDARD, None, SessionKind.PRIMARY),
+        (SessionKind.STANDARD, BranchType.SUBAGENT, SessionKind.SUBAGENT),
+        (SessionKind.PROMPT_SUGGESTION, None, SessionKind.PROMPT_SUGGESTION),
+    ],
+)
+def test_admission_assigns_session_kind_from_structural_evidence(
+    tmp_path: Path,
+    session_kind: SessionKind,
+    branch_type: BranchType | None,
+    expected: SessionKind,
+) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=f"kind-{expected.value}",
+        session_kind=session_kind,
+        branch_type=branch_type,
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="admitted",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="admitted")],
+            )
+        ],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert row["session_kind"] == expected.value
+
+
 def test_ingest_flags_empty_writes_no_auto_tags(tmp_path: Path) -> None:
     """Sessions with no ingest_flags do not gain spurious auto-tags."""
     conn = _connect(tmp_path / "index.db")
