@@ -1384,7 +1384,9 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
     usage = conn.execute(
         """
         SELECT model_name, input_tokens, output_tokens, cache_read_tokens,
-               cache_write_tokens, cost_provenance
+               cache_write_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -1618,7 +1620,9 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
 
     usage = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,
@@ -1854,7 +1858,9 @@ def test_writer_materializes_claude_message_usage_events_without_overriding_pric
 
     rollup = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'claude-sonnet-4-20250514'
         """,
@@ -2041,7 +2047,9 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
 
     row = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cost_provenance
+        SELECT input_tokens, output_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,
@@ -2114,7 +2122,9 @@ def test_provider_usage_append_incremental_rolls_up_last_usage(tmp_path: Path) -
 
     row = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_provenance
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,
@@ -2185,7 +2195,9 @@ def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path:
 
     row = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cost_provenance
+        SELECT input_tokens, output_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,
@@ -2672,8 +2684,10 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
 
     row = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cost_provenance,
-               cost_usd
+        SELECT model_name, input_tokens, output_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance,
+               catalog_cost_usd AS cost_usd
         FROM session_model_usage
         WHERE session_id = ?
         """,

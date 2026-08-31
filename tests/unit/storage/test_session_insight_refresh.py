@@ -881,8 +881,9 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
                 output_tokens,
                 cache_read_tokens,
                 cache_write_tokens,
-                cost_usd,
-                cost_provenance
+                catalog_cost_usd AS cost_usd,
+                CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                     WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
             FROM session_model_usage
             WHERE session_id = ?
             """,
@@ -934,7 +935,9 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
         row = conn.execute(
             """
             SELECT model_name, input_tokens, output_tokens, cache_read_tokens,
-                   cache_write_tokens, cost_usd, cost_provenance
+                   cache_write_tokens, catalog_cost_usd AS cost_usd,
+                   CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                        WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
             FROM session_model_usage
             WHERE session_id = ?
             """,

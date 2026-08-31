@@ -100,18 +100,20 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CatalogCost:
     value: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProviderCost:
     value: float
 
 
 def _write_provider_cost(conn: sqlite3.Connection, session_id: str, model_name: str, cost: ProviderCost) -> None:
     """Pass through a provider dollar value without catalog computation."""
+    if not isinstance(cost, ProviderCost):
+        raise TypeError("provider cost writes require ProviderCost")
     conn.execute(
         """UPDATE session_model_usage SET provider_cost_usd = ?
            WHERE session_id = ? AND model_name = ?""",
@@ -1706,7 +1708,7 @@ def _fetch_message_window(
         upto_params = (upto_position, upto_variant_index)
     message_rows = conn.execute(
         f"""
-        SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
+        SELECT message_id, native_id, identity_source, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
                paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
         FROM messages
@@ -5770,8 +5772,6 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     rollups started sharing the 'priced' label with real message-derived
     pricing (see ``_price_provider_usage_tokens``).
     """
-    from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
-
     # Aggregate token counts from the messages table for all known models.
     token_rows = conn.execute(
         """
@@ -5801,23 +5801,14 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         sum_cache_write: int = int(row[4] or 0)
         msg_count: int = int(row[5] or 0)
 
-        # Compute catalog_cost_usd from the curated catalog when a price entry exists.
-        # estimate_cost() reads the in-memory PRICING dict directly -- there
-        # is no DB-backed rate mirror to keep in sync (polylogue-v2mg dropped
-        # model_prices, and polylogue-resk dropped the price_catalogs
-        # catalog-identity table, as zero-consumer).
-        normalized = _normalize_model(model_name)
-        billable = sum_input + sum_output + sum_cache_read + sum_cache_write
-        if normalized in PRICING and billable > 0:
-            catalog_cost_usd: float | None = estimate_cost(
-                sum_input, sum_output, model_name, sum_cache_read, sum_cache_write
-            )
-        else:
-            # polylogue-shnc: no catalog price (or no billable tokens) means no
-            # claim at all -- NOT 'priced' with a NULL cost_usd, which is the
-            # exact self-contradiction the forensic audit found on 5,016 live
-            # rows.
-            catalog_cost_usd = None
+        catalog_cost = _price_provider_usage_tokens(
+            conn,
+            model_name,
+            input_tokens=sum_input,
+            output_tokens=sum_output,
+            cache_read_tokens=sum_cache_read,
+            cache_write_tokens=sum_cache_write,
+        )
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
@@ -5854,7 +5845,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 sum_cache_read,
                 sum_cache_write,
                 msg_count,
-                catalog_cost_usd,
+                None if catalog_cost is None else catalog_cost.value,
             ),
         )
 

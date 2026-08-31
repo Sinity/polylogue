@@ -256,7 +256,9 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
 
     usage = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cost_provenance
+        SELECT input_tokens, output_tokens, cache_read_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,
@@ -1223,7 +1225,9 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
 
     usage = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cost_provenance
+        SELECT input_tokens, output_tokens, cache_read_tokens,
+               CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                    WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
         WHERE session_id = ? AND model_name = 'gpt-5-codex'
         """,

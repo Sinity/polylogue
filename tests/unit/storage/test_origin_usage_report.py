@@ -329,19 +329,16 @@ def test_origin_usage_report_separates_priced_and_unpriced_repricing(tmp_path: P
             ('codex-session', 'unknown', 'unknown', 'standard', 3, 3, 1, 1, zeroblob(32))
         """
     )
-    # polylogue-shnc: 'priced' now requires cost_usd set (CHECK constraint,
-    # v49); 'origin_reported' now means a genuine provider-reported dollar
-    # figure, so a NULL cost_usd row must carry no provenance claim at all
-    # instead of a mislabeled 'origin_reported'.
     conn.executemany(
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
+            cache_read_tokens, cache_write_tokens, message_count,
+            provider_cost_usd, catalog_cost_usd
         ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         [
-            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, None, 1.25),
             ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, None, None),
             ("codex-session:origin", "gpt-4o-mini", 1_000_000, 0, 0, 0, None, None),
             ("codex-session:unknown", "not-in-price-catalog", 1000, 100, 0, 0, None, None),
@@ -433,19 +430,16 @@ def test_origin_usage_report_exposes_subscription_credit_view_distinct_from_api_
             ('codex-session', 'origin', 'origin', 'standard', 2, 2, 1, 1, zeroblob(32))
         """
     )
-    # polylogue-shnc: a row with provider-reported tokens but no stored cost
-    # carries cost_provenance=NULL, not 'origin_reported' -- that label is
-    # reserved for a genuine provider-reported dollar figure. NULL groups
-    # under the report's "unknown" lane.
     conn.executemany(
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
+            cache_read_tokens, cache_write_tokens, message_count,
+            provider_cost_usd, catalog_cost_usd
         ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         [
-            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, None, 1.25),
             ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, None, None),
         ],
     )
@@ -1136,8 +1130,9 @@ def _seed_priced_claude_session(conn: sqlite3.Connection) -> None:
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
-        ) VALUES ('claude-code-session:priced', 'claude-sonnet-4-5', 1000, 100, 2000, 0, 1, 'priced', 1.25)
+            cache_read_tokens, cache_write_tokens, message_count,
+            provider_cost_usd, catalog_cost_usd
+        ) VALUES ('claude-code-session:priced', 'claude-sonnet-4-5', 1000, 100, 2000, 0, 1, NULL, 1.25)
         """
     )
 

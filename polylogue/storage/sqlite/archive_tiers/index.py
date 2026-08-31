@@ -1599,7 +1599,7 @@ SELECT
     pp.terminal_state                           AS parent_terminal_state,
     cp.primary_model_name                       AS child_session_dominant_model,
     cp.primary_model_family                     AS child_session_dominant_model_family,
-    (SELECT COALESCE(SUM(u.catalog_cost_usd),
+    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd),
                      (SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id))
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,

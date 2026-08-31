@@ -170,6 +170,21 @@ class TestTokenAggregation:
 
 
 class TestCostUsdComputation:
+    def test_catalog_cost_cannot_cross_provider_write_path(self) -> None:
+        """The provider writer rejects a catalog-computed cost wrapper."""
+
+        from polylogue.storage.sqlite.archive_tiers.write import CatalogCost, _write_provider_cost
+
+        conn = sqlite3.connect(":memory:")
+        with pytest.raises(TypeError, match="ProviderCost"):
+            _write_provider_cost(
+                conn,
+                "session",
+                "model",
+                CatalogCost(1.0),  # type: ignore[arg-type]
+            )
+        conn.close()
+
     def test_provider_and_catalog_costs_remain_distinct_and_provider_wins(self, tmp_path: Path) -> None:
         conn = _make_archive(tmp_path)
         with conn:

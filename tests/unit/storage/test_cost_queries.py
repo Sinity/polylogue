@@ -113,16 +113,16 @@ def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_
         CREATE TABLE session_model_usage (
             session_id TEXT, model_name TEXT, input_tokens INTEGER,
             output_tokens INTEGER, cache_read_tokens INTEGER,
-            cache_write_tokens INTEGER, cost_usd REAL, cost_credits REAL,
-            cost_provenance TEXT
+            cache_write_tokens INTEGER, provider_cost_usd REAL,
+            catalog_cost_usd REAL, cost_credits REAL
         );
         CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
         INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, NULL);
         INSERT INTO sessions VALUES ('s2', 'chatgpt-export', 2, 2, NULL);
         INSERT INTO session_model_usage VALUES
-            ('s1', 'gpt-5-5', 100, 10, 0, 0, 1.0, 100.0, 'priced');
+            ('s1', 'gpt-5-5', 100, 10, 0, 0, NULL, 1.0, 100.0);
         INSERT INTO session_model_usage VALUES
-            ('s2', 'gpt-5-5-pro', 200, 20, 0, 0, 2.0, 200.0, 'estimated');
+            ('s2', 'gpt-5-5-pro', 200, 20, 0, 0, NULL, 2.0, 200.0);
         """
     )
     archive = ArchiveStore.__new__(ArchiveStore)
@@ -136,3 +136,39 @@ def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_
     assert rollup.basis.catalog_priced_usd == pytest.approx(3.0)
     assert rollup.basis.subscription_equivalent_usd == pytest.approx(credits_to_usd(300.0))
     conn.close()
+
+
+def test_cost_rollups_sum_provider_precedence_across_sessions(tmp_path: Path) -> None:
+    """Both rollup surfaces sum the selected cost lane for a cohort."""
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(tmp_path / "archive") as archive:
+        conn = archive._conn
+        for index in range(3):
+            native_id = f"provider-cost-{index}"
+            session_id = f"codex-session:{native_id}"
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, content_hash, updated_at_ms) VALUES (?, ?, ?, ?)",
+                (native_id, "codex-session", bytes(32), 1_700_000_000_000 + index),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_model_usage (
+                    session_id, model_name, provider_cost_usd, catalog_cost_usd
+                ) VALUES (?, 'gpt-5', 5.0, 1.0)
+                """,
+                (session_id,),
+            )
+        conn.commit()
+
+        cost_rollups = archive.list_cost_rollup_insights(origin="codex-session")
+        timeline_rollups = archive.list_usage_timeline_insights(origin="codex-session")
+
+    assert len(cost_rollups) == 1
+    assert cost_rollups[0].total_usd == pytest.approx(15.0)
+    assert cost_rollups[0].basis.provider_reported_usd == pytest.approx(15.0)
+    assert cost_rollups[0].basis.catalog_priced_usd == pytest.approx(0.0)
+    assert len(timeline_rollups) == 1
+    assert timeline_rollups[0].stored_cost_usd == pytest.approx(15.0)
+    assert timeline_rollups[0].cost_provenance_counts == {"origin_reported": 3}

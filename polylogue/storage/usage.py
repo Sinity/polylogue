@@ -2751,6 +2751,7 @@ def session_usage_costs_for_connection(
                COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
                COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+               SUM(u.provider_cost_usd) AS provider_cost_usd,
                SUM(u.catalog_cost_usd) AS catalog_cost_usd,
                COUNT(u.catalog_cost_usd) AS priced_model_count,
                SUM(u.cost_credits) AS stored_credits,
@@ -2788,7 +2789,12 @@ def session_usage_costs_for_connection(
         cache_read_tokens = int(row["cache_read_tokens"] or 0)
         cache_write_tokens = int(row["cache_write_tokens"] or 0)
         total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-        provider_money = None if row["reported_cost_usd"] is None else float(row["reported_cost_usd"])
+        if row["provider_cost_usd"] is not None:
+            provider_money = float(row["provider_cost_usd"])
+        elif row["reported_cost_usd"] is not None:
+            provider_money = float(row["reported_cost_usd"])
+        else:
+            provider_money = None
         catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
         catalog_cost = (
             None
@@ -2965,22 +2971,12 @@ def session_usage_reconciliation_for_connection(
     profile_total_output_tokens = 0
     profile_total_cache_read_tokens = 0
     profile_total_cache_write_tokens = 0
+    # Session profiles no longer persist usage or cost mirrors. The pure
+    # reconciliation policy still accepts profile evidence for callers that
+    # provide it explicitly, but an archive read has no such lower-authority
+    # source to load.
     profile_cost_usd = 0.0
     profile_cost_provenance = "unknown"
-    if _table_exists(conn, "session_profiles"):
-        profile_row = conn.execute(
-            "SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, "
-            "total_cache_write_tokens, total_cost_usd, cost_provenance "
-            "FROM session_profiles WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if profile_row is not None:
-            profile_total_input_tokens = _int(profile_row["total_input_tokens"])
-            profile_total_output_tokens = _int(profile_row["total_output_tokens"])
-            profile_total_cache_read_tokens = _int(profile_row["total_cache_read_tokens"])
-            profile_total_cache_write_tokens = _int(profile_row["total_cache_write_tokens"])
-            profile_cost_usd = float(profile_row["total_cost_usd"] or 0.0)
-            profile_cost_provenance = str(profile_row["cost_provenance"] or "unknown")
 
     reconciled_model: str | None = None
     if model_usage_rows:

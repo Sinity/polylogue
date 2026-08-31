@@ -265,7 +265,7 @@ async def test_seed_injects_demo_cost_for_postmortem(tmp_path: Path) -> None:
     with sqlite3.connect(archive_root / "index.db") as conn:
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd,
+            SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd,
                    COALESCE(SUM(u.input_tokens), 0) AS total_input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS total_output_tokens
             FROM sessions AS s
@@ -310,7 +310,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     with sqlite3.connect(archive_root / "index.db") as conn:
         pre_row = conn.execute(
             """
-            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd
+            SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd
             FROM sessions AS s
             LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
             WHERE s.session_id = ?
@@ -328,7 +328,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     with sqlite3.connect(archive_root / "index.db") as conn:
         cost_row = conn.execute(
             """
-            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd,
+            SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd,
                    COALESCE(SUM(u.input_tokens), 0) AS total_input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS total_output_tokens,
                    p.repo_names_json

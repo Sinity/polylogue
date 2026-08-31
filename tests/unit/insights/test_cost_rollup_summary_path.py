@@ -11,8 +11,9 @@ rather than triggering message hydration.
 
 The contract this test pins:
 
-* ``list_cost_rollup_insights`` aggregates typed cost rows — a session whose
-  profile carries ``cost_usd`` contributes that exact amount to the rollup.
+* ``list_cost_rollup_insights`` aggregates typed model-usage cost rows — a
+  session whose provider-cost row carries ``provider_cost_usd`` contributes
+  that exact amount to the rollup.
 * The rollup completes without loading message bodies (no
   ``SessionRepository.list`` / ``get_many`` calls); the only
   session read is ``list_summaries_by_query``.
@@ -31,7 +32,6 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.insights.archive import CostRollupInsightQuery
-from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -57,7 +57,6 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
         .save()
     )
     priced_id = "conv-priced"
-    no_cost_id = "conv-no-cost"
     with sqlite3.connect(db_path) as conn:
         priced_row = conn.execute(
             "SELECT session_id FROM sessions WHERE native_id = ?",
@@ -70,32 +69,12 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
         assert priced_row is not None
         assert no_cost_row is not None
         priced_id = str(priced_row[0])
-        no_cost_id = str(no_cost_row[0])
-        upsert_session_profile_costs(
-            conn,
-            priced_id,
-            cost_usd=2.50,
-            cost_is_estimated=False,
-            cost_provenance="exact",
-            priced_with="origin-reported",
-            priced_at_ms=1_772_360_400_000,
-        )
-        # polylogue-shnc: a skeleton row with no tokens/cost carries no
-        # provenance claim (NULL) -- 'origin_reported' now means a genuine
-        # provider-reported dollar figure, which this row does not have.
         conn.execute(
             """
-            INSERT INTO session_model_usage (session_id, model_name, cost_provenance)
-            VALUES (?, 'claude-sonnet-4-5', NULL)
+            INSERT INTO session_model_usage (session_id, model_name, provider_cost_usd)
+            VALUES (?, 'claude-sonnet-4-5', 2.50)
             """,
             (priced_id,),
-        )
-        upsert_session_profile_costs(
-            conn,
-            no_cost_id,
-            cost_usd=0.0,
-            cost_is_estimated=True,
-            cost_provenance="none",
         )
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
