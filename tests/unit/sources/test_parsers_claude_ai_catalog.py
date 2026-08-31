@@ -73,6 +73,7 @@ def _tool_result_segment(text: str, *, tool_use_id: str = "tu-1") -> dict[str, A
         "type": "tool_result",
         "tool_use_id": tool_use_id,
         "content": [{"type": "text", "text": text}],
+        "is_error": False,
     }
 
 

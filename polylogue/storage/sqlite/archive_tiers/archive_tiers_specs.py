@@ -2,7 +2,7 @@
 
 Defines the single source of truth for:
   - messages table structure (29 writable columns + 1 GENERATED message_id)
-  - blocks table structure (16 writable columns + 1 GENERATED block_id)
+  - blocks table structure (17 writable columns + 1 GENERATED block_id)
   - Other key tables (sessions, session_events, etc.)
 
 Each spec drives INSERT/SELECT generation and typed row extraction.
@@ -34,6 +34,7 @@ from polylogue.core.enums import (
     SessionRefKind,
     StopReason,
     TitleSource,
+    ToolOutcome,
     ToolResultUnknownReason,
     TopologyEdgeStatus,
     WebConstructType,
@@ -277,7 +278,7 @@ def _make_blocks_spec() -> TableColumnSpec:
     The blocks table structure (from schema):
       session_id, message_id, position, block_type, text, tool_name, tool_id,
       tool_input, semantic_type, media_type, language, tool_result_is_error,
-      tool_result_exit_code, tool_result_outcome_unknown_reason, signature,
+      tool_result_exit_code, tool_outcome, tool_result_outcome_unknown_reason, signature,
       content_hash
 
     GENERATED (not writable):
@@ -300,6 +301,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         _ddl("language", "TEXT"),
         _ddl("tool_result_is_error", "INTEGER CHECK (tool_result_is_error IN (0, 1))"),
         _ddl("tool_result_exit_code", "INTEGER"),
+        ColumnSpec("tool_outcome", "TEXT", ddl_sql=f"tool_outcome TEXT CHECK ({check('tool_outcome', ToolOutcome)})"),
         ColumnSpec(
             "tool_result_outcome_unknown_reason",
             "TEXT",
@@ -336,6 +338,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         "semantic_type": ("semantic_type", None),
         "tool_result_is_error": ("tool_result_is_error", None),
         "tool_result_exit_code": ("tool_result_exit_code", None),
+        "tool_outcome": ("tool_outcome", None),
         "tool_result_outcome_unknown_reason": ("tool_result_outcome_unknown_reason", None),
         "signature": ("signature", None),
     }

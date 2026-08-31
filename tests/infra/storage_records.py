@@ -19,6 +19,7 @@ from polylogue.core.enums import (
     Provider,
     SemanticBlockType,
     TitleSource,
+    ToolOutcome,
     ValidationMode,
     ValidationStatus,
 )
@@ -187,6 +188,7 @@ def _content_block_record(
     semantic_type: str | None = None,
     tool_result_is_error: int | None = None,
     tool_result_exit_code: int | None = None,
+    tool_outcome: ToolOutcome | None = None,
     tool_result_outcome_unknown_reason: str | None = None,
 ) -> BlockRecord:
     # #1240: media_type is now stored inside the block-metadata JSON.
@@ -205,6 +207,7 @@ def _content_block_record(
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
         tool_result_is_error=tool_result_is_error,
         tool_result_exit_code=tool_result_exit_code,
+        tool_outcome=tool_outcome,
         tool_result_outcome_unknown_reason=tool_result_outcome_unknown_reason,
     )
 
@@ -230,8 +233,9 @@ def _content_block_from_mapping(
         media_type=_optional_str(block.get("media_type")),
         metadata=_json_string_or_none(raw_metadata, context="content block metadata"),
         semantic_type=_optional_str(block.get("semantic_type")),
-        tool_result_is_error=_optional_int(block.get("tool_result_is_error")),
-        tool_result_exit_code=_optional_int(block.get("tool_result_exit_code")),
+        tool_result_is_error=_optional_int(block.get("tool_result_is_error", block.get("is_error"))),
+        tool_result_exit_code=_optional_int(block.get("tool_result_exit_code", block.get("exit_code"))),
+        tool_outcome=(ToolOutcome(str(block["tool_outcome"])) if block.get("tool_outcome") is not None else None),
         tool_result_outcome_unknown_reason=_optional_str(block.get("tool_result_outcome_unknown_reason")),
     )
 
@@ -893,6 +897,7 @@ def _record_to_parsed_session(
                 metadata=_maybe_json_object(block.metadata),
                 is_error=None if block.tool_result_is_error is None else bool(block.tool_result_is_error),
                 exit_code=block.tool_result_exit_code,
+                tool_outcome=block.tool_outcome,
             )
             for block in (message.blocks or [])
         ]

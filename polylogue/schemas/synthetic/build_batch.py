@@ -636,7 +636,12 @@ def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = Fals
             "name": "Bash",
             "input": {"command": f"python -m pytest tests/generated/test_{index:04d}.py -q"},
         },
-        {"type": "tool_result", "tool_use_id": read_id, "content": "read 4096 bytes"},
+        {
+            "type": "tool_result",
+            "tool_use_id": read_id,
+            "content": "read 4096 bytes",
+            "is_error": False,
+        },
         {
             "type": "tool_result",
             "tool_use_id": bash_id,
@@ -644,7 +649,12 @@ def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = Fals
             "is_error": True,
         }
         if bash_failed
-        else {"type": "tool_result", "tool_use_id": bash_id, "content": "1 passed"},
+        else {
+            "type": "tool_result",
+            "tool_use_id": bash_id,
+            "content": "1 passed",
+            "is_error": False,
+        },
     ]
 
 

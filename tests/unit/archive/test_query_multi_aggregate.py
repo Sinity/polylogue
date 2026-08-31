@@ -520,6 +520,7 @@ async def test_codex_mcp_tool_calls_are_reachable_through_existing_tool_and_acti
                     "type": "tool_result",
                     "tool_id": "mcp-call-1",
                     "text": "1 result",
+                    "is_error": False,
                 }
             ],
         )

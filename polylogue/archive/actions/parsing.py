@@ -7,11 +7,11 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from polylogue.archive.viewport.viewports import ToolCall, ToolCategory, classify_tool
-from polylogue.core.enums import ActionResultState, Origin
+from polylogue.core.enums import ActionResultState, Origin, ToolOutcome
 from polylogue.core.json import JSONDocument, json_document
 
-#: Structural pass/fail verdict for a tool_result, or "unknown" when the
-#: origin never populated the keystone columns for this result at all.
+#: Structural pass/fail verdict for a tool_result, or "unknown" for a
+#: pre-admission block that has not passed through the archive writer.
 ToolResultOutcome = Literal["ok", "failed", "unknown"]
 
 
@@ -112,6 +112,13 @@ def tool_result_block_outcome(block: Mapping[str, object]) -> ToolResultOutcome:
     for Claude/Codex-style transcripts, which per-message pairing alone
     misses.
     """
+    canonical = block.get("tool_outcome")
+    if canonical == ToolOutcome.OK.value:
+        return "ok"
+    if canonical == ToolOutcome.ERROR.value:
+        return "failed"
+    if canonical == ToolOutcome.NO_RESULT.value:
+        return "unknown"
     is_error = _block_outcome_int(block, "tool_result_is_error", legacy_key="is_error")
     exit_code = _block_outcome_int(block, "tool_result_exit_code", legacy_key="exit_code")
     return tool_result_outcome(is_error, exit_code)

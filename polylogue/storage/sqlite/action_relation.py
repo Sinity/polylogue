@@ -61,6 +61,7 @@ ranked_results AS (
         r.text AS output_text,
         r.tool_result_is_error AS is_error,
         r.tool_result_exit_code AS exit_code,
+        r.tool_outcome,
         ROW_NUMBER() OVER (
             PARTITION BY r.session_id, r.tool_id
             ORDER BY rm.position, rm.variant_index, r.position
@@ -82,12 +83,15 @@ SELECT
     ranked_results.is_error,
     ranked_results.exit_code,
     ranked_results.tool_result_block_id,
+    ranked_results.tool_outcome,
     CASE
         WHEN ranked_results.tool_result_block_id IS NULL THEN 'no_result'
-        WHEN ranked_results.is_error IS NULL AND ranked_results.exit_code IS NULL THEN 'outcome_unknown'
+        WHEN ranked_results.tool_outcome = 'error' THEN 'outcome_error'
+        WHEN ranked_results.tool_outcome = 'ok' THEN 'outcome_success'
         WHEN ranked_results.exit_code IS NOT NULL AND ranked_results.exit_code != 0 THEN 'outcome_error'
         WHEN ranked_results.exit_code IS NULL AND ranked_results.is_error = 1 THEN 'outcome_error'
-        ELSE 'outcome_success'
+        WHEN ranked_results.is_error = 0 OR ranked_results.exit_code = 0 THEN 'outcome_success'
+        ELSE 'outcome_unknown'
     END AS result_state
 FROM ranked_uses
 LEFT JOIN ranked_results
@@ -110,6 +114,7 @@ SELECT
     NULL AS is_error,
     NULL AS exit_code,
     NULL AS tool_result_block_id,
+    NULL AS tool_outcome,
     'no_result' AS result_state
 FROM blocks u{session_index_hint}
 WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = ''){null_id_bound}

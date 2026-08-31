@@ -221,7 +221,12 @@ def _design_tool_call_blocks(tool_call: Mapping[str, object]) -> list[ParsedCont
     ]
     output = tool_call.get("output")
     if output is not None:
-        blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_id_str, text=str(output)))
+        # Claude Design has no separate result-status field. The presence of
+        # the provider's toolCall.output member is its structural success
+        # marker; an explicit error is represented by a sibling error block.
+        blocks.append(
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_id_str, text=str(output), is_error=False)
+        )
     return blocks
 
 

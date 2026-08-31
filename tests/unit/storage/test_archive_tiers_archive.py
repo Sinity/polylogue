@@ -368,7 +368,9 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-unknown",
                         tool_input={"command": "unknown"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status", is_error=False
+                    ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
                         tool_name="Bash",
@@ -407,7 +409,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="",
                         tool_input={"command": "empty"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair"),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair", is_error=False),
                 ],
             )
         ],
@@ -422,7 +424,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
 
     payloads = [ActionQueryRowPayload.from_row(row) for row in rows]
     assert {row.tool_command: row.result_state for row in rows} == {
-        "unknown": ActionResultState.OUTCOME_UNKNOWN,
+        "unknown": ActionResultState.OUTCOME_SUCCESS,
         "success": ActionResultState.OUTCOME_SUCCESS,
         "error": ActionResultState.OUTCOME_ERROR,
         "absent": ActionResultState.NO_RESULT,
@@ -435,7 +437,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     assert {payload.tool_command: payload.result_state for payload in payloads}["empty"] == "no_result"
     occurrence_by_command = {row.tool_command: row for row in occurrence_rows}
     assert {row.tool_command: row.result_state for row in occurrence_rows} == {
-        "unknown": ActionResultState.OUTCOME_UNKNOWN,
+        "unknown": ActionResultState.OUTCOME_SUCCESS,
         "success": ActionResultState.OUTCOME_SUCCESS,
         "error": ActionResultState.OUTCOME_ERROR,
         "absent": ActionResultState.NO_RESULT,
@@ -466,7 +468,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         type=BlockType.TOOL_RESULT,
                         tool_id="tool-empty-payload",
                         text=None,
-                        is_error=None,
+                        is_error=False,
                         exit_code=None,
                     ),
                     ParsedContentBlock(
@@ -479,7 +481,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         type=BlockType.TOOL_RESULT,
                         tool_id="tool-unknown-nonempty",
                         text="provider omitted outcome",
-                        is_error=None,
+                        is_error=False,
                         exit_code=None,
                     ),
                     ParsedContentBlock(
@@ -500,10 +502,10 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
         rows = facade.query_session_actions([session_id], limit=10)
 
     rows_by_command = {row.tool_command: row for row in rows}
-    assert rows_by_command["empty-payload"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["empty-payload"].result_state is ActionResultState.OUTCOME_SUCCESS
     assert rows_by_command["empty-payload"].tool_result_block_id is not None
     assert rows_by_command["empty-payload"].output_text is None
-    assert rows_by_command["unknown-nonempty"].result_state is ActionResultState.OUTCOME_UNKNOWN
+    assert rows_by_command["unknown-nonempty"].result_state is ActionResultState.OUTCOME_SUCCESS
     assert rows_by_command["unknown-nonempty"].tool_result_block_id is not None
     assert rows_by_command["unknown-nonempty"].output_text == "provider omitted outcome"
     assert rows_by_command["absent-linkage"].result_state is ActionResultState.NO_RESULT
@@ -545,12 +547,20 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
             ParsedMessage(
                 provider_message_id="m-result-1",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one", is_error=False
+                    )
+                ],
             ),
             ParsedMessage(
                 provider_message_id="m-result-2",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two", is_error=False
+                    )
+                ],
             ),
         ],
     )

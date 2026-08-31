@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType, SessionKind
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType, SessionKind, ToolOutcome
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import json_document, json_document_list
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
@@ -128,11 +128,12 @@ class BlockRecord(BaseModel):
     tool_input: str | None = None
     metadata: str | None = None
     semantic_type: SemanticBlockType | None = None
-    # Keystone structured tool-result outcome (schema v16): the paired
-    # tool_result's outcome read from source structure, not regex-guessed from
-    # output text. NULL means unknown — never a fabricated positive.
+    # Legacy structural fields retained for compatibility. The canonical
+    # outcome is tool_outcome, which is always resolved for admitted tool
+    # blocks and never inferred from output text.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
+    tool_outcome: ToolOutcome | None = None
     # polylogue-2qx.4 (v46): why tool_result_is_error is NULL, when known
     # (see core.enums.ToolResultUnknownReason). NULL means either the
     # outcome IS known, or this read path did not select the column.

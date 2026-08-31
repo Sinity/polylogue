@@ -111,6 +111,7 @@ def message_from_record(
                 "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
                 "tool_result_is_error": b.tool_result_is_error,
                 "tool_result_exit_code": b.tool_result_exit_code,
+                "tool_outcome": str(b.tool_outcome) if b.tool_outcome is not None else None,
                 "tool_result_outcome_unknown_reason": b.tool_result_outcome_unknown_reason,
                 "signature": b.signature,
             }

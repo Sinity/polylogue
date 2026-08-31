@@ -976,6 +976,28 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
     if not isinstance(tool_result, dict):
         return None
     payload: dict[str, object] = {}
+    message = item.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        tool_ids = [
+            segment.get("tool_use_id")
+            for segment in content
+            if isinstance(segment, dict)
+            and segment.get("type") == "tool_result"
+            and isinstance(segment.get("tool_use_id"), str)
+        ]
+        if len(tool_ids) == 1:
+            payload["tool_use_id"] = tool_ids[0]
+    for key in ("is_error", "isError"):
+        value = tool_result.get(key)
+        if isinstance(value, bool):
+            payload["is_error"] = value
+            break
+    for key in ("exit_code", "exitCode"):
+        value = tool_result.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            payload["exit_code"] = value
+            break
     for key in _TOOL_RESULT_STRUCTURAL_KEYS:
         value = tool_result.get(key)
         if isinstance(value, (bool, int, float)):
