@@ -153,6 +153,41 @@ def test_reconciled_cost_prefers_fresh_catalog_price_over_stale_zero() -> None:
     assert any(observation.value_state == "unknown" for observation in superseded)
 
 
+def test_live_claude_row_prefers_current_catalog_price_over_legacy_provider_label() -> None:
+    """The live mislabeled Claude row resolves to the current catalog price."""
+
+    rows = (
+        ModelUsageTotals(
+            model_name="claude-opus-4-8",
+            input_tokens=81_532,
+            output_tokens=11_306,
+            cache_read_tokens=3_655_173,
+            cache_write_tokens=820_953,
+        ),
+    )
+    reconciliation = build_session_usage_reconciliation(
+        "claude-code-session:5896e890-b744-4692-a5d3-d83e0b2b8c4d:agent-a587f12e763694b2b",
+        observed_at="2026-08-31T00:00:00+00:00",
+        model_usage_rows=rows,
+        profile_total_input_tokens=81_532,
+        profile_total_output_tokens=11_306,
+        profile_total_cache_read_tokens=3_655_173,
+        profile_total_cache_write_tokens=820_953,
+        profile_cost_usd=22.946558,
+        profile_cost_provenance="provider_reported",
+        reconciled_model="claude-opus-4-8",
+    )
+
+    assert reconciliation.catalog_cost_evidence.value == 7.648853
+    assert reconciliation.legacy_cost_evidence.value == 22.946558
+    reconciled = reconciliation.reconciled_cost_evidence
+    assert reconciled.value_state == "known"
+    assert reconciled.value == 7.648853
+    assert reconciled.conflicts == ()
+    assert [observation.value for observation in reconciliation.superseded_cost_observations()] == [22.946558]
+    SESSION_USAGE_RECONCILED_COST_FAMILY.require(reconciled)
+
+
 def test_multi_model_reprice_keeps_each_model_rate() -> None:
     """A mixed session is priced as the sum of its per-model projections.
 
