@@ -118,12 +118,14 @@ def compute_session_cost(
     has_estimates = False
     has_reported = False
     has_unknown = False
+    all_catalog_priced = True
 
     for _key, breakdown in sorted(per_model.items()):
         norm = breakdown.normalized_model
         api_cost = 0.0
         credit_cost = 0.0
         catalog_priced = norm is not None and pricing_catalog_source(norm) is not None
+        all_catalog_priced = all_catalog_priced and catalog_priced
 
         if norm:
             api_cost = estimate_cost(
@@ -204,10 +206,13 @@ def compute_session_cost(
         # disposition is "unknown", not "reported" (polylogue-9kjtc).
         agg_confidence = "unknown"
 
-    if agg_confidence == "reported":
-        cost_provenance = "provider_reported"
-    elif agg_confidence == "unknown":
+    if agg_confidence == "unknown":
         cost_provenance = "unknown"
+    elif all_catalog_priced:
+        # Per-model provenance describes the token evidence.  The aggregate
+        # cost provenance describes the dollars produced by estimate_cost,
+        # which are catalog-derived unless an exact provider amount is used.
+        cost_provenance = "catalog_priced"
     else:
         cost_provenance = "mixed"
 

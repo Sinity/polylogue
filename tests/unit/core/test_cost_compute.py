@@ -45,6 +45,41 @@ def test_nonzero_model_usage_row_stays_provider_reported() -> None:
     assert breakdown.provenance == "provider_reported"
 
 
+def test_catalog_priced_session_money_is_not_labelled_provider_reported() -> None:
+    """Catalog-priced dollars must not inherit provider token provenance.
+
+    Anti-vacuity: restoring the aggregate mapping from reported token
+    confidence to ``provider_reported`` makes this assertion red.
+    """
+
+    session = make_conv(id="catalog-priced-money", provider="claude-code", messages=[])
+    summary = compute_session_cost(
+        session,
+        estimate_if_missing=False,
+        model_usage=[ModelUsageTotals(model_name="claude-opus-4-8", input_tokens=1_000, output_tokens=500)],
+    )
+
+    assert summary.cost_provenance == "catalog_priced"
+    assert summary.per_model[0].provenance == "provider_reported"
+
+
+def test_exact_provider_money_remains_provider_reported() -> None:
+    """A provider-stated dollar total keeps its exact money provenance."""
+
+    session = make_conv(id="exact-provider-money", provider="hermes", messages=[])
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(
+            origin="hermes",
+            status="exact",
+            total_usd=1.25,
+            usage=CostUsagePayload(input_tokens=100, output_tokens=50),
+        ),
+    )
+
+    assert summary.cost_provenance == "provider_reported"
+
+
 def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() -> None:
     """polylogue-t2ugv: reported money and canonical token lanes are orthogonal.
 
