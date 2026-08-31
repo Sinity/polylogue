@@ -86,6 +86,23 @@ class SchemaVersionMismatchError(DatabaseError):
         self.lifecycle_action = lifecycle_action
 
 
+class SchemaSkewError(DatabaseError):
+    """A tier cannot be served by this runtime's schema contract."""
+
+    code = "schema_skew"
+    http_status_code = HTTPStatus.CONFLICT
+
+    def __init__(self, *, tier: str, expected: object, found: object, remedy: str) -> None:
+        self.tier = tier
+        self.expected = expected
+        self.found = found
+        self.remedy = remedy
+        super().__init__(f"{tier} schema skew: expected {expected}, found {found}. {remedy}")
+
+
+SchemaSkew = SchemaSkewError
+
+
 class EmbeddingRetrievalNotReadyError(DatabaseError):
     """Raised when ``--similar``/``--semantic`` is asked for but vectors aren't ready.
 
@@ -119,4 +136,6 @@ __all__ = [
     "PolylogueError",
     "RawCASFrontierError",
     "SchemaVersionMismatchError",
+    "SchemaSkew",
+    "SchemaSkewError",
 ]

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite import connection_profile
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:
@@ -56,3 +60,40 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
             )
     finally:
         descriptor_handle.close()
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_connection(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection]
+) -> None:
+    db_path = tmp_path / "user.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        factory(db_path)
+
+    assert excinfo.value.tier == ArchiveTier.USER.value
+    assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
+    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
+    assert "rebuild or migrate" in excinfo.value.remedy
+
+
+def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1}")
+
+    with pytest.raises(SchemaSkew, match="index schema skew"):
+        connection_profile.open_readonly_connection(db_path)
+
+
+def test_schema_skew_explicit_tier_checks_noncanonical_generation_path(tmp_path: Path) -> None:
+    db_path = tmp_path / "generation.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        connection_profile.open_readonly_connection(db_path, tier=ArchiveTier.SOURCE)
+
+    assert excinfo.value.tier == ArchiveTier.SOURCE.value
