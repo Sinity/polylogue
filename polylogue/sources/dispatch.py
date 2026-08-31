@@ -1755,6 +1755,17 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     capture payloads retain the provider mapping verbatim.
     """
     documents: list[ChatGPTLoweredDocument] = []
+    shared_record = _payload_record(payload)
+    if shared_record is not None and chatgpt.looks_like_shared_decode(shared_record):
+        conversation_id = shared_record.get("shared_conversation_id")
+        if isinstance(conversation_id, str) and conversation_id:
+            return [
+                ChatGPTLoweredDocument(
+                    conversation_id,
+                    cast(PayloadRecord, chatgpt.shared_decode_mapping(shared_record)),
+                    "shared_page_decode",
+                )
+            ]
     for spec in _lower_payload_specs(Provider.CHATGPT, payload, fallback_id):
         if spec.provider is not Provider.CHATGPT and spec.mode != "browser_capture":
             continue
@@ -1773,10 +1784,10 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
                 continue
             native = envelope.raw_provider_payload
             if isinstance(native, dict) and isinstance(native.get("mapping"), dict):
+                conversation_id = optional_string(native.get("id")) or optional_string(native.get("uuid"))
                 conversation_id = (
-                    native.get("id")
-                    or native.get("uuid")
-                    or native.get("conversation_id")
+                    conversation_id
+                    or optional_string(native.get("conversation_id"))
                     or envelope.session.provider_session_id
                 )
                 documents.append(

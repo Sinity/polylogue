@@ -598,6 +598,7 @@ def extract_messages_from_mapping(
     current_node: str | None = None,
     *,
     admission: AdmissionLedger | None = None,
+    preserve_empty_messages: bool = False,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, str, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
@@ -1092,7 +1093,7 @@ def extract_messages_from_mapping(
                     )
                 else:
                     admission.materialized(AdmissionUnit.BLOCK, block_ordinal, block.type.value)
-        if not text and not content_blocks:
+        if not text and not content_blocks and not preserve_empty_messages:
             if admission is not None:
                 admission.unknown(
                     AdmissionUnit.MESSAGE,
@@ -1372,6 +1373,17 @@ def _shared_decode_mapping(payload: Mapping[str, object]) -> tuple[dict[str, obj
     return mapping, leaf_node_id
 
 
+def shared_decode_mapping(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return the ordinary mapping projection for a validated shared decode.
+
+    Source-side conservation uses the same mapping projection as parsing. A
+    caller that needs only the provider document must not reimplement the
+    flattened shared-page lowering rules.
+    """
+    mapping, _leaf_node_id = _shared_decode_mapping(payload)
+    return mapping
+
+
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
 # ``blocks`` table has no metadata column and the write path only reads a
 # ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
@@ -1421,7 +1433,12 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     admission = AdmissionLedger()
     admission.expect(AdmissionUnit.OUTER_RECORD, 1)
     admission.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
-    messages, attachments = extract_messages_from_mapping(mapping, current_node, admission=admission)
+    messages, attachments = extract_messages_from_mapping(
+        mapping,
+        current_node,
+        admission=admission,
+        preserve_empty_messages=derived_current_node is not None,
+    )
     generation_timings = _extract_generation_timings(mapping)
     emitted_message_ids = {message.provider_message_id for message in messages}
     resolved_generation_timings: list[_GenerationTiming] = []

@@ -299,13 +299,34 @@ def test_chatgpt_parse_shared_decode_produces_real_messages() -> None:
     assert session.provider_session_id == "shared-conv-id"
     assert session.title == "Shared Decode Title"
     assert SHARED_CONVERSATION_INDEX_INGEST_FLAG not in session.ingest_flags
-    # The hidden empty system root is skipped by extract_messages_from_mapping's
-    # usual empty-text filtering; the two real turns come through.
+    # Shared-page decodes preserve every mapping node, including the hidden
+    # empty system root, so parent/child relationships remain lossless.
+    assert len(session.messages) == 3
+    by_id = {message.provider_message_id: message for message in session.messages}
+    assert by_id["root-node"].role.value == "system"
+    assert by_id["root-node"].blocks == []
+    assert by_id["user-node"].parent_message_provider_id == "root-node"
     roles_and_text = [(m.role, m.blocks[0].text if m.blocks else "") for m in session.messages]
     assert ("user", "Hello from the shared page decode") in roles_and_text
     assert ("assistant", "Reply from the shared page decode") in roles_and_text
     # The leaf node (no children) is derived as the active path tail.
     assert session.active_leaf_message_provider_id == "assistant-node"
+
+
+def test_chatgpt_shared_decode_lowering_preserves_conservation_mapping() -> None:
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    [document] = lower_chatgpt_documents(_shared_decode_payload(), "fallback")
+
+    assert document.document_id == "shared-conv-id"
+    assert document.artifact_class == "shared_page_decode"
+    assert set(document.mapping) == {"root-node", "user-node", "assistant-node"}
+    user_node = document.mapping["user-node"]
+    assistant_node = document.mapping["assistant-node"]
+    assert isinstance(user_node, dict)
+    assert isinstance(assistant_node, dict)
+    assert user_node["parent"] == "root-node"
+    assert assistant_node["children"] == []
 
 
 def test_chatgpt_temporary_payload_sets_session_kind() -> None:
