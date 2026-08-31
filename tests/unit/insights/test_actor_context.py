@@ -3,7 +3,7 @@
 Anti-vacuity note: several tests below deliberately implement the *wrong*
 adapter inline (the exact shortcuts h6r AC6 names -- actor=model-name folded
 with config, actor=session, context=prompt-only) and assert the real adapter
-in :mod:`polylogue.insights.actor_context` produces *different*,
+in :mod:`polylogue.analysis.actor_context` produces *different*,
 distinguishable behavior from that naive implementation on the same fixture.
 A test that only exercised the real adapter in isolation could not prove the
 anti-pattern is rejected; showing the two implementations diverge is the
@@ -14,16 +14,16 @@ from __future__ import annotations
 
 import hashlib
 
-from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider
-from polylogue.core.refs import ActorRef, EvidenceRef, ObjectRef
-from polylogue.insights.actor_context import (
+from polylogue.analysis.actor_context import (
     actor_ref_from_run,
     actor_ref_from_session,
     execution_context_ref_from_run,
     execution_context_ref_from_session,
 )
-from polylogue.insights.run_projection import ProjectedRun
+from polylogue.analysis.run_projection import ProjectedRun
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
+from polylogue.core.refs import ActorRef, EvidenceRef, ObjectRef
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.insights.judgment.experiments import OutcomeRecord, analyze_experiment
+from polylogue.analysis.judgment.experiments import OutcomeRecord, analyze_experiment
 
 
 @dataclass(frozen=True, slots=True)

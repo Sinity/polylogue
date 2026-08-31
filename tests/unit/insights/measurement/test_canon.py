@@ -4,7 +4,7 @@ import unicodedata
 
 import pytest
 
-from polylogue.insights.measurement.canon import canonicalize, content_ref
+from polylogue.analysis.measurement.canon import canonicalize, content_ref
 
 
 def test_canonicalize_sorts_mapping_keys_regardless_of_insertion_order() -> None:

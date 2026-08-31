@@ -12,8 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from polylogue.analysis.authored_payloads import PayloadDict
 from polylogue.core.json import JSONValue
-from polylogue.insights.authored_payloads import PayloadDict
 from polylogue.scenarios import NamedScenarioSource, ScenarioProjectionSourceKind
 
 ContinuityFailureClass = Literal[

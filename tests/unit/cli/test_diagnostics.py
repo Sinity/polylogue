@@ -14,10 +14,10 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.analysis.tool_usage import ToolUsageInsightQuery
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.commands import diagnostics
 from polylogue.cli.shared.types import AppEnv
-from polylogue.insights.tool_usage import ToolUsageInsightQuery
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
 

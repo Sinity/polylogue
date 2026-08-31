@@ -13,8 +13,8 @@ from __future__ import annotations
 import aiosqlite
 from typing_extensions import TypedDict
 
+from polylogue.analysis.tool_usage import ToolUsageInsightQuery
 from polylogue.core.enums import Origin
-from polylogue.insights.tool_usage import ToolUsageInsightQuery
 
 __all__ = [
     "ToolUsageOriginCoverageRow",

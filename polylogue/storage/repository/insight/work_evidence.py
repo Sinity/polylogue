@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceTraversal
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceTraversal
 from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 from polylogue.storage.sqlite.queries import work_evidence as work_evidence_q
 

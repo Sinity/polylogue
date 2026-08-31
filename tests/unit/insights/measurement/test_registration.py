@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from polylogue.insights.measurement.registration import (
+from polylogue.analysis.measurement.registration import (
     PreRegistration,
     RegistrationEvaluation,
     registration_status,

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.temporal_source import (
+from polylogue.analysis.temporal_source import (
     TEMPORAL_SOURCE_VALUES,
     TemporalSource,
     audit_temporal_source_leaf_callers,

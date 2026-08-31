@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.work_effects import GitCommitEffectAdapter
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.core.refs import ObjectRef
-from polylogue.insights.work_effects import GitCommitEffectAdapter
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.operations.work_effect_reconciliation import (
     WorkEvidenceGraphNotFoundError,
     reconcile_graph_repository_effects,
@@ -143,7 +143,7 @@ async def test_unknown_graph_id_raises_typed_error(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_adapter_failures_are_recorded_not_swallowed_or_fatal(tmp_path: Path) -> None:
-    from polylogue.insights.work_effects import GitHubPullRequestEffectAdapter
+    from polylogue.analysis.work_effects import GitHubPullRequestEffectAdapter
 
     graph = _seed_graph()
     async with SessionRepository(db_path=tmp_path / "index.db") as repository:

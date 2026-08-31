@@ -1,7 +1,7 @@
 """Production read path: materialize an incident's work-evidence graph from the archive.
 
 ``insights.incident_evidence_materialization`` is pure -- it adapts whatever
-:class:`~polylogue.insights.run_projection.ProjectedRun`/:class:`ObservedEvent`
+:class:`~polylogue.analysis.run_projection.ProjectedRun`/:class:`ObservedEvent`
 rows a caller hands it. This module is the one production caller that
 resolves *which* sessions an incident investigation means (an explicit
 session-id set, or a :class:`~polylogue.archive.filter.filters.SessionFilter`
@@ -12,7 +12,7 @@ run projection, and -- when ``apply=True`` -- persists the resulting graph
 through the same ``replace_work_evidence_graph`` route the Claude Workflow
 materializer and work-effect reconciliation already use.
 
-Loading uses :func:`~polylogue.insights.transforms.compile_session_run_projection`
+Loading uses :func:`~polylogue.analysis.transforms.compile_session_run_projection`
 against each full :class:`~polylogue.archive.session.domain_models.Session`
 (the same function ``storage.insights.session.rebuild`` already uses for its
 materialization-ledger stamp), not the thinner ``query_runs``/
@@ -30,16 +30,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from polylogue.core.errors import PolylogueError
-from polylogue.insights.incident_evidence_materialization import (
+from polylogue.analysis.incident_evidence_materialization import (
     IncidentMaterializationSummary,
     incident_corpus_snapshot_ref,
     materialize_incident_evidence_graph,
     summarize_incident_graph,
 )
-from polylogue.insights.run_projection import ObservedEvent, ProjectedRun
-from polylogue.insights.transforms import compile_session_run_projection
-from polylogue.insights.work_evidence import WorkEvidenceGraph
+from polylogue.analysis.run_projection import ObservedEvent, ProjectedRun
+from polylogue.analysis.transforms import compile_session_run_projection
+from polylogue.analysis.work_evidence import WorkEvidenceGraph
+from polylogue.core.errors import PolylogueError
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository import SessionRepository
 

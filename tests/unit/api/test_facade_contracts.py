@@ -385,7 +385,7 @@ async def test_archive_read_capability_is_the_real_facade_route(tmp_path: Path) 
 
 def _materialize_run_projection(index_db: Path) -> None:
     """Run the session-insight materializer for richer digest-derived projections."""
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(index_db) as conn:
@@ -4577,9 +4577,9 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
     """Session tag rollups aggregate index and user tags."""
     import sqlite3
 
+    from polylogue.analysis.archive import SessionTagRollupQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import SessionTagRollupQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_tag
@@ -4645,9 +4645,9 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     """Archive coverage aggregates sessions and profiles."""
     import sqlite3
 
+    from polylogue.analysis.archive import ArchiveCoverageInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import ArchiveCoverageInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs, upsert_session_work_event
@@ -4702,7 +4702,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             archive_db.write_parsed(chatgpt)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.row_factory = sqlite3.Row
-            from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+            from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
             rebuild_session_insights_sync(conn, session_ids=[codex_id])
             upsert_session_profile_costs(
@@ -4776,9 +4776,9 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
 
 async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) -> None:
     """Tool-usage API reads archive ``actions`` instead of retired action tables."""
+    from polylogue.analysis.tool_usage import ToolUsageInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.tool_usage import ToolUsageInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -4999,9 +4999,9 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
     """Work-event and phase insight facade methods read rows."""
     import sqlite3
 
+    from polylogue.analysis.archive import SessionPhaseInsightQuery, SessionWorkEventInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import SessionPhaseInsightQuery, SessionWorkEventInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import (
@@ -5113,13 +5113,13 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
     """Thread facade methods project thread rows."""
     import sqlite3
 
+    from polylogue.analysis.archive import ThreadInsightQuery
+    from polylogue.analysis.audit import InsightRigorAuditQuery
+    from polylogue.analysis.export_bundles import InsightExportBundleRequest
+    from polylogue.analysis.readiness import InsightReadinessQuery
     from polylogue.archive.message.roles import Role
     from polylogue.archive.session.branch_type import BranchType
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import ThreadInsightQuery
-    from polylogue.insights.audit import InsightRigorAuditQuery
-    from polylogue.insights.export_bundles import InsightExportBundleRequest
-    from polylogue.insights.readiness import InsightReadinessQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
@@ -5310,9 +5310,9 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
     """Session cost insight facade reads profile cost columns."""
     import sqlite3
 
+    from polylogue.analysis.archive import CostRollupInsightQuery, SessionCostInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import CostRollupInsightQuery, SessionCostInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import (
@@ -5427,9 +5427,9 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     """Latency profile facade methods project message timings."""
     import sqlite3
 
+    from polylogue.analysis.archive import SessionLatencyProfileInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import SessionLatencyProfileInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
@@ -5521,9 +5521,9 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
     """Archive debt API reports consistency debt."""
     import sqlite3
 
+    from polylogue.analysis.archive import ArchiveDebtInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import ArchiveDebtInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
@@ -5580,9 +5580,9 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
     """Session profile facade methods read profile rows."""
     import sqlite3
 
+    from polylogue.analysis.archive import SessionProfileInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.archive import SessionProfileInsightQuery
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
@@ -6191,9 +6191,9 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
     """Learning corrections use ``user.db``."""
     import sqlite3
 
+    from polylogue.analysis.feedback import CorrectionKind
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
-    from polylogue.insights.feedback import CorrectionKind
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 

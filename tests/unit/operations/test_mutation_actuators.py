@@ -32,8 +32,8 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.analysis.feedback import LearningCorrection
 from polylogue.core.enums import AssertionKind, Provider
-from polylogue.insights.feedback import LearningCorrection
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,

@@ -363,7 +363,7 @@ persistent condition detection.
 
 ### Hermes Integration Health
 
-`polylogue ops insights hermes-health` (`polylogue.insights.hermes_integration_health`)
+`polylogue ops insights hermes-health` (`polylogue.analysis.hermes_integration_health`)
 reports one bounded, read-only rollup of Hermes-to-Polylogue integration
 liveness (polylogue-fs1.15): enabled/disabled, per-source-class
 freshness/cursor position (via the named-source freshness projection,

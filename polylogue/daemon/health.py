@@ -806,7 +806,7 @@ def _check_capture_coverage_medium() -> HealthAlert:
     """
     now = datetime.now(UTC).isoformat()
     try:
-        from polylogue.insights.capture_coverage import compute_capture_coverage
+        from polylogue.analysis.capture_coverage import compute_capture_coverage
 
         root = archive_root()
         source_db = root / "source.db"
@@ -988,7 +988,7 @@ def _check_schema_drift_medium() -> HealthAlert:
     """
     now = datetime.now(UTC).isoformat()
     try:
-        from polylogue.insights.schema_drift import schema_drift_status
+        from polylogue.analysis.schema_drift import schema_drift_status
 
         drift = schema_drift_status(_active_health_db_path().parent, now_ms=int(datetime.now(UTC).timestamp() * 1000))
         if not drift.get("available"):

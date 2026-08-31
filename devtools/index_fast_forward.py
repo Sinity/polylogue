@@ -283,7 +283,7 @@ def _materializer_fingerprint() -> str:
     root = Path(__file__).resolve().parents[1]
     paths = (
         root / "polylogue/storage/sqlite/archive_tiers/write.py",
-        root / "polylogue/storage/insights/session/rebuild.py",
+        root / "polylogue/storage/derived/session/rebuild.py",
         root / "polylogue/storage/runtime/store_constants.py",
     )
     digest = hashlib.sha256()

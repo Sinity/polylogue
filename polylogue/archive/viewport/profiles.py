@@ -312,7 +312,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="correlation",
         label="Correlation",
-        owner="polylogue.insights.correlation_view.run_correlation_view",
+        owner="polylogue.analysis.correlation_view.run_correlation_view",
         purpose="GitHub/Git correlation evidence around one session.",
         input_scope="single session id plus repository/time-window options",
         included_kinds=("commits", "issues", "pull requests", "checks", "file overlap"),

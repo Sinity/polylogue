@@ -7,7 +7,7 @@ from contextlib import AbstractAsyncContextManager
 
 import aiosqlite
 
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import (
     SessionTagRollupListQuery,
     ThreadListQuery,
@@ -56,7 +56,7 @@ class SQLiteQueryStore(
     # -- Insight status (formerly query_store_insight_status.py) ------------
 
     async def get_session_insight_status(self, *, verify_freshness: bool = True) -> SessionInsightStatusSnapshot:
-        from polylogue.storage.insights.session.status import session_insight_status_async
+        from polylogue.storage.derived.session.status import session_insight_status_async
 
         async with self._connection_factory() as conn:
             return await session_insight_status_async(conn, verify_freshness=verify_freshness)

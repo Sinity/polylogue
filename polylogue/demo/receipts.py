@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError
 from polylogue.core.sources import origin_from_provider
-from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.scenarios import (
     DEMO_CODEX_ANTI_GREP_SESSION_ID,
     DEMO_CODEX_RECEIPTS_SESSION_ID,

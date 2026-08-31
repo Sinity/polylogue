@@ -341,7 +341,7 @@ class MCPSessionTopologyPayload(SurfacePayloadModel):
     """Typed envelope for ``get_session_topology`` (#1261 / #866 slice D).
 
     The four ref lists mirror the helper methods on
-    :class:`~polylogue.insights.topology.SessionTopology` so callers do
+    :class:`~polylogue.analysis.topology.SessionTopology` so callers do
     not have to re-derive lineage from the raw node/edge tuples.
     """
 
@@ -592,7 +592,7 @@ def session_tree_payload(
 def _ref_payload(ref: object) -> MCPSessionRefPayload:
     # Imported lazily to avoid pulling insights/topology into the module
     # import graph at module load time.
-    from polylogue.insights.topology import SessionRef
+    from polylogue.analysis.topology import SessionRef
 
     assert isinstance(ref, SessionRef)
     return MCPSessionRefPayload(
@@ -605,7 +605,7 @@ def _ref_payload(ref: object) -> MCPSessionRefPayload:
 
 def session_topology_payload(topology: object, *, session_id: str) -> MCPSessionTopologyPayload:
     """Build the typed MCP payload for ``get_session_topology`` (#1261)."""
-    from polylogue.insights.topology import SessionTopology
+    from polylogue.analysis.topology import SessionTopology
 
     assert isinstance(topology, SessionTopology)
     nodes = tuple(_ref_payload(node.as_ref()) for node in topology.nodes)
@@ -634,7 +634,7 @@ def session_topology_payload(topology: object, *, session_id: str) -> MCPSession
 
 def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload:
     """Build the typed MCP payload for ``get_logical_session`` (#866)."""
-    from polylogue.insights.topology import LogicalSession
+    from polylogue.analysis.topology import LogicalSession
 
     assert isinstance(logical_session, LogicalSession)
     return MCPLogicalSessionPayload(

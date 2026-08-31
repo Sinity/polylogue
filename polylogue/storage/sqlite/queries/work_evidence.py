@@ -7,8 +7,7 @@ from typing import cast
 
 import aiosqlite
 
-from polylogue.core.refs import ActorRef, ExecutionContextRef, ObjectRef
-from polylogue.insights.work_evidence import (
+from polylogue.analysis.work_evidence import (
     WorkEvidenceAssociationState,
     WorkEvidenceAuthority,
     WorkEvidenceEdge,
@@ -20,6 +19,7 @@ from polylogue.insights.work_evidence import (
     WorkEvidenceTraversal,
     parse_work_evidence_source_ref,
 )
+from polylogue.core.refs import ActorRef, ExecutionContextRef, ObjectRef
 from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 
 __all__ = ["get_work_evidence_graph", "get_work_evidence_traversal", "replace_work_evidence_graph"]

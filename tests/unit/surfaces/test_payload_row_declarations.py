@@ -8,9 +8,9 @@ from typing import Any, get_args
 
 import pytest
 
+from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.core.enums import DelegationMappingState
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveActionQueryRow,
     ArchiveAssertionQueryRow,

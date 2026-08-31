@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 if TYPE_CHECKING:
-    from polylogue.insights.topology import SessionTopology
+    from polylogue.analysis.topology import SessionTopology
 
 # All test classes in this module that start HTTP servers share an xdist
 # group to prevent cross-worker port interference.
@@ -325,13 +325,13 @@ class TestKeyboardNavigation:
 
 def _make_topology() -> SessionTopology:
     """Build a small SessionTopology covering parent+target+sibling+child+unresolved."""
-    from polylogue.core.types import SessionId
-    from polylogue.insights.topology import (
+    from polylogue.analysis.topology import (
         SessionTopology,
         TopologyEdge,
         TopologyEdgeKind,
         TopologyNode,
     )
+    from polylogue.core.types import SessionId
 
     cid = SessionId
 

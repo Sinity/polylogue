@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Source
-from polylogue.core.enums import Provider
-from polylogue.insights.claude_todo_projection import load_claude_todo_plan_states
-from polylogue.insights.measurement.registered_metrics import (
+from polylogue.analysis.claude_todo_projection import load_claude_todo_plan_states
+from polylogue.analysis.measurement.registered_metrics import (
     DEFAULT_METRIC_REGISTRY,
     PLAN_COMPLETION_RATE_METRIC,
 )
+from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
 _SESSION_A = "138e259e-435f-4259-8c68-dbd5aa9f9837"

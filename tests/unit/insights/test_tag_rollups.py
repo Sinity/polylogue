@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
+from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 
 
 class _FakeArchive:

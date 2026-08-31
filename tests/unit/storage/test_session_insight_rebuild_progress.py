@@ -28,7 +28,7 @@ import pytest
 pytestmark = pytest.mark.storage_scale
 
 from polylogue.api import Polylogue
-from polylogue.storage.insights.session.rebuild import _delete_tables_with_progress_sync
+from polylogue.storage.derived.session.rebuild import _delete_tables_with_progress_sync
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -180,7 +180,7 @@ def test_full_rebuild_failure_preserves_prior_profiles(
     # the first chunk's records (before any chunk commit). The archive rebuild
     # imports build_session_insight_records at call time from the rebuild
     # module, so patching it there is observed.
-    from polylogue.storage.insights.session import rebuild as rebuild_module
+    from polylogue.storage.derived.session import rebuild as rebuild_module
 
     def _explode(*args: object, **kwargs: object) -> None:
         raise RuntimeError("simulated mid-rebuild failure")

@@ -28,6 +28,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.analysis.archive import (
+    ArchiveInsightProvenance,
+    SessionCostInsight,
+)
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
@@ -41,10 +45,6 @@ from polylogue.daemon.http import (
     _cost_panel_payload,
     _empty_cost_payload,
     _usage_dict,
-)
-from polylogue.insights.archive import (
-    ArchiveInsightProvenance,
-    SessionCostInsight,
 )
 
 # ---------------------------------------------------------------------------

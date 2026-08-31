@@ -7,9 +7,8 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef, ObjectRefKind
-from polylogue.insights.run_projection import ObservedEvent, ProjectedRun
-from polylogue.insights.work_evidence import (
+from polylogue.analysis.run_projection import ObservedEvent, ProjectedRun
+from polylogue.analysis.work_evidence import (
     WorkEvidenceAssociationState,
     WorkEvidenceEdge,
     WorkEvidenceEdgeKind,
@@ -19,6 +18,7 @@ from polylogue.insights.work_evidence import (
     node_from_projected_run,
     session_segment_from_observed_events,
 )
+from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef, ObjectRefKind
 from polylogue.storage.repository import SessionRepository
 
 EVIDENCE = EvidenceRef(session_id="codex-session:work-evidence", message_id="m1", block_index=0)

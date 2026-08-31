@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.archive import ArchiveInferenceProvenance, ArchiveInsightProvenance, SessionProfileInsight
-from polylogue.insights.archive_models import SessionEvidencePayload, SessionInferencePayload
-from polylogue.insights.session_analytics import (
+from polylogue.analysis.archive import ArchiveInferenceProvenance, ArchiveInsightProvenance, SessionProfileInsight
+from polylogue.analysis.archive_models import SessionEvidencePayload, SessionInferencePayload
+from polylogue.analysis.session_analytics import (
     CORRELATABLE_SESSION_METRICS,
     build_session_comparison_row,
     compute_metadata_similarity_candidates,

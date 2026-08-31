@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.transforms import (
+    DecisionCandidate,
+    SessionDigest,
+    TransformRawRef,
+    compile_session_digest,
+)
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
@@ -14,12 +20,6 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONValue
 from polylogue.core.types import SessionId
-from polylogue.insights.transforms import (
-    DecisionCandidate,
-    SessionDigest,
-    TransformRawRef,
-    compile_session_digest,
-)
 from polylogue.storage.sqlite.archive_tiers import user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
@@ -1836,8 +1836,8 @@ def test_assertion_upsert_rolls_back_its_immediate_transaction(tmp_path: Path, m
 
 def test_upsert_pathology_findings_emits_queryable_candidates(tmp_path: Path) -> None:
     """Pathology findings become PATHOLOGY candidate claims with evidence (#2383)."""
+    from polylogue.analysis.pathology import PathologyFinding
     from polylogue.core.refs import EvidenceRef
-    from polylogue.insights.pathology import PathologyFinding
 
     conn = connect_user_tier(tmp_path / "user.db")
     try:

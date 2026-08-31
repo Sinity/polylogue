@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from polylogue.insights.topology import SessionTopology, TopologyEdge, TopologyNode
+from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyNode
 
 #: Default ``node_limit`` used when the client does not pass ``?limit=``.
 DEFAULT_NODE_LIMIT: Final[int] = 200

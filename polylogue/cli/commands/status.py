@@ -32,7 +32,7 @@ def convergence_debt_summary_info(*args: Any, **kwargs: Any) -> Any:
 
 
 def schema_drift_status(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.insights.schema_drift import schema_drift_status as implementation
+    from polylogue.analysis.schema_drift import schema_drift_status as implementation
 
     return implementation(*args, **kwargs)
 
@@ -1886,7 +1886,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
 
 
 def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.insights.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
+    from polylogue.analysis.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
     from polylogue.readiness.capability import (
         CapabilityReadinessState,
         ComponentReadiness,

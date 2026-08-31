@@ -11,19 +11,19 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.cli.click_app import cli
-from polylogue.cli.commands.insights import _make_callback
-from polylogue.insights.archive import ArchiveCoverageInsight, SessionWorkEventInsight
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive import ArchiveCoverageInsight, SessionWorkEventInsight
+from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.insights.registry import get_insight_type, insight_items_payload
-from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
-from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.analysis.registry import get_insight_type, insight_items_payload
+from polylogue.cli.click_app import cli
+from polylogue.cli.commands.insights import _make_callback
+from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
+from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db

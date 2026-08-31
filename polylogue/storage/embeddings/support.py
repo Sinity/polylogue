@@ -7,7 +7,7 @@ from collections.abc import Iterable
 
 import aiosqlite
 
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.introspection import table_exists_async as _table_exists_async
 

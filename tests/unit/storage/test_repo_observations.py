@@ -10,7 +10,7 @@ import aiosqlite
 import pytest
 
 from polylogue.archive.session.attribution import SessionAttribution
-from polylogue.storage.insights.session.repo_observations import (
+from polylogue.storage.derived.session.repo_observations import (
     RepoObservation,
     attribution_to_observations,
     list_repos,

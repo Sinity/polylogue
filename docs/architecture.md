@@ -84,8 +84,8 @@ Stored insights computed over the archive:
 
 Primary modules:
 
-- `polylogue/insights/`
-- `polylogue/storage/insights/session/`
+- `polylogue/analysis/`
+- `polylogue/storage/derived/session/`
 - `polylogue/storage/repository/insight/`
 
 ### 3. Surfaces
@@ -129,7 +129,7 @@ source files (JSON/JSONL/ZIP)
   → provider parser            # parsers/{chatgpt,claude,codex,drive}.py
   → content hash (NFC)         # pipeline/ids.py — SHA-256 over normalized payload
   → store (upsert-if-changed)  # storage/ — idempotent by content hash
-  → session insights           # storage/insights/session/ — profiles, work events, phases, threads
+  → session insights           # storage/derived/session/ — profiles, work events, phases, threads
   → FTS index                  # search_providers/fts5.py — unicode61 tokenizer
 
            CLI / MCP / Python API
@@ -265,7 +265,7 @@ route invokes this same iterator even when `conversations/` is absent.
 | `SessionRepository` | `storage/repository/__init__.py` | Mixin-composed async repository (10 mixins: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology). |
 | `VectorProvider` protocol | `core/protocols.py` | `SqliteVecProvider` implementation (sqlite-vec + Voyage AI embeddings). FTS/hybrid retrieval has no provider abstraction — production lexical search queries FTS5 directly and hybrid retrieval fuses results inline (`reciprocal_rank_fusion` in `storage/search_providers/hybrid.py`) against live query-plan state (`archive/query/archive_execution.py`, `cli/archive_query.py`); a prior `SearchProvider` protocol with FTS5/Hybrid provider classes was removed (polylogue-a7xr.10) after an audit found zero production consumers. |
 | `SessionFilter` | `archive/filter/filters.py` | Fluent filter chain used by CLI, MCP, and facade. |
-| `Session Insights` | `storage/insights/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
+| `Session Insights` | `storage/derived/session/` | Materialized read models: profiles, work events, phases, threads, aggregates. |
 | `ContentHash` | `pipeline/ids.py` | SHA-256 over NFC-normalized session payload. Title, timestamps, messages, attachments are hashed. User metadata (tags, summaries) is excluded — editable metadata doesn't trigger re-import. |
 | `Provider` enum | `core/enums.py` | Legacy/provider-wire identifier used by parsers, schemas, provider metadata, and compatibility bridges. |
 | `Origin` enum | `core/enums.py` | Public source-origin identity used by query/read surfaces and archive payloads. |
@@ -481,7 +481,7 @@ polylogue-c9y so the first PR that adds it has somewhere to look):
 
 - **`insights/`** = materialized derived **read models** — storage-backed,
   rebuildable rows written by a convergence stage or write-effect
-  (`storage/insights/session/profiles.py`, `timeline/`, `storage/insights/topology/derivation.py`).
+  (`storage/derived/session/profiles.py`, `timeline/`, `storage/derived/topology/derivation.py`).
   An insight has a table (or a view) and a staleness/rebuild story.
 - **`analytics/`** (future) = **computation** — measures, statistics,
   registries of pure functions over already-materialized data. An analytic

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.insights.session.runtime import SessionInsightRefreshChunkPayload
+from polylogue.storage.derived.session.runtime import SessionInsightRefreshChunkPayload
 
 
 class AcquireSplitPayloadSummary(TypedDict):

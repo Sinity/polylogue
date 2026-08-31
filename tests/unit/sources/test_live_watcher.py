@@ -2204,7 +2204,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
                 == 1
             )
 
-        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+        from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
         summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
         assert summary.current_artifact_count == 1
@@ -2278,7 +2278,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
                 == 2
             )
 
-        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+        from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
         summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
         assert summary.current_artifact_count == 2

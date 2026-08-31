@@ -8,14 +8,14 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.api import Polylogue
-from polylogue.insights.readiness import (
+from polylogue.analysis.readiness import (
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
     build_insight_readiness_report,
 )
-from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.api import Polylogue
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.storage_records import SessionBuilder
 

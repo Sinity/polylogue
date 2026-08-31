@@ -191,7 +191,7 @@ def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: p
     async def fake_fetch(_descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
         return [item]
 
-    monkeypatch.setattr("polylogue.insights.registry.fetch_insights_async", fake_fetch)
+    monkeypatch.setattr("polylogue.analysis.registry.fetch_insights_async", fake_fetch)
     payload = asyncio.run(
         build_observability_payload(
             object(),
@@ -239,7 +239,7 @@ def test_observability_payload_keeps_projection_errors_panel_local(monkeypatch: 
     async def fake_fetch(descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
         return [good_item] if descriptor is good else [broken_item]
 
-    monkeypatch.setattr("polylogue.insights.registry.fetch_insights_async", fake_fetch)
+    monkeypatch.setattr("polylogue.analysis.registry.fetch_insights_async", fake_fetch)
     payload = asyncio.run(
         build_observability_payload(
             object(),
@@ -269,7 +269,7 @@ def test_observability_status_adapter_preserves_timeout_evidence() -> None:
 
 def _materialize_run_projection(index_db: Path) -> None:
     """Rebuild session insights for richer digest-derived run-projection rows."""
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(index_db) as conn:
@@ -2578,8 +2578,8 @@ class TestWebUIV2:
         workspace_env: dict[str, Path],
     ) -> None:
         """A materialized rollup renders every basis lane independently, never collapsed into one number."""
+        from polylogue.analysis.archive import ArchiveInsightProvenance, CostRollupInsight
         from polylogue.archive.semantic.pricing import CostBasisPayload, CostUsagePayload
-        from polylogue.insights.archive import ArchiveInsightProvenance, CostRollupInsight
 
         provenance = ArchiveInsightProvenance(
             materializer_version=1,

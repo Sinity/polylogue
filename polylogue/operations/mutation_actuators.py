@@ -2118,8 +2118,8 @@ class InsightsRebuildActuator(_FailClosedRecovery):
         )
 
     def apply(self, plan: MutationPlan, args: InsightsRebuildArgs) -> MutationReceipt:
-        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-        from polylogue.storage.insights.session.runtime import SessionInsightCounts
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.derived.session.runtime import SessionInsightCounts
 
         session_ids = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         if not session_ids and not bool(plan.context.get("full_rebuild")):

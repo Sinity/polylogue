@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.measurement.metric import MetricDefinition
-from polylogue.insights.measurement.registered_measures import DEFAULT_MEASURE_REGISTRY
-from polylogue.insights.measurement.registry import (
+from polylogue.analysis.measurement.metric import MetricDefinition
+from polylogue.analysis.measurement.registered_measures import DEFAULT_MEASURE_REGISTRY
+from polylogue.analysis.measurement.registry import (
     MeasurePlan,
     MeasureRegistry,
     MeasureSpec,

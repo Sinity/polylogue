@@ -6,7 +6,7 @@ CLI, MCP, API, readiness, and export.
 
 from __future__ import annotations
 
-from polylogue.insights.registry import INSIGHT_REGISTRY
+from polylogue.analysis.registry import INSIGHT_REGISTRY
 
 
 def _consumer_report() -> dict[str, dict[str, str | None]]:

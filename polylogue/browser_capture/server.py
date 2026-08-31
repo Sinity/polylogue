@@ -128,8 +128,8 @@ def mission_control_archive_facts(
     """
     try:
         from polylogue import Polylogue
+        from polylogue.analysis.archive import SessionCostInsightQuery
         from polylogue.api.sync.bridge import run_coroutine_sync
-        from polylogue.insights.archive import SessionCostInsightQuery
 
         poly = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
         cost: _MissionControlCostPayload = {"status": "unknown", "total_usd": None, "provenance": []}

@@ -319,7 +319,7 @@ _DOMAIN_FAMILY_DECLARATIONS: Final[tuple[FactFamilySpec, ...]] = (
     ),
     _family(
         "inference.profile_phase",
-        owner="polylogue.insights.profile",
+        owner="polylogue.analysis.profile",
         field="profile_phase",
         schema="object",
         unit="classification",
@@ -338,7 +338,7 @@ _DOMAIN_FAMILY_DECLARATIONS: Final[tuple[FactFamilySpec, ...]] = (
     ),
     _family(
         "metric.aggregate",
-        owner="polylogue.insights.measurement",
+        owner="polylogue.analysis.measurement",
         field="metric",
         schema="number",
         unit="declared",

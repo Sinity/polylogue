@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.judgment.elicitation import ElicitationSession, ExplorationQuota
-from polylogue.insights.judgment.types import JudgeIdentity
+from polylogue.analysis.judgment.elicitation import ElicitationSession, ExplorationQuota
+from polylogue.analysis.judgment.types import JudgeIdentity
 
 _ITEMS = ("maj1", "maj2", "maj3", "maj4", "min1", "min2")
 _JUDGE = JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a")

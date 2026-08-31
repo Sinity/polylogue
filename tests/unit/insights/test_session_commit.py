@@ -23,8 +23,7 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.core.refs import ObjectRef
-from polylogue.insights.session_commit import (
+from polylogue.analysis.session_commit import (
     SOURCE_HEURISTIC,
     SOURCE_TYPED,
     GitHubRef,
@@ -41,6 +40,7 @@ from polylogue.insights.session_commit import (
     score_file_overlap,
     typed_refs_from_session_refs,
 )
+from polylogue.core.refs import ObjectRef
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-l9su trailer-priority tests create a real git commit via subprocess "

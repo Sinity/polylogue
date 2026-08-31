@@ -8,9 +8,9 @@ from pathlib import Path
 
 import aiosqlite
 
-from polylogue.insights.readiness import InsightReadinessQuery, build_insight_readiness_report
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.insights.session.status import (
+from polylogue.analysis.readiness import InsightReadinessQuery, build_insight_readiness_report
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.status import (
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
     SessionInsightReadyDescriptor,

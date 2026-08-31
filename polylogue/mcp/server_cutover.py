@@ -157,7 +157,7 @@ def _metric_definition_payload(hooks: ServerCallbacks, metric_id: str) -> str:
     ref), falling back to a direct content-hash lookup for
     ``metric:<hash>`` refs copied from another surface's output.
     """
-    from polylogue.insights.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY
+    from polylogue.analysis.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY
 
     definition = DEFAULT_METRIC_REGISTRY.resolve(metric_id) or DEFAULT_METRIC_REGISTRY.get(f"metric:{metric_id}")
     if definition is None:
@@ -176,9 +176,9 @@ async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, metho
     ``Polylogue.cost_outlook`` production route rather than redefining the
     projection or its "no cycle window" degradation here.
     """
+    from polylogue.analysis.projection_contracts import cost_outlook_availability
     from polylogue.cost.outlook import ProjectionMethod
     from polylogue.cost.plans import PlanLookupError
-    from polylogue.insights.projection_contracts import cost_outlook_availability
 
     if not plan_name.strip():
         return hooks.error_json("cost-outlook ref requires a plan name", code="invalid_argument", tool="get")
@@ -574,7 +574,7 @@ async def _query_insight_projection(
     to 10 sessions and defeat the facade's own 200-session analysis cap.
     """
     if projection == "tool-episodes":
-        from polylogue.insights.tool_episodes import ToolEpisodeQuery
+        from polylogue.analysis.tool_episodes import ToolEpisodeQuery
 
         episodes = await hooks.get_polylogue().list_tool_episode_insights(
             ToolEpisodeQuery(
@@ -624,7 +624,7 @@ async def _query_insight_projection(
             return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
 
         assert projection == "stuck_sessions", f"unhandled insight projection: {projection}"
-        from polylogue.insights.archive import SessionLatencyProfileInsightQuery
+        from polylogue.analysis.archive import SessionLatencyProfileInsightQuery
 
         stuck = await poly.find_stuck_session_latency_profile_insights(
             SessionLatencyProfileInsightQuery(
@@ -947,7 +947,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
         ``ref="metric:<hash-or-registered-name>"`` resolves a canonical
         ``metric:<hash>`` definition (rxdo.9.1) from the process-wide
-        default registry (``polylogue/insights/measurement/
+        default registry (``polylogue/analysis/measurement/
         registered_metrics.py``) -- identity/schema resolution only, not
         execution (no aggregation engine exists yet; see polylogue-9l5.7).
         """
@@ -1916,7 +1916,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             )
 
         if operation == "record_correction":
-            from polylogue.insights.feedback import UnknownCorrectionKindError
+            from polylogue.analysis.feedback import UnknownCorrectionKindError
 
             if session_id is None:
                 return hooks.error_json(
@@ -1954,7 +1954,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             )
 
         if operation == "clear_corrections":
-            from polylogue.insights.feedback import UnknownCorrectionKindError
+            from polylogue.analysis.feedback import UnknownCorrectionKindError
 
             if session_id is None:
                 return hooks.error_json(

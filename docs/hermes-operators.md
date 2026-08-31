@@ -308,7 +308,7 @@ observer/verification session id, *preserving* whatever `@profile-<key>`
 qualifier it carries — a reader holding the qualified conversational id
 resolves that artifact's evidence for the same install, not merely the same
 raw session id.
-`polylogue/insights/hermes_topology_projection.py` composes all four artifact
+`polylogue/analysis/hermes_topology_projection.py` composes all four artifact
 classes for one raw Hermes session id into one typed, read-only projection
 (availability, per-artifact fidelity, unpaired-trace debt, and explicit
 producer-conflict detection for disagreeing subagent-session evidence) — but
@@ -375,7 +375,7 @@ This is the section to read before you trust anything above it.
    helpers above, or use the `hermes_verification_coverage` primitive
    (next point).
 3. **Verification-coverage correlation has no CLI or MCP surface yet.**
-   `polylogue/insights/hermes_verification_coverage.py` (`fs1.4`) is a real,
+   `polylogue/analysis/hermes_verification_coverage.py` (`fs1.4`) is a real,
    tested, pure-aggregation function that summarizes one Hermes session's
    `verification_evidence.db` coverage — but it is not registered in the
    insight registry, has no `polylogue read --view` entry, and is not
@@ -388,9 +388,9 @@ This is the section to read before you trust anything above it.
    dedicated Hermes forensics command or `read --view forensics`. What
    exists today composes from generic, origin-agnostic primitives already
    documented elsewhere: session topology (`get_session_topology`), the
-   postmortem bundle (`polylogue/insights/postmortem.py`,
+   postmortem bundle (`polylogue/analysis/postmortem.py`,
    `docs/agent-forensics.md`), and git-commit correlation
-   (`polylogue/insights/session_commit.py`) all work on Hermes sessions the
+   (`polylogue/analysis/session_commit.py`) all work on Hermes sessions the
    same as any other origin, because none of them branch on origin. But
    there is no single command that packages all five forensic sections for
    a Hermes session yet.
@@ -486,9 +486,9 @@ because none of them branch on origin — see
 
 - Session topology / logical-session composition (parents, resumes,
   compactions, branches).
-- The postmortem bundle (`polylogue/insights/postmortem.py`) — cost/token
+- The postmortem bundle (`polylogue/analysis/postmortem.py`) — cost/token
   lanes, tool-category profiles, pathology-detector failure modes.
-- Git-commit correlation (`polylogue/insights/session_commit.py`).
+- Git-commit correlation (`polylogue/analysis/session_commit.py`).
 
 ## Privacy boundaries
 

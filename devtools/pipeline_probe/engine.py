@@ -614,7 +614,7 @@ async def _probe_materialize_stage(
 ) -> _MaterializeStageOutcome:
     """Materialize probe-ingested sessions through the production insights writer."""
     from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_async
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_async
 
     if stage in {"all", "reprocess"}:
         session_ids = sorted(processed_ids)

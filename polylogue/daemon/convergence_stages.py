@@ -36,7 +36,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
+from polylogue.storage.derived.session.runtime import session_profile_stale_predicate
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -374,7 +374,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         if not relevant(path):
             return False
         try:
-            from polylogue.insights.claude_workflow_materializer import (
+            from polylogue.analysis.claude_workflow_materializer import (
                 claude_workflow_materialization_needed,
             )
 
@@ -393,7 +393,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         if not relevant(path):
             return True
         try:
-            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
             summary = materialize_claude_workflow_archive(archive_root())
             logger.info(
@@ -442,7 +442,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
     def check(path: Path) -> bool:
         del path
         try:
-            from polylogue.insights.delegation_work_evidence_materializer import (
+            from polylogue.analysis.delegation_work_evidence_materializer import (
                 delegation_work_evidence_materialization_needed,
             )
 
@@ -456,7 +456,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
     def execute(path: Path) -> StageExecuteReturn:
         del path
         try:
-            from polylogue.insights.delegation_work_evidence_materializer import (
+            from polylogue.analysis.delegation_work_evidence_materializer import (
                 materialize_delegation_work_evidence_archive,
             )
 
@@ -518,7 +518,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute(archive_db, path, archive_root=db_path.parent)
-        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
         try:
@@ -590,7 +590,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute_many(archive_db, paths, archive_root=db_path.parent)
-        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
         try:
@@ -658,7 +658,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
             return _archive_insights_execute_sessions(archive_db, session_ids, archive_root=db_path.parent)
-        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
         try:
@@ -1400,7 +1400,7 @@ def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> bool:
 
 def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
     """Sessions whose session_profile is missing or stale (#1620)."""
-    from polylogue.storage.insights.session.status import SESSION_PROFILE_REPAIR_CANDIDATES_SQL
+    from polylogue.storage.derived.session.status import SESSION_PROFILE_REPAIR_CANDIDATES_SQL
     from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
     rows = conn.execute(SESSION_PROFILE_REPAIR_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
@@ -2429,7 +2429,7 @@ def _archive_insights_execute_sessions(
 def _archive_insights_execute_ids(
     conn: sqlite3.Connection, session_ids: Sequence[str], *, archive_root: Path | None = None
 ) -> StageExecuteReturn:
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not session_ids:

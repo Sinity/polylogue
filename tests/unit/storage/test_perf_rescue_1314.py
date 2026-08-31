@@ -29,7 +29,7 @@ from typing import Any
 import aiosqlite
 import pytest
 
-from polylogue.storage.insights.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
+from polylogue.storage.derived.session.rebuild import _SESSION_INSIGHT_REBUILD_PAGE_SIZE
 from polylogue.storage.sqlite.queries.sessions_search import search_session_hits
 from polylogue.storage.sqlite.queries.stats import get_origin_metrics_rows
 from tests.benchmarks.helpers import open_bench_store

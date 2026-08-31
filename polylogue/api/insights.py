@@ -6,15 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.query.spec import parse_query_date
-from polylogue.archive.query.transaction import run_archive_read
-from polylogue.archive.session.branch_type import BranchType
-from polylogue.config import active_archive_root as _active_archive_root
-from polylogue.core.types import SessionId
-from polylogue.cost.aggregation import session_costs_to_daily_usd
-from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
-from polylogue.cost.plans import resolve_plan
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsight,
@@ -38,12 +30,12 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.insights.cost_enrichment import enrich_session_cost_insights
-from polylogue.insights.tag_rollups import synthesize_origin_tag_rollups
-from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
-from polylogue.insights.topology import (
+from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.analysis.cost_enrichment import enrich_session_cost_insights
+from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
+from polylogue.analysis.topology import (
     LogicalSession,
     SessionRef,
     SessionTopology,
@@ -51,6 +43,14 @@ from polylogue.insights.topology import (
     TopologyEdgeKind,
     TopologyNode,
 )
+from polylogue.archive.query.spec import parse_query_date
+from polylogue.archive.query.transaction import run_archive_read
+from polylogue.archive.session.branch_type import BranchType
+from polylogue.config import active_archive_root as _active_archive_root
+from polylogue.core.types import SessionId
+from polylogue.cost.aggregation import session_costs_to_daily_usd
+from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook
+from polylogue.cost.plans import resolve_plan
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -828,7 +828,7 @@ class PolylogueInsightsMixin:
 
         Raises ``ValueError`` for an unsupported ``group_by``.
         """
-        from polylogue.insights.archive_rollups import aggregate_session_profiles_by_dimension
+        from polylogue.analysis.archive_rollups import aggregate_session_profiles_by_dimension
 
         profiles = await self.list_session_profile_insights(
             SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
@@ -849,7 +849,7 @@ class PolylogueInsightsMixin:
         Raises ``ValueError`` when ``group_by`` is not one of
         ``week``, ``origin``, ``project``.
         """
-        from polylogue.insights.archive_rollups import workflow_shape_distribution_buckets
+        from polylogue.analysis.archive_rollups import workflow_shape_distribution_buckets
 
         profiles = await self.list_session_profile_insights(
             SessionProfileInsightQuery(origin=origin, since=since, until=until, limit=None)
@@ -872,7 +872,7 @@ class PolylogueInsightsMixin:
 
         Raises ``ValueError`` for an unknown ``min_severity``.
         """
-        from polylogue.insights.archive_rollups import abandoned_session_items
+        from polylogue.analysis.archive_rollups import abandoned_session_items
 
         profiles = await self.list_session_profile_insights(
             SessionProfileInsightQuery(origin=origin, tag=tag, repo=repo, since=since, until=until, limit=None)
@@ -890,7 +890,7 @@ class PolylogueInsightsMixin:
         limit: int = 500,
     ) -> dict[str, object]:
         """Distribution of materialized per-session tool-call latency."""
-        from polylogue.insights.archive_rollups import tool_call_latency_distribution_payload
+        from polylogue.analysis.archive_rollups import tool_call_latency_distribution_payload
 
         insights = await self.list_session_latency_profile_insights(
             SessionLatencyProfileInsightQuery(origin=origin, since=since, until=until, limit=limit)
@@ -903,7 +903,7 @@ class PolylogueInsightsMixin:
         Raises ``ValueError`` when ``session_ids`` has fewer than 2 or more
         than 10 entries.
         """
-        from polylogue.insights.session_analytics import build_session_comparison_row, diff_session_comparison_rows
+        from polylogue.analysis.session_analytics import build_session_comparison_row, diff_session_comparison_rows
 
         if len(session_ids) < 2:
             raise ValueError(f"Need at least 2 session IDs to compare. Got {len(session_ids)} ID(s); expected 2-10.")
@@ -940,7 +940,7 @@ class PolylogueInsightsMixin:
         for ``similarity_dimension="metadata"``. Returns ``None`` when
         ``session_id`` does not resolve to a session profile.
         """
-        from polylogue.insights.session_analytics import compute_metadata_similarity_candidates
+        from polylogue.analysis.session_analytics import compute_metadata_similarity_candidates
 
         ref_profile = await self.get_session_profile_insight(session_id)
         if ref_profile is None:
@@ -969,7 +969,7 @@ class PolylogueInsightsMixin:
         Raises ``ValueError`` for an unknown metric name (validated before
         fetching profiles).
         """
-        from polylogue.insights.session_analytics import ensure_known_session_metric, pearson_session_correlation
+        from polylogue.analysis.session_analytics import ensure_known_session_metric, pearson_session_correlation
 
         ensure_known_session_metric(metric_x, "metric_x")
         ensure_known_session_metric(metric_y, "metric_y")

@@ -6,14 +6,14 @@ from collections.abc import Sequence
 
 import pytest
 
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
-from polylogue.insights.archive_models import ObjectivePosturePayload
-from polylogue.insights.objective_posture import (
+from polylogue.analysis.archive_models import ObjectivePosturePayload
+from polylogue.analysis.objective_posture import (
     ASSERTION_TIER_KINDS,
     derive_objective_posture,
     resolve_session_objective_posture,
     structural_objective_posture,
 )
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
 

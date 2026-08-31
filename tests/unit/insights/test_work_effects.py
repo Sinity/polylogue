@@ -16,8 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.core.refs import ObjectRef
-from polylogue.insights.work_effects import (
+from polylogue.analysis.work_effects import (
     BeadsIssueEffectAdapter,
     EffectAdapterUnavailableError,
     GitCommitEffectAdapter,
@@ -27,7 +26,8 @@ from polylogue.insights.work_effects import (
     reconcile_repository_effects,
     referenced_work_item_ids,
 )
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.core.refs import ObjectRef
 
 _EVIDENCE = ObjectRef(kind="artifact", object_id="raw:test-evidence")
 _SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="snapshot:work-effects-test")

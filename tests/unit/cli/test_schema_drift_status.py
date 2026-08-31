@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+from polylogue.analysis.schema_drift import schema_drift_status
 from polylogue.cli.commands.status import _render_schema_drift_status
 from polylogue.cli.shared.types import AppEnv
-from polylogue.insights.schema_drift import schema_drift_status
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

@@ -9,15 +9,15 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.archive.message.roles import Role
-from polylogue.archive.session.repo_identity import repo_relative_path
-from polylogue.core.enums import BlockType, Provider
-from polylogue.insights.session_label import (
+from polylogue.analysis.session_label import (
     SessionLabelInputs,
     compute_session_structural_label,
     dominant_repo_relative_path_for_session,
     session_structural_label_for_session,
 )
+from polylogue.archive.message.roles import Role
+from polylogue.archive.session.repo_identity import repo_relative_path
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

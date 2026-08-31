@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.measurement.metric import (
+from polylogue.analysis.measurement.metric import (
     DuplicateMetricIdentityError,
     MetricDefinition,
     MetricRegistry,

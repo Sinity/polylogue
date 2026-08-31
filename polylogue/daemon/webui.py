@@ -891,8 +891,8 @@ async def build_cost_payload(operations: object) -> dict[str, object]:
     reported exactly as the substrate computed them and are never summed into
     one collapsed number (docs/cost-model.md's named anti-goal).
     """
-    from polylogue.insights.archive import ArchiveInsightUnavailableError
-    from polylogue.insights.registry import INSIGHT_REGISTRY, fetch_insights_async
+    from polylogue.analysis.archive import ArchiveInsightUnavailableError
+    from polylogue.analysis.registry import INSIGHT_REGISTRY, fetch_insights_async
 
     async def _fetch(name: str, **kwargs: object) -> tuple[list[dict[str, object]], str | None]:
         descriptor = INSIGHT_REGISTRY.get(name)
@@ -1346,8 +1346,8 @@ async def build_observability_payload(
     of its accessors or readiness rules.  A failed descriptor is rendered in
     place and cannot suppress healthy sibling panels.
     """
-    from polylogue.insights.archive import ArchiveInsightUnavailableError
-    from polylogue.insights.registry import INSIGHT_REGISTRY, fetch_insights_async
+    from polylogue.analysis.archive import ArchiveInsightUnavailableError
+    from polylogue.analysis.registry import INSIGHT_REGISTRY, fetch_insights_async
 
     panels: list[dict[str, object]] = []
     active_registry: Mapping[str, Any] = INSIGHT_REGISTRY if registry is None else registry

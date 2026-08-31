@@ -12,20 +12,19 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.archive.semantic.pricing import CostEstimatePayload
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     SessionCostInsight,
     SessionLatencyProfileInsight,
     SessionProfileInsight,
 )
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
     SessionLatencyProfilePayload,
 )
-from polylogue.insights.archive_rollups import (
+from polylogue.analysis.archive_rollups import (
     ABANDONMENT_SEVERITY_RANK,
     abandoned_session_items,
     aggregate_cost_rollup_insights,
@@ -34,6 +33,7 @@ from polylogue.insights.archive_rollups import (
     tool_call_latency_distribution_payload,
     workflow_shape_distribution_buckets,
 )
+from polylogue.archive.semantic.pricing import CostEstimatePayload
 
 
 def _provenance() -> ArchiveInsightProvenance:

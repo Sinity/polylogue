@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.enums import ComparativeVerdict
-from polylogue.insights.judgment.rankers import (
+from polylogue.analysis.judgment.rankers import (
     RankerDefinition,
     bradley_terry_mle,
     fit_ranker,
 )
-from polylogue.insights.judgment.types import ComparativeJudgment, JudgeIdentity
+from polylogue.analysis.judgment.types import ComparativeJudgment, JudgeIdentity
+from polylogue.core.enums import ComparativeVerdict
 
 _JUDGE = JudgeIdentity(actor_ref="user:local", execution_context_id="operator")
 

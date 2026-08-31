@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.insights.session.storage import session_tag_rollup_insert_values
+from polylogue.storage.derived.session.storage import session_tag_rollup_insert_values
 from polylogue.storage.query_models import SessionTagRollupListQuery
 from polylogue.storage.runtime import SessionTagRollupRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_tag_rollup_record

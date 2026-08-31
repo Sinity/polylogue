@@ -35,8 +35,8 @@ from pathlib import Path
 
 import pytest
 
-import polylogue.storage.insights.session.rebuild as rebuild_mod
-from polylogue.storage.insights.session.rebuild import (
+import polylogue.storage.derived.session.rebuild as rebuild_mod
+from polylogue.storage.derived.session.rebuild import (
     SessionInsightRecordBundle,
     compute_session_insight_bundles,
     rebuild_session_insights_sync,
@@ -137,7 +137,7 @@ def _rebuild_and_dump(archive_root: Path) -> dict[str, list[dict[str, object]]]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.frozen_clock_modules("polylogue.storage.insights.session.profiles")
+@pytest.mark.frozen_clock_modules("polylogue.storage.derived.session.profiles")
 def test_rebuild_session_insights_parallel_vs_sequential_byte_identical(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.measurement.metric import MetricDefinition
-from polylogue.insights.measurement.ratio import (
+from polylogue.analysis.measurement.metric import MetricDefinition
+from polylogue.analysis.measurement.ratio import (
     IncompatibleRatioError,
     derive_ratio_metric,
     evaluate_ratio,

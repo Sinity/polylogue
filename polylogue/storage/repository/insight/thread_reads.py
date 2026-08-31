@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session.threads import Thread
-from polylogue.storage.insights.insight_read_support import hydrate_optional, hydrate_sequence
-from polylogue.storage.insights.session.threads import hydrate_thread
+from polylogue.storage.derived.insight_read_support import hydrate_optional, hydrate_sequence
+from polylogue.storage.derived.session.threads import hydrate_thread
 from polylogue.storage.query_models import ThreadListQuery
 from polylogue.storage.runtime import ThreadRecord
 

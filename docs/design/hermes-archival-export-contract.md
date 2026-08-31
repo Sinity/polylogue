@@ -144,5 +144,5 @@ and `::test_published_hook_adapters_refuse_duplicated_transcript_payloads`.
   (`observer:atif:<id>` / `observer:atof:<id>`, fs1.14 fixed a prior
   collision where both shared one `observer:<id>` identity), correlated by
   shared Hermes session id via
-  `polylogue/insights/hermes_topology_projection.py`, not physically merged
+  `polylogue/analysis/hermes_topology_projection.py`, not physically merged
   into the state-db-ingested message tree.

@@ -30,6 +30,7 @@ from polylogue.scenarios import (
     seed_demo_user_overlays,
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
     EmbeddingRequestSpec,
@@ -38,7 +39,6 @@ from polylogue.storage.embeddings.identity import (
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
-from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION

@@ -72,7 +72,7 @@ goes in `cli/commands/`. The CLI shows fast daemon status on bare invocation
 and falls back to archive summary when the daemon is not running.
 
 **Adding a session insight**: Define the insight model in `insights/`. Add
-storage in `storage/insights/session/`. Wire rebuild logic and register in
+storage in `storage/derived/session/`. Wire rebuild logic and register in
 `insights/registry.py`.
 
 **Adding a devtools command**: Add a `CommandSpec` to
@@ -762,19 +762,19 @@ carries the original provider-native parent id. The same table also carries the
 
 ## Work-Evidence Graph and Repository-Effect Reconciliation (polylogue-1vpm.6)
 
-`polylogue/insights/work_evidence.py` defines a provider-neutral graph
+`polylogue/analysis/work_evidence.py` defines a provider-neutral graph
 (`WorkEvidenceGraph`/`WorkEvidenceNode`/`WorkEvidenceEdge`, stored in
 `index.db`'s `work_evidence_graphs`/`_nodes`/`_edges` tables) for
 orchestration runs, invocations, task/calls, attempts, session segments, and
-agent-reported claims. `polylogue/insights/claude_workflow_materializer.py`
+agent-reported claims. `polylogue/analysis/claude_workflow_materializer.py`
 is the production builder for `claude-workflow:<run-id>` graphs from admitted
 Claude Code Workflow artifacts (a live daemon convergence stage).
 
-A claim node is never treated as ground truth. `polylogue/insights/
+A claim node is never treated as ground truth. `polylogue/analysis/
 work_reconciliation.py`'s `reconcile_work_effects` attaches independently
 observed `ObservedRepositoryEffect` facts (git commits, Beads issue-state
 changes, GitHub PR activity) and explicit `ReconciliationJudgment`s to a
-graph without ever mutating a claim into an effect. `polylogue/insights/
+graph without ever mutating a claim into an effect. `polylogue/analysis/
 work_effects.py` supplies the effect-observation adapters:
 `GitCommitEffectAdapter` (real `git log`, read-only), `BeadsIssueEffectAdapter`
 (reads a `.beads/interactions.jsonl`-shaped ledger), and a typed
@@ -793,7 +793,7 @@ The production read-modify-write entry point is
 the reconciled graph back through `SessionRepository.replace_work_evidence_graph`).
 
 `reconcile-work-effects` reconciles an *existing* work-evidence graph against
-independent repository effects; it never builds one. `polylogue/insights/
+independent repository effects; it never builds one. `polylogue/analysis/
 incident_evidence_materialization.py` materializes the source graph: it adapts
 real per-session `ProjectedRun`/`ObservedEvent` evidence (one run node per
 session run, `invoked`-linked parent→subagent; one session-segment node per
@@ -829,7 +829,7 @@ agents and MCP callers; `get_session_topology` remains the full graph view.
 
 User corrections live outside the content-hash boundary by construction
 (#1131). They are `AssertionKind.CORRECTION` rows in the unified `user.db`
-`assertions` table (`storage/insights/feedback/`):
+`assertions` table (`storage/derived/feedback/`):
 
 - Keyed by session and correction kind — at most one correction of
   each kind per session, so deterministic rebuilds always produce the
@@ -842,7 +842,7 @@ User corrections live outside the content-hash boundary by construction
   `tests/unit/insights/test_feedback.py`.
 - Insight materialization paths consult corrections after computing
   heuristic suggestions. Auto-tag and summary merge helpers live in
-  `polylogue/insights/feedback.py`.
+  `polylogue/analysis/feedback.py`.
 - Surfaces:
   - MCP: `record_correction`, `list_corrections`, `clear_corrections`.
   - Library: `Polylogue.record_correction(...)`,
@@ -851,7 +851,7 @@ User corrections live outside the content-hash boundary by construction
 - Storage backed by `polylogue/storage/sqlite/archive_tiers/archive.py`
   (`ArchiveStore.record_correction` / `list_corrections` /
   `delete_correction` / `clear_corrections`) and
-  `polylogue/storage/insights/feedback/` (async SQL helpers).
+  `polylogue/storage/derived/feedback/` (async SQL helpers).
 
 ## Text Handling Contracts
 

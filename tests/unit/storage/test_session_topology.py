@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.api import Polylogue
-from polylogue.core.enums import Origin
-from polylogue.core.types import ContentHash, SessionId
-from polylogue.insights.topology import (
+from polylogue.analysis.topology import (
     SessionTopology,
     TopologyEdgeKind,
 )
-from polylogue.storage.insights.topology import derive_session_topology_sync
+from polylogue.api import Polylogue
+from polylogue.core.enums import Origin
+from polylogue.core.types import ContentHash, SessionId
+from polylogue.storage.derived.topology import derive_session_topology_sync
 from polylogue.storage.runtime import SessionRecord
 from tests.infra.storage_records import SessionBuilder, db_setup
 

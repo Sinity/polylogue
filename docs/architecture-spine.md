@@ -11,7 +11,7 @@ change belongs or which production route must be exercised.
 | Ring | Role | Primary modules |
 |------|------|-----------------|
 | **Archive Substrate** | Owns stored meaning: acquisition, parsing, persistence, query | `sources/`, `pipeline/`, `storage/`, `archive/`, `operations/` |
-| **Derived Read Models** | Stored insights computed over the archive | `insights/`, `storage/insights/session/` |
+| **Derived Read Models** | Stored insights computed over the archive | `insights/`, `storage/derived/session/` |
 | **Surfaces** | Expose the archive to users and machines | `cli/`, `mcp/`, `api/`, `rendering/`, `ui/`, `daemon/` |
 | **Verification** | Schema, demos, devtools, tests | `schemas/`, `demo/`, `devtools/`, `tests/` |
 

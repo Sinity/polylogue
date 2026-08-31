@@ -112,12 +112,12 @@ class _ProjectionFingerprintStripper(ast.NodeTransformer):
 
 _MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/repair.py",
-    "polylogue/storage/insights/session/rebuild.py",
-    "polylogue/storage/insights/session/threads.py",
-    "polylogue/storage/insights/session/profiles.py",
-    "polylogue/storage/insights/session/latency_profiles.py",
-    "polylogue/storage/insights/session/timeline_rows.py",
-    "polylogue/storage/insights/session/aggregates.py",
+    "polylogue/storage/derived/session/rebuild.py",
+    "polylogue/storage/derived/session/threads.py",
+    "polylogue/storage/derived/session/profiles.py",
+    "polylogue/storage/derived/session/latency_profiles.py",
+    "polylogue/storage/derived/session/timeline_rows.py",
+    "polylogue/storage/derived/session/aggregates.py",
     "polylogue/storage/runtime/store_constants.py",
 )
 

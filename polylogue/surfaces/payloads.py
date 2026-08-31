@@ -23,6 +23,7 @@ from pydantic import (
 )
 from typing_extensions import Self, TypedDict
 
+from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.archive.query.search_hits import bound_display_title
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
@@ -37,7 +38,6 @@ from polylogue.core.enums import (
 )
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import delegation_edge_object_id, normalize_object_ref_text, normalize_public_ref_text
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.surfaces.action_affordances import (
     ActionAffordancePayload,
     CandidateReviewDecision,
@@ -3976,7 +3976,7 @@ class ProjectionAvailabilityPayload(SurfacePayloadModel):
     --cost-outlook``, ...) reports this envelope alongside its data so a
     reader never has to infer "empty" vs "not computed" vs "prerequisite
     missing" from a bare null or zero (polylogue-duti). See
-    ``polylogue.insights.projection_contracts`` for the declaration registry
+    ``polylogue.analysis.projection_contracts`` for the declaration registry
     that produces these envelopes.
     """
 
@@ -4200,7 +4200,7 @@ class ContextPreambleSession(SurfacePayloadModel):
     date: str | None = None
     terminal_state: str | None = None
     # polylogue-37t.23: structural_inference-tier resumability posture for
-    # this related session (see `polylogue.insights.objective_posture`) --
+    # this related session (see `polylogue.analysis.objective_posture`) --
     # distinct from `terminal_state`, which only describes how the process
     # ended.
     objective_posture: str | None = None

@@ -61,7 +61,7 @@ The current archive has several identities with different purposes. Conflating t
 | Raw observation id | SHA-256 of acquired observation bytes in the source tier | Durable acquisition evidence. It remains independent of normalized session hashes and of CDC manifest identity. |
 | Source identity | `Source` family/runtime root/originating lab plus acquisition artifact identity | Explains where bytes came from. It is richer than `Origin` and is not reversible from `Origin`. |
 | Origin | `Origin` in `polylogue/core/enums.py` and the registry in `polylogue/sources/origin_specs.py` | Public normalized source token. It does not replace provider-wire or source identity. |
-| Display label | `polylogue/insights/session_label.py` | Read projection. It must not affect acquisition, session primary identity, or content hash. |
+| Display label | `polylogue/analysis/session_label.py` | Read projection. It must not affect acquisition, session primary identity, or content hash. |
 | Lineage identity | `session_links` key `(src_session_id, dst_origin, dst_native_id, link_type)` | One asserted topology relation. Resolution to `resolved_dst_session_id` is late and repeatable. |
 | Byte chunk identity | Not yet present | This design assigns SHA-256 of exact chunk bytes. It is storage identity only, not parser or session identity. |
 
@@ -306,7 +306,7 @@ The read-time display label uses this deterministic precedence:
 5. origin label plus message count and UTC start date;
 6. origin label plus native-id prefix for a zero-message session.
 
-`polylogue/insights/session_label.py` remains the implementation home. Its current structural label is reused, but `_summary_from_row()` must stop treating heuristic title sources as authoritative.
+`polylogue/analysis/session_label.py` remains the implementation home. Its current structural label is reused, but `_summary_from_row()` must stop treating heuristic title sources as authoritative.
 
 Collision handling is an archive-wide read projection. Compute base labels for every current session in one batch, group exact normalized labels, and leave singleton labels unchanged. Every member of a collision group receives `[<origin>:<native-prefix>]`, using the shortest native-id prefix that is unique within that archive-wide group and extending through the full native id if needed. If duplicate native ids exist across origins, origin is already part of the suffix. Query subsets reuse the archive-wide result, so the same session does not acquire a different label merely because a filter changed. A label may become more specific when another session enters its collision group; that is allowed because display identity is not content identity.
 
@@ -456,7 +456,7 @@ Decision route: `acceptance/polylogue-qj5x` (`DecisionRoute`, dispatch `decision
 
 The current `interactions.jsonl` parser turns field-change protocol into English user messages with `RUNTIME_PROTOCOL`; it is neither authored conversation nor a faithful issue model. Keeping it was rejected. Improving the synthetic prose was rejected because it leaves the wrong domain boundary.
 
-The evidence is the 2026-07-31 investigation record at `.agent/scratch/live/beads-handling-design-2026-07-31.html`, the measured zero-Beads-session live census recorded on this bead, and the existing `BeadsIssueEffectAdapter` at `polylogue/insights/work_effects.py`. The adapter keeps interaction rows as repository effects. Real session messages containing bead ids remain searchable. Removing the parser therefore removes a redundant synthetic-session representation, not the repository ledger or its effect evidence.
+The evidence is the 2026-07-31 investigation record at `.agent/scratch/live/beads-handling-design-2026-07-31.html`, the measured zero-Beads-session live census recorded on this bead, and the existing `BeadsIssueEffectAdapter` at `polylogue/analysis/work_effects.py`. The adapter keeps interaction rows as repository effects. Real session messages containing bead ids remain searchable. Removing the parser therefore removes a redundant synthetic-session representation, not the repository ledger or its effect evidence.
 
 Compatibility consequence: pre-adoption has no stored Beads sessions in the measured live index, so no session migration or compatibility shim is selected. Durable source-tier constraints still require an archive-wide census, verified backup, explicit authorization, copy-forward migration, and derived-index rebuild. A later apply must be dry-run-first, exact-plan-bound, idempotent or resumable, and receipt-producing. This decision lane performs no production mutation.
 
@@ -515,7 +515,7 @@ All lanes work from isolated worktrees. They do not edit Beads. Each lane commit
 
 ### Packet A: OriginSpec, title authority, and hash v2
 
-**Own:** `polylogue/sources/origin_specs.py`, `polylogue/pipeline/ids.py`, `polylogue/core/hashing.py`, title-policy portions of parser assembly, `polylogue/insights/session_label.py`, source membership hash-version migration and its narrow writer/readers, `tests/unit/sources/test_origin_specs.py`, `tests/unit/pipeline/test_pipeline_ids.py`, `tests/unit/pipeline/test_content_hash_determinism.py`, `tests/unit/insights/test_session_label.py`, `tests/unit/archive/test_codex_title_census.py`, and focused durable-migration tests.
+**Own:** `polylogue/sources/origin_specs.py`, `polylogue/pipeline/ids.py`, `polylogue/core/hashing.py`, title-policy portions of parser assembly, `polylogue/analysis/session_label.py`, source membership hash-version migration and its narrow writer/readers, `tests/unit/sources/test_origin_specs.py`, `tests/unit/pipeline/test_pipeline_ids.py`, `tests/unit/pipeline/test_content_hash_determinism.py`, `tests/unit/insights/test_session_label.py`, `tests/unit/archive/test_codex_title_census.py`, and focused durable-migration tests.
 
 **Avoid:** `archive_tiers/index.py`, lineage functions in `write.py`, event storage, CDC blob tables, attachment GC, and context-delivery schema.
 

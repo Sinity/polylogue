@@ -4,18 +4,18 @@ Constructs real ``SessionEventRecord`` rows (the same typed row every other
 Hermes read model consumes via ``get_session_events``) rather than a
 hand-rolled stub, and drives ``project_hermes_topology`` -- the pure
 aggregator under test -- directly, mirroring
-``tests/unit/insights/test_hermes_verification_coverage.py``'s design.
+the structural Hermes evidence projection design.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.core.types import SessionEventId, SessionId
-from polylogue.insights.hermes_topology_projection import (
+from polylogue.analysis.hermes_topology_projection import (
     HermesArtifactInput,
     project_hermes_topology,
 )
+from polylogue.core.types import SessionEventId, SessionId
 from polylogue.sources.parsers import hermes_spans
 from polylogue.storage.runtime.archive.records import SessionEventRecord
 

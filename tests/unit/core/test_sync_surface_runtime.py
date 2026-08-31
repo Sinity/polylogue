@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from polylogue.analysis.archive_models import ArchiveInsightProvenance
+from polylogue.analysis.tool_usage import ToolUsageInsight
 from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.api.sync import SyncPolylogue
 from polylogue.api.sync.insights import SyncInsightQueriesMixin
 from polylogue.api.sync.sessions import SyncSessionQueriesMixin
-from polylogue.insights.archive_models import ArchiveInsightProvenance
-from polylogue.insights.tool_usage import ToolUsageInsight
 
 
 class _FilterStub:
