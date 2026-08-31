@@ -445,7 +445,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # execution-context refs in work-evidence nodes. Existing graph rows cannot
 # recover role from their prior shape, so the normal derived rebuild route
 # must regenerate them from projected-run evidence.
-INDEX_SCHEMA_VERSION = 78
+INDEX_SCHEMA_VERSION = 79
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -518,6 +518,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
 ON sessions(origin, sort_key_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_sort_key
+ON sessions(sort_key_ms DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_parent
 ON sessions(parent_session_id)

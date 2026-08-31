@@ -50,6 +50,7 @@ class TestSchemaDDLParity:
         """SCHEMA_DDL must create required indexes."""
         required_indexes = [
             "idx_sessions_origin_sort",
+            "idx_sessions_sort_key",
             "idx_messages_session_position",
         ]
         ddl_lower = SCHEMA_DDL.lower()
@@ -527,6 +528,19 @@ class TestAnalyticsQueryPlan:
             assert "idx_sessions_origin_sort" in plan or "COVERING" in plan or "INDEX" in plan.upper(), (
                 f"Expected index usage for GROUP BY origin, got: {plan}"
             )
+        finally:
+            conn.close()
+
+    def test_global_recent_sessions_uses_sort_key_index(self, tmp_path: Path) -> None:
+        """Global recent-session listing must avoid a table scan and temp sort."""
+        db_path = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(SCHEMA_DDL)
+            cursor = conn.execute("EXPLAIN QUERY PLAN SELECT * FROM sessions ORDER BY sort_key_ms DESC LIMIT 50")
+            plan = " ".join(row[3] if len(row) > 3 else str(row) for row in cursor.fetchall())
+            assert "idx_sessions_sort_key" in plan, f"Expected global sort index usage, got: {plan}"
+            assert "USE TEMP B-TREE" not in plan.upper(), f"Expected no temporary sort, got: {plan}"
         finally:
             conn.close()
 
