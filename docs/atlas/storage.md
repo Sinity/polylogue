@@ -22,7 +22,11 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 - `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path/search projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:266-313`).
 - Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:493-495`; `polylogue/storage/sqlite/archive_tiers/index.py:512-514`; `polylogue/storage/sqlite/archive_tiers/index.py:570-572`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:106-113`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:279-283`).
 - `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:115-125`).
-- Tool outcomes come from structured result columns; the `actions` view joins paired blocks and derives `result_state` without prose matching (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:293-299`; `polylogue/storage/sqlite/archive_tiers/index.py:801-839`).
+- Tool outcomes use the canonical enum derived from structured parser evidence;
+  deliberate unknown outcomes preserve their parser reason. The `actions` view
+  joins paired blocks and derives `result_state` without prose matching
+  (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:293-309`;
+  `polylogue/storage/sqlite/archive_tiers/index.py:801-839`).
 
 ## Parsed-session write choke point
 

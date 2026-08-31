@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,8 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, ToolOutcome, ToolResultUnknownReason
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.claude.code_parser import parse_code
+from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -144,6 +147,96 @@ def test_declared_unknown_outcome_is_admitted_and_preserves_reason(
         assert result_row["tool_result_is_error"] is None
         assert result_row["tool_result_exit_code"] is None
         assert result_row["tool_result_outcome_unknown_reason"] == reason.value
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("provider", "parse_session", "payload"),
+    [
+        (
+            Provider.CLAUDE_CODE,
+            lambda payload: parse_code(payload, "claude-parser-unknown"),
+            [
+                {
+                    "type": "assistant",
+                    "uuid": "assistant-1",
+                    "sessionId": "claude-parser-unknown",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "call-1", "name": "Bash", "input": {}}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "user-1",
+                    "sessionId": "claude-parser-unknown",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "call-1", "content": "plain output"}],
+                    },
+                },
+            ],
+        ),
+        (
+            Provider.CODEX,
+            lambda payload: parse_codex(payload, "codex-parser-unknown"),
+            [
+                {"type": "session_meta", "payload": {"id": "codex-parser-unknown"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "Bash",
+                        "arguments": "{}",
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call_output",
+                        "call_id": "call-1",
+                        "output": "plain output",
+                    },
+                },
+            ],
+        ),
+    ],
+    ids=["claude-code", "codex"],
+)
+def test_real_parser_unknown_shape_is_admitted_by_writer(
+    provider: Provider,
+    parse_session: Callable[[list[dict[str, object]]], ParsedSession],
+    payload: list[dict[str, object]],
+    tmp_path: Path,
+) -> None:
+    """Parser-produced no-verdict results are admitted without inventing success."""
+    conn = _connect(tmp_path / f"parser-{provider.value}.db")
+    try:
+        session = parse_session(payload)
+        result_blocks = [
+            block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+        ]
+        assert len(result_blocks) == 1
+        assert result_blocks[0].outcome_unknown_reason == ToolResultUnknownReason.NOT_REPORTED.value
+
+        session_id = write_parsed_session_to_archive(conn, session)
+        row = conn.execute(
+            """
+            SELECT tool_outcome, tool_result_is_error, tool_result_exit_code,
+                   tool_result_outcome_unknown_reason
+            FROM blocks WHERE session_id = ? AND block_type = 'tool_result'
+            """,
+            (session_id,),
+        ).fetchone()
+        assert row is not None
+        assert tuple(row) == (
+            ToolOutcome.UNKNOWN.value,
+            None,
+            None,
+            ToolResultUnknownReason.NOT_REPORTED.value,
+        )
     finally:
         conn.close()
 

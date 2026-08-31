@@ -558,16 +558,13 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `status`, matching the SQL lowerer's group expressions. Existing index tiers
   must be rebuilt from source evidence (`polylogue ops reset --index &&
   polylogued run`).
-- Index schema version 16 captures structured tool-result outcomes (the
-  "keystone"). `blocks` gains `tool_result_is_error` (0/1, nullable) and
-  `tool_result_exit_code` (nullable INTEGER); the `actions` view exposes them
-  as `is_error` / `exit_code` alongside the paired tool_use row. Previously the
-  source's own outcome fields (Claude `is_error` on tool_result content, Codex
-  `function_call_output.metadata.exit_code`) were dropped at parse, forcing
-  in-session outcomes ("tests passed", "command failed") to be regex-guessed
-  from result text. Now they are read from structure: NULL means unknown
-  (default), never a fabricated positive. This is additive — existing rows
-  read NULL until rebuilt. Rebuild from source evidence
+- Index schema version 16 captured structured tool-result outcomes (the
+  "keystone") in nullable legacy columns. The new index schema generation
+  adds the canonical
+  `blocks.tool_outcome` enum and preserves deliberate unknown reasons in
+  `tool_result_outcome_unknown_reason`; the `actions` view exposes the paired
+  result state without guessing from prose. Existing index tiers require a
+  semantic replay from source evidence
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
