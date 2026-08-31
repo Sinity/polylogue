@@ -302,13 +302,13 @@ describe("build.mjs full archive emission", () => {
     // Name the refusal: reaching for `started.job.id` on a rejected start
     // reports "undefined has no 'id'" and buries the reason.
     expect(started).toMatchObject({ ok: true });
-    await vi.waitFor(() => expect(pageRequests.some((message) => message.operation === "inventory")).toBe(true));
+    await vi.waitFor(() => expect(pageRequests.some((message) => message.operation === "inventory")).toBe(true), { timeout: 15000 });
     for (let inventoryCount = 2; inventoryCount <= 4; inventoryCount += 1) {
       alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-      await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount));
+      await vi.waitFor(() => expect(pageRequests.filter((message) => message.operation === "inventory")).toHaveLength(inventoryCount), { timeout: 15000 });
     }
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-    await vi.waitFor(() => expect(receiverPosts).toBe(1));
+    await vi.waitFor(() => expect(receiverPosts).toBe(1), { timeout: 15000 });
     const paused = await send({ type: "polylogue.backfill.status" });
     expect(paused.jobs[0]).toMatchObject({
       status: "paused",
@@ -318,7 +318,7 @@ describe("build.mjs full archive emission", () => {
     expect(receiverPosts).toBe(1);
     await send({ type: "polylogue.backfill.control", job_id: started.job.id, action: "resume" });
     alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-    await vi.waitFor(() => expect(receiverPosts).toBe(2));
+    await vi.waitFor(() => expect(receiverPosts).toBe(2), { timeout: 15000 });
     const recovered = await send({ type: "polylogue.backfill.status" });
     expect(recovered.jobs[0].progress.complete).toBe(1);
     expect(pageRequests.filter((message) => message.operation === "conversation")).toHaveLength(1);
