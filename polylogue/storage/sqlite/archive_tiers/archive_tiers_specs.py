@@ -87,7 +87,7 @@ def _make_messages_spec() -> TableColumnSpec:
     """Create the messages table column specification.
 
     The messages table structure (from schema):
-      session_id, native_id, parent_message_id, position, role, message_type,
+      session_id, native_id, identity_source, parent_message_id, position, role, message_type,
       material_origin, model_name, model_effort, sender_name, recipient,
       delivery_status, end_turn, user_context_text, has_tool_use, has_thinking,
       has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf,
@@ -105,6 +105,11 @@ def _make_messages_spec() -> TableColumnSpec:
         ),
         _ddl("session_id", "TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"),
         _ddl("native_id", "TEXT"),
+        ColumnSpec(
+            "identity_source",
+            "TEXT",
+            ddl_sql="identity_source TEXT NOT NULL DEFAULT 'positional' CHECK(identity_source IN ('native', 'positional'))",
+        ),
         ColumnSpec(
             "parent_message_id",
             "TEXT",
@@ -188,6 +193,7 @@ def _make_messages_spec() -> TableColumnSpec:
         "message_id": record("message_id", domain_name="id"),
         "session_id": record("session_id"),
         "native_id": record("native_id", record_name="provider_message_id"),
+        "identity_source": record("identity_source", domain_name="identity_source"),
         "parent_message_id": record("parent_message_id", domain_name="parent_id"),
         "content_address": record("content_address", select_expression="lower(hex({alias}.content_address))"),
         "position": record("position", domain_name="position", record_transform=_none_to_zero),

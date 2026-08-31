@@ -166,6 +166,7 @@ class MessageRecord(BaseModel):
     message_id: MessageId
     session_id: SessionId
     provider_message_id: str | None = None
+    identity_source: str = "positional"
     role: Role | None = None
     text: str | None = None
     sort_key: float | None = None

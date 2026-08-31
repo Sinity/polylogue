@@ -158,6 +158,7 @@ class ArchiveMessageRow:
     is_active_path: bool
     is_active_leaf: bool
     blocks: tuple[ArchiveBlockRow, ...]
+    identity_source: str = "positional"
     message_type: str = "message"
     material_origin: str = "unknown"
     word_count: int = 0
@@ -1463,7 +1464,7 @@ def read_archive_session_envelope(
 
     message_rows = conn.execute(
         """
-        SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
+        SELECT message_id, native_id, identity_source, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
                paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
         FROM messages
@@ -1626,6 +1627,7 @@ def _row_to_archive_message(
     return ArchiveMessageRow(
         message_id=row["message_id"],
         native_id=row["native_id"],
+        identity_source=row["identity_source"],
         role=row["role"],
         position=row["position"],
         variant_index=row["variant_index"],
@@ -2002,6 +2004,7 @@ def _build_message_rows(
             else _timestamp_ms(message.timestamp),
             "stop_reason": _enum_value(message.stop_reason),
         }
+        values["identity_source"] = "native" if values["native_id"] is not None else "positional"
         rows.append(archive_tiers_specs.MESSAGES_SPEC.extract_tuple(values))
     return rows
 
