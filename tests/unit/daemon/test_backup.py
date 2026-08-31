@@ -17,6 +17,7 @@ from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
+from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.blob_integrity import BlobLivenessProjection
@@ -643,6 +644,167 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     assert result.ok, result.error
     assert result.verified
     assert result.verification["recoverable_source_blob_count"] == 1
+
+
+def test_zip_replay_derives_member_and_split_from_empty_legacy_coordinates(tmp_path: Path) -> None:
+    """Legacy rows use the recorded member suffix and source index."""
+    source_path = tmp_path / "legacy-empty-coordinate.zip"
+    records = [
+        {"metadata": "bundle sibling"},
+        {"id": "first", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+    ]
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps(records, separators=(",", ":")))
+    recorded_path = f"{source_path}:conversations.json"
+    expected = dumps_bytes(records[2])
+
+    payload, error = zip_reacquisition_payload(
+        {
+            "coordinate_format": "",
+            "entry_ordinal": None,
+            "split_index": None,
+            "raw_id": "legacy-raw-id",
+            "source_path": recorded_path,
+            "source_index": 1,
+            "blob_hash": hashlib.sha256(expected).hexdigest(),
+            "capture_mode": "chatgpt",
+        },
+        source_path=recorded_path,
+        zip_payload_cache={},
+    )
+
+    assert error is None
+    assert payload == expected
+
+
+@pytest.mark.parametrize(
+    ("origin", "revision_kind"),
+    [
+        ("codex-session", "full"),
+        ("claude-code-session", "full"),
+        ("claude-code-session", "unknown"),
+    ],
+)
+def test_backup_replays_historical_full_snapshot_prefix(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    origin: str,
+    revision_kind: str,
+) -> None:
+    """A later append leaves the writer's full-file observation at the prefix."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / f"{origin}.jsonl"
+    historical = b'{"type":"session_meta","payload":{"id":"snapshot"}}\n'
+    source_path.write_bytes(historical + b'{"type":"message","payload":{"text":"later"}}\n')
+    blob_hash = hashlib.sha256(historical).digest()
+    raw_id = f"historical-{origin}-{revision_kind}"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind
+            ) VALUES (?, ?, ?, 0, ?, ?, 1, 'passed', ?)""",
+            (raw_id, origin, str(source_path), blob_hash, len(historical), revision_kind),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "historical_snapshot_prefix_sha256"
+    assert unproven == []
+
+
+def test_backup_types_legacy_codex_append_without_window(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A legacy Codex append without offsets remains explicitly unproven."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "legacy-codex-append.jsonl"
+    source_path.write_bytes(b'{"type":"session_meta"}\n{"type":"event_msg"}\n')
+    payload = b'{"type":"event_msg"}\n'
+    blob_hash = hashlib.sha256(payload).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind
+            ) VALUES ('legacy-codex-append', 'codex-session', ?, -1, ?, ?, 1, 'passed', 'unknown')""",
+            (str(source_path), blob_hash, len(payload)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert proofs == []
+    assert unproven[0]["kind"] == "legacy_append_window_missing"
+    assert unproven[0]["reason"] == "legacy_append_window_missing"
+
+
+@pytest.mark.parametrize("origin", ["codex-session", "claude-code-session"])
+def test_backup_replays_legacy_append_from_preceding_full_snapshot(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    origin: str,
+) -> None:
+    """Pre-envelope append rows use the immediately preceding full snapshot as their window."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / f"legacy-{origin}.jsonl"
+    identity = "019f4d42-1794-7280-b329-ed31152df30e"
+    prefix = dumps_bytes({"type": "session_meta", "payload": {"id": identity}}) + b"\n"
+    append = b'{"type":"event_msg","payload":{"message":"legacy"}}\n'
+    source_path.write_bytes(prefix + append)
+    if origin == "codex-session":
+        from polylogue.sources.live.batch_support import codex_append_payload
+
+        expected = codex_append_payload(append, identity=identity, legacy_header=True)
+        capture_mode = "codex"
+    else:
+        expected = append
+        capture_mode = None
+    prior_hash = hashlib.sha256(prefix).digest()
+    append_hash = hashlib.sha256(expected).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status, revision_kind
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 1, 'passed', 'full')""",
+            (f"prior-{origin}", origin, capture_mode, identity, str(source_path), prior_hash, len(prefix)),
+        )
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status, revision_kind
+            ) VALUES (?, ?, ?, ?, ?, -1, ?, ?, 2, 'passed', 'unknown')""",
+            (f"append-{origin}", origin, capture_mode, identity, str(source_path), append_hash, len(expected)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={append_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "historical_append_segment_sha256"
+    assert proofs[0]["append_start_offset"] == str(len(prefix))
+    assert proofs[0]["append_end_offset"] == str(len(prefix) + len(append))
+    assert unproven == []
 
 
 def test_full_evidence_backup_reacquires_live_append_segment_after_file_grows(

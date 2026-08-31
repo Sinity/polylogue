@@ -25,9 +25,9 @@ def zip_reacquisition_payload(
     """Replay one ZIP member through the production acquisition splitter."""
     coordinate = _zip_coordinate(row)
     split_index = coordinate[1] if coordinate is not None else _legacy_split_index(row)
-    if split_index is None:
-        return None, "container_coordinate_missing"
     zip_path_text, _separator, member = source_path.partition(":")
+    if not zip_path_text or not member:
+        return None, "container_coordinate_missing"
     zip_path = Path(zip_path_text)
     if not zip_path.exists():
         return None, "source_missing"
@@ -73,6 +73,10 @@ def zip_reacquisition_payload(
         # the backup. Any unreadable or unparseable container therefore
         # leaves this reference unproven and lets verification fail closed.
         return None, f"error:{exc}"
+    if split_index is None:
+        if len(payloads) != 1:
+            return None, "container_coordinate_missing"
+        split_index = next(iter(payloads))
     return payloads.get(split_index), None if split_index in payloads else "source_index:unmatched"
 
 
