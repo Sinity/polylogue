@@ -313,6 +313,22 @@ def test_chatgpt_parse_shared_decode_produces_real_messages() -> None:
     assert session.active_leaf_message_provider_id == "assistant-node"
 
 
+def test_chatgpt_shared_decode_lowering_preserves_conservation_mapping() -> None:
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    [document] = lower_chatgpt_documents(_shared_decode_payload(), "fallback")
+
+    assert document.document_id == "shared-conv-id"
+    assert document.artifact_class == "shared_page_decode"
+    assert set(document.mapping) == {"root-node", "user-node", "assistant-node"}
+    user_node = document.mapping["user-node"]
+    assistant_node = document.mapping["assistant-node"]
+    assert isinstance(user_node, dict)
+    assert isinstance(assistant_node, dict)
+    assert user_node["parent"] == "root-node"
+    assert assistant_node["children"] == []
+
+
 def test_chatgpt_temporary_payload_sets_session_kind() -> None:
     session = chatgpt_parse(
         {
