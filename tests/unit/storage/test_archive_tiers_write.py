@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -5308,7 +5309,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
         conn.close()
 
 
-def test_repo_edges_skip_bare_directory_with_no_git_evidence(tmp_path: Path) -> None:
+def test_repo_edges_skip_bare_directory_with_no_git_evidence() -> None:
     """polylogue-cijx.2 AC4: a directory with no git evidence is a directory, not a repository.
 
     A session whose only location signal is a cwd that resolves to no
@@ -5317,33 +5318,35 @@ def test_repo_edges_skip_bare_directory_with_no_git_evidence(tmp_path: Path) -> 
     guards was ``dir:/home/sinity`` being recorded as the "sinity" repo for
     every session merely cd'd there.
     """
-    conn = _connect(tmp_path / "index.db")
-    try:
-        bare_dir = tmp_path / "not_a_repo"
-        bare_dir.mkdir()
-        session = ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="bare-directory-session",
-            working_directories=[str(bare_dir)],
-            messages=[
-                ParsedMessage(
-                    provider_message_id="m1",
-                    role=Role.USER,
-                    text="hello from a bare directory",
-                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
-                )
-            ],
-        )
-        session_id = write_parsed_session_to_archive(conn, session)
+    with tempfile.TemporaryDirectory(prefix="polylogue-bare-directory-") as isolated_root:
+        isolated_path = Path(isolated_root)
+        conn = _connect(isolated_path / "index.db")
+        try:
+            bare_dir = isolated_path / "not_a_repo"
+            bare_dir.mkdir()
+            session = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="bare-directory-session",
+                working_directories=[str(bare_dir)],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hello from a bare directory",
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            )
+            session_id = write_parsed_session_to_archive(conn, session)
 
-        repos_count = conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
-        session_repos_count = conn.execute(
-            "SELECT COUNT(*) FROM session_repos WHERE session_id = ?", (session_id,)
-        ).fetchone()[0]
-        assert repos_count == 0, "a bare directory with no git evidence must not synthesize a repos row"
-        assert session_repos_count == 0
-    finally:
-        conn.close()
+            repos_count = conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
+            session_repos_count = conn.execute(
+                "SELECT COUNT(*) FROM session_repos WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            assert repos_count == 0, "a bare directory with no git evidence must not synthesize a repos row"
+            assert session_repos_count == 0
+        finally:
+            conn.close()
 
 
 def test_repo_edges_write_repo_for_discovered_git_root(tmp_path: Path) -> None:
