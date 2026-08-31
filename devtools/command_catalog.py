@@ -218,6 +218,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify blob-conservation",
+        "verification",
+        "Verify both directions of blob/reference conservation without mutation.",
+        "polylogue.maintenance.blob_conservation",
+        use_when="Check for orphaned blob files and references whose bytes are neither present nor recoverable.",
+        examples=("devtools verify blob-conservation --archive-root /path/to/archive",),
+    ),
+    CommandSpec(
         "verify webui",
         "verification",
         "Run the declared typed WebUI generation, contract, unit, and build checks.",
