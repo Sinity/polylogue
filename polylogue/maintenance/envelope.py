@@ -41,7 +41,7 @@ from polylogue.maintenance.planner import (
     BoundedFailureSamples,
     FailureSample,
 )
-from polylogue.maintenance.scope import MaintenanceScopeFilter
+from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 #: Allowed values for the ``origin`` envelope field.
@@ -168,20 +168,7 @@ def envelope_from_operation(
     scope_payload = MaintenanceScopePayload(
         targets=scope_targets,
         filter=scope_filter_dict,
-        unsupported_dimensions=tuple(
-            name
-            for name in (
-                "origin",
-                "source_family",
-                "source_root",
-                "time_range",
-                "failure_kind",
-                "parser_version",
-            )
-            if getattr(scope.filter, name, None) is not None
-        )
-        if scope is not None
-        else (),
+        unsupported_dimensions=unsupported_scope_dimensions(scope.filter) if scope is not None else (),
     )
     return MaintenanceOperationEnvelope(
         operation_id=operation.operation_id,

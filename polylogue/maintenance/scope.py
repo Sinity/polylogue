@@ -41,6 +41,8 @@ from pydantic import ConfigDict, field_validator
 from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
+HONORED_SCOPE_DIMENSIONS = frozenset(("session_ids",))
+
 
 class MaintenanceScopeFilter(SurfacePayloadModel):
     """Typed scope filter for a maintenance backfill operation.
@@ -165,4 +167,21 @@ def _coerce_datetime(value: Any) -> datetime:
     raise TypeError(f"Cannot coerce {value!r} to datetime")
 
 
-__all__ = ["MaintenanceScopeFilter"]
+def unsupported_scope_dimensions(scope_filter: MaintenanceScopeFilter) -> tuple[str, ...]:
+    """Return requested dimensions the maintenance executor does not apply."""
+    return tuple(
+        name
+        for name in (
+            "session_ids",
+            "origin",
+            "source_family",
+            "source_root",
+            "time_range",
+            "failure_kind",
+            "parser_version",
+        )
+        if getattr(scope_filter, name, None) is not None and name not in HONORED_SCOPE_DIMENSIONS
+    )
+
+
+__all__ = ["HONORED_SCOPE_DIMENSIONS", "MaintenanceScopeFilter", "unsupported_scope_dimensions"]
