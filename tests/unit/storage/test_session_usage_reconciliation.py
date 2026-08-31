@@ -14,6 +14,8 @@ contribution rather than silently discarding it.
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
 from polylogue.storage.usage import (
@@ -153,8 +155,18 @@ def test_reconciled_cost_prefers_fresh_catalog_price_over_stale_zero() -> None:
     assert any(observation.value_state == "unknown" for observation in superseded)
 
 
-def test_live_claude_row_prefers_current_catalog_price_over_legacy_provider_label() -> None:
-    """The live mislabeled Claude row resolves to the current catalog price."""
+@pytest.mark.parametrize(
+    ("profile_cost_provenance", "legacy_authority"),
+    (
+        ("provider_reported", ("provider-reported",)),
+        ("catalog_priced", ("model-derived",)),
+    ),
+)
+def test_live_claude_row_prefers_current_catalog_price(
+    profile_cost_provenance: str,
+    legacy_authority: tuple[str, ...],
+) -> None:
+    """The live stale Claude row resolves to the current catalog price."""
 
     rows = (
         ModelUsageTotals(
@@ -174,12 +186,13 @@ def test_live_claude_row_prefers_current_catalog_price_over_legacy_provider_labe
         profile_total_cache_read_tokens=3_655_173,
         profile_total_cache_write_tokens=820_953,
         profile_cost_usd=22.946558,
-        profile_cost_provenance="provider_reported",
+        profile_cost_provenance=profile_cost_provenance,
         reconciled_model="claude-opus-4-8",
     )
 
     assert reconciliation.catalog_cost_evidence.value == 7.648853
     assert reconciliation.legacy_cost_evidence.value == 22.946558
+    assert reconciliation.legacy_cost_evidence.measurement_authority == legacy_authority
     reconciled = reconciliation.reconciled_cost_evidence
     assert reconciled.value_state == "known"
     assert reconciled.value == 7.648853
