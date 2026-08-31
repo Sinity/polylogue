@@ -52,6 +52,11 @@ _RUNTIME_INDEX_SQL: tuple[str, ...] = (
 )
 
 
+def runtime_index_ddl() -> str:
+    """Return the canonical runtime-index DDL used by the index identity."""
+    return "\n".join(statement.strip() for statement in _RUNTIME_INDEX_SQL)
+
+
 def ensure_runtime_indexes_sync(conn: sqlite3.Connection) -> None:
     for sql in _RUNTIME_INDEX_SQL:
         conn.execute(sql)
@@ -65,4 +70,5 @@ async def ensure_runtime_indexes_async(conn: aiosqlite.Connection) -> None:
 __all__ = [
     "ensure_runtime_indexes_async",
     "ensure_runtime_indexes_sync",
+    "runtime_index_ddl",
 ]

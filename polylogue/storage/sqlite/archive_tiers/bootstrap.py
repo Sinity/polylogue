@@ -535,6 +535,19 @@ def initialize_archive_database(
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS) and current_version != 0:
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import (
+                DerivedTier,
+                derived_schema_identity,
+                read_schema_identity,
+            )
+            from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
+
+            derived_tier = DerivedTier(tier.value)
+            expected_identity = derived_schema_identity(derived_tier)
+            found_identity = read_schema_identity(conn, derived_tier)
+            if found_identity != expected_identity:
+                raise SchemaSkew(tier.value, expected_identity, found_identity)
         if current_version == required_version:
             # ops.db is disposable and evolves through idempotent additive DDL
             # without version bumps. Re-apply it so existing same-version
@@ -596,6 +609,11 @@ def initialize_archive_database(
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
             assert_schema_manifest(conn, tier)
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+            stamp_derived_schema_identity(conn, tier.value)
+            conn.commit()
     finally:
         conn.close()
 

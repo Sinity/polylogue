@@ -30,6 +30,22 @@ SCHEMA_DDL = INDEX_DDL
 SCHEMA_VERSION = INDEX_SCHEMA_VERSION
 
 
+class SchemaSkewError(RuntimeError):
+    """A tier was opened with a schema identity different from this build."""
+
+    def __init__(self, tier: str, expected: str, found: str | None) -> None:
+        self.tier = tier
+        self.expected = expected
+        self.found = found
+        super().__init__(
+            f"{tier} derived schema identity mismatch: expected {expected}, found {found!r}; "
+            "stale derived tier; daemon convergence rebuilds it"
+        )
+
+
+SchemaSkew = SchemaSkewError
+
+
 @dataclass(frozen=True)
 class SchemaSnapshot:
     """Database state needed to classify the canonical bootstrap branch."""
@@ -70,6 +86,61 @@ def decide_schema_bootstrap(snapshot: SchemaSnapshot) -> SchemaBootstrapDecision
     if snapshot.current_version == SCHEMA_VERSION:
         return SchemaBootstrapDecision(action="open_as_is", current_version=snapshot.current_version)
     return SchemaBootstrapDecision(action="version_mismatch", current_version=snapshot.current_version)
+
+
+def assert_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
+    """Refuse a derived tier before callers use its read models."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import (
+        DerivedTier,
+        derived_schema_identity,
+        read_schema_identity,
+    )
+
+    derived_tier = DerivedTier(tier)
+    expected = derived_schema_identity(derived_tier)
+    try:
+        found = read_schema_identity(conn, derived_tier)
+    except Exception as exc:
+        if not isinstance(exc, sqlite3.Error):
+            raise
+        found = None
+    if found != expected:
+        raise SchemaSkew(tier, expected, found)
+
+
+def stamp_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
+    """Stamp a freshly materialized derived tier."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import (
+        DERIVED_SCHEMA_META_DDL,
+        DerivedTier,
+        derived_schema_identity,
+    )
+
+    derived_tier = DerivedTier(tier)
+    conn.executescript(DERIVED_SCHEMA_META_DDL)
+    conn.execute(
+        "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
+        "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",
+        (tier, derived_schema_identity(derived_tier)),
+    )
+
+
+async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier: str) -> None:
+    """Async counterpart to :func:`assert_derived_schema_identity`."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
+    derived_tier = DerivedTier(tier)
+    expected = derived_schema_identity(derived_tier)
+    try:
+        cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier,))
+        row = await cursor.fetchone()
+    except Exception as exc:
+        if not isinstance(exc, sqlite3.Error):
+            raise
+        row = None
+    found = None if row is None else str(row[0])
+    if found != expected:
+        raise SchemaSkew(tier, expected, found)
 
 
 def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
@@ -144,11 +215,16 @@ __all__ = [
     "PLANNER_STAT1_SEED_SQL",
     "SCHEMA_DDL",
     "SCHEMA_VERSION",
+    "SchemaSkew",
+    "SchemaSkewError",
     "SchemaBootstrapDecision",
     "SchemaSnapshot",
     "capture_schema_snapshot",
     "capture_schema_snapshot_async",
     "decide_schema_bootstrap",
+    "assert_derived_schema_identity",
+    "assert_derived_schema_identity_async",
+    "stamp_derived_schema_identity",
     "ensure_vec0_table",
     "ensure_vec0_table_async",
     "schema_version_mismatch_message",
