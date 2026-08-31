@@ -36,6 +36,8 @@ def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> Attachme
         file_native_id=(value if isinstance((value := _row_value(row, "file_native_id")), str) else None),
         drive_native_id=(value if isinstance((value := _row_value(row, "drive_native_id")), str) else None),
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
+        direction=str(_row_value(row, "direction") or "user_input"),
+        producer_ref=(value if isinstance((value := _row_value(row, "producer_ref")), str) else None),
         blob_hash=(bytes(value) if isinstance((value := _row_value(row, "blob_hash")), (bytes, bytearray)) else None),
         acquisition_status=(value if isinstance((value := _row_value(row, "acquisition_status")), str) else None),
         generation_id=(value if isinstance((value := _row_value(row, "generation_id")), str) else None),
@@ -61,6 +63,8 @@ async def get_attachments(
             r.caption,
             r.message_id,
             r.upload_origin,
+            r.direction,
+            r.producer_ref,
             (
                 SELECT native_id FROM attachment_native_ids ani
                 WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'
@@ -110,6 +114,8 @@ async def get_attachments_batch(
             r.message_id,
             r.session_id,
             r.upload_origin,
+            r.direction,
+            r.producer_ref,
             (
                 SELECT native_id FROM attachment_native_ids ani
                 WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'

@@ -461,7 +461,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # v84 corrects delegation cost-estimation semantics when provider dollars are
 # present without catalog pricing. Existing derived rows need fresh replay so
 # the view definition is installed on every index generation.
-INDEX_SCHEMA_VERSION = 84
+# v85 adds parser-derived attachment direction and model-output provenance.
+# Existing rows must be replayed because direction cannot be recovered from the
+# old upload_origin field without inventing evidence.
+INDEX_SCHEMA_VERSION = 85
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

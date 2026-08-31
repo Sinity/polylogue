@@ -159,6 +159,8 @@ class ArchiveAttachmentRow:
     media_type: str | None = None
     byte_count: int = 0
     upload_origin: str | None = None
+    direction: str | None = "user_input"
+    producer_ref: str | None = None
     source_url: str | None = None
     caption: str | None = None
     blob_hash: bytes | None = None
@@ -1470,7 +1472,8 @@ def read_archive_session_envelope(
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
                a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
                a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
-               r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
+               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
+               r.source_url AS source_url, r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
         WHERE r.session_id = ?
@@ -1488,6 +1491,8 @@ def read_archive_session_envelope(
                 media_type=attachment["media_type"],
                 byte_count=int(attachment["byte_count"] or 0),
                 upload_origin=attachment["upload_origin"],
+                direction=attachment["direction"],
+                producer_ref=attachment["producer_ref"],
                 source_url=attachment["source_url"],
                 caption=attachment["caption"],
                 blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
@@ -1764,7 +1769,8 @@ def _fetch_message_window(
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
                a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
                a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
-               r.upload_origin AS upload_origin, r.source_url AS source_url, r.caption AS caption
+               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
+               r.source_url AS source_url, r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
         WHERE r.message_id IN ({placeholders})
@@ -1782,6 +1788,8 @@ def _fetch_message_window(
                 media_type=attachment["media_type"],
                 byte_count=int(attachment["byte_count"] or 0),
                 upload_origin=attachment["upload_origin"],
+                direction=attachment["direction"],
+                producer_ref=attachment["producer_ref"],
                 source_url=attachment["source_url"],
                 caption=attachment["caption"],
                 blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
@@ -1877,7 +1885,8 @@ def read_archive_session_page(
     orphan_attachment_rows = conn.execute(
         """
         SELECT a.attachment_id AS attachment_id, a.display_name AS display_name, a.media_type AS media_type,
-               a.byte_count AS byte_count, r.upload_origin AS upload_origin, r.source_url AS source_url,
+               a.byte_count AS byte_count, r.upload_origin AS upload_origin, r.direction AS direction,
+               r.producer_ref AS producer_ref, r.source_url AS source_url,
                r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
@@ -1894,6 +1903,8 @@ def read_archive_session_page(
             media_type=row["media_type"],
             byte_count=int(row["byte_count"] or 0),
             upload_origin=row["upload_origin"],
+            direction=row["direction"],
+            producer_ref=row["producer_ref"],
             source_url=row["source_url"],
             caption=row["caption"],
         )
@@ -2768,7 +2779,7 @@ class _ProjectionCarryForward:
 
 def _capture_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> _CapturedProjections:
     attachment_refs = conn.execute(
-        "SELECT attachment_id, session_id, message_id, position, upload_origin, source_url, caption "
+        "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption "
         "FROM attachment_refs WHERE session_id = ?",
         (session_id,),
     ).fetchall()
@@ -2837,8 +2848,8 @@ def _restore_captured_projection_rows(
         if exists is None:
             conn.execute(
                 "INSERT OR IGNORE INTO attachment_refs "
-                "(attachment_id, session_id, message_id, position, upload_origin, source_url, caption) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             restored_attachment_ref_ids.add(f"{message_id}:attachment:{position}")
@@ -3703,6 +3714,13 @@ def _write_attachments(
         attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
+        if attachment.direction not in {"user_input", "model_output"}:
+            raise ValueError(f"attachment direction is not supported: {attachment.direction!r}")
+        if attachment.direction == "model_output" and not attachment.producer_ref:
+            raise ValueError(
+                "model_output attachment requires producer provenance: "
+                f"attachment_id={attachment.provider_attachment_id!r}"
+            )
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
@@ -3753,12 +3771,14 @@ def _write_attachments(
         conn.execute(
             """
             INSERT INTO attachment_refs (
-                attachment_id, session_id, message_id, position, upload_origin, source_url, caption
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id, position) DO UPDATE SET
                 attachment_id = excluded.attachment_id,
                 session_id = excluded.session_id,
                 upload_origin = excluded.upload_origin,
+                direction = excluded.direction,
+                producer_ref = excluded.producer_ref,
                 source_url = excluded.source_url,
                 caption = excluded.caption
             WHERE attachment_refs.attachment_id = excluded.attachment_id
@@ -3769,6 +3789,8 @@ def _write_attachments(
                 message_id,
                 ref_position,
                 _sqlite_text(attachment.upload_origin),
+                attachment.direction,
+                _sqlite_text(attachment.producer_ref),
                 _sqlite_text(_attachment_source_url(attachment)),
                 _sqlite_text(_attachment_caption(attachment)),
             ),

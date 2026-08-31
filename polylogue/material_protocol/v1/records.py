@@ -178,6 +178,8 @@ def attachment_record(session_id: str, message_id: str, attachment: AttachmentIn
         "blob_sha256": attachment.blob_sha256,
         "acquisition_status": attachment.acquisition_status,
         "upload_origin": attachment.upload_origin,
+        "direction": attachment.direction,
+        "producer_ref": attachment.producer_ref,
         "source_url": attachment.source_url,
         "caption": attachment.caption,
     }

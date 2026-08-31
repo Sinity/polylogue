@@ -691,6 +691,8 @@ def extract_messages_from_mapping(
                         name=sandbox_path.rsplit("/", 1)[-1] or None,
                         attachment_kind="sandbox_file",
                         source_url=f"sandbox:{sandbox_path}",
+                        direction="model_output",
+                        producer_ref=f"message:{msg_id}",
                     )
                 )
 

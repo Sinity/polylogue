@@ -304,6 +304,8 @@ def _parsed_attachment_input(position: int, attachment: ParsedAttachment) -> Att
         blob_sha256=blob_sha,
         acquisition_status="acquired" if attachment.inline_bytes is not None else "unfetched",
         upload_origin=attachment.upload_origin,
+        direction=attachment.direction or "user_input",
+        producer_ref=attachment.producer_ref,
         source_url=attachment.source_url,
         caption=attachment.caption,
     )

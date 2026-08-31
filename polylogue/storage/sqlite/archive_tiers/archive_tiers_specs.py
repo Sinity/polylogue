@@ -1114,6 +1114,14 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
             "upload_origin",
             f"""upload_origin          TEXT CHECK({literal_check("upload_origin", "drive", "paste", "url", "oauth")} OR upload_origin IS NULL)""",
         ),
+        _raw_column(
+            "direction",
+            """direction              TEXT NOT NULL DEFAULT 'user_input' CHECK(direction IN ('user_input', 'model_output'))""",
+        ),
+        _raw_column(
+            "producer_ref",
+            """producer_ref           TEXT CHECK(direction = 'user_input' OR producer_ref IS NOT NULL)""",
+        ),
         _raw_column("source_url", """source_url             TEXT"""),
         _raw_column("caption", """caption                TEXT"""),
     ),
