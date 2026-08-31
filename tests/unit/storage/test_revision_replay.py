@@ -69,6 +69,39 @@ def _decisions(candidates: list[RevisionCandidate]) -> dict[str, ApplicationDeci
     return {item.raw_id: item.decision for item in plan_revision_replay(candidates).applications}
 
 
+def test_partial_append_overlap_is_ambiguous() -> None:
+    baseline = _candidate("base", RawRevisionKind.FULL, 0, size=100)
+    first = _candidate(
+        "first", RawRevisionKind.APPEND, 1, size=100, predecessor="base", baseline="base", start=100, end=200
+    )
+    overlapping = _candidate(
+        "overlap", RawRevisionKind.APPEND, 2, size=100, predecessor="first", baseline="base", start=150, end=250
+    )
+
+    plan = plan_revision_replay([baseline, first, overlapping])
+
+    decisions = {item.raw_id: item for item in plan.applications}
+    assert plan.accepted_raw_ids == ("base", "first")
+    assert decisions["overlap"].decision is ApplicationDecision.AMBIGUOUS
+    assert "inside an accepted append window" in decisions["overlap"].detail
+
+
+def test_same_start_longer_append_supersedes_shorter_observation() -> None:
+    baseline = _candidate("base", RawRevisionKind.FULL, 0, size=100)
+    short = _candidate(
+        "short", RawRevisionKind.APPEND, 1, size=100, predecessor="base", baseline="base", start=100, end=200
+    )
+    longer = _candidate(
+        "longer", RawRevisionKind.APPEND, 2, size=100, predecessor="base", baseline="base", start=100, end=250
+    )
+
+    plan = plan_revision_replay([baseline, short, longer])
+
+    decisions = {item.raw_id: item for item in plan.applications}
+    assert plan.accepted_raw_ids == ("base", "longer")
+    assert decisions["short"].decision is ApplicationDecision.DEFERRED
+
+
 def _codex_jsonl(records: list[dict[str, object]]) -> bytes:
     return b"".join(json.dumps(record, separators=(",", ":")).encode() + b"\n" for record in records)
 
