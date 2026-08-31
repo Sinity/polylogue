@@ -150,7 +150,10 @@ def _mypy_cmd() -> list[str]:
     try:
         result = subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
         if result.returncode == 0:
-            return [dmypy, "run", "--", "--no-error-summary"]
+            # run can itself spawn the daemon (races, direct invocations);
+            # the timeout must ride every spawning form or one immortal
+            # daemon per checkout accumulates.
+            return [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     try:
@@ -162,7 +165,7 @@ def _mypy_cmd() -> list[str]:
             cwd=ROOT,
         )
         if result.returncode == 0:
-            return [dmypy, "run", "--", "--no-error-summary"]
+            return [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return [venv_bin("mypy", root=ROOT)]
