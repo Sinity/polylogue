@@ -9,8 +9,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon.http import _parameterized_get_routes, _static_get_routes, implemented_daemon_route_patterns
+from polylogue.daemon.http import (
+    DaemonAPIHandler,
+    _declared_get_routes,
+    _parameterized_get_routes,
+    _static_get_routes,
+    implemented_daemon_route_patterns,
+    validate_declared_route_reachability,
+)
 from polylogue.daemon.route_contracts import (
+    DAEMON_ROUTE_DECLARATIONS,
     DAEMON_ROUTE_REGISTRY,
     ROUTE_CONTRACTS,
     daemon_route_declaration,
@@ -67,6 +75,63 @@ def test_get_dispatch_tables_are_bound_to_route_contracts() -> None:
         assert parameterized_route.pattern == parameterized_route.contract.pattern
 
 
+def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> None:
+    """The installed HTTP entrypoint exposes every migrated declaration once."""
+
+    validate_declared_route_reachability(DaemonAPIHandler)
+    generated = {(route.contract.method, route.pattern) for route in _declared_get_routes()}
+    declared = {(route.method, route.path) for route in DAEMON_ROUTE_DECLARATIONS}
+    assert generated == declared
+
+
+def test_unreachable_generated_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing one generated binding makes the completeness oracle red."""
+
+    generated = _declared_get_routes()
+    monkeypatch.setattr("polylogue.daemon.http._declared_get_routes", lambda: generated[:-1])
+
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        validate_declared_route_reachability(DaemonAPIHandler)
+
+
+def test_unreachable_declaration_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adding a declaration without an executable handler cannot self-authorize."""
+
+    from dataclasses import replace
+
+    from polylogue.daemon.route_contracts import RouteSpec
+
+    source = DAEMON_ROUTE_DECLARATIONS[-1]
+    unreachable = replace(
+        source,
+        path="/api/sessions/:id/unreachable",
+        kernel=replace(
+            source.kernel,
+            declaration_id="daemon.unreachable",
+            producer="polylogue.daemon.http.DaemonAPIHandler._missing_route_adapter",
+            handlers=tuple(
+                replace(binding, symbol="_missing_route_adapter", binding_key="GET /api/sessions/:id/unreachable")
+                for binding in source.kernel.handlers
+            ),
+        ),
+    )
+    assert isinstance(unreachable, RouteSpec)
+    monkeypatch.setattr("polylogue.daemon.http.DAEMON_ROUTE_DECLARATIONS", DAEMON_ROUTE_DECLARATIONS + (unreachable,))
+
+    with pytest.raises(RuntimeError, match="adapter is unreachable"):
+        validate_declared_route_reachability(DaemonAPIHandler)
+
+
+def test_duplicate_generated_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicating a generated binding cannot silently create two authorities."""
+
+    generated = _declared_get_routes()
+    monkeypatch.setattr("polylogue.daemon.http._declared_get_routes", lambda: generated + generated[-1:])
+
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        validate_declared_route_reachability(DaemonAPIHandler)
+
+
 def test_find_route_is_registered_once_in_the_shared_declaration_kernel() -> None:
     """The production adapter and metadata must consume one route declaration."""
 
@@ -90,9 +155,12 @@ def test_find_openapi_operation_carries_declaration_contract() -> None:
     operation = _build_openapi_document()["paths"]["/api/sessions"]["get"]
     assert operation["x-polylogue-declaration"] == {
         "declaration_id": "daemon.find.sessions",
+        "method": "GET",
+        "path": "/api/sessions",
         "request_contract": "SessionSearchQuery",
         "response_contract": "SearchEnvelope | SessionListResponse",
         "auth_policy": "credential_if_configured",
+        "domain_operation": "sessions.find",
         "owner_path": "polylogue/daemon/http.py",
     }
 

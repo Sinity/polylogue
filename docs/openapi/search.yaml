@@ -114,6 +114,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/WebCredentialFailurePayload'
       x-polylogue-recoverable-states: *id001
+  /api/status:
+    get:
+      summary: Report daemon status and archive readiness
+      description: Returns the daemon status payload and readiness state.
+      operationId: status
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
+      responses:
+        '200':
+          description: Daemon status payload.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: DaemonStatusPayload; fields vary with enabled daemon components.
+                additionalProperties: true
+        '401':
+          description: Machine bearer or web credential was not accepted.
+          headers:
+            X-Polylogue-Web-Credential-State:
+              description: Present when the first-party web credential was evaluated.
+              schema:
+                type: string
+                enum: *id001
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/QueryErrorPayload'
+                - $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '403':
+          description: Host, origin, or web credential scope was not admitted.
+          headers:
+            X-Polylogue-Web-Credential-State:
+              description: Present when the first-party web credential was evaluated.
+              schema:
+                type: string
+                enum: *id001
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/QueryErrorPayload'
+                - $ref: '#/components/schemas/WebCredentialFailurePayload'
+      x-polylogue-declaration:
+        declaration_id: daemon.status
+        method: GET
+        path: /api/status
+        request_contract: StatusQuery
+        response_contract: DaemonStatusPayload
+        auth_policy: credential_if_configured
+        domain_operation: daemon.status
+        owner_path: polylogue/daemon/http.py
   /api/sessions:
     get:
       summary: Ranked session search and list
@@ -248,9 +302,12 @@ paths:
           - estimate
       x-polylogue-declaration:
         declaration_id: daemon.find.sessions
+        method: GET
+        path: /api/sessions
         request_contract: SessionSearchQuery
         response_contract: SearchEnvelope | SessionListResponse
         auth_policy: credential_if_configured
+        domain_operation: sessions.find
         owner_path: polylogue/daemon/http.py
   /api/query-units:
     get:
@@ -518,9 +575,12 @@ paths:
           qualification: page
       x-polylogue-declaration:
         declaration_id: daemon.query.units
+        method: GET
+        path: /api/query-units
         request_contract: QueryUnitQuery
         response_contract: QueryUnitResultEnvelope
         auth_policy: credential_if_configured
+        domain_operation: query.units
         owner_path: polylogue/daemon/http.py
   /api/sessions/{session_id}/read:
     get:
@@ -529,7 +589,7 @@ paths:
         Supported profiles currently include ``messages``, ``raw``, ``context``, ``context-image``, ``neighbors``, ``correlation``,
         ``effective_context``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected
         read profile.
-      operationId: readSessionView
+      operationId: readSession
       security:
       - machineBearer: []
       - webCredentialCookie: []
@@ -687,6 +747,15 @@ paths:
                 anyOf:
                 - $ref: '#/components/schemas/QueryErrorPayload'
                 - $ref: '#/components/schemas/WebCredentialFailurePayload'
+      x-polylogue-declaration:
+        declaration_id: daemon.read.session
+        method: GET
+        path: /api/sessions/:id/read
+        request_contract: SessionReadQuery
+        response_contract: SessionReadViewEnvelope
+        auth_policy: credential_if_configured
+        domain_operation: sessions.read
+        owner_path: polylogue/daemon/http.py
   /api/assertions:
     get:
       summary: List assertion-backed overlay claims
