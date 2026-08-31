@@ -10,6 +10,7 @@ from devtools.verification_graph import (
     attest_corpus,
     eligible_root,
     graph_identity,
+    latest_eligible_root,
     publish_complete_root,
     publish_selected_child,
 )
@@ -95,3 +96,39 @@ def test_selected_child_requires_parent_and_is_never_root(tmp_path: Path) -> Non
     )
     assert path.exists()
     assert eligible_root(tmp_path, child) is None
+
+
+def test_worktree_reads_roots_through_the_parent_indirection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worktree with no local roots resolves the main checkout's sealed root."""
+    main_checkout = tmp_path / "main"
+    worktree = tmp_path / "worktree"
+    main_checkout.mkdir()
+    worktree.mkdir()
+    corpus = attest_corpus(("tests/test_one.py::test_a",))
+    digest = _identity(corpus_attestation=corpus.digest)
+    published = publish_complete_root(
+        main_checkout,
+        graph_digest=digest,
+        corpus=corpus,
+        run_id="sealed",
+        terminal_status="success",
+        complete=True,
+    )
+    assert published is not None
+    assert eligible_root(worktree, digest) is None
+    monkeypatch.setenv("POLYLOGUE_VERIFY_GRAPH_PARENT", str(main_checkout))
+    resolved = eligible_root(worktree, digest)
+    assert resolved is not None
+    assert main_checkout in resolved.parents
+    latest = latest_eligible_root(worktree)
+    assert latest is not None and latest[0] == digest
+    # The indirection is read-only: publication still lands locally.
+    local = publish_complete_root(
+        worktree,
+        graph_digest=digest,
+        corpus=corpus,
+        run_id="sealed",
+        terminal_status="success",
+        complete=True,
+    )
+    assert local is not None and worktree in local.parents
