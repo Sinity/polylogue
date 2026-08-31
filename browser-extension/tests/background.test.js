@@ -221,7 +221,7 @@ async function loadBackground(storagePatch = {}) {
   // Let the previous instance's pending fire-and-forget chains settle before
   // the fresh mock exists; anything later is silenced by the generation guard.
   for (let turn = 0; turn < 25; turn += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
   }
   globalThis.indexedDB = new IDBFactory();
   installChromeMock(storagePatch);
