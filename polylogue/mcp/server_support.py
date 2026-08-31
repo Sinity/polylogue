@@ -453,6 +453,8 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             tool=fn_name,
             current_version=exc.current_version,
             expected_version=exc.expected_version,
+            generation_id=exc.generation_id,
+            lifecycle_action=exc.lifecycle_action,
         )
     elif isinstance(exc, ArchiveTierUnavailableError):
         payload = MCPErrorPayload(

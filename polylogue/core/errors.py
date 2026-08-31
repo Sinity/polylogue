@@ -76,10 +76,14 @@ class SchemaVersionMismatchError(DatabaseError):
         *,
         current_version: int,
         expected_version: int,
+        generation_id: str | None = None,
+        lifecycle_action: str | None = None,
     ) -> None:
         super().__init__(message)
         self.current_version = current_version
         self.expected_version = expected_version
+        self.generation_id = generation_id
+        self.lifecycle_action = lifecycle_action
 
 
 class EmbeddingRetrievalNotReadyError(DatabaseError):
