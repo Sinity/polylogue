@@ -119,6 +119,21 @@ _ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
 _KNOWN_PROVIDERS = frozenset(SyntheticCorpus.available_providers())
 _PROVIDER_COMPONENT = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "pathology_", "case_")
+
+
+def _reject_semantic_metadata(value: object, *, location: str) -> None:
+    """Keep workload identity and publication records free of semantic oracles."""
+    if isinstance(value, str) and value.startswith(_SEMANTIC_METADATA_PREFIXES):
+        raise ValueError(f"{location} cannot carry semantic metadata: {value}")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str) and key.startswith(_SEMANTIC_METADATA_PREFIXES):
+                raise ValueError(f"{location} cannot carry semantic metadata: {key}")
+            _reject_semantic_metadata(child, location=location)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _reject_semantic_metadata(child, location=location)
 
 
 def _validate_provider(provider: object) -> str:
@@ -177,6 +192,9 @@ class CorpusArtifactManifest:
     facts: tuple[SyntheticArtifactFacts, ...]
     files: tuple[dict[str, object], ...]
     receipt: dict[str, object]
+
+    def __post_init__(self) -> None:
+        _reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
 
     @property
     def manifest_id(self) -> str:
@@ -581,6 +599,7 @@ class WorkloadProfile:
             raise ValueError("workload profile requires a name and purpose")
         if not self.family_ids or not self.profile_tokens:
             raise ValueError("workload profile requires semantic corpus identity")
+        _reject_semantic_metadata(self.profile_tokens, location="workload profile")
 
     def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
         if not shapes:
@@ -1982,6 +2001,10 @@ def _validate_frontier_convergence(root: Path) -> None:
 def _manifest_from_payload(payload: object) -> SeededArchiveManifest:
     if not isinstance(payload, dict):
         raise ValueError("seeded archive manifest must be an object")
+    _reject_semantic_metadata(
+        {key: value for key, value in payload.items() if key not in {"facts", "files"}},
+        location="seeded archive manifest",
+    )
     stored_manifest_id = payload.pop("manifest_id", None)
     if not isinstance(stored_manifest_id, str):
         raise ValueError("seeded archive manifest is missing manifest_id")

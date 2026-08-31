@@ -148,6 +148,29 @@ def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
     assert not hasattr(artifact.manifest, "expected_sessions")
 
 
+def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> None:
+    """Operational identity cannot become a hidden expected-result catalogue."""
+    import dataclasses
+
+    with pytest.raises(ValueError, match="semantic metadata"):
+        WorkloadProfile(
+            name="invalid",
+            purpose="fixture-shape",
+            seed=1,
+            family_ids=("test",),
+            profile_tokens=("expected_sessions",),
+            origin="generated.test-invalid",
+            tags=("synthetic",),
+        )
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    with pytest.raises(ValueError, match="semantic metadata"):
+        dataclasses.replace(
+            artifact.manifest,
+            receipt={**artifact.manifest.receipt, "expected_sessions": 64},
+        )
+
+
 def test_named_and_benchmark_catalogs_share_one_semantic_spec_contract() -> None:
     """Both catalog adapters retain a common identity and native-spec constructor."""
     catalog_profiles = (*NAMED_WORKLOAD_PROFILES, *BENCHMARK_WORKLOAD_PROFILES)
