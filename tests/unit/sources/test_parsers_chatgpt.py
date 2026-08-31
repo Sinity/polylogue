@@ -299,8 +299,13 @@ def test_chatgpt_parse_shared_decode_produces_real_messages() -> None:
     assert session.provider_session_id == "shared-conv-id"
     assert session.title == "Shared Decode Title"
     assert SHARED_CONVERSATION_INDEX_INGEST_FLAG not in session.ingest_flags
-    # The hidden empty system root is skipped by extract_messages_from_mapping's
-    # usual empty-text filtering; the two real turns come through.
+    # Shared-page decodes preserve every mapping node, including the hidden
+    # empty system root, so parent/child relationships remain lossless.
+    assert len(session.messages) == 3
+    by_id = {message.provider_message_id: message for message in session.messages}
+    assert by_id["root-node"].role.value == "system"
+    assert by_id["root-node"].blocks == []
+    assert by_id["user-node"].parent_message_provider_id == "root-node"
     roles_and_text = [(m.role, m.blocks[0].text if m.blocks else "") for m in session.messages]
     assert ("user", "Hello from the shared page decode") in roles_and_text
     assert ("assistant", "Reply from the shared page decode") in roles_and_text
