@@ -150,7 +150,8 @@ def _acquire_dat_blobs_from_directory(directory: Path, store: BlobStore) -> dict
         dat_id = _dat_asset_id(dat_path.name)
         try:
             size_on_disk = dat_path.stat().st_size
-        except OSError:
+        except OSError as exc:
+            logger.warning("chatgpt_dat_stat_failed", path=str(dat_path), error=str(exc))
             continue
         if size_on_disk > MAX_UNCOMPRESSED_SIZE:
             logger.warning("chatgpt_dat_oversized", path=str(dat_path), size=size_on_disk)
