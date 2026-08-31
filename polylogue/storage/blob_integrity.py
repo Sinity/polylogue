@@ -882,6 +882,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
         "append_end_offset" if _column_exists(conn, "raw_sessions", "append_end_offset") else "NULL"
     )
     capture_mode_column = "capture_mode" if _column_exists(conn, "raw_sessions", "capture_mode") else "NULL"
+    acquired_at_ms_column = "acquired_at_ms" if _column_exists(conn, "raw_sessions", "acquired_at_ms") else "NULL"
     has_container_coordinates = _table_exists(conn, "raw_container_coordinates")
     coordinate_join = (
         "LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id"
@@ -906,6 +907,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                {origin_column} AS origin,
                {native_id_column} AS native_id,
                {capture_mode_column} AS capture_mode,
+               {acquired_at_ms_column} AS acquired_at_ms,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
                {revision_kind_column} AS revision_kind,

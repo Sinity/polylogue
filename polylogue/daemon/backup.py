@@ -31,7 +31,7 @@ from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
-from polylogue.operations.append_acquisition_replay import replay_append_acquisition_payload
+from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
 from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -71,8 +71,10 @@ _RECOVERABILITY_FAILURE_KINDS = frozenset(
         "no_replay_candidate",
         "source_missing",
         "append_segment",
+        "legacy_append_window_missing",
         "acquisition_coordinate",
         "replay_error",
+        "historical_snapshot_prefix_mismatch",
         "hash_mismatch",
     }
 )
@@ -688,7 +690,7 @@ def _replay_append_payload(
     provider = Provider.from_string(str(row.get("capture_mode") or ""))
     if provider is Provider.UNKNOWN:
         provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
-    blob_size_value = row.get("blob_size")
+    blob_size_value = row.get("blob_size", row.get("size_bytes"))
     expected_size = int(blob_size_value) if isinstance(blob_size_value, (int, str)) else None
     return replay_append_acquisition_payload(
         payload,
@@ -696,6 +698,122 @@ def _replay_append_payload(
         source_name=source_name or str(row.get("source_path") or "append.jsonl"),
         expected_size=expected_size,
     )
+
+
+def _historical_snapshot_prefix_payload(
+    row: Mapping[str, object],
+    source_path: str,
+) -> tuple[bool, bytes | None, str | None]:
+    """Read a historical full-file prefix when the writer observed growth later.
+
+    Full-file acquisition streams hash the complete file observed at admission.
+    A later append therefore leaves that exact observation at the current
+    file's prefix; the recorded blob size is the only boundary needed to
+    replay it. ``unknown`` is retained for pre-revision-envelope full-file
+    rows, but append rows use ``source_index=-1`` and are not eligible.
+    """
+    revision_kind = str(row.get("revision_kind") or "")
+    if revision_kind != "full" and not (
+        revision_kind == "unknown" and str(row.get("origin") or "") == "claude-code-session"
+    ):
+        return False, None, None
+    source_index = row.get("source_index")
+    if not isinstance(source_index, (int, str)):
+        return False, None, None
+    try:
+        if int(source_index) != 0:
+            return False, None, None
+    except (TypeError, ValueError):
+        return False, None, None
+    size_value = row.get("size_bytes")
+    if size_value is None:
+        size_value = row.get("blob_size")
+    if not isinstance(size_value, (int, str)):
+        return False, None, None
+    try:
+        expected_size = int(size_value)
+    except (TypeError, ValueError):
+        return False, None, None
+    if expected_size < 0:
+        return False, None, None
+    path = Path(source_path)
+    try:
+        if path.stat().st_size <= expected_size:
+            return False, None, None
+        with path.open("rb") as handle:
+            payload = handle.read(expected_size)
+    except FileNotFoundError:
+        return True, None, "source_missing"
+    except OSError as exc:
+        return True, None, f"historical_snapshot:{exc}"
+    if len(payload) != expected_size:
+        return True, None, "historical_snapshot:short_read"
+    blob_hash = str(row.get("blob_hash") or "")
+    if blob_hash and hashlib.sha256(payload).hexdigest() != blob_hash:
+        return True, payload, "historical_snapshot:prefix_mismatch"
+    return True, payload, None
+
+
+def _legacy_append_without_window(row: Mapping[str, object]) -> bool:
+    provider = Provider.from_string(str(row.get("capture_mode") or ""))
+    if provider is Provider.UNKNOWN:
+        provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+    if provider not in {Provider.CODEX, Provider.CLAUDE_CODE}:
+        return False
+    source_index = row.get("source_index")
+    if not isinstance(source_index, (int, str)):
+        return False
+    try:
+        source_index = int(source_index)
+    except (TypeError, ValueError):
+        return False
+    return (
+        source_index == -1
+        and str(row.get("revision_kind") or "") in {"", "unknown"}
+        and row.get("append_start_offset") is None
+        and row.get("append_end_offset") is None
+    )
+
+
+def _legacy_append_replay(
+    row: Mapping[str, object],
+    source_path: str,
+    prior_full_sizes: Mapping[str, list[tuple[int, int]]],
+) -> tuple[bytes | None, str | None, int | None, int | None]:
+    """Replay a pre-envelope append from the preceding full observation."""
+    path_rows = prior_full_sizes.get(source_path, [])
+    acquired_at_value = row.get("acquired_at_ms")
+    size_value = row.get("size_bytes")
+    if size_value is None:
+        size_value = row.get("blob_size")
+    if not isinstance(acquired_at_value, (int, str)) or not isinstance(size_value, (int, str)):
+        return None, "legacy_append_window_missing", None, None
+    try:
+        acquired_at_ms = int(acquired_at_value)
+        expected_size = int(size_value)
+    except (TypeError, ValueError):
+        return None, "legacy_append_window_missing", None, None
+    starts = [size for timestamp, size in path_rows if timestamp < acquired_at_ms]
+    if not starts:
+        return None, "legacy_append_window_missing", None, None
+    start = max(starts)
+    provider = Provider.from_string(str(row.get("capture_mode") or ""))
+    if provider is Provider.UNKNOWN:
+        provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
+    payload_size = expected_size
+    if provider is Provider.CODEX:
+        header_size = codex_legacy_header_size(source_path)
+        if header_size is None:
+            return None, "legacy_append_window_missing", None, None
+        payload_size -= header_size
+    if payload_size < 0:
+        return None, "legacy_append_window_missing", None, None
+    end = start + payload_size
+    payload, error = _append_segment_payload(source_path, start, end)
+    if error is not None or payload is None:
+        return None, error or "legacy_append_window_missing", start, end
+    payload, error = _replay_append_payload(row, payload, source_name=source_path)
+    return payload, error, start, end
 
 
 def _source_recoverability_proofs(
@@ -715,8 +833,22 @@ def _source_recoverability_proofs(
     decoded_payload_cache = decoded_payload_cache if decoded_payload_cache is not None else {}
     zip_payload_cache = zip_payload_cache if zip_payload_cache is not None else {}
     by_hash: dict[str, list[dict[str, object]]] = {}
+    prior_full_sizes: dict[str, list[tuple[int, int]]] = {}
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
-        for row in _raw_session_reference_rows(conn):
+        reference_rows = _raw_session_reference_rows(conn)
+        for row in reference_rows:
+            if (
+                str(row.get("revision_kind") or "") == "full"
+                and row.get("source_path")
+                and row.get("source_index") is not None
+            ):
+                try:
+                    if int(row["source_index"]) == 0:
+                        prior_full_sizes.setdefault(str(row["source_path"]), []).append(
+                            (int(row["acquired_at_ms"]), int(row["size_bytes"]))
+                        )
+                except (TypeError, ValueError):
+                    pass
             blob_hash = str(row.get("blob_hash") or "")
             if blob_hash in missing_hashes:
                 by_hash.setdefault(blob_hash, []).append(row)
@@ -725,6 +857,10 @@ def _source_recoverability_proofs(
         rows = by_hash.get(blob_hash, [])
         errors: list[str] = []
         for row in rows:
+            historical_snapshot_candidate = False
+            historical_append_candidate = False
+            historical_append_start: int | None = None
+            historical_append_end: int | None = None
             source_path = row.get("source_path")
             if not isinstance(source_path, str) or not source_path:
                 errors.append("no_source_path")
@@ -756,15 +892,25 @@ def _source_recoverability_proofs(
                         payload, error = _append_segment_payload(resolved, start, end)
                         if error is None and payload is not None:
                             payload, error = _replay_append_payload(row, payload, source_name=resolved)
-                else:
-                    payload, error = _current_raw_payload_bytes(
-                        resolved,
-                        source_index,
-                        raw_id=str(row.get("ref_id") or "") or None,
-                        blob_hash=blob_hash,
-                        source_bytes_cache=source_bytes_cache,
-                        decoded_payload_cache=decoded_payload_cache,
+                elif _legacy_append_without_window(row):
+                    payload, error, historical_append_start, historical_append_end = _legacy_append_replay(
+                        row, resolved, prior_full_sizes
                     )
+                    historical_append_candidate = payload is not None and error is None
+                else:
+                    prefix_candidate, prefix_payload, prefix_error = _historical_snapshot_prefix_payload(row, resolved)
+                    historical_snapshot_candidate = prefix_candidate
+                    if prefix_candidate:
+                        payload, error = prefix_payload, prefix_error
+                    else:
+                        payload, error = _current_raw_payload_bytes(
+                            resolved,
+                            source_index,
+                            raw_id=str(row.get("ref_id") or "") or None,
+                            blob_hash=blob_hash,
+                            source_bytes_cache=source_bytes_cache,
+                            decoded_payload_cache=decoded_payload_cache,
+                        )
             if error is None and payload is not None and hashlib.sha256(payload).hexdigest() == blob_hash:
                 kind = (
                     "zip_reacquired_payload"
@@ -773,9 +919,14 @@ def _source_recoverability_proofs(
                     if str(row.get("revision_kind") or "") == "append"
                     else "direct_file_sha256"
                 )
+                if historical_snapshot_candidate:
+                    kind = "historical_snapshot_prefix_sha256"
+                elif historical_append_candidate:
+                    kind = "historical_append_segment_sha256"
                 proofs.append(
                     {
                         "blob_hash": blob_hash,
+                        "blob_size": str(row.get("size_bytes")) if row.get("size_bytes") is not None else "",
                         "kind": kind,
                         "source_path": resolved,
                         "raw_id": str(row.get("ref_id") or ""),
@@ -787,10 +938,18 @@ def _source_recoverability_proofs(
                         "split_index": str(row.get("split_index")) if row.get("split_index") is not None else "",
                         "revision_kind": str(row.get("revision_kind") or ""),
                         "append_start_offset": (
-                            str(row.get("append_start_offset")) if row.get("append_start_offset") is not None else ""
+                            str(historical_append_start)
+                            if historical_append_candidate and historical_append_start is not None
+                            else str(row.get("append_start_offset"))
+                            if row.get("append_start_offset") is not None
+                            else ""
                         ),
                         "append_end_offset": (
-                            str(row.get("append_end_offset")) if row.get("append_end_offset") is not None else ""
+                            str(historical_append_end)
+                            if historical_append_candidate and historical_append_end is not None
+                            else str(row.get("append_end_offset"))
+                            if row.get("append_end_offset") is not None
+                            else ""
                         ),
                     }
                 )
@@ -822,6 +981,10 @@ def _recoverability_failure_kind(error: str) -> str:
         return "source_missing"
     if error.startswith("append_segment:"):
         return "append_segment"
+    if error == "legacy_append_window_missing":
+        return "legacy_append_window_missing"
+    if error == "historical_snapshot:prefix_mismatch":
+        return "historical_snapshot_prefix_mismatch"
     if error.startswith("source_index:") or error in {
         "container_coordinate_missing",
         "container_coordinate_mismatch",
@@ -837,9 +1000,11 @@ def _recoverability_failure_kind_for_attempts(kinds: set[str]) -> str:
     for kind in (
         "replay_error",
         "append_segment",
+        "legacy_append_window_missing",
         "acquisition_coordinate",
         "source_missing",
         "no_replay_candidate",
+        "historical_snapshot_prefix_mismatch",
         "hash_mismatch",
     ):
         if kind in kinds:
@@ -1363,7 +1528,14 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                     not isinstance(blob_hash_value, str)
                     or blob_hash_value not in source_evidence_hashes
                     or not isinstance(source_path_value, str)
-                    or kind not in {"direct_file_sha256", "zip_reacquired_payload", "live_append_segment_sha256"}
+                    or kind
+                    not in {
+                        "direct_file_sha256",
+                        "historical_snapshot_prefix_sha256",
+                        "zip_reacquired_payload",
+                        "live_append_segment_sha256",
+                        "historical_append_segment_sha256",
+                    }
                 ):
                     reference_evidence_ok = False
                     continue
@@ -1382,7 +1554,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                         source_path=source_path,
                         zip_payload_cache=zip_payload_cache,
                     )
-                elif kind == "live_append_segment_sha256":
+                elif kind in {"live_append_segment_sha256", "historical_append_segment_sha256"}:
                     start_value = proof.get("append_start_offset")
                     end_value = proof.get("append_end_offset")
                     try:
@@ -1398,6 +1570,8 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                                 recovered_payload,
                                 source_name=source_path,
                             )
+                elif kind == "historical_snapshot_prefix_sha256":
+                    recovered_payload, recovery_error = _historical_snapshot_prefix_payload(proof, source_path)[1:]
                 else:
                     recovered_payload, recovery_error = _current_raw_payload_bytes(
                         source_path,

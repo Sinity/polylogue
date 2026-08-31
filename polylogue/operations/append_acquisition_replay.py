@@ -24,6 +24,14 @@ def _codex_session_meta_id(source_name: str) -> str | None:
     return identity if isinstance(identity, str) and identity else None
 
 
+def codex_legacy_header_size(source_name: str) -> int | None:
+    """Return the historical Codex append header size for one source file."""
+    identity = _codex_session_meta_id(source_name)
+    if identity is None:
+        return None
+    return len(codex_append_payload(b"", identity=identity, legacy_header=True))
+
+
 def replay_append_acquisition_payload(
     payload: bytes,
     *,
@@ -53,4 +61,4 @@ def replay_append_acquisition_payload(
     return None, "append_segment:recorded_size_mismatch"
 
 
-__all__ = ["replay_append_acquisition_payload"]
+__all__ = ["codex_legacy_header_size", "replay_append_acquisition_payload"]
