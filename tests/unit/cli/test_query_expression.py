@@ -588,13 +588,14 @@ class TestQueryNestingDepthGuard:
         n = 250
         payload = "sessions where " + "(" * n + "repo:polylogue" + ")" * n
 
-        started = time.perf_counter()
+        started = time.process_time()
         with pytest.raises(QueryDepthExceededError):
             compile_expression(payload)
-        elapsed = time.perf_counter() - started
+        elapsed = time.process_time() - started
 
-        # A fast rejection, not a slow one: generous ceiling still an order
-        # of magnitude below the previously observed ~0.83s RecursionError cost.
+        # A fast rejection, not a slow one: CPU time, so host load cannot
+        # inflate it; the ceiling stays an order of magnitude below the
+        # previously observed ~0.83s RecursionError CPU cost.
         assert elapsed < 0.1
 
     def test_depth_guard_covers_pipeline_stage_and_unit_source_entry_points(self) -> None:
