@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionDisposition,
+    AdmissionFailure,
     AdmissionReceipt,
     AdmissionState,
     AdmissionUnit,
@@ -83,3 +84,17 @@ def test_round_robin_keeps_small_sibling_live() -> None:
     scheduler.add(AdmissionUnit("small", lambda: calls.append("small-1")))
     list(scheduler.run())
     assert calls == ["whale-1", "small-1"]
+
+
+def test_round_robin_bounds_each_source_and_isolates_poison() -> None:
+    calls: list[str] = []
+    scheduler = FairAdmissionScheduler()
+    scheduler.add(AdmissionUnit("whale", lambda: calls.append("whale-1")))
+    scheduler.add(AdmissionUnit("whale", lambda: (_ for _ in ()).throw(RuntimeError("poison"))))
+    scheduler.add(AdmissionUnit("whale", lambda: calls.append("whale-3")))
+    scheduler.add(AdmissionUnit("small", lambda: calls.append("small-1")))
+
+    results = list(scheduler.run())
+
+    assert calls == ["whale-1", "small-1", "whale-3"]
+    assert isinstance(results[2][1], AdmissionFailure)

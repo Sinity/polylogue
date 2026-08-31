@@ -56,7 +56,7 @@ from polylogue.sources.drive.types import DriveFile
 from polylogue.sources.emitter import _SessionEmitter
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers import claude as claude_parser
-from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
     enrich_session_from_index,
@@ -1676,6 +1676,61 @@ def test_merge_parsed_session_chunks_orders_timestamp_values_chronologically() -
 
     assert merged.created_at == "2026-10-01T00:30:00Z"
     assert merged.updated_at == "2026-09-30T23:00:00-02:00"
+
+
+def test_merge_parsed_session_chunks_reduces_claude_coverage_once() -> None:
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="coverage-chunks",
+            updated_at="2026-10-01T00:00:00Z",
+            messages=[],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="message_usage",
+                    timestamp="2026-10-01T00:00:00Z",
+                    source_message_provider_id="m-1",
+                ),
+                ParsedSessionEvent(
+                    event_type="claude_parse_coverage",
+                    timestamp="2026-09-30T23:59:00Z",
+                    payload={"sidecar_seen": {"progress": 2}, "sidecar_persisted": {"permission-mode": 1}},
+                ),
+            ],
+        ),
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="coverage-chunks",
+            updated_at="2026-10-01T00:01:00Z",
+            messages=[],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="message_usage",
+                    timestamp="2026-10-01T00:01:00Z",
+                    source_message_provider_id="m-2",
+                ),
+                ParsedSessionEvent(
+                    event_type="claude_parse_coverage",
+                    timestamp="2026-10-01T00:01:00Z",
+                    payload={"sidecar_seen": {"progress": 3}, "sidecar_persisted": {"permission-mode": 2}},
+                ),
+            ],
+        ),
+    ]
+
+    events = merge_parsed_session_chunks(chunks)[0].session_events
+
+    assert [event.event_type for event in events] == [
+        "message_usage",
+        "message_usage",
+        "claude_parse_coverage",
+    ]
+    assert events[-1].timestamp == "2026-10-01T00:01:00Z"
+    assert events[-1].payload == {
+        "sidecar_seen": {"progress": 5},
+        "sidecar_persisted": {"permission-mode": 3},
+        "empty_dropped_by_record_type": {},
+    }
 
 
 def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_chunk() -> None:
