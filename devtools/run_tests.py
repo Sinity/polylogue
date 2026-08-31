@@ -50,6 +50,7 @@ from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
     VerifyRun,
+    append_verification_evidence,
     append_verify_history,
     configured_pytest_worker_request,
     env_for_pytest_step,
@@ -590,6 +591,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     append_verify_history(payload)
+    append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
