@@ -45,8 +45,8 @@ from polylogue.core.enums import (
     PasteBoundary,
     Provider,
     SessionKind,
-    admitted_session_kind,
     ToolOutcome,
+    admitted_session_kind,
 )
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
