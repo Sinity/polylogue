@@ -182,6 +182,14 @@ class AdmissionUnit:
     work: Callable[[], object]
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionFailure:
+    """A bounded unit failure that must not stop sibling admission."""
+
+    error: str
+    retryable: bool = True
+
+
 class FairAdmissionScheduler:
     """Bounded round-robin scheduler; a yielding source cannot starve siblings."""
 
@@ -195,20 +203,33 @@ class FairAdmissionScheduler:
         self._queue.append(unit)
 
     def run(self) -> Iterable[tuple[str, object]]:
-        active = 0
+        buckets: dict[str, deque[AdmissionUnit]] = {}
+        order: deque[str] = deque()
         while self._queue:
             unit = self._queue.popleft()
-            if active >= self.max_units:
-                active = 0
-            active += 1
-            result = unit.work()
-            yield unit.source_id, result
-            active -= 1
+            if unit.source_id not in buckets:
+                buckets[unit.source_id] = deque()
+                order.append(unit.source_id)
+            buckets[unit.source_id].append(unit)
+
+        while order:
+            source_id = order.popleft()
+            unit = buckets[source_id].popleft()
+            try:
+                result = unit.work()
+            except Exception as exc:  # one poison item cannot preempt siblings
+                result = AdmissionFailure(str(exc) or type(exc).__name__)
+            yield source_id, result
+            if buckets[source_id]:
+                order.append(source_id)
+            else:
+                del buckets[source_id]
 
 
 __all__ = [
     "AdmissionAttempt",
     "AdmissionDisposition",
+    "AdmissionFailure",
     "AdmissionReceipt",
     "AdmissionState",
     "AdmissionUnit",
