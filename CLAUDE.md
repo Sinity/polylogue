@@ -43,8 +43,10 @@ Sessions → messages → blocks, all `STRICT`. Load-bearing semantics:
 
 - `messages.material_origin` records who or what authored the content, which roles can't express —
   what makes honest cost/user-word accounting possible.
-- `blocks.tool_result_is_error` / `tool_result_exit_code` are provider-reported
-  outcomes read from structure; `NULL` = unknown, never regex-guessed.
+- `blocks.tool_outcome` is the canonical structural outcome. `unknown` means
+  the parser retained a deliberate unknown-outcome reason; it is never treated
+  as success. Legacy `tool_result_is_error` / `tool_result_exit_code` remain
+  nullable compatibility fields.
 - `actions` is a VIEW joining tool_use ↔ tool_result blocks by `tool_id`.
 - FTS5 is contentless over `blocks.search_text`, trigger-maintained,
   `unicode61` (no porter stemmer in this build).

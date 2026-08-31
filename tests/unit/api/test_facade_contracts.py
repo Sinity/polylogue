@@ -1939,7 +1939,12 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
                         provider_message_id="m-result-1",
                         role=Role.ASSISTANT,
                         blocks=[
-                            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeat", text=None, is_error=False)
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="repeat",
+                                text=None,
+                                outcome_unknown_reason="not_reported",
+                            )
                         ],
                     ),
                     ParsedMessage(
@@ -1992,12 +1997,12 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
 
     by_command = {action.command: action for action in actions}
     assert [(action.command, action.output_text, action.result_state) for action in actions] == [
-        ("first", None, "outcome_success"),
+        ("first", None, "outcome_unknown"),
         ("absent", None, "no_result"),
         ("second", "failed", "outcome_error"),
         ("success", "ok", "outcome_success"),
     ]
-    assert by_command["first"].tool_success is True
+    assert by_command["first"].tool_success is None
     assert by_command["absent"].tool_success is None
     assert by_command["second"].tool_success is False
     assert by_command["success"].tool_success is True

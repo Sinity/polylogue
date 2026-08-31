@@ -2352,6 +2352,10 @@ def _derive_tool_outcomes(
             sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
             if sidecar_exit is not None and not isinstance(block.exit_code, int):
                 result_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
+            if block.outcome_unknown_reason is not None and not any(
+                candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in result_candidates
+            ):
+                result_candidates.append(ToolOutcome.UNKNOWN)
             distinct = set(result_candidates)
             if any(candidate is ToolOutcome.NO_RESULT for candidate in distinct) or len(distinct) > 1:
                 raise ValueError(
@@ -2384,6 +2388,10 @@ def _derive_tool_outcomes(
                 sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
                 if sidecar_exit is not None and not isinstance(block.exit_code, int):
                     resolved_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
+                if block.outcome_unknown_reason is not None and not any(
+                    candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in resolved_candidates
+                ):
+                    resolved_candidates.append(ToolOutcome.UNKNOWN)
                 if any(candidate is ToolOutcome.NO_RESULT for candidate in resolved_candidates):
                     raise ValueError(
                         f"tool outcome derivation refused for origin {origin.value!r}: "
@@ -2404,14 +2412,16 @@ def _derive_tool_outcomes(
                 exit_code = block.exit_code
                 if exit_code is None and block.tool_id in sidecar_exit_codes:
                     exit_code = sidecar_exit_codes[block.tool_id]
-                is_error = outcome is ToolOutcome.ERROR
+                is_error = None if outcome is ToolOutcome.UNKNOWN else outcome is ToolOutcome.ERROR
                 blocks.append(
                     block.model_copy(
                         update={
                             "tool_outcome": outcome,
                             "is_error": is_error,
                             "exit_code": exit_code,
-                            "outcome_unknown_reason": None,
+                            "outcome_unknown_reason": (
+                                block.outcome_unknown_reason if outcome is ToolOutcome.UNKNOWN else None
+                            ),
                         }
                     )
                 )

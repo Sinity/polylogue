@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, ToolOutcome
+from polylogue.core.enums import BlockType, Provider, ToolOutcome, ToolResultUnknownReason
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -105,6 +105,45 @@ def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> No
             (ToolOutcome.ERROR.value, None),
             (ToolOutcome.ERROR.value, 2),
         ]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("reason", [ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.DISTRUSTED])
+def test_declared_unknown_outcome_is_admitted_and_preserves_reason(
+    reason: ToolResultUnknownReason, tmp_path: Path
+) -> None:
+    conn = _connect(tmp_path / f"unknown-{reason.value}.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            _session(
+                Provider.CLAUDE_CODE,
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    tool_id="call-1",
+                    text="provider omitted a trusted verdict",
+                    outcome_unknown_reason=reason.value,
+                ),
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT block_type, tool_outcome, tool_result_is_error,
+                   tool_result_exit_code, tool_result_outcome_unknown_reason
+            FROM blocks WHERE session_id = ? ORDER BY position
+            """,
+            (session_id,),
+        ).fetchall()
+        by_type = {item["block_type"]: item for item in row}
+        assert {block_type: item["tool_outcome"] for block_type, item in by_type.items()} == {
+            "tool_use": ToolOutcome.UNKNOWN.value,
+            "tool_result": ToolOutcome.UNKNOWN.value,
+        }
+        result_row = by_type["tool_result"]
+        assert result_row["tool_result_is_error"] is None
+        assert result_row["tool_result_exit_code"] is None
+        assert result_row["tool_result_outcome_unknown_reason"] == reason.value
     finally:
         conn.close()
 

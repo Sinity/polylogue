@@ -88,6 +88,7 @@ SELECT
         WHEN ranked_results.tool_result_block_id IS NULL THEN 'no_result'
         WHEN ranked_results.tool_outcome = 'error' THEN 'outcome_error'
         WHEN ranked_results.tool_outcome = 'ok' THEN 'outcome_success'
+        WHEN ranked_results.tool_outcome = 'unknown' THEN 'outcome_unknown'
         WHEN ranked_results.exit_code IS NOT NULL AND ranked_results.exit_code != 0 THEN 'outcome_error'
         WHEN ranked_results.exit_code IS NULL AND ranked_results.is_error = 1 THEN 'outcome_error'
         WHEN ranked_results.is_error = 0 OR ranked_results.exit_code = 0 THEN 'outcome_success'

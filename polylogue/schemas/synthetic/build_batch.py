@@ -640,7 +640,6 @@ def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = Fals
             "type": "tool_result",
             "tool_use_id": read_id,
             "content": "read 4096 bytes",
-            "is_error": False,
         },
         {
             "type": "tool_result",
@@ -653,7 +652,6 @@ def _tool_use_blocks(provider: str, index: int, *, include_failures: bool = Fals
             "type": "tool_result",
             "tool_use_id": bash_id,
             "content": "1 passed",
-            "is_error": False,
         },
     ]
 

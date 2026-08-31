@@ -505,11 +505,16 @@ class ToolResultUnknownReason(PolylogueStrEnum):
 
 
 class ToolOutcome(PolylogueStrEnum):
-    """Closed outcome vocabulary for a recorded tool invocation."""
+    """Outcome vocabulary for a recorded tool invocation.
+
+    ``UNKNOWN`` is deliberate when the provider records why its result cannot
+    be trusted or does not report a pass/fail signal.
+    """
 
     OK = "ok"
     ERROR = "error"
     NO_RESULT = "no_result"
+    UNKNOWN = "unknown"
 
 
 class ActionResultState(PolylogueStrEnum):

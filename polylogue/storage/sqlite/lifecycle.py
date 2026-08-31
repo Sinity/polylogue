@@ -1101,6 +1101,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # used.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=83,
+        # polylogue-xd0ha: deliberate unknown outcomes are now
+        # admitted and their parser reasons are preserved in the canonical
+        # projection. Existing rows require fresh parser replay.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

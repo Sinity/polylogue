@@ -119,6 +119,8 @@ def tool_result_block_outcome(block: Mapping[str, object]) -> ToolResultOutcome:
         return "failed"
     if canonical == ToolOutcome.NO_RESULT.value:
         return "unknown"
+    if canonical == ToolOutcome.UNKNOWN.value:
+        return "unknown"
     is_error = _block_outcome_int(block, "tool_result_is_error", legacy_key="is_error")
     exit_code = _block_outcome_int(block, "tool_result_exit_code", legacy_key="exit_code")
     return tool_result_outcome(is_error, exit_code)

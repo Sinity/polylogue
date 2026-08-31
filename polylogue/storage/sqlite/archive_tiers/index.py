@@ -454,7 +454,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-oyiux: v82 changes session insight cost reconciliation to prefer
 # fresh catalog repricing over persisted cost observations. Existing derived
 # rows must be reprocessed so current catalog prices are served.
-INDEX_SCHEMA_VERSION = 82
+# polylogue-xd0ha: v83 admits the deliberate unknown tool-outcome state and
+# exposes it through the actions view. Existing normalized rows need fresh
+# parser replay to preserve their unknown-outcome reasons.
+INDEX_SCHEMA_VERSION = 83
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -865,6 +868,7 @@ SELECT
         WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
         WHEN tr.tool_outcome = 'error' THEN 'outcome_error'
         WHEN tr.tool_outcome = 'ok' THEN 'outcome_success'
+        WHEN tr.tool_outcome = 'unknown' THEN 'outcome_unknown'
         WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
         WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
         WHEN ap.is_error = 0 OR ap.exit_code = 0 THEN 'outcome_success'

@@ -106,9 +106,7 @@ def _function_call_output(output: str, *, call_id: str = "call-1") -> dict[str, 
         "payload": {
             "type": "function_call_output",
             "call_id": call_id,
-            # Codex exec results carry the process verdict in the structured
-            # output envelope, not in the human-readable text alone.
-            "output": json.dumps({"output": output, "exit_code": 0}),
+            "output": output,
         },
     }
 
