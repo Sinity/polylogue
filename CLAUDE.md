@@ -76,7 +76,11 @@ ingest and full replay/reindex.
 Never use rebuildable state as authority for durable mutation; never strand
 existing durable archives with a schema shortcut. Archive writes are
 idempotent by content hash (SHA-256 over NFC-normalized payload, excluding
-user metadata — tagging never re-imports).
+user metadata — tagging never re-imports). The parser-side hash vocabulary is
+declared and exhaustively partitioned in `pipeline/ids.py`: semantic session,
+message, and block fields are hashed; parser-only coordinates, provider
+signatures, and independently-owned usage/timing/cost measurements are
+excluded with reasons.
 
 **Schema regimes**: durable tiers evolve by additive numbered migrations under
 `storage/sqlite/migrations/{source,user,audit}/` behind a verified backup;
