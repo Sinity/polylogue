@@ -12,24 +12,20 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
-def test_declared_read_profiles_are_query_only_and_bound_or_sealed() -> None:
+def test_declared_read_profiles_are_query_only() -> None:
     assert set(connection_profile.TIMEOUT_CLASSES) == {
         "interactive-read",
         "background-read",
         "publication",
         "offline-bulk",
     }
-    assert connection_profile.READ_PROFILES["interactive-read"].query_only
-    assert connection_profile.READ_PROFILES["background-read"].max_snapshot_age_s is not None
-    sealed = connection_profile.READ_PROFILES["offline-bulk"]
-    assert sealed.query_only and sealed.immutable
-    assert sealed.max_snapshot_age_s is None
+    assert all(profile.role == "read" and profile.query_only for profile in connection_profile.READ_PROFILES.values())
 
 
-def test_writers_leave_checkpointing_to_the_coordinator() -> None:
-    assert connection_profile.WAL_AUTOCHECKPOINT_PAGES == 0
-    assert "PRAGMA wal_autocheckpoint = 0" in connection_profile.WRITE_CONNECTION_PROFILE.pragma_statements
-    assert "PRAGMA wal_autocheckpoint = 0" in connection_profile.DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
+def test_writers_retain_bounded_autocheckpoint() -> None:
+    assert connection_profile.WAL_AUTOCHECKPOINT_PAGES == 10000
+    assert "PRAGMA wal_autocheckpoint = 10000" in connection_profile.WRITE_CONNECTION_PROFILE.pragma_statements
+    assert "PRAGMA wal_autocheckpoint = 10000" in connection_profile.DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
 
 
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:

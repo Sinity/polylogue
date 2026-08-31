@@ -154,10 +154,7 @@ BOUNDED_REPAIR_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
 # Schema inference keeps its own WAL journal connection alive while it scans
 # provider artifacts. It has no mmap allowance, only this page-cache limit.
 OBSERVATION_JOURNAL_CACHE_SIZE_KIB = _scale_profile_size(65536)  # 64 MiB
-# Automatic checkpoints are disabled on every production writer.  The
-# checkpoint coordinator owns cadence and escalation so publication cannot
-# hide an unbudgeted checkpoint hold.
-WAL_AUTOCHECKPOINT_PAGES = 0
+WAL_AUTOCHECKPOINT_PAGES = 10000
 # #1614: soft cap on the WAL file. After any checkpoint that frees
 # pages, SQLite truncates the WAL down to this size. Without this cap
 # the WAL grows unbounded when a TRUNCATE checkpoint is blocked by a
@@ -274,8 +271,6 @@ READ_PROFILES: dict[str, SQLiteConnectionProfile] = {
         cache_size_kib=READ_CACHE_SIZE_KIB,
         mmap_size_bytes=READ_MMAP_SIZE_BYTES,
         query_only=True,
-        max_snapshot_age_s=30.0,
-        generation_identity="live",
     ),
     "offline-bulk": SQLiteConnectionProfile(
         role="read",
@@ -284,10 +279,6 @@ READ_PROFILES: dict[str, SQLiteConnectionProfile] = {
         cache_size_kib=READ_CACHE_SIZE_KIB,
         mmap_size_bytes=READ_MMAP_SIZE_BYTES,
         query_only=True,
-        immutable=True,
-        max_snapshot_age_s=None,
-        generation_identity="sealed",
-        cancellation_supported=False,
     ),
 }
 TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
@@ -778,7 +769,7 @@ def open_readonly_connection(
     """
     if profile.role != "read" or not profile.query_only:
         raise ValueError("open_readonly_connection requires a query-only read profile")
-    if timeout_class not in TIMEOUT_CLASSES:
+    if timeout_class not in READ_PROFILES:
         raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
     if profile is READ_CONNECTION_PROFILE and timeout_class != "interactive-read":
         profile = READ_PROFILES["offline-bulk" if immutable else timeout_class]
@@ -880,7 +871,6 @@ __all__ = [
     "READ_PROFILES",
     "SQLiteConnectionProfile",
     "TIMEOUT_CLASSES",
-    "TIMEOUT_PROFILES",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",
@@ -895,5 +885,4 @@ __all__ = [
     "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",
-    "open_profiled_connection",
 ]

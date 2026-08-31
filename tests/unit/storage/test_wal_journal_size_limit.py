@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.connection_profile import (
     DAEMON_WRITE_CONNECTION_PROFILE,
     DAEMON_WRITE_MMAP_SIZE_BYTES,
     READ_CONNECTION_PROFILE,
+    WAL_AUTOCHECKPOINT_PAGES,
     WAL_JOURNAL_SIZE_LIMIT_BYTES,
     WRITE_CONNECTION_PROFILE,
     open_connection,
@@ -137,6 +138,29 @@ def test_open_daemon_connection_applies_bounded_cache_and_mmap(tmp_path: Path) -
         assert _pragma_int(conn, "cache_size") == -DAEMON_WRITE_CACHE_SIZE_KIB
         assert _pragma_int(conn, "mmap_size") == DAEMON_WRITE_MMAP_SIZE_BYTES
         assert _pragma_int(conn, "journal_size_limit") == WAL_JOURNAL_SIZE_LIMIT_BYTES
+    finally:
+        conn.close()
+
+
+def test_autocheckpoint_bounds_representative_write_burst(tmp_path: Path) -> None:
+    """A committed burst keeps the WAL near the declared frame threshold."""
+    db_path = tmp_path / "index.db"
+    conn = open_connection(db_path)
+    try:
+        conn.execute("CREATE TABLE blob (id INTEGER PRIMARY KEY, payload BLOB)")
+        conn.commit()
+        page_size = _pragma_int(conn, "page_size")
+        assert _pragma_int(conn, "wal_autocheckpoint") == WAL_AUTOCHECKPOINT_PAGES
+
+        payload = b"x" * (8 * 1024)
+        for _ in range(16):
+            conn.executemany("INSERT INTO blob (payload) VALUES (?)", [(payload,) for _ in range(500)])
+            conn.commit()
+
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+        bound = (WAL_AUTOCHECKPOINT_PAGES + 2048) * page_size
+        assert wal_size <= bound, f"WAL after representative burst was {wal_size} bytes, above {bound} bytes"
     finally:
         conn.close()
 
