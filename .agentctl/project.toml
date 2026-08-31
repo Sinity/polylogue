@@ -149,6 +149,14 @@ scratch = "nvme"
 type = "bool"
 flag = "--authorize"
 
+[operations.harvest.parameters.publish]
+type = "bool"
+flag = "--publish"
+
+[operations.harvest.parameters.close]
+type = "bool"
+flag = "--close"
+
 [operations.harvest.parameters.no_watch]
 type = "bool"
 flag = "--no-watch"
