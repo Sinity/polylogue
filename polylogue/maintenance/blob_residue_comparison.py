@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Origin, Provider
@@ -48,6 +48,15 @@ class ComparisonOutcome(StrEnum):
     REPRODUCED_NORMALIZED = "reproduced_normalized"
     SUPERSEDED_PREFIX = "superseded_prefix"
     CONTENT_DIVERGENT = "content_divergent"
+
+
+class AuthorityOutcome(StrEnum):
+    """The only terminal authority states used by a residue census."""
+
+    CURRENT_SOURCE_REACQUIRABLE = "current_source_reacquirable"
+    RESTORED_AND_REACQUIRED = "restored_and_reacquired"
+    POSITIVELY_EXCLUDED = "positively_excluded"
+    UNRESOLVED_BLOCKER = "unresolved_blocker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -507,6 +516,16 @@ def _candidate_result(
             "blob_observation": blob_observation,
         },
         "disposition": comparison.outcome.value,
+        "authority_outcome": (
+            AuthorityOutcome.CURRENT_SOURCE_REACQUIRABLE.value
+            if not comparison.unresolved
+            and comparison.outcome
+            in {
+                ComparisonOutcome.REPRODUCED_NORMALIZED,
+                ComparisonOutcome.SUPERSEDED_PREFIX,
+            }
+            else AuthorityOutcome.UNRESOLVED_BLOCKER.value
+        ),
     }
 
 
@@ -516,8 +535,8 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     if not isinstance(records, list):
         raise ValueError("census records must be a list")
     present = [record for record in records if isinstance(record, dict) and record.get("cohort") != "source_missing"]
-    if len(present) != 577:
-        raise ValueError(f"expected 577 present-source candidates, found {len(present)}")
+    if not present:
+        raise ValueError("census must contain at least one present-source candidate")
     from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 
     origins = sorted({str(record.get("origin")) for record in present})
@@ -531,7 +550,16 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     processed = 0
     for record in records:
         if not isinstance(record, dict) or record.get("cohort") == "source_missing":
-            extended_records.append(record)
+            if isinstance(record, dict):
+                extended_records.append(
+                    {
+                        **record,
+                        "authority_outcome": AuthorityOutcome.UNRESOLVED_BLOCKER.value,
+                        "authority_evidence": "source_missing_requires_ordinary_restoration_and_admission",
+                    }
+                )
+            else:
+                extended_records.append(record)
         else:
             extended_records.append(_candidate_result(record, blob_store=store, current_cache=current_cache))
             processed += 1
@@ -548,6 +576,31 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
         for comparison in comparisons
         if _route_status(comparison, "stored_route") == "error" or _route_status(comparison, "current_route") == "error"
     )
+    outcome_counts = Counter(
+        str(record["authority_outcome"]) for record in extended_records if "authority_outcome" in record
+    )
+    allowed_outcomes = {outcome.value for outcome in AuthorityOutcome}
+    invalid_outcomes = sorted(set(outcome_counts) - allowed_outcomes)
+    if invalid_outcomes:
+        raise ValueError(f"invalid authority outcomes: {invalid_outcomes}")
+    physical_hashes = {
+        str(record.get("blob_hash"))
+        for record in records
+        if isinstance(record, dict) and isinstance(record.get("blob_hash"), str)
+    }
+    distinct_bytes = 0
+    seen_hashes: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("blob_hash"), str):
+            continue
+        blob_hash = str(record["blob_hash"])
+        if blob_hash in seen_hashes:
+            continue
+        seen_hashes.add(blob_hash)
+        size = record.get("size_bytes", record.get("blob_size_bytes"))
+        if isinstance(size, int) and size >= 0:
+            distinct_bytes += size
+    unresolved_count = outcome_counts[AuthorityOutcome.UNRESOLVED_BLOCKER.value]
     return {
         **census,
         "normalized_comparison": {
@@ -558,6 +611,19 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
                 1 for record in records if isinstance(record, dict) and record.get("cohort") == "source_missing"
             ),
             "outcome_counts": dict(sorted(outcomes.items())),
+            "authority_outcome_counts": dict(
+                sorted(
+                    {
+                        **{outcome.value: outcome_counts.get(outcome.value, 0) for outcome in AuthorityOutcome},
+                        AuthorityOutcome.UNRESOLVED_BLOCKER.value: unresolved_count,
+                    }.items()
+                )
+            ),
+            "authority_outcome_values": sorted(allowed_outcomes),
+            "candidate_record_count": len(records),
+            "candidate_distinct_hash_count": len(physical_hashes),
+            "candidate_distinct_bytes": distinct_bytes,
+            "unresolved_candidate_count": unresolved_count,
             "route_error_count": route_errors,
             "read_only": True,
             "route": "production_detector_parser_admission_v1",
@@ -577,9 +643,9 @@ def main(argv: list[str] | None = None) -> int:
     census = json.loads(args.census.read_text(encoding="utf-8"))
     receipt = extend_census(census, blob_root=args.blob_root)
     args.output.write_text(json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    comparison = receipt["normalized_comparison"]
-    counts = comparison["outcome_counts"] if isinstance(comparison, dict) else {}
-    print(f"normalized-comparison present=577 outcomes={counts}")
+    comparison = cast(dict[str, object], receipt["normalized_comparison"])
+    counts = comparison["outcome_counts"]
+    print(f"normalized-comparison present={comparison.get('present_source_candidate_count')} outcomes={counts}")
     return 0
 
 
@@ -589,6 +655,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ComparisonOutcome",
+    "AuthorityOutcome",
     "ContributionComparison",
     "NormalizedContribution",
     "NormalizedSessionContribution",

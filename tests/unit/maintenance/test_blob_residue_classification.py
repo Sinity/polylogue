@@ -2,12 +2,14 @@
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from pytest import MonkeyPatch
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.maintenance.blob_residue_comparison import (
+    AuthorityOutcome,
     ComparisonOutcome,
     ContributionComparison,
     NormalizedContribution,
@@ -115,12 +117,52 @@ def test_extend_census_leaves_source_missing_records_unchanged(tmp_path: Path) -
     receipt = extend_census(census, blob_root=store.root)
 
     records = receipt["records"]
-    comparison = receipt["normalized_comparison"]
+    comparison = cast(dict[str, object], receipt["normalized_comparison"])
     assert isinstance(records, list)
     assert isinstance(comparison, dict)
-    assert records[-1] == missing
+    last_record = cast(dict[str, object], records[-1])
+    assert last_record["blob_hash"] == "missing"
+    assert last_record["authority_outcome"] == AuthorityOutcome.UNRESOLVED_BLOCKER.value
     assert comparison["present_source_candidate_count"] == 577
     assert comparison["source_missing_candidate_count_untouched"] == 1
+    assert comparison["candidate_record_count"] == 578
+    assert comparison["unresolved_candidate_count"] == 1
+    authority_values = cast(list[str], comparison["authority_outcome_values"])
+    assert set(authority_values) == {
+        "current_source_reacquirable",
+        "restored_and_reacquired",
+        "positively_excluded",
+        "unresolved_blocker",
+    }
+
+
+def test_present_candidate_count_is_derived_and_route_errors_block(tmp_path: Path) -> None:
+    source = tmp_path / "not-a-session.jsonl"
+    source.write_text("{}\n", encoding="utf-8")
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, size = store.write_from_path(source)
+    census = {
+        "candidate_hash_digest": "fixture",
+        "records": [
+            {
+                "cohort": "single_document_or_cache",
+                "origin": "claude-code-session",
+                "capture_mode": None,
+                "blob_hash": blob_hash,
+                "size_bytes": size,
+                "recorded_source": str(source),
+            }
+        ],
+    }
+
+    receipt = extend_census(census, blob_root=store.root)
+
+    comparison = cast(dict[str, object], receipt["normalized_comparison"])
+    assert comparison["present_source_candidate_count"] == 1
+    assert comparison["candidate_distinct_bytes"] == size
+    assert comparison["unresolved_candidate_count"] == 1
+    first_record = cast(dict[str, object], cast(list[object], receipt["records"])[0])
+    assert first_record["authority_outcome"] == AuthorityOutcome.UNRESOLVED_BLOCKER.value
 
 
 def test_sqlite_route_uses_immutable_read_only_connections(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
