@@ -24,12 +24,15 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     PLANNER_STAT1_SEED_SQL,
     SCHEMA_DDL,
     SCHEMA_VERSION,
+    assert_derived_schema_identity,
+    assert_derived_schema_identity_async,
     capture_schema_snapshot,
     capture_schema_snapshot_async,
     decide_schema_bootstrap,
     ensure_vec0_table,
     ensure_vec0_table_async,
     schema_version_mismatch_message,
+    stamp_derived_schema_identity,
 )
 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
@@ -84,6 +87,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(PLANNER_STAT1_SEED_SQL)
         conn.execute("PRAGMA optimize")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        stamp_derived_schema_identity(conn, "index")
         conn.commit()
         return
 
@@ -97,6 +101,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     # open_as_is — vec0 still needs to be ensured per-connection because the
     # extension may have been newly loaded since fresh init.
+    assert_derived_schema_identity(conn, "index")
     ensure_vec0_table(conn)
     ensure_runtime_indexes_sync(conn)
     apply_index_benign_ddl_convergence(conn)
@@ -116,6 +121,13 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await conn.executescript(PLANNER_STAT1_SEED_SQL)
         await conn.execute("PRAGMA optimize")
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
+        await conn.execute(
+            "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
+            "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",
+            (DerivedTier.INDEX.value, derived_schema_identity(DerivedTier.INDEX)),
+        )
         await conn.commit()
         return
 
@@ -127,6 +139,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
             expected_version=SCHEMA_VERSION,
         )
 
+    await assert_derived_schema_identity_async(conn, "index")
     await ensure_vec0_table_async(conn)
     await ensure_runtime_indexes_async(conn)
     await apply_index_benign_ddl_convergence_async(conn)
