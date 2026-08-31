@@ -27,6 +27,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 
 __all__ = [
     "RAW_ARTIFACT_UPSERT_SQL",
@@ -114,7 +115,7 @@ def artifact_observation_params(record: ArtifactObservationRecord) -> tuple[obje
         record.source_path,
         record.source_index if record.source_index is not None else 0,
         record.artifact_kind,
-        record.support_status.value,
+        require_vocabulary(record.support_status, ArtifactSupportStatus, field="support_status"),
         record.classification_reason,
         int(record.parse_as_session),
         int(record.schema_eligible),

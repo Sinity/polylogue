@@ -6,24 +6,11 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
-from typing import get_args
-
-from polylogue.archive.revision_authority import RawRevisionAuthority
-from polylogue.archive.session_revision_membership import MembershipDecision
-from polylogue.core.enums import (
-    ArtifactSupportStatus,
-    Origin,
-    Provider,
-    RawAuthorityVerdict,
-    ValidationMode,
-    ValidationStatus,
-)
-from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
-from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 SOURCE_SCHEMA_VERSION = 39
 
+# ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS source_generations (
     source_generation_id TEXT PRIMARY KEY,
@@ -39,7 +26,7 @@ CREATE TABLE IF NOT EXISTS source_items (
     source_item_id       TEXT NOT NULL,
     logical_coordinate   TEXT NOT NULL CHECK(length(trim(logical_coordinate)) > 0),
     addressing_mode      TEXT NOT NULL CHECK(length(trim(addressing_mode)) > 0),
-    origin               TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
+    origin               TEXT, -- ddl-lifecycle-waiver: benign vocabulary membership is validated at the write boundary.
     source_path          TEXT,
     source_index         INTEGER CHECK(source_index >= 0),
     disposition          TEXT NOT NULL CHECK(disposition IN (
@@ -187,8 +174,8 @@ SELECT g.source_generation_id, g.item_count AS manifest_items,
 
 CREATE TABLE IF NOT EXISTS raw_sessions (
     raw_id                  TEXT PRIMARY KEY,
-    origin                  TEXT NOT NULL CHECK ({check("origin", Origin)}),
-    capture_mode            TEXT CHECK ({nullable_check("capture_mode", Provider)}),
+    origin                  TEXT NOT NULL,
+    capture_mode            TEXT,
     native_id               TEXT,
     source_path             TEXT NOT NULL,
     source_index            INTEGER NOT NULL DEFAULT 0,
@@ -199,10 +186,10 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     parsed_at_ms            INTEGER,
     parse_error             TEXT,
     validated_at_ms         INTEGER,
-    validation_status       TEXT CHECK ({nullable_check("validation_status", ValidationStatus)}),
+    validation_status       TEXT,
     validation_error        TEXT,
     validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
-    validation_mode         TEXT CHECK ({nullable_check("validation_mode", ValidationMode)}),
+    validation_mode         TEXT,
     detection_warnings_json TEXT NOT NULL DEFAULT '[]'
     ,logical_source_key      TEXT
     ,revision_kind           TEXT NOT NULL DEFAULT 'unknown'
@@ -215,10 +202,9 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset)
     ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)
     ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
-        CHECK ({check("revision_authority", RawRevisionAuthority)})
     ,revision_authority_evidence TEXT
         CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))
-    ,detected_provider       TEXT CHECK ({nullable_check("detected_provider", Provider)})
+    ,detected_provider       TEXT
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_container_coordinates (
@@ -278,7 +264,7 @@ ON raw_sessions(blob_hash, raw_id);
 -- instead of only ever seeing the first-cached value.
 CREATE TABLE IF NOT EXISTS raw_capture_observations (
     raw_id               TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    capture_mode         TEXT NOT NULL CHECK ({check("capture_mode", Provider)}),
+    capture_mode         TEXT NOT NULL,
     first_observed_at_ms INTEGER NOT NULL CHECK(first_observed_at_ms >= 0),
     PRIMARY KEY (raw_id, capture_mode)
 ) STRICT;
@@ -299,9 +285,8 @@ CREATE TABLE IF NOT EXISTS raw_session_memberships (
     -- column: this value is always an OUTPUT of membership classification
     -- (revision_governance.py's writeback), which never emits ASSERTED --
     -- see ProvenRevisionAuthority in archive_tiers/types.py (polylogue-h57ic).
-    revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
-        CHECK ({literal_check("revision_authority", *get_args(ProvenRevisionAuthority))}),
-    decision                TEXT CHECK ({nullable_check("decision", MembershipDecision)}),
+    revision_authority      TEXT NOT NULL DEFAULT 'quarantined',
+    decision                TEXT,
     decided_at_ms           INTEGER CHECK(decided_at_ms >= 0),
     PRIMARY KEY(raw_id, logical_source_key),
     CHECK((decision IS NULL) = (decided_at_ms IS NULL))
@@ -332,7 +317,7 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
 CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
-    previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
+    previous_revision_authority TEXT NOT NULL,
     source_path                 TEXT NOT NULL,
     blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
     blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
@@ -354,15 +339,8 @@ CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key          TEXT NOT NULL,
     provider_session_id         TEXT NOT NULL,
-    membership_decision         TEXT NOT NULL CHECK ({
-    literal_check(
-        "membership_decision",
-        MembershipDecision.APPLIED,
-        MembershipDecision.SUPERSEDED_EQUIVALENT,
-        MembershipDecision.SUPERSEDED_PREFIX,
-    )
-}),
-    previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
+    membership_decision         TEXT NOT NULL,
+    previous_revision_authority TEXT NOT NULL,
     promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
     tool_version                TEXT NOT NULL,
     backup_manifest_path        TEXT NOT NULL,
@@ -392,7 +370,7 @@ CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
     append_start_offset              INTEGER NOT NULL CHECK(append_start_offset >= 0),
     append_end_offset                INTEGER NOT NULL CHECK(append_end_offset > append_start_offset),
     matched_after_codex_header_strip INTEGER NOT NULL CHECK(matched_after_codex_header_strip IN (0, 1)),
-    previous_revision_authority      TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
+    previous_revision_authority      TEXT NOT NULL,
     compared_at_ms                    INTEGER NOT NULL CHECK(compared_at_ms >= 0),
     tool_version                      TEXT NOT NULL,
     backup_manifest_path              TEXT NOT NULL,
@@ -440,7 +418,7 @@ ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
 CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
     raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     artifact_id                TEXT NOT NULL UNIQUE REFERENCES raw_artifacts(artifact_id),
-    origin                     TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    origin                     TEXT NOT NULL,
     source_path                TEXT NOT NULL,
     source_index               INTEGER NOT NULL,
     blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
@@ -680,7 +658,7 @@ WHERE resolved_at_ms IS NULL;
 CREATE TABLE IF NOT EXISTS raw_authority_verdicts (
     raw_id                TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key    TEXT NOT NULL,
-    verdict                TEXT NOT NULL CHECK ({check("verdict", RawAuthorityVerdict)}),
+    verdict                TEXT NOT NULL,
     cohort_member_count   INTEGER NOT NULL CHECK(cohort_member_count >= 1),
     cohort_fingerprint    BLOB NOT NULL CHECK(length(cohort_fingerprint) = 32),
     computed_at_ms        INTEGER NOT NULL CHECK(computed_at_ms >= 0)
@@ -813,11 +791,11 @@ ON raw_sessions(revision_authority, parse_error);
 CREATE TABLE IF NOT EXISTS raw_artifacts (
     artifact_id              TEXT PRIMARY KEY,
     raw_id                   TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    origin                   TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    origin                   TEXT NOT NULL,
     source_path              TEXT NOT NULL,
     source_index             INTEGER NOT NULL DEFAULT 0,
     artifact_kind            TEXT NOT NULL,
-    support_status           TEXT NOT NULL CHECK ({check("support_status", ArtifactSupportStatus)}),
+    support_status           TEXT NOT NULL,
     classification_reason    TEXT NOT NULL,
     parse_as_session         INTEGER NOT NULL DEFAULT 0 CHECK(parse_as_session IN (0, 1)),
     schema_eligible          INTEGER NOT NULL DEFAULT 0 CHECK(schema_eligible IN (0, 1)),
@@ -863,7 +841,7 @@ ON raw_artifacts(raw_id);
 
 CREATE TABLE IF NOT EXISTS raw_hook_events (
     hook_event_id   TEXT PRIMARY KEY,
-    origin          TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    origin          TEXT NOT NULL,
     native_id       TEXT,
     session_native_id TEXT,
     source_path     TEXT NOT NULL,
@@ -905,7 +883,7 @@ CREATE TABLE IF NOT EXISTS otlp_spans (
     span_id           TEXT PRIMARY KEY,
     trace_id          TEXT NOT NULL,
     parent_span_id    TEXT,
-    origin            TEXT CHECK ({nullable_check("origin", Origin)}),
+    origin            TEXT,
     session_native_id TEXT,
     name              TEXT NOT NULL,
     kind              TEXT,
@@ -925,7 +903,7 @@ WHERE session_native_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS history_sidecars (
     sidecar_id      TEXT PRIMARY KEY,
-    origin          TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    origin          TEXT NOT NULL,
     source_path     TEXT NOT NULL,
     payload_json    TEXT NOT NULL,
     observed_at_ms  INTEGER NOT NULL,

@@ -8,9 +8,10 @@ from dataclasses import replace
 import aiosqlite
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionExecution,
     RawAdmissionPlan,
@@ -49,6 +50,12 @@ async def execute_raw_admission_plan_async(
     publication-reservation behavior.
     """
     request = plan.request
+    origin_value = require_vocabulary(request.origin, Origin, field="origin")
+    capture_mode_value = (
+        require_vocabulary(request.capture_mode, Provider, field="capture_mode")
+        if request.capture_mode is not None
+        else None
+    )
     # Before coordinate-sensitive raw ids, normal acquisition used the blob
     # hash itself as its raw id.  Reuse that legacy row only when it proves the
     # same coordinate and bytes; a different coordinate must retain the new
@@ -109,7 +116,7 @@ async def execute_raw_admission_plan_async(
             request.blob_size,
         ):
             raise ValueError(f"raw id is already bound to different acquisition evidence: {plan.raw_id}")
-        incoming_origin = getattr(request.origin, "value", request.origin)
+        incoming_origin = origin_value
         stored_origin = retained_values[0]
         if stored_origin != incoming_origin:
             if stored_origin == "unknown-export" and incoming_origin != "unknown-export":
@@ -131,7 +138,7 @@ async def execute_raw_admission_plan_async(
         if retained_revision != pending_revision and plan.revision.authority is not RawRevisionAuthority.QUARANTINED:
             raise ValueError(f"raw id is already bound to a different revision envelope: {plan.raw_id}")
     else:
-        origin = getattr(request.origin, "value", request.origin)
+        origin = origin_value
         cursor = await conn.execute(
             """
             INSERT INTO raw_sessions (
@@ -145,7 +152,7 @@ async def execute_raw_admission_plan_async(
             (
                 plan.raw_id,
                 origin,
-                getattr(request.capture_mode, "value", request.capture_mode),
+                capture_mode_value,
                 request.native_id,
                 request.source_path,
                 request.source_index,
@@ -163,7 +170,7 @@ async def execute_raw_admission_plan_async(
             return await execute_raw_admission_plan_async(conn, plan, transaction_depth)
 
     if request.capture_mode is not None:
-        capture_mode = getattr(request.capture_mode, "value", request.capture_mode)
+        capture_mode = capture_mode_value
         await conn.execute(
             "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
             (capture_mode, plan.raw_id),
@@ -305,8 +312,10 @@ async def save_raw_session(
         (
             record.raw_id,
             origin.value,
-            detected_provider.value if detected_provider is not None else None,
-            capture_mode.value if capture_mode is not None else None,
+            require_vocabulary(detected_provider, Provider, field="detected_provider")
+            if detected_provider is not None
+            else None,
+            require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
             None,
             record.source_path,
             int(record.source_index or 0),
@@ -317,10 +326,14 @@ async def save_raw_session(
             _timestamp_ms(record.parsed_at),
             record.parse_error,
             _timestamp_ms(record.validated_at),
-            record.validation_status.value if record.validation_status is not None else None,
+            require_vocabulary(record.validation_status, ValidationStatus, field="validation_status")
+            if record.validation_status is not None
+            else None,
             record.validation_error,
             int(record.validation_drift_count or 0),
-            record.validation_mode.value if record.validation_mode is not None else None,
+            require_vocabulary(record.validation_mode, ValidationMode, field="validation_mode")
+            if record.validation_mode is not None
+            else None,
             record.detection_warnings or "[]",
             revision.logical_source_key,
             revision.kind.value,

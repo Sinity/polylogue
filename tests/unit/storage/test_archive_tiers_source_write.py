@@ -3,8 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ArchiveRawArtifactEnvelope,
@@ -32,6 +35,29 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
+
+
+def test_source_vocabulary_is_not_materialized_as_durable_checks() -> None:
+    """Vocabulary membership is a writer concern, so enum additions do not alter DDL."""
+    for column in ("origin", "capture_mode", "validation_status", "validation_mode", "support_status"):
+        assert f"{column} IN (" not in SOURCE_DDL
+
+
+def test_source_writer_rejects_out_of_vocabulary_values(tmp_path: Path) -> None:
+    """The acquisition writer rejects invalid vocabulary before SQLite receives the row."""
+    conn = _connect(tmp_path / "source.db")
+    with pytest.raises(ValueError, match="capture_mode"):
+        write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            capture_mode="made-up-provider",
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+    conn.close()
 
 
 def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_path: Path) -> None:
