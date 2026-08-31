@@ -729,7 +729,10 @@ describe("background receiver diagnostics", () => {
       cutoff,
       policy: { baseCadenceMs: 1000 },
     }));
-    await Promise.all(requests);
+    const responses = await Promise.all(requests);
+    expect(responses).toHaveLength(2);
+    expect(responses.every((response) => response.ok)).toBe(true);
+    expect(responses[0].job.id).toBe(responses[1].job.id);
 
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();

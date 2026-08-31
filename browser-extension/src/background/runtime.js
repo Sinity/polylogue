@@ -67,6 +67,7 @@ const PROVIDER_TRANSPORT_OPERATOR_TAKEN_SESSION_PREFIX = "polylogueProviderTrans
 const recentBackgroundCaptures = new Map();
 const recentActiveTabStateChecks = new Map();
 let backfillCoordinatorPromise = null;
+const backfillStartPromises = new Map();
 let extensionInstanceIdPromise = null;
 let browserActionExecutorIdPromise = null;
 const providerTransportPromises = new Map();
@@ -374,6 +375,29 @@ async function backfillCoordinator() {
     });
   }
   return backfillCoordinatorPromise;
+}
+
+async function startBackfill(request) {
+  const provider = String(request.provider || "");
+  const inFlight = backfillStartPromises.get(provider);
+  if (inFlight) return inFlight;
+  const pending = (async () => {
+    const coordinator = await backfillCoordinator();
+    const job = await coordinator.start({
+      provider,
+      cutoff: request.cutoff,
+      policy: request.policy || {},
+      provider_options: request.provider_options || {},
+    });
+    void coordinator.wake(job.id);
+    return job;
+  })();
+  backfillStartPromises.set(provider, pending);
+  try {
+    return await pending;
+  } finally {
+    if (backfillStartPromises.get(provider) === pending) backfillStartPromises.delete(provider);
+  }
 }
 
 // ---- Capture retry queue --------------------------------------------------
@@ -3074,6 +3098,7 @@ export function startBackgroundRuntime(adapters) {
   providerTransportPromises.clear();
   providerTransportOperations.clear();
   backfillCoordinatorPromise = null;
+  backfillStartPromises.clear();
   extensionInstanceIdPromise = null;
   browserActionExecutorIdPromise = null;
   browserActionPollPromise = null;
@@ -3218,14 +3243,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.backfill.start") {
-      const coordinator = await backfillCoordinator();
-      const job = await coordinator.start({
-        provider: message.provider,
-        cutoff: message.cutoff,
-        policy: message.policy || {},
-        provider_options: message.provider_options || {},
-      });
-      void coordinator.wake(job.id);
+      const job = await startBackfill(message);
       sendResponse({ ok: true, job });
       return;
     }
