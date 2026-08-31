@@ -1587,7 +1587,9 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
         )
         conn.execute(
             "UPDATE insight_materialization SET materializer_version = ? WHERE session_id = ?",
-            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1, "codex-session:conv-stale-version"),
+            # Keep the deployed pre-correction stamp literal. Deriving it from
+            # the current version would let a reverted materializer bump pass.
+            (14, "codex-session:conv-stale-version"),
         )
         conn.commit()
 
@@ -1606,6 +1608,19 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
         "codex-session:conv-stale-source",
         "codex-session:conv-stale-version",
     }
+
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(["codex-session:conv-stale-version"])
+    with open_connection(db_path) as conn:
+        materialization = conn.execute(
+            """
+            SELECT materializer_version
+            FROM insight_materialization
+            WHERE insight_type = 'session_profile' AND session_id = ?
+            """,
+            ("codex-session:conv-stale-version",),
+        ).fetchone()
+    assert tuple(materialization) == (SESSION_INSIGHT_MATERIALIZER_VERSION,)
 
 
 def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: Path) -> None:

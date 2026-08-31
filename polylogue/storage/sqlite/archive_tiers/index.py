@@ -451,7 +451,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-4jcof: v81 splits provider and catalog cost columns; existing rows
 # require regeneration because the old cost label cannot distinguish provider
 # dollars from catalog computation.
-INDEX_SCHEMA_VERSION = 81
+# polylogue-oyiux: v82 changes session insight cost reconciliation to prefer
+# fresh catalog repricing over persisted cost observations. Existing derived
+# rows must be reprocessed so current catalog prices are served.
+INDEX_SCHEMA_VERSION = 82
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
