@@ -51,6 +51,14 @@ OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibilit
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
 ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
 SourceClass = Literal["session", "non_session", "unsupported"]
+TopologyCapabilityState = Literal["carried", "positive-derived", "structurally-absent", "unknown"]
+TopologyCapabilityDimension = Literal[
+    "message_parent",
+    "message_branch_state",
+    "session_parent_target",
+    "inheritance_branch_point",
+    "parent_dispatch",
+]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
@@ -276,6 +284,56 @@ class SourceClassRecognition:
 
     source_class: SourceClass
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyCapability:
+    """Per-origin declaration of the topology evidence a parser may use."""
+
+    state: TopologyCapabilityState
+    evidence: tuple[str, ...]
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        if self.state == "unknown":
+            raise ValueError("topology capability cannot remain unknown")
+        if not self.evidence:
+            raise ValueError("topology capability requires evidence or an absence reason")
+        if self.state == "structurally-absent" and not self.reason:
+            raise ValueError("structurally absent topology capability requires a reason")
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyCapabilities:
+    """Complete, table-driven topology disposition for one origin."""
+
+    message_parent: TopologyCapability
+    message_branch_state: TopologyCapability
+    session_parent_target: TopologyCapability
+    inheritance_branch_point: TopologyCapability
+    parent_dispatch: TopologyCapability
+
+    def as_dict(self) -> dict[str, TopologyCapability]:
+        return {
+            "message_parent": self.message_parent,
+            "message_branch_state": self.message_branch_state,
+            "session_parent_target": self.session_parent_target,
+            "inheritance_branch_point": self.inheritance_branch_point,
+            "parent_dispatch": self.parent_dispatch,
+        }
+
+
+def _absent_topology(reason: str) -> TopologyCapability:
+    return TopologyCapability("structurally-absent", (reason,), reason)
+
+
+_DEFAULT_TOPOLOGY_CAPABILITIES = TopologyCapabilities(
+    message_parent=_absent_topology("no provider message-parent field is admitted"),
+    message_branch_state=_absent_topology("no provider branch-state field is admitted"),
+    session_parent_target=_absent_topology("no provider session-parent target is admitted"),
+    inheritance_branch_point=_absent_topology("no provider inheritance boundary is admitted"),
+    parent_dispatch=_absent_topology("no provider parent-dispatch identity is admitted"),
+)
 
 
 def recognize_source_class(
@@ -516,6 +574,7 @@ class OriginSpec:
     #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
     #: second hand-maintained per-origin description inventory.
     display_description: str
+    topology_capabilities: TopologyCapabilities = _DEFAULT_TOPOLOGY_CAPABILITIES
     #: Whether this origin is offered as a public filter/completion choice.
     #: Compatibility-only and non-session evidence origins can remain in the
     #: authoritative enum without being advertised as query choices.
@@ -582,6 +641,17 @@ def lowering_fingerprint() -> str:
     payload = {
         "source_fingerprint": _fingerprint_sources(_LOWERING_FINGERPRINT_PATHS, namespace="lowering"),
         "detector_declarations": _detector_declaration_fingerprint_payload(),
+        "topology_capabilities": {
+            spec.origin.value: {
+                name: {
+                    "state": capability.state,
+                    "evidence": capability.evidence,
+                    "reason": capability.reason,
+                }
+                for name, capability in spec.topology_capabilities.as_dict().items()
+            }
+            for spec in ORIGIN_SPECS
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -638,6 +708,14 @@ class OriginSpecRegistry:
             raise ValueError(f"{spec.origin.value}: missing coverage declaration")
         if not spec.fixture_paths:
             raise ValueError(f"{spec.origin.value}: missing fixture declaration")
+        if set(spec.topology_capabilities.as_dict()) != {
+            "message_parent",
+            "message_branch_state",
+            "session_parent_target",
+            "inheritance_branch_point",
+            "parent_dispatch",
+        }:
+            raise ValueError(f"{spec.origin.value}: topology capability census is incomplete")
         if len(spec.provider_wires) > 1 and not spec.collision_policy:
             raise ValueError(f"{spec.origin.value}: multiple provider wires require an explicit collision policy")
         if spec.lifecycle == "executable":
@@ -1065,7 +1143,7 @@ def _executable_spec(
 
 
 def _codex_spec() -> OriginSpec:
-    return _executable_spec(
+    spec = _executable_spec(
         Origin.CODEX_SESSION,
         provider=Provider.CODEX,
         tightness=50,
@@ -1134,6 +1212,17 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
     )
+    carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
+    return replace(
+        spec,
+        topology_capabilities=TopologyCapabilities(
+            message_parent=_absent_topology("Codex message records carry no parent-message field"),
+            message_branch_state=_absent_topology("Codex message records carry no branch-state field"),
+            session_parent_target=carried,
+            inheritance_branch_point=_absent_topology("Codex wire carries no inheritance boundary"),
+            parent_dispatch=_absent_topology("Codex wire carries no parent-dispatch identity"),
+        ),
+    )
 
 
 def _gemini_cli_spec() -> OriginSpec:
@@ -1157,7 +1246,7 @@ def _gemini_cli_spec() -> OriginSpec:
 
 
 def _hermes_spec() -> OriginSpec:
-    return _executable_spec(
+    spec = _executable_spec(
         Origin.HERMES_SESSION,
         provider=Provider.HERMES,
         tightness=20,
@@ -1190,6 +1279,23 @@ def _hermes_spec() -> OriginSpec:
             "sampling, a different mechanism than the JSON x-polylogue-values "
             "this bead's declaration reads, not merely a different provider "
             "argument to the same function.",
+        ),
+    )
+    carried = TopologyCapability(
+        "carried", ("hermes_state.sessions.parent_session_id", "hermes ATIF parent_session_id")
+    )
+    return replace(
+        spec,
+        topology_capabilities=TopologyCapabilities(
+            message_parent=_absent_topology("Hermes message records carry no parent-message field"),
+            message_branch_state=TopologyCapability(
+                "positive-derived",
+                ("hermes_state._branch_type",),
+                "branch type is derived only when parent state is present",
+            ),
+            session_parent_target=carried,
+            inheritance_branch_point=_absent_topology("Hermes wire carries no inheritance boundary"),
+            parent_dispatch=_absent_topology("Hermes wire carries no parent-dispatch identity"),
         ),
     )
 
@@ -1976,6 +2082,21 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
+def topology_capability_census() -> dict[str, dict[str, dict[str, object]]]:
+    """Project the complete topology capability census from ``OriginSpec``."""
+    return {
+        spec.origin.value: {
+            name: {
+                "state": capability.state,
+                "evidence": capability.evidence,
+                "reason": capability.reason,
+            }
+            for name, capability in spec.topology_capabilities.as_dict().items()
+        }
+        for spec in ORIGIN_SPECS
+    }
+
+
 def parser_fingerprint_for_origin(origin: Origin | str) -> str:
     """Return the current parser fingerprint for one normalized archive origin."""
     normalized = Origin.from_string(origin)
@@ -2070,9 +2191,12 @@ __all__ = [
     "OriginSpec",
     "OriginSpecDiagnostic",
     "OriginSpecRegistry",
+    "TopologyCapability",
+    "TopologyCapabilities",
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
+    "topology_capability_census",
     "public_origin_descriptions",
     "public_origin_meanings",
     "public_origin_tokens",
