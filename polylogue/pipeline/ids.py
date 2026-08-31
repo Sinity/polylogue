@@ -60,6 +60,7 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "message_type",
             "material_origin",
             "parent_message_provider_id",
+            "position",
             "branch_index",
             "variant_index",
             "is_active_path",
@@ -114,7 +115,6 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedMessage": {
         "parent_message_position": "parser-only linkage resolved to the stored parent identity",
         "owner_coordinate": "parser-only ownership evidence resolved before storage",
-        "position": "parser-only occurrence coordinate used for ordering and owner resolution",
         "input_tokens": "provider usage measurement is owned by usage/cost derivation",
         "output_tokens": "provider usage measurement is owned by usage/cost derivation",
         "cache_read_tokens": "provider usage measurement is owned by usage/cost derivation",
@@ -130,6 +130,16 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "models_used": "provider usage summary is derived from message model fields",
         "ingest_flags": "parser quality annotations are independent session tags",
     },
+}
+
+# Message ownership has a stricter identity boundary than the complete
+# semantic hash. These are the stable intrinsic fields used to distinguish
+# duplicate id-less messages; ordering, path state, usage, and other semantic
+# revision fields must not become owner evidence. Keeping this boundary
+# separate from ``_EXCLUDED_FIELDS`` lets the complete content identity remain
+# sensitive to those fields.
+_OWNER_MATCH_FIELDS: dict[str, frozenset[str]] = {
+    "ParsedMessage": frozenset({"role", "text", "timestamp", "blocks"}),
 }
 
 
@@ -151,6 +161,9 @@ def validate_semantic_hash_partition() -> None:
                 f"{name} semantic hash partition drift: missing={sorted(fields - hashed - excluded)}, "
                 f"duplicate={sorted(hashed & excluded)}, stale={sorted((hashed | excluded) - fields)}"
             )
+    owner_fields = _OWNER_MATCH_FIELDS["ParsedMessage"]
+    if not owner_fields <= _HASHED_FIELDS["ParsedMessage"] or "position" in owner_fields:
+        raise AssertionError("ParsedMessage owner partition must be a position-free semantic subset")
 
 
 def _hash_field_value(value: object) -> JSONValue:
@@ -373,16 +386,16 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
 
 
 def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, JSONValue]:
-    """Build the hash-stable payload for a single message."""
+    """Build the complete semantic payload for a single message."""
     payload: dict[str, JSONValue] = {"id": message_id}
-    payload.update(_message_comparison_payload(message))
+    payload.update(_message_semantic_payload(message))
     return payload
 
 
-def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
-    """Build the declared semantic payload that distinguishes a message."""
+def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str, JSONValue]:
+    """Build a message payload with the requested semantic field boundary."""
     validate_semantic_hash_partition()
-    payload = _model_hash_payload(message, _HASHED_FIELDS["ParsedMessage"] - {"blocks", "provider_message_id"})
+    payload = _model_hash_payload(message, fields - {"blocks", "provider_message_id"})
     if message.blocks and not _is_redundant_text_only_block(message):
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
     else:
@@ -410,6 +423,20 @@ def _message_reference_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     if references:
         payload["block_references"] = references
     return payload
+
+def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
+    """Build the complete semantic payload used by session content hashing."""
+    return _message_payload(message, _HASHED_FIELDS["ParsedMessage"])
+
+
+def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
+    """Build the owner-safe payload used to compare id-less messages.
+
+    This deliberately excludes ``position``.  The owner resolver must retain
+    the ability to report duplicate messages as ambiguous when position is
+    their only distinguishing evidence.
+    """
+    return _message_payload(message, _OWNER_MATCH_FIELDS["ParsedMessage"])
 
 
 #: Marker prefix for a content-derived message identity anchor, used only

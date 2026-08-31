@@ -15,6 +15,7 @@ from polylogue.pipeline.ids import (
     _content_block_payload,
     _message_comparison_payload,
     _message_hash_payload,
+    _message_semantic_payload,
     _model_hash_payload,
     _normalize_for_hash,
     _session_hash_payload,
@@ -191,8 +192,8 @@ def test_session_hash_empty_messages_is_valid() -> None:
     assert len(session_content_hash(session)) == 64
 
 
-def test_semantic_hash_partition_covers_parser_fields_and_excludes_position() -> None:
-    """Every parser field has one identity decision; position is owner evidence."""
+def test_semantic_hash_partition_covers_parser_fields_and_separates_owner_evidence() -> None:
+    """Every parser field is classified; owner matching has a narrower boundary."""
     validate_semantic_hash_partition()
 
     from polylogue.sources.parsers.base_models import ParsedContentBlock as BlockModel
@@ -207,13 +208,14 @@ def test_semantic_hash_partition_covers_parser_fields_and_excludes_position() ->
         fields = frozenset(model.model_fields)
         assert fields == _HASHED_FIELDS[name] | frozenset(_EXCLUDED_FIELDS[name])
 
-    assert "position" not in _HASHED_FIELDS["ParsedMessage"]
-    assert "position" in _EXCLUDED_FIELDS["ParsedMessage"]
+    assert "position" in _HASHED_FIELDS["ParsedMessage"]
 
     block = ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="shell", tool_input={"command": "echo hi"})
     message = _parsed_message("m1", "assistant", "hello", "2024-01-01")
     assert set(_content_block_payload(block)) == _HASHED_FIELDS["ParsedContentBlock"]
-    assert set(_message_comparison_payload(message)) == (_HASHED_FIELDS["ParsedMessage"] - {"provider_message_id"})
+    assert set(_message_semantic_payload(message)) == (_HASHED_FIELDS["ParsedMessage"] - {"provider_message_id"})
+    assert "position" not in _message_comparison_payload(message)
+    assert set(_message_comparison_payload(message)) == {"role", "text", "timestamp", "blocks"}
     assert set(
         _model_hash_payload(
             _parsed_session("s1", "title", [message], created_at=None, updated_at=None),
@@ -242,6 +244,20 @@ def test_duplicate_idless_messages_with_only_position_difference_keep_owner_ambi
                 update={"attachments": [attachment]}
             )
         )
+
+
+def test_position_is_semantic_hash_input_but_not_owner_match_input() -> None:
+    first = _parsed_session(
+        "s1",
+        "title",
+        [_parsed_message("", "assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": 0})],
+        created_at=None,
+        updated_at=None,
+    )
+    second = first.model_copy(update={"messages": [first.messages[0].model_copy(update={"position": 1})]})
+
+    assert session_content_hash(first) != session_content_hash(second)
+    assert _message_comparison_payload(first.messages[0]) == _message_comparison_payload(second.messages[0])
 
 
 def test_session_hash_timestamps_affect_hash() -> None:
@@ -300,10 +316,10 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "8cd118f8bf6b5cf4df70d71fdfd0dce1a48b00618c6bc14f044baf6e723b26f1"
+    assert projection.session_hash.hex() == "249f0cc8793d109bfd26202eb0484bc507c42fb8e076836b7fc5bd25ea44c64d"
     assert [h.hex() for h in projection.message_hashes] == [
-        "b18ab4ba054f11ca84f6b32d1d38da9a84f116cd67f0bfbb5d4cef4840accf17",
-        "8b2e45a989cd949b3762e018977590d3ce409fe57a3e1a11020f9102fd9c4ce5",
+        "eb03f6f0c61eb754e87dd9700d57531d3c6750a495d6cc11e5c51fab5de19e80",
+        "d5ce85960c00a706e9d8d91ee7acb7e501f5f5ca2e3b50e75e2e6a9cd8e2bd1b",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
