@@ -1149,8 +1149,8 @@ systemctl --user start polylogued.service
 
 # 7. After the catch-up event or timeout, the first bounded blob-GC pass
 #    waits one 900-second interval. Each pass reclaims at most 200 blobs;
-#    eligible leftovers are handled by later passes. Manual orphaned-blob
-#    repair is not a supported route, and reservation TTLs must not be inferred.
+#    eligible leftovers are handled by later passes. Manual blob reclamation
+#    is not a supported route, and reservation TTLs must not be inferred.
 
 ```
 

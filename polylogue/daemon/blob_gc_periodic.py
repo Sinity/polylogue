@@ -1,14 +1,8 @@
 """Bounded ambient blob-GC drain for the daemon.
 
-``polylogue ops maintenance blob-gc`` is a mechanical, non-judgment
-operation (delete a content-addressed blob once its refcount is zero and
-it clears the generation-age gate — see ``storage/blob_gc.py``'s module
-docstring for the full safety invariant list) with no daemon-side
-equivalent before this module: the CLI command was the *only* way to
-reclaim disk space, in the same shape ``embedding-orphan-reconcile`` was
-before its own daemon loop was added. This mirrors that precedent —
-periodic ambient drain in bounded batches, same as
-``periodic_embedding_orphan_reconcile_check``.
+The loop delegates each bounded pass to the daemon write coordinator. The
+storage implementation owns liveness, publication reservations, and
+crash-consistent unlink accounting.
 """
 
 from __future__ import annotations
