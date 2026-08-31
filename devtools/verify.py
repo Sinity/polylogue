@@ -200,16 +200,18 @@ def _native_pytest_steps(
     serial_worker_args: Sequence[str],
     storage_scale_worker_args: Sequence[str],
 ) -> list[tuple[str, list[str]]]:
-    testmon_args = (
-        ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
-        if testmon_mode == "affected"
-        # A full-corpus run (deliberate `--all`, or the bootstrap route taken
-        # when no compatible graph exists yet) still traces every test under
-        # `--testmon-noselect` so it populates `.cache/testmon/testmondata`;
-        # omitting `--testmon` here left bootstrap runs with no supported way
-        # to ever produce a graph that a later plain `devtools verify` accepts.
-        else ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
-    )
+    if testmon_mode == "affected":
+        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
+    elif testmon_mode == "bootstrap":
+        # A bootstrap must trace the corpus so it can publish the graph that
+        # makes later affected verification safe.  Deliberate --all runs do
+        # not need that graph and would otherwise duplicate testmon's
+        # dependency state in every xdist worker.
+        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
+    elif testmon_mode == "all":
+        testmon_args = []
+    else:
+        raise ValueError(f"unsupported native testmon mode: {testmon_mode}")
     base = [
         venv_python(root=ROOT),
         "-m",
@@ -309,7 +311,7 @@ def build_verify_steps(
             ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
         ]
     if not quick and not commit:
-        if testmon_mode not in {"affected", "all"} or not testmon_environment:
+        if testmon_mode not in {"affected", "bootstrap", "all"} or not testmon_environment:
             raise ValueError("a valid native testmon selection and environment are required")
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _native_pytest_steps(
@@ -874,7 +876,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         steps = build_verify_steps(
             quick=args.quick,
             commit=args.commit,
-            testmon_mode=mode,
+            # Keep the graph-building plugin for a fresh checkout, but omit
+            # it from an explicit complete-corpus run where it adds no
+            # selection coverage and amplifies worker memory.
+            testmon_mode="bootstrap" if preparation and preparation.selection_mode == "bootstrap" else mode,
             testmon_environment=preparation.environment_name if preparation else "",
         )
         results: list[dict[str, Any]] = []
