@@ -36,7 +36,7 @@ def _build_attachment_record(row: aiosqlite.Row, *, session_id: str) -> Attachme
         file_native_id=(value if isinstance((value := _row_value(row, "file_native_id")), str) else None),
         drive_native_id=(value if isinstance((value := _row_value(row, "drive_native_id")), str) else None),
         upload_origin=(value if isinstance((value := _row_value(row, "upload_origin")), str) else None),
-        direction=str(_row_value(row, "direction") or "user_input"),
+        direction=(value if isinstance((value := _row_value(row, "direction")), str) else None),
         producer_ref=(value if isinstance((value := _row_value(row, "producer_ref")), str) else None),
         blob_hash=(bytes(value) if isinstance((value := _row_value(row, "blob_hash")), (bytes, bytearray)) else None),
         acquisition_status=(value if isinstance((value := _row_value(row, "acquisition_status")), str) else None),

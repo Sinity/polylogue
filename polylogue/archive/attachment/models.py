@@ -16,7 +16,7 @@ class Attachment(BaseModel):
     source_url: str | None = None
     caption: str | None = None
     upload_origin: str | None = None
-    direction: str = "user_input"
+    direction: str | None = None
     producer_ref: str | None = None
     availability: AttachmentAvailability | None = None
 

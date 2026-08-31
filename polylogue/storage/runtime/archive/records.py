@@ -277,7 +277,7 @@ class AttachmentRecord(BaseModel):
     file_native_id: str | None = None
     drive_native_id: str | None = None
     upload_origin: str | None = None
-    direction: str = "user_input"
+    direction: str | None = None
     producer_ref: str | None = None
     blob_hash: bytes | None = None
     acquisition_status: str | None = None

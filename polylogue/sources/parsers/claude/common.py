@@ -603,7 +603,12 @@ def _extract_message_text(item: Mapping[str, object]) -> str | None:
     return None
 
 
-def _message_attachments(item: Mapping[str, object], message_id: str) -> list[ParsedAttachment]:
+def _message_attachments(
+    item: Mapping[str, object],
+    message_id: str,
+    *,
+    role: Role,
+) -> list[ParsedAttachment]:
     raw_attachments: list[object] = []
     for key in ("attachments", "files"):
         value = item.get(key)
@@ -611,7 +616,7 @@ def _message_attachments(item: Mapping[str, object], message_id: str) -> list[Pa
             raw_attachments.extend(value)
     attachments: list[ParsedAttachment] = []
     for meta in raw_attachments:
-        attachment = attachment_from_meta(meta, message_id)
+        attachment = attachment_from_meta(meta, message_id, role=role)
         if attachment is not None:
             attachments.append(attachment)
     return attachments
@@ -813,6 +818,8 @@ def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAt
                 "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
                 "provider_file_id": preferred.provider_file_id or other.provider_file_id,
                 "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
+                "direction": preferred.direction or other.direction,
+                "producer_ref": preferred.producer_ref or other.producer_ref,
                 "source_url": preferred.source_url or other.source_url,
             }
         )
@@ -996,7 +1003,7 @@ def normalize_chat_messages(
         occurrence = evidence_key_counts.get(base_evidence_key, 0)
         evidence_key_counts[base_evidence_key] = occurrence + 1
         evidence_key = base_evidence_key if occurrence == 0 else f"{base_evidence_key}:occurrence:{occurrence}"
-        attachments = _message_attachments(item, native_message_id)
+        attachments = _message_attachments(item, native_message_id, role=role)
         parent_message_provider_id = _message_parent_id(item)
         explicit_position = _first_non_negative_int_field(item, "position")
         explicit_branch_index = _first_non_negative_int_field(item, "branch_index", "branchIndex")

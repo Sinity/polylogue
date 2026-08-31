@@ -159,7 +159,7 @@ class ArchiveAttachmentRow:
     media_type: str | None = None
     byte_count: int = 0
     upload_origin: str | None = None
-    direction: str | None = "user_input"
+    direction: str | None = None
     producer_ref: str | None = None
     source_url: str | None = None
     caption: str | None = None

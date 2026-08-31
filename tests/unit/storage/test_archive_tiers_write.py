@@ -2535,6 +2535,7 @@ def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts
                         name=f"neighbor-{i}.txt",
                         mime_type="text/plain",
                         path=f"neighbor-{i}.txt",
+                        direction="user_input",
                     )
                 ],
             ),
@@ -2597,6 +2598,7 @@ def test_full_replace_without_attachments_does_not_refresh_all_attachment_counts
                         name=f"neighbor-{i}.txt",
                         mime_type="text/plain",
                         path=f"neighbor-{i}.txt",
+                        direction="user_input",
                     )
                 ],
             ),
@@ -2651,6 +2653,7 @@ def test_full_replace_sweeps_removed_attachment_that_loses_its_last_ref(tmp_path
         name="first.txt",
         mime_type="text/plain",
         path="first.txt",
+        direction="user_input",
     )
     att2 = ParsedAttachment(
         provider_attachment_id="att-2",
@@ -2658,6 +2661,7 @@ def test_full_replace_sweeps_removed_attachment_that_loses_its_last_ref(tmp_path
         name="second.txt",
         mime_type="text/plain",
         path="second.txt",
+        direction="user_input",
     )
     session = ParsedSession(
         source_name=Provider.CHATGPT,
@@ -3519,6 +3523,7 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
                 name="report.pdf",
                 mime_type="application/pdf",
                 path="report.pdf",
+                direction="user_input",
             )
         ],
         session_events=[
@@ -3623,6 +3628,7 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
                 provider_file_id="file-1",
                 provider_drive_id="drive-1",
                 upload_origin="drive",
+                direction="user_input",
                 caption="report",
                 source_url="https://example.test/report.pdf",
             )
@@ -3711,6 +3717,7 @@ def test_writer_sanitizes_unpaired_surrogates_in_attachment_native_ids(tmp_path:
                     message_provider_id="m1",
                     name="surrogate.txt",
                     mime_type="text/plain",
+                    direction="user_input",
                 )
             ],
         )
@@ -3723,6 +3730,22 @@ def test_writer_sanitizes_unpaired_surrogates_in_attachment_native_ids(tmp_path:
             ).fetchall()
         }
         assert native_ids == {"attachment-�", "file-�"}
+    finally:
+        conn.close()
+
+
+def test_writer_refuses_attachment_without_derived_direction(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-direction-required",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="read this")],
+            attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1")],
+        )
+
+        with pytest.raises(ValueError, match="attachment direction"):
+            write_parsed_session_to_archive(conn, session)
     finally:
         conn.close()
 
@@ -5241,6 +5264,8 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
                     name="report.pdf",
                     mime_type="application/pdf",
                     path="report.pdf",
+                    direction="model_output",
+                    producer_ref="message:m1-tool",
                 )
             ],
         )
@@ -5293,6 +5318,7 @@ def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tm
                 name="first.txt",
                 mime_type="text/plain",
                 size_bytes=5,
+                direction="user_input",
             ),
             ParsedAttachment(
                 provider_attachment_id="cert-collision-111329",
@@ -5300,6 +5326,7 @@ def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tm
                 name="second.txt",
                 mime_type="text/plain",
                 size_bytes=6,
+                direction="user_input",
             ),
         ]
         session = ParsedSession(

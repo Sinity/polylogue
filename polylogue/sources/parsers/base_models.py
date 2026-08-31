@@ -391,7 +391,7 @@ class ParsedAttachment(BaseModel):
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
     upload_origin: str | None = None
-    direction: Literal["user_input", "model_output"] | None = "user_input"
+    direction: Literal["user_input", "model_output"] | None = None
     producer_ref: str | None = None
     attachment_kind: str | None = None
     source_url: str | None = None

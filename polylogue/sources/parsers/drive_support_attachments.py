@@ -6,10 +6,12 @@ import base64
 import binascii
 from typing import TypeAlias
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.hashing import hash_payload, hash_text_short
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
 
 from .base import ParsedAttachment
+from .base_support import derive_attachment_provenance
 
 _YOUTUBE_WATCH_URL = "https://www.youtube.com/watch?v={video_id}"
 
@@ -249,6 +251,8 @@ def attachment_from_youtube_video(
 def collect_chunk_attachments(
     chunk: DrivePayload,
     message_id: str | None,
+    *,
+    role: Role | str | None = None,
 ) -> list[ParsedAttachment]:
     attachments: list[ParsedAttachment] = []
     for doc in collect_drive_docs(chunk):
@@ -291,6 +295,11 @@ def collect_chunk_attachments(
     youtube_attachment = attachment_from_youtube_video(chunk.get("youtubeVideo"), message_id)
     if youtube_attachment is not None:
         attachments.append(youtube_attachment)
+    direction, producer_ref = derive_attachment_provenance(role, message_id)
+    attachments = [
+        attachment.model_copy(update={"direction": direction, "producer_ref": producer_ref})
+        for attachment in attachments
+    ]
     return list({attachment.provider_attachment_id: attachment for attachment in attachments}.values())
 
 

@@ -22,7 +22,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureTurn,
     looks_like_browser_capture,
 )
-from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource
+from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
@@ -32,6 +32,7 @@ from polylogue.sources.parsers.base_models import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.parsers.base_support import derive_attachment_provenance
 
 
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
@@ -260,12 +261,14 @@ def _browser_capture_parsed_attachment(
     attachment: BrowserCaptureAttachment,
     *,
     message_provider_id: str | None,
+    role: Role | None = None,
 ) -> ParsedAttachment:
     inline_bytes = _browser_capture_attachment_inline_bytes(attachment)
     size_bytes = attachment.size_bytes
     if inline_bytes is not None and size_bytes is None:
         size_bytes = len(inline_bytes)
     url = attachment.url
+    direction, producer_ref = derive_attachment_provenance(role, message_provider_id)
     return ParsedAttachment(
         provider_attachment_id=attachment.provider_attachment_id,
         message_provider_id=message_provider_id,
@@ -276,6 +279,8 @@ def _browser_capture_parsed_attachment(
         path=None,
         source_url=url if url else None,
         upload_origin="url" if url else "paste" if inline_bytes is not None else "oauth",
+        direction=direction,
+        producer_ref=producer_ref,
         inline_bytes=inline_bytes,
     )
 
@@ -292,12 +297,18 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     """
 
     envelope_attachments = [
-        _browser_capture_parsed_attachment(attachment, message_provider_id=attachment.message_provider_id)
-        for attachment in (
-            *(a for turn in envelope.session.turns for a in turn.attachments),
-            *envelope.session.attachments,
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
+            role=turn.role,
         )
+        for turn in envelope.session.turns
+        for attachment in turn.attachments
     ]
+    envelope_attachments.extend(
+        _browser_capture_parsed_attachment(attachment, message_provider_id=attachment.message_provider_id)
+        for attachment in envelope.session.attachments
+    )
     if not envelope_attachments:
         return parsed
     merged: dict[str, ParsedAttachment] = {a.provider_attachment_id: a for a in parsed.attachments}
@@ -318,6 +329,8 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
                 "provider_file_id": existing.provider_file_id or candidate.provider_file_id,
                 "provider_drive_id": existing.provider_drive_id or candidate.provider_drive_id,
                 "upload_origin": existing.upload_origin or candidate.upload_origin,
+                "direction": existing.direction or candidate.direction,
+                "producer_ref": existing.producer_ref or candidate.producer_ref,
                 "attachment_kind": existing.attachment_kind or candidate.attachment_kind,
                 "source_url": existing.source_url or candidate.source_url,
                 "caption": existing.caption or candidate.caption,
@@ -471,6 +484,7 @@ def _parse_claude_fallback_envelope(
         _browser_capture_parsed_attachment(
             attachment,
             message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
+            role=turn.role,
         )
         for turn in envelope.session.turns
         for attachment in turn.attachments
@@ -738,6 +752,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 _browser_capture_parsed_attachment(
                     attachment,
                     message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
+                    role=turn.role,
                 )
             )
 

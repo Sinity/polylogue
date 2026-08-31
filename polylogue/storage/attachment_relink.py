@@ -81,7 +81,7 @@ class RelinkableAttachment:
     message_id: str
     position: int
     upload_origin: str | None
-    direction: str
+    direction: str | None
     producer_ref: str | None
     source_url: str | None
     caption: str | None
@@ -400,7 +400,7 @@ def _match_session_payload(
             message_id=message_id,
             position=attachment_positions[id(attachment)],
             upload_origin=attachment.upload_origin,
-            direction=attachment.direction or "user_input",
+            direction=attachment.direction,
             producer_ref=attachment.producer_ref,
             source_url=_attachment_source_url(attachment),
             caption=_attachment_caption(attachment),

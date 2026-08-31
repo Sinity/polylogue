@@ -185,7 +185,7 @@ def _design_attachment_from_meta(meta: object, message_id: str) -> ParsedAttachm
     content = shimmed.get("content")
     if isinstance(content, str) and "extracted_content" not in shimmed:
         shimmed["extracted_content"] = content
-    attachment = attachment_from_meta(shimmed, message_id)
+    attachment = attachment_from_meta(shimmed, message_id, role=Role.USER)
     if attachment is None:
         return None
     attachment_type = meta.get("type")
@@ -666,6 +666,8 @@ def _merge_session_attachments(
                 "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
                 "provider_file_id": preferred.provider_file_id or other.provider_file_id,
                 "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
+                "direction": preferred.direction or other.direction,
+                "producer_ref": preferred.producer_ref or other.producer_ref,
             }
         )
     return list(merged.values())
