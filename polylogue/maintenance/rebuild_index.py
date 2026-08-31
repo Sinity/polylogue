@@ -32,9 +32,7 @@ from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLoca
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_ALL_SQL
 from polylogue.storage.introspection import table_exists
-from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
-from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
 if TYPE_CHECKING:
     from polylogue.operations.candidate_build import CandidateBuildRequest
@@ -59,7 +57,6 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
     "ANALYZE messages",
     "ANALYZE blocks",
     "ANALYZE session_links",
-    "ANALYZE action_pairs",
 )
 
 logger = get_logger(__name__)
@@ -722,14 +719,9 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
     """One archive-wide repopulate of every surface bulk-build replay skipped.
 
     polylogue-v6i3: ``write_parsed_session_to_archive``'s ``bulk_build`` mode
-    leaves ``messages_fts``, ``blocks_command_trigram``, ``action_pairs``, and
-    ``delegation_facts`` empty (or stale from a prior page) throughout replay
-    -- this runs exactly once, right before readiness, to bring all four back
-    into exact sync from ``blocks``/``messages``/``session_links`` in one bulk
-    delete+insert per surface instead of the per-session maintenance replay
-    skipped. Order matters: ``action_pairs`` must be repopulated before
-    ``delegation_facts`` (the latter's ``delegation_facts_source`` view joins
-    through the ``actions`` view, which reads ``action_pairs``).
+    leaves the FTS surfaces empty (or stale from a prior page) throughout
+    replay -- this runs exactly once, right before readiness, to bring them
+    back into exact sync from their canonical block evidence.
     """
     timings_s: dict[str, float] = {}
     with contextlib.closing(_open_bulk_build_maintenance_connection(index_path, timeout=600)) as conn:
@@ -740,12 +732,6 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
         started_at = time.perf_counter()
         rebuild_command_trigram_index_sync(conn)
         timings_s["command_trigram"] = time.perf_counter() - started_at
-        started_at = time.perf_counter()
-        rebuild_all_action_pairs_sync(conn)
-        timings_s["action_pairs"] = time.perf_counter() - started_at
-        started_at = time.perf_counter()
-        rebuild_all_delegation_facts_sync(conn)
-        timings_s["delegation_facts"] = time.perf_counter() - started_at
         started_at = time.perf_counter()
         conn.commit()
         timings_s["commit"] = time.perf_counter() - started_at
@@ -758,7 +744,7 @@ def _refresh_generation_planner_statistics(index_path: Path) -> None:
     A generation is bulk-written from empty, so the relative selectivities the
     planner needs (session-scoped indexes are narrow, type-scoped ones are not)
     drift fast as tables grow.  Bounded periodic ANALYZE of only writer-hot row
-    stores keeps per-session plans (e.g. ``action_pairs`` refresh) on
+    stores keeps per-session plans on
     session-scoped indexes; analyzing bulk-build's empty FTS virtual tables
     adds archive-scale I/O without improving replay.  Skipping measured row-
     store statistics altogether reproduced an O(N^2) replay at >20x slower.
@@ -1965,8 +1951,7 @@ async def _rebuild_index_from_source_owned(
                         # per affected session.
                         bulk_fts=True,
                         # polylogue-v6i3: the broader bulk-generation-build lifecycle --
-                        # every per-session messages_fts/blocks_command_trigram/
-                        # action_pairs/delegation_facts refresh is skipped during this
+                        # every per-session FTS refresh is skipped during this
                         # replay (safe for a full OR partial/diagnostic selection: a
                         # repopulate from `blocks` always matches whatever sessions
                         # actually got replayed into this generation); see
@@ -2232,9 +2217,9 @@ async def _rebuild_index_from_source_owned(
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
             source_evidence_after = rebuild_source_evidence_snapshot(root)
             # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
-            # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
-            # empty or stale for every session -- repopulate all four
-            # archive-wide exactly once here, then prove exact parity before
+            # messages_fts/blocks_command_trigram empty or stale for every
+            # session -- repopulate both archive-wide exactly once here, then
+            # prove exact parity before
             # readiness can observe (and silently accept) a mismatch.
             _validate_before_derived_state(provenance)
             bulk_timings_s = _repopulate_bulk_build_derived_state(Path(generation.index_path))

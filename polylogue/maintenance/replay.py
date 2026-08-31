@@ -180,11 +180,10 @@ async def rebuild_index_from_source(
     ``rebuild-index`` maintenance command passes ``True``.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) enables the broader
-    bulk-generation-build lifecycle -- skip every per-session
-    messages_fts/blocks_command_trigram/action_pairs/delegation_facts
-    refresh during replay, deferred to one archive-wide repopulate at
-    readiness. The offline ``rebuild-index`` maintenance command passes
-    ``True``.
+    bulk-generation-build lifecycle -- skip every per-session FTS refresh
+    during replay, deferred to one archive-wide repopulate at readiness. The
+    action and delegation surfaces are query-time views. The offline
+    ``rebuild-index`` maintenance command passes ``True``.
 
     ``prefetch_cache`` (polylogue-gd6v, default ``None``) lets a caller
     substitute parse output already computed off the writer hold (the

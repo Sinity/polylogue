@@ -37,7 +37,7 @@ class SessionInsightTableDescriptor:
 
     @property
     def exists_sql(self) -> str:
-        return f"SELECT name FROM sqlite_master WHERE type='table' AND name='{self.table_name}'"
+        return f"SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name='{self.table_name}'"
 
     def count_sync(self, conn: sqlite3.Connection, tables: TablePresence) -> tuple[str, int] | None:
         if self.count_key is None:
@@ -266,6 +266,7 @@ MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL = """
           AND ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) = 0
     )
 """
+QUERY_TIME_DERIVED_COUNT_SQL = "SELECT 0"
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 STALE_WORK_EVENT_COUNT_SQL = f"""
@@ -606,23 +607,15 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="missing_thread_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("thread", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
+        sql=QUERY_TIME_DERIVED_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
-        table_key="threads",
-        sql=STALE_THREAD_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        requires_freshness=True,
+        sql=QUERY_TIME_DERIVED_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_thread_count",
-        table_key="threads",
-        sql=ORPHAN_THREAD_COUNT_SQL,
-        requires_freshness=True,
+        sql=QUERY_TIME_DERIVED_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
         count_key="expected_tag_rollup_count",
@@ -633,10 +626,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_tag_rollup_count",
-        table_key="session_tag_rollups",
-        sql=STALE_SESSION_TAG_ROLLUP_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        requires_freshness=True,
+        sql=QUERY_TIME_DERIVED_COUNT_SQL,
     ),
 )
 

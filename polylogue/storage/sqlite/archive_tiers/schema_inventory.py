@@ -236,6 +236,10 @@ def _canonical_connection(tier: ArchiveTier) -> sqlite3.Connection:
             raise SchemaCensusError(f"canonical {tier.value} tier unavailable: sqlite-vec: {error or 'not loadable'}")
     try:
         initialize_archive_tier(connection, tier)
+        if tier is ArchiveTier.OPS:
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+            connection.executescript(DERIVED_SCHEMA_META_DDL)
     except Exception:
         connection.close()
         raise

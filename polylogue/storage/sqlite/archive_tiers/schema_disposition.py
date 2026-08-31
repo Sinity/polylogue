@@ -269,6 +269,10 @@ _PURGE_TABLES = frozenset(
     }
 )
 
+_QUERY_TIME_DERIVED_INDEX_VIEWS = frozenset(
+    {"action_pairs", "threads", "thread_sessions", "delegation_facts", "session_tag_rollups"}
+)
+
 
 def _object_decision(obj: object) -> SchemaDisposition:
     """Assign policy from object identity while leaving the denominator to DDL."""
@@ -297,6 +301,11 @@ def _object_decision(obj: object) -> SchemaDisposition:
         evidence = (
             "no production writer, reader, hydration, or intended identity join; dominant_repo remains authoritative"
         )
+    elif tier == "index" and object_type == "view" and name in _QUERY_TIME_DERIVED_INDEX_VIEWS:
+        disposition = "DERIVE"
+        owner = "query-time index derivation"
+        bead = "polylogue-avlt5"
+        evidence = "view derives from canonical index-tier evidence; no materialized relation is retained"
     elif tier == "user" and table_name in {"result_set_holdout_policies", "holdout_access_receipts"}:
         disposition = "COMPLETE"
         owner = "holdout evaluation workflow"

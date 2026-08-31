@@ -24,70 +24,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
-from polylogue.analysis.affordance_usage import (
-    clean_patterns as _clean_affordance_patterns,
-)
-from polylogue.analysis.affordance_usage import (
-    evidence_kind_for_row as _affordance_evidence_kind,
-)
-from polylogue.analysis.affordance_usage import (
-    family_for_text as _affordance_family_for_text,
-)
-from polylogue.analysis.affordance_usage import (
-    like_param as _affordance_like_param,
-)
-from polylogue.analysis.affordance_usage import (
-    matched_by_row as _affordance_matched_by,
-)
-from polylogue.analysis.affordance_usage import (
-    normalized_tool_name_for_row as _affordance_normalized_tool_name,
-)
-from polylogue.analysis.archive import (
-    ArchiveCoverageInsight,
-    ArchiveDebtInsight,
-    ArchiveEnrichmentProvenance,
-    ArchiveInferenceProvenance,
-    ArchiveInsightProvenance,
-    CostRollupInsight,
-    SessionCostInsight,
-    SessionEnrichmentPayload,
-    SessionEvidencePayload,
-    SessionInferencePayload,
-    SessionLatencyProfileInsight,
-    SessionLatencyProfilePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInsight,
-    SessionProfileInsight,
-    SessionTagRollupInsight,
-    SessionWorkEventInsight,
-    ThreadInsight,
-    UsageTimelineInsight,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
-)
-from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
-from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.analysis.confidence import ConfidenceBand
-from polylogue.analysis.confidence import from_score as confidence_from_score
-from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
-from polylogue.analysis.objective_posture import structural_objective_posture
-from polylogue.analysis.readiness import (
-    InsightOriginCoverage,
-    InsightReadinessEntry,
-    InsightReadinessQuery,
-    InsightReadinessReport,
-    InsightReadinessVerdict,
-    InsightStorageArtifact,
-    InsightVersionCoverage,
-    known_insight_readiness_names,
-    normalize_insight_readiness_name,
-)
-from polylogue.analysis.rigor import list_rigor_contracts
-from polylogue.analysis.session_label import session_structural_label_for_session
-from polylogue.analysis.temporal_source import time_confidence_for_source
-from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
@@ -122,16 +58,74 @@ from polylogue.core.json import require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
+from polylogue.insights.affordance_usage import (
+    clean_patterns as _clean_affordance_patterns,
+)
+from polylogue.insights.affordance_usage import (
+    evidence_kind_for_row as _affordance_evidence_kind,
+)
+from polylogue.insights.affordance_usage import (
+    family_for_text as _affordance_family_for_text,
+)
+from polylogue.insights.affordance_usage import (
+    like_param as _affordance_like_param,
+)
+from polylogue.insights.affordance_usage import (
+    matched_by_row as _affordance_matched_by,
+)
+from polylogue.insights.affordance_usage import (
+    normalized_tool_name_for_row as _affordance_normalized_tool_name,
+)
+from polylogue.insights.archive import (
+    ArchiveCoverageInsight,
+    ArchiveDebtInsight,
+    ArchiveEnrichmentProvenance,
+    ArchiveInferenceProvenance,
+    ArchiveInsightProvenance,
+    CostRollupInsight,
+    SessionCostInsight,
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    SessionLatencyProfileInsight,
+    SessionLatencyProfilePayload,
+    SessionPhaseEvidencePayload,
+    SessionPhaseInsight,
+    SessionProfileInsight,
+    SessionTagRollupInsight,
+    SessionWorkEventInsight,
+    ThreadInsight,
+    UsageTimelineInsight,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
+from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
+from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.insights.confidence import ConfidenceBand
+from polylogue.insights.confidence import from_score as confidence_from_score
+from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
+from polylogue.insights.objective_posture import structural_objective_posture
+from polylogue.insights.readiness import (
+    InsightOriginCoverage,
+    InsightReadinessEntry,
+    InsightReadinessQuery,
+    InsightReadinessReport,
+    InsightReadinessVerdict,
+    InsightStorageArtifact,
+    InsightVersionCoverage,
+    known_insight_readiness_names,
+    normalize_insight_readiness_name,
+)
+from polylogue.insights.rigor import list_rigor_contracts
+from polylogue.insights.session_label import session_structural_label_for_session
+from polylogue.insights.temporal_source import time_confidence_for_source
+from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import Heartbeat, PreparedBlob
-from polylogue.storage.derived.session.records import SessionProfileRecord
-from polylogue.storage.derived.session.runtime import (
-    SESSION_INSIGHT_MATERIALIZATION_TYPES,
-    SessionInsightStatusSnapshot,
-)
-from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -139,6 +133,13 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    SessionInsightStatusSnapshot,
+)
+from polylogue.storage.derived.session.status import session_insight_status_sync
+from polylogue.storage.introspection import relation_exists as _relation_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -197,9 +198,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
     classify_raw_revision_cohort_for_live_watch,
-    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
-    classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
@@ -211,10 +210,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     membership_decisions_for_classification,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
-    promote_reconstructed_legacy_append_revisions,
     raw_append_revision_parent,
     raw_full_revision_generation,
-    raw_legacy_append_resynthesis_receipt,
     raw_membership_authority_complete,
     raw_membership_census_rows,
     raw_membership_decision_pending,
@@ -449,7 +446,7 @@ class ArchiveSessionSearchHit:
 # SQLite recursive CTE each -- no N+1, no client-side stitching.
 #
 # Quarantined edges (session_links' TopologyEdgeStatus cycle-break
-# precedent, reused verbatim: delegation_facts_source's `mapping_state =
+# precedent, reused verbatim: delegation_facts' `mapping_state =
 # 'quarantined'` rows already mark exactly this) and authority-contradicted
 # rows are excluded from traversal by construction. The latter is not a
 # topological cycle, but it is an authoritative verdict that the inferred
@@ -459,7 +456,7 @@ class ArchiveSessionSearchHit:
 # despite that exclusion: quarantine is asserted by the topology resolver
 # over `session_links` alone, while `delegations` unions edges resolved by
 # an independent mechanism (`content_pairs`' provider-asserted content-
-# identity match, `delegation_facts_source` in index.py) that the topology
+# identity match, `delegation_facts` in index.py) that the topology
 # resolver's cycle detector never inspects. Two content-identity-matched
 # edges could in principle compose into a cycle the quarantine pass never
 # saw; the guard makes that structurally unreachable rather than assumed
@@ -632,10 +629,7 @@ class ArchiveStore:
         frozen_source_validation: bool = False,
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
-        validate_index_layout: bool = True,
     ) -> None:
-        if not validate_index_layout and not read_only:
-            raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
@@ -713,7 +707,6 @@ class ArchiveStore:
         try:
             self._initialize_store(
                 archive_root,
-                validate_index_layout=validate_index_layout,
                 # The generation store already initialized the candidate's
                 # sole owned tier, index.db. Active-root initialization would
                 # reinterpret deliberate source/user read-through symlinks as
@@ -748,7 +741,6 @@ class ArchiveStore:
         read_timeout: float,
         bulk_build_profile: bool = False,
         opened_index_fd: int | None = None,
-        validate_index_layout: bool = True,
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
@@ -816,15 +808,10 @@ class ArchiveStore:
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
-            # ``assert_readable_archive_layout`` below is this route's version
-            # refusal: it names the generation and the lifecycle action the
-            # operator must take. The generic open-time check would preempt it
-            # with a message carrying neither.
             self._conn = open_readonly_connection(
                 self.index_db_path,
                 timeout=read_timeout,
                 opened_main_fd=opened_index_fd,
-                validate_schema=False,
             )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
@@ -841,7 +828,7 @@ class ArchiveStore:
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
             self._conn.execute(statement)
-        if read_only and validate_index_layout:
+        if read_only:
             from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 
             resolved_index = self.index_db_path.resolve()
@@ -885,7 +872,6 @@ class ArchiveStore:
         read_timeout: float = 5.0,
         index_path: Path | None = None,
         opened_main_fd: int | None = None,
-        validate_index_layout: bool = True,
     ) -> ArchiveStore:
         """Open archive tier files.
 
@@ -895,11 +881,6 @@ class ArchiveStore:
         may pass an already-resolved ``index_path`` to remain pinned to one
         physical generation across an active-pointer promotion. An opened main
         descriptor can additionally bind the index connection to that inode.
-
-        ``validate_index_layout=False`` opens a read-only archive whose index
-        is not at the runtime's shape. It exists for the tools whose subject is
-        such an index -- the fast-forward actuator reaching source-tier
-        evidence -- and never for a read of the index itself.
         """
         if index_path is not None and not read_only:
             raise ValueError("index_path is valid only for read-only archive access")
@@ -911,7 +892,6 @@ class ArchiveStore:
             read_timeout=read_timeout,
             frozen_index_path=index_path,
             opened_index_fd=opened_main_fd,
-            validate_index_layout=validate_index_layout,
         )
 
     @classmethod
@@ -1612,27 +1592,6 @@ class ArchiveStore:
         self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
-    def promote_reconstructed_legacy_append_revisions(
-        self,
-        revisions: Sequence[tuple[str, RawRevisionEnvelope]],
-        *,
-        source_prefix_sha256: str,
-        source_size: int,
-        source_mtime_ns: int,
-        source_ctime_ns: int,
-        observed_at_ms: int,
-    ) -> None:
-        self._require_writable("promote reconstructed source.db revisions")
-        return promote_reconstructed_legacy_append_revisions(
-            self,
-            revisions,
-            source_prefix_sha256=source_prefix_sha256,
-            source_size=source_size,
-            source_mtime_ns=source_mtime_ns,
-            source_ctime_ns=source_ctime_ns,
-            observed_at_ms=observed_at_ms,
-        )
-
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
         self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
@@ -1648,9 +1607,6 @@ class ArchiveStore:
     ) -> tuple[str, str, int] | None:
         return raw_append_revision_parent(self, logical_source_key, start_offset, predecessor_revision)
 
-    def raw_legacy_append_resynthesis_receipt(self, raw_id: str) -> tuple[str, int] | None:
-        return raw_legacy_append_resynthesis_receipt(self, raw_id)
-
     def raw_membership_retired_full_revision_siblings(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_retired_full_revision_siblings(self, logical_source_key)
 
@@ -1660,15 +1616,15 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
+        *,
+        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
-        self, logical_source_key: str
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair_in_transaction(self, logical_source_key)
+        return classify_raw_revision_cohort_for_rebuild_repair(
+            self,
+            logical_source_key,
+            manage_transaction=manage_transaction,
+        )
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
@@ -1688,13 +1644,15 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_live_watch(
         self,
         logical_source_key: str,
+        *,
+        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
-
-    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
+        return classify_raw_revision_cohort_for_live_watch(
+            self,
+            logical_source_key,
+            manage_transaction=manage_transaction,
+        )
 
     def classify_untyped_full_revision_groups(self, raw_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         return classify_untyped_full_revision_groups(self, raw_ids)
@@ -2460,6 +2418,7 @@ class ArchiveStore:
         params: list[object] = []
         if query:
             like = f"%{query.strip().lower()}%"
+            match = normalize_fts5_query(query)
             where.append(
                 """
                 (
@@ -2476,10 +2435,18 @@ class ArchiveStore:
                             OR lower(COALESCE(qs.git_branch, '')) LIKE ?
                           )
                     )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM messages_fts mf
+                        JOIN blocks mb ON mb.rowid = mf.rowid
+                        JOIN thread_sessions fts_ts ON fts_ts.session_id = mb.session_id
+                        WHERE fts_ts.thread_id = t.thread_id
+                        AND messages_fts MATCH ?
+                    )
                 )
                 """.strip()
             )
-            params.extend([like, like, like, like, like])
+            params.extend([like, like, like, like, like, match or ""])
         if since_ms is not None:
             where.append("t.created_at_ms >= ?")
             params.append(since_ms)
@@ -2578,7 +2545,7 @@ class ArchiveStore:
             )
             for index, session in enumerate(session_rows)
         )
-        lineage_signals: tuple[str, ...] = ("archive_threads", "archive_thread_sessions")
+        lineage_signals: tuple[str, ...] = ("root_session_id",)
         if any(session["parent_session_id"] is not None for session in session_rows):
             lineage_signals = (*lineage_signals, "explicit_lineage")
         payload = ThreadPayload(
@@ -2709,7 +2676,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    u.model_name AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN COUNT(DISTINCT u.model_name) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -2719,10 +2686,7 @@ class ArchiveStore:
                        u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
                    ), 0) AS total_tokens,
                    COALESCE(
-                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                            WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                            WHEN s.reported_cost_usd IS NOT NULL
-                                 AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported' END,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' END,
                        'unknown'
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
@@ -2734,11 +2698,7 @@ class ArchiveStore:
             WHERE {" AND ".join(where)}
             GROUP BY s.origin,
                      u.model_name,
-                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                          WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                          WHEN s.reported_cost_usd IS NOT NULL
-                               AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported'
-                          ELSE 'unknown' END
+                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END
             """,
             tuple(params),
         ).fetchall()
@@ -5046,15 +5006,12 @@ class ArchiveStore:
         User-tier overlays are intentionally left in ``user.db``; the user
         overlay orphan checker owns follow-up visibility for those durable rows.
 
-        polylogue-meoz: a plain per-session ``DELETE FROM sessions`` detonates
-        the per-row derived-refresh triggers -- ``blocks_action_pairs_ad``
-        (gated on the ``'session-write'`` guard, see ``index.py``) fires once
-        per deleted ``blocks`` row (both the explicit block cascade and the FK
-        ``ON DELETE CASCADE`` from ``messages``/``sessions`` still invoke AFTER
-        DELETE triggers per row) and, on each firing, deletes+rebuilds the
-        *entire session's* ``action_pairs`` via two window-function scans and
-        re-derives ``delegation_facts``. Live incident 2026-07-21: deleting 91
-        sessions ran 3h, 375GB reads, zero commit, before being killed.
+        polylogue-meoz: a plain per-session ``DELETE FROM sessions`` still
+        fires the external-content FTS triggers once per deleted block row.
+        The action and delegation relations are query-time views, so deletion
+        does not run a second derived-table maintenance pass. Live incident
+        2026-07-21: deleting 91 sessions ran 3h, 375GB reads, zero commit,
+        before being killed.
         ``messages_fts``/``blocks_command_trigram`` are external-content FTS5
         tables with no FK cascade at all, so those triggers would fire and
         maintain per-row postings unless suppressed the same way.
@@ -5062,22 +5019,12 @@ class ArchiveStore:
         This mirrors ``_bulk_fts_session_guard``'s delete-then-guard-then-
         mutate shape (``write.py``): explicit session-scoped FTS/identity/
         trigram deletes run first (while ``blocks`` rows still exist -- the
-        trigram table needs the OLD text to locate its postings), then BOTH
-        ``derived_refresh_guard`` rows are set for the whole batch --
-        ``'session-write'`` (suppresses ``blocks_action_pairs_a{i,d,u}`` and
-        the ``delegation_facts`` triggers) and ``'fts-bulk-session-write'``
-        (suppresses the ``messages_fts``/``blocks_command_trigram`` trigger
-        BODIES, redundant here since those rows are already gone, but kept for
-        parity with the guard contract and defense-in-depth against any block
-        row that slips past the explicit pre-delete). ``action_pairs``/
-        ``delegation_facts`` are also explicitly cleared by session id --
-        belt-and-suspenders alongside the ``ON DELETE CASCADE`` FKs those
-        tables already carry against ``sessions``/``blocks``, and it keeps the
-        post-condition legible without depending on cascade timing. The
-        physical ``sessions``/``messages``/``blocks`` rows are then removed by
-        one ``DELETE FROM sessions`` per id, relying on indexed FK cascades
-        (not per-row trigger logic) for the tree removal; guard rows are
-        cleared and the transaction commits once for the whole batch.
+        trigram table needs the OLD text to locate its postings), then the
+        ``'fts-bulk-session-write'`` guard suppresses redundant FTS trigger
+        bodies. The physical ``sessions``/``messages``/``blocks`` rows are
+        then removed by one ``DELETE FROM sessions`` per id, relying on
+        indexed FK cascades; the guard is cleared and the transaction commits
+        once for the whole batch.
 
         The per-row ``query_unit_frame_{sessions,messages,blocks}_delete``
         epoch-bump triggers (``index.py``) are NOT gated by either guard --
@@ -5120,8 +5067,6 @@ class ArchiveStore:
                     )
                 try:
                     for session_id in resolved_session_ids:
-                        conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
-                        conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
                         # attachment_refs cascades from sessions, so the refs
                         # vanish with no Python code observing it. Their
                         # attachments rows would survive with a stale ref_count
@@ -5547,14 +5492,14 @@ class ArchiveStore:
             ),
             "session_tag_rollups": (
                 "Session Tag Rollups",
-                "session_tags",
+                "session_tag_rollups",
                 status.tag_rollup_count,
                 status.expected_tag_rollup_count,
                 0,
                 status.stale_tag_rollup_count,
                 0,
                 {"tag_rollups_ready": status.tag_rollups_ready},
-                ("session_tags",),
+                ("session_tag_rollups",),
             ),
             "archive_coverage": (
                 "Archive Coverage",
@@ -5582,11 +5527,11 @@ class ArchiveStore:
             ready_flags,
             artifact_names,
         ) = spec
-        table_present = _table_exists(self._conn, table_name)
+        table_present = _relation_exists(self._conn, table_name)
         artifacts = tuple(
             InsightStorageArtifact(
                 name=artifact,
-                present=_table_exists(self._conn, artifact),
+                present=_relation_exists(self._conn, artifact),
                 ready=ready_flags[next(iter(ready_flags))] if len(ready_flags) == 1 else None,
             )
             for artifact in artifact_names
@@ -8299,7 +8244,7 @@ def _session_latency_profile_from_archive_row(
     tool_counts = _latency_tool_category_counts(conn, session_id)
     materialization = _read_archive_materialization(conn, "latency", session_id)
     # Tool latency facts are materialized into session_latency_profiles by
-    # storage/derived/session/latency_profiles.py, which derives stuck_tool_count
+    # storage/insights/session/latency_profiles.py, which derives stuck_tool_count
     # from unpaired tool-start events. Read them rather than reporting zeros: the
     # stuck_sessions projection filters on `stuck_tool_count > 0`, so zeroing here
     # makes that projection unable to return any row at all.

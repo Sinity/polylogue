@@ -33,6 +33,12 @@ def test_canonical_inventory_contains_all_object_kinds_and_generated_fields() ->
         assert {obj.object_type for obj in tier_objects} >= {"table", "column"}
 
     index_objects = objects[ArchiveTier.INDEX]
+    query_time_derived = {"action_pairs", "threads", "thread_sessions", "delegation_facts", "session_tag_rollups"}
+    index_relations = {(obj.object_type, obj.name) for obj in index_objects if obj.object_type in {"table", "view"}}
+    assert {("view", name) for name in query_time_derived} <= index_relations
+    assert not {(object_type, name) for object_type, name in index_relations if object_type == "table"} & {
+        ("table", name) for name in query_time_derived
+    }
     assert any(obj.object_type == "view" and obj.name == "actions" for obj in index_objects)
     assert any(obj.object_type == "table" and obj.name == "messages_fts" and obj.virtual for obj in index_objects)
     assert any(

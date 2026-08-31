@@ -10,10 +10,8 @@ from polylogue.storage.fts.sql import (
     FTS_TRIGGER_DDL,
     FTS_UNICODE_TOKENIZER,
 )
-from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
-from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
 # 9x22 field-landing decisions):
@@ -52,7 +50,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # routes to `polylogue ops reset --index && polylogued run`.
 #
 # A bump without a declaration is a policy violation, not a free rebuild:
-# `devtools gate schema-versioning` fails, and the archive silently
+# `devtools verify schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
 #
 # polylogue-o4j2: v47 adds sessions.pending_drafts_json -- aistudio-drive's
@@ -99,7 +97,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #     a real value to read so the ``status == "exact"`` cost path (audited
 #     polylogue-gt1z: zero production callers behind it, a phantom-verified
 #     feature pinned only by hand-built-payload tests) becomes reachable
-#     through a real caller -- `polylogue/analysis/cost_enrichment.py`'s
+#     through a real caller -- `polylogue/insights/cost_enrichment.py`'s
 #     `enrich_session_cost_insight`, which backs the `insights costs` /
 #     `SessionCostInsight` surface.
 #   - polylogue-shnc: two new session_model_usage CHECK constraints enforcing
@@ -148,8 +146,8 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # name as the mechanism that keeps `typing.Literal` types and their SQL CHECK
 # lists in lockstep. Both columns already only ever receive values from their
 # typed counterparts (DelegationMappingState / DelegationResultStatus in
-# archive_tiers/archive.py) at the sole writer (delegation_facts_insert_sql);
-# this only adds the CHECK the Python type already implied. Measured on the
+# archive_tiers/archive.py) in the canonical delegation-facts view; this only
+# adds the CHECK the Python type already implied. Measured on the
 # live archive (index.db, read-only, 2026-07-31) before declaring this
 # version: mapping_state in {edge_only, resolved, unresolved} (0 rows outside
 # the 4-value vocabulary), result_status in {error, unknown} (0 rows outside
@@ -274,6 +272,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # `polylogue ops reset --index && polylogued run` is required; deliberately
 # NOT executed by this declaration.
 
+# polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, an immutable
+# per-row audit record for the retired one-shot sidecar purge actuator
+# -- the targeted actuator that deletes the ~4,945 pre-2026-07-28
+# `agent-<hash>.meta.json` subagent-sidecar phantom sessions found by the
+# polylogue-b508 audit (a fixed producer bug materialized a per-subagent
+# metadata sidecar file into its own empty session, duplicate of the real,
+# correctly-ingested subagent transcript). Brand-new table, no existing
+# archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
+# forwards to a plain create, same shape as v33's `insight_materialization`.
 # polylogue-omsw: v58 declares the classification change made to
 # `archive.artifact_taxonomy.classify_artifact`/`classify_artifact_path`:
 # (1) a `tool-results/<name>.json` sidecar now refuses session
@@ -390,10 +397,8 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #    ledger row are either `readiness_exempt=True` (query-time aggregates
 #    with no separate materialized state to go stale: archive_coverage,
 #    tool_usage, session_costs, cost_rollups, usage_timeline, archive_debt)
-#    or `session_tag_rollups`, which has its own dedicated non-session-scoped
-#    staleness query (`STALE_SESSION_TAG_ROLLUP_COUNT_SQL` in
-#    `storage/derived/session/status.py`) because it isn't keyed by
-#    session_id at all. `input_high_water_mark_source` is read broadly
+#    or `session_tag_rollups`, which is derived at query time from
+#    `session_profiles`. `input_high_water_mark_source` is read broadly
 #    across public surfaces (`insights/archive.py`'s `time_confidence_for_
 #    source`, `daemon/http.py` status payloads), not confined to
 #    repair/status internals. price_catalogs metadata is out of scope here
@@ -446,18 +451,9 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-oyiux: v82 changes session insight cost reconciliation to prefer
 # fresh catalog repricing over persisted cost observations. Existing derived
 # rows must be reprocessed so current catalog prices are served.
-# polylogue-xd0ha: v83 admits the deliberate unknown tool-outcome state and
-# exposes it through the actions view. Existing normalized rows need fresh
-# parser replay to preserve their unknown-outcome reasons.
-# v84 corrects delegation cost-estimation semantics when provider dollars are
-# present without catalog pricing. Existing derived rows need fresh replay so
-# the view definition is installed on every index generation.
-# v85 adds parser-derived attachment direction and model-output provenance.
-# Existing rows must be replayed because direction cannot be recovered from the
-# old upload_origin field without inventing evidence.
-# v86 removes the unused ``threads.dominant_repo_id`` projection. Existing
-# thread rows copy forward through the derived-tier fast-forward route.
-INDEX_SCHEMA_VERSION = 86
+# polylogue-avlt5: v83 removes materialized thread/tag-rollup caches while
+# retaining compact indexed action/delegation relations for bounded reads.
+INDEX_SCHEMA_VERSION = 83
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -477,6 +473,8 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 """
 
 INDEX_DDL = f"""
+{DERIVED_SCHEMA_META_DDL}
+
 -- Candidate construction authority is generation-local.  The source seal is
 -- copied here when an inactive generation is created; resume derives pending
 -- work from this table, never from an ops cursor or a later source scan.
@@ -623,7 +621,7 @@ ON blocks(block_type);
 -- view over paired tool_use/tool_result blocks; starting from failed result
 -- rows avoids scanning every tool invocation in large archives.
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_result_outcome
-ON blocks(block_type, tool_outcome, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
+ON blocks(block_type, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
 WHERE block_type = 'tool_result';
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type_tool
@@ -793,47 +791,44 @@ END;
 {FTS_FRESHNESS_STATE_DDL}
 
 -- polylogue-2i2w: deliberately NO tool_input/output_text columns here. This
--- table is a join/rank/outcome index over paired tool_use/tool_result
+-- relation is a join/rank/outcome index over paired tool_use/tool_result
 -- blocks -- the text itself already lives once in blocks.tool_input /
 -- blocks.text. Storing it again (index schema <= v40) made every tool
 -- interaction exist ~3x on disk (868K rows, ~4.7KB/row overflow-chained,
 -- ~4.1GB) and turned per-session DELETE into scattered random IO (measured:
 -- hours on a whale session replace). The actions VIEW below re-joins blocks
 -- by block_id to serve tool_input/output_text to readers at query time.
-CREATE TABLE IF NOT EXISTS action_pairs (
-    {TABLE_SPECS["action_pairs"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_action_pairs_session_order
-ON action_pairs(session_id, message_id, tool_use_block_id);
-CREATE INDEX IF NOT EXISTS idx_action_pairs_message
-ON action_pairs(message_id);
-CREATE INDEX IF NOT EXISTS idx_action_pairs_tool
-ON action_pairs(tool_name, session_id, message_id);
-CREATE INDEX IF NOT EXISTS idx_action_pairs_semantic
-ON action_pairs(semantic_type, session_id, message_id);
-CREATE INDEX IF NOT EXISTS idx_action_pairs_path
-ON action_pairs(tool_path, session_id, message_id)
-WHERE tool_path IS NOT NULL AND tool_path != '';
-CREATE INDEX IF NOT EXISTS idx_action_pairs_outcome
-ON action_pairs(is_error, exit_code, session_id, message_id)
-WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
-
--- polylogue-623q: tool_result_block_id is ON DELETE SET NULL against
--- blocks(block_id) but had no supporting index. SQLite must find every
--- action_pairs row whose tool_result_block_id equals each block being
--- deleted; without an index that is a full action_pairs table SCAN per
--- deleted block row -- for a whale session's full-replace block DELETE
--- (thousands of blocks) against an archive-wide action_pairs table, that is
--- effectively O(deleted_blocks x action_pairs_row_count). Verified with a
--- synthetic whale session (2,000 blocks) against a 32K-row action_pairs
--- table: the single ``DELETE FROM blocks WHERE session_id = ?`` dropped
--- from 6.87s to 0.034s (~200x) after adding this index. Partial (excludes
--- NULL) since unpaired tool_use rows never populate this column and NULL
--- never matches an equality FK lookup.
-CREATE INDEX IF NOT EXISTS idx_action_pairs_tool_result_block
-ON action_pairs(tool_result_block_id)
-WHERE tool_result_block_id IS NOT NULL;
+CREATE VIEW IF NOT EXISTS action_pairs AS
+WITH ranked_uses AS (
+    SELECT u.session_id, u.message_id, u.block_id AS tool_use_block_id,
+           u.tool_id, u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
+           ROW_NUMBER() OVER (
+               PARTITION BY u.session_id, u.tool_id
+               ORDER BY um.position, um.variant_index, u.position
+           ) AS use_rank
+    FROM blocks u JOIN messages um ON um.message_id = u.message_id
+    WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''
+), ranked_results AS (
+    SELECT r.session_id, r.tool_id, r.block_id AS tool_result_block_id,
+           r.tool_result_is_error AS is_error, r.tool_result_exit_code AS exit_code,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.session_id, r.tool_id
+               ORDER BY rm.position, rm.variant_index, r.position
+           ) AS result_rank
+    FROM blocks r JOIN messages rm ON rm.message_id = r.message_id
+    WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''
+)
+SELECT u.tool_use_block_id, u.session_id, u.message_id, u.tool_id, u.use_rank,
+       u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
+       r.tool_result_block_id, r.is_error, r.exit_code
+FROM ranked_uses u LEFT JOIN ranked_results r
+  ON r.session_id = u.session_id AND r.tool_id = u.tool_id AND r.result_rank = u.use_rank
+UNION ALL
+SELECT u.block_id, u.session_id, u.message_id, u.tool_id, NULL,
+       u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
+       NULL, NULL, NULL
+FROM blocks u
+WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = '');
 
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
@@ -856,7 +851,7 @@ WHERE tool_result_block_id IS NOT NULL;
 -- tool_use_block_id / tool_result_block_id) here, at read time, so every
 -- consumer of this view keeps byte-identical payloads without any caller
 -- change. tu is an INNER JOIN because tool_use_block_id is a NOT NULL FK
--- ON DELETE CASCADE (the action_pairs row cannot outlive its use block); tr
+-- ON DELETE CASCADE (the derived action row cannot outlive its use block); tr
 -- is a LEFT JOIN because tool_result_block_id is nullable (unpaired uses)
 -- and ON DELETE SET NULL.
 CREATE VIEW IF NOT EXISTS actions AS
@@ -866,13 +861,10 @@ SELECT
     ap.is_error, ap.exit_code, ap.tool_result_block_id,
     CASE
         WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
-        WHEN tr.tool_outcome = 'error' THEN 'outcome_error'
-        WHEN tr.tool_outcome = 'ok' THEN 'outcome_success'
-        WHEN tr.tool_outcome = 'unknown' THEN 'outcome_unknown'
+        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
         WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
         WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
-        WHEN ap.is_error = 0 OR ap.exit_code = 0 THEN 'outcome_success'
-        ELSE 'outcome_unknown'
+        ELSE 'outcome_success'
     END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
@@ -920,12 +912,32 @@ AFTER DELETE ON session_links BEGIN
     UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
 END;
 
-CREATE TABLE IF NOT EXISTS threads (
-    {TABLE_SPECS["threads"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_threads_time
-ON threads(end_time DESC, start_time DESC);
+CREATE VIEW IF NOT EXISTS threads AS
+WITH grouped AS (
+    SELECT COALESCE(s.root_session_id, s.session_id) AS thread_id,
+           COUNT(*) AS session_count,
+           SUM(COALESCE(s.message_count, 0)) AS total_messages,
+           MIN(COALESCE(sp.first_message_at, datetime(s.created_at_ms / 1000, 'unixepoch'))) AS start_time,
+           MAX(COALESCE(sp.last_message_at, datetime(s.updated_at_ms / 1000, 'unixepoch'),
+                        datetime(s.created_at_ms / 1000, 'unixepoch'))) AS end_time,
+           SUM(COALESCE((SELECT SUM(u.cost_usd) FROM session_model_usage u
+                         WHERE u.session_id = s.session_id), s.reported_cost_usd, 0.0)) AS total_cost_usd,
+           MAX(CASE WHEN s.session_id = COALESCE(s.root_session_id, s.session_id)
+                    THEN COALESCE(s.created_at_ms, s.updated_at_ms, 0) ELSE 0 END) AS created_at_ms,
+           json_group_array(s.session_id) AS session_ids_json
+    FROM sessions s
+    LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+    GROUP BY COALESCE(s.root_session_id, s.session_id)
+)
+SELECT thread_id, NULL AS dominant_repo_id, 0 AS materializer_version,
+       'query-time' AS materialized_at, NULL AS source_updated_at, NULL AS input_high_water_mark,
+       NULL AS input_high_water_mark_source, session_count AS input_row_count,
+       start_time, end_time, NULL AS dominant_repo, session_ids_json,
+       session_count, MAX(session_count - 1, 0) AS depth, MAX(session_count - 1, 0) AS branch_count,
+       total_messages, total_cost_usd, 0 AS wall_duration_ms,
+       '{{}}' AS work_event_breakdown_json, '{{}}' AS payload_json,
+       lower(thread_id) AS search_text, created_at_ms
+FROM grouped;
 
 -- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
 -- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
@@ -936,9 +948,14 @@ ON threads(end_time DESC, start_time DESC);
 -- list_threads now does the same LIKE scan over threads.search_text
 -- instead of an FTS5 MATCH. See lifecycle.py's v63 declaration.
 
-CREATE TABLE IF NOT EXISTS thread_sessions (
-    {TABLE_SPECS["thread_sessions"].ddl_body}
-) STRICT;
+CREATE VIEW IF NOT EXISTS thread_sessions AS
+SELECT COALESCE(root_session_id, session_id) AS thread_id, session_id,
+       ROW_NUMBER() OVER (
+           PARTITION BY COALESCE(root_session_id, session_id)
+           ORDER BY session_id != COALESCE(root_session_id, session_id),
+                    sort_key_ms IS NULL, sort_key_ms, session_id
+       ) - 1 AS position
+FROM sessions;
 
 CREATE TABLE IF NOT EXISTS session_working_dirs (
     {TABLE_SPECS["session_working_dirs"].ddl_body}
@@ -1285,39 +1302,6 @@ END;
 -- `archive.semantic.pricing.resolve_model_identity()` to derive
 -- vendor/model-line/pricing-source/confidence from any of these raw columns.
 --
--- 100% derivable from existing tables -- VIEW, not a table, matching the
--- `actions` precedent (derived tier, no convergence stage needed).
-CREATE TABLE IF NOT EXISTS delegation_facts (
-    {TABLE_SPECS["delegation_facts"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
-ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
-CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
-ON delegation_facts(mapping_state, parent_session_id);
-CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
-ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant_model);
-
--- The terminal ``delegations`` adapter reads this materialized relation
--- directly.  Count its maintenance writes even when their source update was
--- outside the terminal transcript tables above.
-CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_insert
-AFTER INSERT ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
-END;
-CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_update
-AFTER UPDATE ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
-END;
-CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_delete
-AFTER DELETE ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
-END;
-
-CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
-    {TABLE_SPECS["delegation_refresh_scope"].ddl_body}
-) STRICT;
-
 CREATE TABLE IF NOT EXISTS derived_refresh_guard (
     {TABLE_SPECS["derived_refresh_guard"].ddl_body}
 ) STRICT;
@@ -1342,7 +1326,9 @@ ON work_evidence_edges(graph_id, source_ref, edge_kind);
 CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_target
 ON work_evidence_edges(graph_id, target_ref, edge_kind);
 
-CREATE VIEW IF NOT EXISTS delegation_facts_source AS
+-- 100% derivable from existing tables. Keep the public relation name as the
+-- view so delegation readers do not depend on a materialized copy.
+CREATE VIEW IF NOT EXISTS delegation_facts AS
 WITH dispatch_actions AS (
     SELECT
         a.session_id                           AS parent_session_id,
@@ -1373,10 +1359,6 @@ WITH dispatch_actions AS (
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
-      AND EXISTS (
-          SELECT 1 FROM delegation_refresh_scope scope
-          WHERE scope.parent_session_id = a.session_id
-      )
 ),
 resolved_children AS (
     SELECT
@@ -1390,10 +1372,6 @@ resolved_children AS (
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
       AND {topology_status_composes_sql("l.status")}
-      AND EXISTS (
-          SELECT 1 FROM delegation_refresh_scope scope
-          WHERE scope.parent_session_id = l.resolved_dst_session_id
-      )
 ),
 -- The child's own first user turn: for a subagent this literally IS the
 -- text Claude Code/Codex injected as the dispatch's prompt, not a human
@@ -1439,7 +1417,7 @@ trivial_pairs AS (
     JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id AND cc.n = 1
 ),
 -- Case 2: non-trivial cohort, disambiguated by provider-asserted content
--- identity (see the delegation_facts table comment above for the corpus
+-- identity (see the delegation_facts view comment above for the corpus
 -- verification numbers).
 content_pairs AS (
     SELECT
@@ -1568,10 +1546,6 @@ quarantined_rows AS (
     WHERE l.link_type = 'subagent'
       AND {topology_status_excluded_sql("l.status")}
       AND l.resolved_dst_session_id IS NOT NULL
-      AND EXISTS (
-          SELECT 1 FROM delegation_refresh_scope scope
-          WHERE scope.parent_session_id = l.resolved_dst_session_id
-      )
 ),
 attempts AS (
     SELECT * FROM resolved_rows
@@ -1613,7 +1587,6 @@ SELECT
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,
     (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
-                 WHEN COUNT(u.provider_cost_usd) > 0 THEN 0
                  WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,
@@ -1628,93 +1601,6 @@ JOIN sessions p ON p.session_id = att.parent_session_id
 LEFT JOIN session_profiles pp ON pp.session_id = att.parent_session_id
 LEFT JOIN session_profiles cp ON cp.session_id = att.child_session_id;
 
-CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ai
-AFTER INSERT ON blocks
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
-    {action_pairs_refresh_sql("NEW.session_id")};
-    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
-    {delegation_facts_insert_sql("NEW.session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ad
-AFTER DELETE ON blocks
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM action_pairs WHERE session_id = OLD.session_id;
-    {action_pairs_refresh_sql("OLD.session_id")};
-    DELETE FROM delegation_facts WHERE parent_session_id = OLD.session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (OLD.session_id);
-    {delegation_facts_insert_sql("OLD.session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_au
-AFTER UPDATE ON blocks
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
-    {action_pairs_refresh_sql("NEW.session_id")};
-    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
-    {delegation_facts_insert_sql("NEW.session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_ai
-AFTER INSERT ON session_links
-WHEN NEW.resolved_dst_session_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM delegation_facts WHERE parent_session_id = NEW.resolved_dst_session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.resolved_dst_session_id);
-    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_ai
-AFTER INSERT ON session_profiles
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
-    {delegation_facts_insert_sql("NEW.session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_au
-AFTER UPDATE ON session_links
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    DELETE FROM delegation_facts
-    WHERE parent_session_id IN (OLD.resolved_dst_session_id, NEW.resolved_dst_session_id);
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
-    SELECT parent_session_id
-    FROM (
-        SELECT OLD.resolved_dst_session_id AS parent_session_id
-        UNION
-        SELECT NEW.resolved_dst_session_id
-    )
-    WHERE parent_session_id IS NOT NULL;
-    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
-CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_au
-AFTER UPDATE ON session_profiles
-WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
-    -- A profile row may be the child-side evidence of many parent
-    -- delegations. Preserve those parent cohorts before replacing the stale
-    -- derived rows; refreshing only NEW.session_id leaves child model/cost
-    -- projections stale.
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
-    SELECT parent_session_id
-    FROM delegation_facts
-    WHERE child_session_id = NEW.session_id;
-    DELETE FROM delegation_facts
-    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
-    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
-    {delegation_facts_insert_sql("NEW.session_id")};
-    DELETE FROM delegation_refresh_scope;
-END;
-
 CREATE VIEW IF NOT EXISTS delegations AS
 SELECT
     parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance,
@@ -1725,16 +1611,122 @@ SELECT
     child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state
 FROM delegation_facts;
 
-CREATE TABLE IF NOT EXISTS session_tag_rollups (
-    {TABLE_SPECS["session_tag_rollups"].ddl_body}
+CREATE VIEW IF NOT EXISTS session_tag_rollups AS
+WITH tag_members AS (
+    SELECT sp.session_id, sp.source_name, COALESCE(sp.logical_session_id, sp.session_id) AS logical_session_id,
+           COALESCE(sp.canonical_session_date, date(COALESCE(
+               sp.first_message_at,
+               json_extract(sp.evidence_payload_json, '$.created_at'),
+               sp.source_updated_at,
+               sp.last_message_at
+           ))) AS bucket_day,
+           tag.value AS tag, 1 AS explicit_count, 0 AS auto_count,
+           sp.repo_names_json, sp.source_sort_key,
+           json_extract(sp.evidence_payload_json, '$.updated_at') AS updated_at,
+           sp.last_message_at, sp.first_message_at,
+           json_extract(sp.evidence_payload_json, '$.created_at') AS created_at
+    FROM session_profiles sp, json_each(COALESCE(sp.tags_json, '[]')) tag
+    WHERE tag.value IS NOT NULL AND tag.value != ''
+    UNION ALL
+    SELECT sp.session_id, sp.source_name, COALESCE(sp.logical_session_id, sp.session_id) AS logical_session_id,
+           COALESCE(sp.canonical_session_date, date(COALESCE(
+               sp.first_message_at,
+               json_extract(sp.evidence_payload_json, '$.created_at'),
+               sp.source_updated_at,
+               sp.last_message_at
+           ))) AS bucket_day,
+           tag.value AS tag, 0 AS explicit_count, 1 AS auto_count,
+           sp.repo_names_json, sp.source_sort_key,
+           json_extract(sp.evidence_payload_json, '$.updated_at') AS updated_at,
+           sp.last_message_at, sp.first_message_at,
+           json_extract(sp.evidence_payload_json, '$.created_at') AS created_at
+    FROM session_profiles sp, json_each(COALESCE(sp.auto_tags_json, '[]')) tag
+    WHERE tag.value IS NOT NULL AND tag.value != ''
+), distinct_members AS (
+    SELECT session_id, source_name, bucket_day, tag,
+           MAX(logical_session_id) AS logical_session_id,
+           MAX(explicit_count) AS explicit_count,
+           MAX(auto_count) AS auto_count,
+           MAX(repo_names_json) AS repo_names_json,
+           MAX(source_sort_key) AS source_sort_key,
+           MAX(updated_at) AS updated_at,
+           MAX(last_message_at) AS last_message_at,
+           MAX(first_message_at) AS first_message_at,
+           MAX(created_at) AS created_at
+    FROM tag_members
+    WHERE bucket_day IS NOT NULL
+    GROUP BY session_id, source_name, bucket_day, tag
+), repo_counts AS (
+    SELECT dm.source_name, dm.bucket_day, dm.tag, repo.value AS repo,
+           COUNT(*) AS repo_count
+    FROM distinct_members dm
+    JOIN json_each(COALESCE(dm.repo_names_json, '[]')) repo
+    WHERE repo.value IS NOT NULL AND repo.value != ''
+    GROUP BY dm.source_name, dm.bucket_day, dm.tag, repo.value
+), repo_json AS (
+    SELECT source_name, bucket_day, tag, json_group_object(repo, repo_count) AS repo_breakdown_json
+    FROM repo_counts
+    GROUP BY source_name, bucket_day, tag
+)
+SELECT dm.tag,
+       dm.bucket_day,
+       dm.source_name,
+       0 AS materializer_version, 'query-time' AS materialized_at,
+       NULLIF(MAX(MAX(COALESCE(dm.updated_at, ''), COALESCE(dm.last_message_at, ''),
+                          COALESCE(dm.first_message_at, ''), COALESCE(dm.created_at, ''))), '')
+           AS source_updated_at,
+       MAX(dm.source_sort_key) AS source_sort_key,
+       NULLIF(MAX(MAX(COALESCE(dm.updated_at, ''), COALESCE(dm.last_message_at, ''),
+                          COALESCE(dm.first_message_at, ''), COALESCE(dm.created_at, ''))), '')
+           AS input_high_water_mark,
+       CASE WHEN MAX(MAX(COALESCE(dm.updated_at, ''), COALESCE(dm.last_message_at, ''),
+                         COALESCE(dm.first_message_at, ''), COALESCE(dm.created_at, ''))) = ''
+            THEN 'fallback_date' ELSE 'provider_ts' END AS input_high_water_mark_source,
+       COUNT(*) AS input_row_count, COUNT(*) AS session_count,
+       COUNT(DISTINCT dm.logical_session_id) AS logical_session_count,
+       (
+           SELECT json_group_array(logical_session_id)
+           FROM (
+               SELECT DISTINCT dm2.logical_session_id
+               FROM distinct_members dm2
+               WHERE dm2.source_name = dm.source_name
+                 AND dm2.bucket_day = dm.bucket_day
+                 AND dm2.tag = dm.tag
+               ORDER BY dm2.logical_session_id
+           )
+       ) AS logical_session_ids_json,
+       SUM(dm.explicit_count) AS explicit_count,
+       SUM(dm.auto_count) AS auto_count,
+       COALESCE(rj.repo_breakdown_json, '{{}}') AS repo_breakdown_json,
+       dm.tag || char(10) || dm.source_name || COALESCE(
+           char(10) || (
+               SELECT group_concat(repo, char(10))
+               FROM (
+                   SELECT DISTINCT rc.repo
+                   FROM repo_counts rc
+                   WHERE rc.source_name = dm.source_name
+                     AND rc.bucket_day = dm.bucket_day
+                     AND rc.tag = dm.tag
+                   ORDER BY rc.repo
+               )
+           ), ''
+       ) AS search_text
+FROM distinct_members dm
+LEFT JOIN repo_json rj
+  ON rj.source_name = dm.source_name AND rj.bucket_day = dm.bucket_day AND rj.tag = dm.tag
+GROUP BY dm.tag, dm.bucket_day, dm.source_name;
+
+-- v57 (polylogue-ioz7): one immutable receipt per `sessions` row deleted by
+-- the agent-meta-sidecar purge actuator. No FK to `sessions` -- the whole
+-- point of the row is that the session it describes no longer exists.
+-- `raw_id` is likewise unconstrained here (source.db is a separate
+-- database file; the raw row and its blob are deliberately retained there).
+CREATE TABLE IF NOT EXISTS agent_meta_sidecar_purge_receipts (
+    {TABLE_SPECS["agent_meta_sidecar_purge_receipts"].ddl_body}
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_day
-ON session_tag_rollups(bucket_day DESC, source_name, tag);
-
-CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
-ON session_tag_rollups(source_name, tag);
-
+CREATE INDEX IF NOT EXISTS idx_agent_meta_sidecar_purge_receipts_purged_at
+ON agent_meta_sidecar_purge_receipts(purged_at_ms);
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
@@ -1747,7 +1739,5 @@ ON session_tag_rollups(source_name, tag);
 # devtools render demo-corpus-datasheet started failing with "Search index
 # is incomplete" right after #2893 landed.
 INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
-# CREATE TABLE schema_identity; ddl-lifecycle-waiver: derived schema_identity is existing bootstrap metadata; declaring it in canonical DDL changes fresh-bootstrap completeness, not the indexed data shape.
-INDEX_DDL += DERIVED_SCHEMA_META_DDL
 
 __all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]

@@ -16,9 +16,6 @@ _DERIVED_SURFACES = (
     "messages_fts_identity",
     "session_work_events_fts",
     "blocks_command_trigram",
-    "action_pairs",
-    "delegation_facts",
-    "delegation_refresh_scope",
 )
 _SQL_SPACE = re.compile(r"\s+")
 
@@ -55,14 +52,10 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
         return False
     if sql.startswith("delete from "):
         return " where " not in sql
-    if sql.startswith("insert into action_pairs"):
-        return "where u.session_id =" not in sql
     if sql.startswith("insert into messages_fts"):
         return "target.session_id = b.session_id" not in sql
     if sql.startswith("insert into blocks_command_trigram"):
         return "session_id" not in sql
-    if sql.startswith("insert or replace into delegation_refresh_scope"):
-        return "select session_id from sessions" in sql
     return False
 
 

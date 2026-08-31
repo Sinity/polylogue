@@ -118,8 +118,6 @@ class MaterializeStageObservation(TypedDict, total=False):
     unique_provider_days: int
     elapsed_ms: float
     update_ms: float
-    thread_refresh_ms: float
-    aggregate_refresh_ms: float
     update_chunk_count: int
     update_slow_chunk_count: int
     update_max_chunk_ms: float

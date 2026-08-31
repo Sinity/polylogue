@@ -3124,16 +3124,9 @@ def test_refresh_thread_reorder_only_touches_changed_span(tmp_path: Path) -> Non
     ).fetchone()
     assert dict(thread_row) == {"session_count": 6, "depth": 5}
 
-    deletes = [stmt for stmt in statements if "DELETE FROM thread_sessions" in stmt]
-    # The unchanged leading run (root, child1) must not be touched by any
-    # delete -- a full unconditional rebuild would issue a bare
-    # "DELETE FROM thread_sessions WHERE thread_id = ?" here instead.
-    assert len(deletes) == 1
-    assert "position >=" in deletes[0] and "position <" in deletes[0]
-    inserts = [stmt for stmt in statements if "INSERT INTO thread_sessions" in stmt]
-    # Only the 4 rows in the affected span (child2's old slot through the
-    # new tail) get reinserted, not all 6 members.
-    assert len(inserts) == 4
+    assert not any(
+        "thread_sessions" in stmt and stmt.lstrip().startswith(("INSERT", "UPDATE", "DELETE")) for stmt in statements
+    )
 
 
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:
@@ -3262,7 +3255,6 @@ def test_graph_resolve_records_late_parent_substage_timings(tmp_path: Path) -> N
         "append.index.graph_resolve.reextract_prefix_tails.edge_update",
         "append.index.graph_resolve.reextract_prefix_tails.count_refresh",
         "append.index.graph_resolve.projection_refresh",
-        "append.index.graph_resolve.thread_refresh",
     }
     assert expected_substages <= timings.keys()
     assert "append.index.graph_resolve" in timings

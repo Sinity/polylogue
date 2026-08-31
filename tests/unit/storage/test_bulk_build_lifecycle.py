@@ -1,30 +1,24 @@
-"""Bulk-generation-build lifecycle (polylogue-v6i3): empty derived state
+"""Bulk-generation-build lifecycle (polylogue-v6i3): empty FTS state
 throughout replay, one archive-wide repopulate at readiness.
 
 Background: a whale offline rebuild measured a 3h+ stall doing per-session
-FTS/trigram/action_pairs/delegation_facts maintenance one session at a time,
-where an ARCHIVE-WIDE ``messages_fts`` + ``blocks_command_trigram``
+FTS/trigram maintenance one session at a time, where an ARCHIVE-WIDE
+``messages_fts`` + ``blocks_command_trigram``
 delete-all took 28.7s (bead polylogue-v6i3). ``write_parsed_session_to_
 archive(..., bulk_build=True)`` -- the offline rebuild path's mode, layered
 on top of the existing ``bulk_fts`` guard-gated bulk FTS mode (#3152) --
-skips ALL per-session maintenance of these four derived surfaces (not just
+skips ALL per-session maintenance of these two derived surfaces (not just
 the whale prefix-reextract cascade #3152 already handles) and defers
 everything to one archive-wide repopulate the caller runs once at readiness
 (``maintenance/rebuild_index.py``'s ``_repopulate_bulk_build_derived_state``).
 
 These tests prove: (a) ``bulk_build=True`` writes leave ``messages_fts`` /
-``blocks_command_trigram`` / ``action_pairs`` empty for the written session,
-where mode-off leaves them populated (so (a) is not vacuously true for every
-write); (b) the readiness repopulate (``rebuild_fts_index_sync`` +
-``rebuild_command_trigram_index_sync`` + ``rebuild_all_action_pairs_sync``)
-produces byte-identical content to trickle-mode (``bulk_build=False``)
-population of the SAME corpus, including a prefix-sharing lineage cascade
-that exercises ``_bulk_fts_session_guard``'s bulk-build no-op branch; (c) the
-whole-transaction ``FTS_BULK_SESSION_WRITE_GUARD`` row never leaks past an
-exception; (d) an anti-vacuity check -- skip the readiness repopulate for one
-surface and show the parity comparison then fails, proving the equivalence
-test in (b) is actually exercising the repopulate code, not passing by
-coincidence.
+``blocks_command_trigram`` empty for the written session, where mode-off
+leaves them populated; (b) the readiness repopulate produces byte-identical
+content to trickle-mode population of the same corpus, including a
+prefix-sharing lineage cascade; (c) the guard row never leaks past an
+exception; (d) skipping one readiness surface makes the parity comparison
+fail. ``action_pairs`` remains query-time derived during both modes.
 """
 
 from __future__ import annotations
@@ -39,7 +33,6 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
-from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
@@ -188,7 +181,7 @@ def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] > 0
     # The guard row must never leak past the write it protected.
     assert (
         conn.execute(
@@ -204,9 +197,8 @@ def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
 
 
 def test_bulk_build_off_matches_todays_per_session_population(tmp_path: Path) -> None:
-    """Anti-vacuity baseline for the test above: without bulk_build, the same
-    session write populates all three surfaces immediately, proving the
-    empty result above is a real skip, not something every write produces."""
+    """Without bulk_build, the same session write populates both FTS surfaces
+    immediately. The action-pairs view is available in either mode."""
     conn = _connect(tmp_path / "index.db")
     session_id = write_parsed_session_to_archive(conn, _session("solo"))
 
@@ -233,11 +225,10 @@ def test_bulk_build_readiness_repopulate_matches_trickle_mode(tmp_path: Path) ->
     # before repopulating -- otherwise the parity check below could pass
     # vacuously if bulk_build silently did nothing.
     assert conn_bulk.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
-    assert conn_bulk.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+    assert conn_bulk.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] > 0
 
     rebuild_fts_index_sync(conn_bulk)
     rebuild_command_trigram_index_sync(conn_bulk)
-    rebuild_all_action_pairs_sync(conn_bulk)
     conn_bulk.commit()
 
     fts_bulk = _fts_rows(conn_bulk)
@@ -308,7 +299,6 @@ def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> N
     _build_corpus(conn_bulk, bulk_build=True)
     # Deliberately DO NOT call rebuild_fts_index_sync here.
     rebuild_command_trigram_index_sync(conn_bulk)
-    rebuild_all_action_pairs_sync(conn_bulk)
     conn_bulk.commit()
 
     fts_bulk = _fts_rows(conn_bulk)

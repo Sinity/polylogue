@@ -83,16 +83,17 @@ durable Sinex-backed-mode publication-obligation ledger — see
 ### `index.db` — parsed tree, search, and insights (rebuildable)
 
 The parsed session/message/block tree, full-text search indexes, cross-session
-topology, and the materialized read models. Rebuildable from `source.db`.
+topology, and rebuildable read models. Rebuildable from `source.db`.
 
 Core tables: `sessions`, `messages`, `blocks`, plus the `actions` **view**
 (not a table — see below), `session_links` (typed cross-session edges),
-`threads` / `thread_sessions`, attachment tables (`attachments`,
+query-time `threads`, `thread_sessions`, `action_pairs`, `delegation_facts`,
+and `session_tag_rollups` views, attachment tables (`attachments`,
 `attachment_refs`, `attachment_native_ids`), `paste_spans`, the cost table
 `session_model_usage`, the auto-tag side of
 `session_tags`, and the insight
 read models (`session_profiles`, `session_work_events`, `session_phases`,
-`session_latency_profiles`, `session_tag_rollups`, `threads`) plus
+`session_latency_profiles`) plus
 `insight_materialization` for cache invalidation.
 
 ### `embeddings.db` — vectors (rebuildable, expensive)

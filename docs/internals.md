@@ -184,6 +184,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `IF NOT EXISTS`/`IF EXISTS` guard). First application: dropped the
   zero-consumer `model_prices` and `session_reported_costs` tables
   (polylogue-v2mg).
+- **Index schema version 81** (polylogue-avlt5) replaces the redundant
+  `action_pairs`, `threads`, `thread_sessions`, `delegation_facts`, and
+  `session_tag_rollups` tables with query-time views over canonical index
+  evidence. Existing index generations require semantic reparse so the
+  rebuilt tier contains no materialized copies.
 - On startup the on-disk `PRAGMA user_version` is compared against the tier
   constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.

@@ -421,7 +421,7 @@ extensible registry):
 | `source-index-coverage` | Every raw logical head is materialized, has an explicit terminal disposition, or is quarantined, and every index session's `raw_id` still resolves to a real raw row (orphans). The raw source population, not the derived census ledger, defines the coverage universe. |
 | `fts-parity` | `messages_fts`/`blocks_command_trigram` exactly cover their source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
-| `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans — polylogue-l3tk class). |
+| `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`session_links` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans, polylogue-l3tk class). |
 | `counts-summary` | Archive-wide session/message/block counts and an origin breakdown — the numbers-freeze starting point for an operator handoff. |
 
 Exit code is non-zero when any check reports `error` (or, with `--strict`,

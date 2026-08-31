@@ -2241,10 +2241,9 @@ def backfill_historical_revision_evidence(
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
     threading to the same two apply calls, enabling the broader
-    bulk-generation-build lifecycle: every per-session
-    messages_fts/blocks_command_trigram/action_pairs/delegation_facts refresh
-    is skipped during replay, deferred to one archive-wide repopulate at
-    readiness. Only the offline rebuild caller passes ``True``.
+    bulk-generation-build lifecycle: per-session FTS refresh is skipped during
+    replay and deferred to one archive-wide repopulate at readiness. The
+    action and delegation surfaces are query-time views and need no refresh.
 
     ``prefetch_cache`` (polylogue-gd6v, default ``None``) is threaded to the
     census phase exactly like ``census_historical_revision_evidence``'s own

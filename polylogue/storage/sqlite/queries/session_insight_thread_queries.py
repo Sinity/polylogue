@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.derived.session.storage import thread_insert_values
+from polylogue.storage.derived.session.threads import build_thread_records_for_roots_async
 from polylogue.storage.query_models import ThreadListQuery
 from polylogue.storage.runtime import ThreadRecord
-from polylogue.storage.sqlite.queries.mappers import _row_to_thread_record
+from polylogue.storage.search.query_support import normalize_fts5_query
 
 __all__ = [
     "get_thread",
     "list_threads",
-    "replace_thread",
 ]
 
 
@@ -20,12 +19,8 @@ async def get_thread(
     conn: aiosqlite.Connection,
     thread_id: str,
 ) -> ThreadRecord | None:
-    cursor = await conn.execute(
-        "SELECT *, thread_id AS root_id FROM threads WHERE thread_id = ?",
-        (thread_id,),
-    )
-    row = await cursor.fetchone()
-    return _row_to_thread_record(row) if row else None
+    records = await build_thread_records_for_roots_async(conn, [thread_id])
+    return records.get(thread_id)
 
 
 async def list_threads(
@@ -33,28 +28,44 @@ async def list_threads(
     query: ThreadListQuery,
 ) -> list[ThreadRecord]:
     params: list[object] = []
+    where: list[str] = []
     if query.query:
-        # polylogue-eizc: threads_fts (the FTS5 MATCH index this used to
-        # query) was dropped -- zero production callers ever reached this
-        # branch, and the live "analyze threads" search path
-        # (archive_tiers/archive.py:list_thread_insights) already does a
-        # manual LIKE substring scan rather than using threads_fts. Mirror
-        # that same LIKE shape here instead of an FTS5 MATCH.
-        from_clause = "FROM threads wt"
-        where = ["lower(wt.search_text) LIKE ?"]
-        params.append(f"%{query.query.strip().lower()}%")
-        order_by = "ORDER BY COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
-    else:
-        from_clause = "FROM threads wt"
-        where = []
-        order_by = "ORDER BY COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
+        match = normalize_fts5_query(query.query)
+        like = f"%{query.query.strip().lower()}%"
+        where.append(
+            "("
+            "lower(wt.thread_id) LIKE ? "
+            "OR EXISTS ("
+            "SELECT 1 FROM thread_sessions qts "
+            "JOIN sessions qs ON qs.session_id = qts.session_id "
+            "WHERE qts.thread_id = wt.thread_id AND ("
+            "lower(qs.session_id) LIKE ? OR lower(COALESCE(qs.title, '')) LIKE ? "
+            "OR lower(COALESCE(qs.git_repository_url, '')) LIKE ? "
+            "OR lower(COALESCE(qs.git_branch, '')) LIKE ?"
+            "))"
+            + (
+                " OR EXISTS ("
+                "SELECT 1 FROM messages_fts mf "
+                "JOIN blocks mb ON mb.rowid = mf.rowid "
+                "JOIN thread_sessions fts_ts ON fts_ts.session_id = mb.session_id "
+                "WHERE fts_ts.thread_id = wt.thread_id AND messages_fts MATCH ?"
+                ")"
+                if match
+                else ""
+            )
+            + ")"
+        )
+        params.extend([like, like, like, like, like])
+        if match:
+            params.append(match)
+    order_by = "ORDER BY COALESCE(wt.end_time, wt.start_time, wt.materialized_at) DESC, wt.thread_id"
     if query.since:
         where.append("COALESCE(wt.end_time, wt.start_time, wt.materialized_at) >= ?")
         params.append(query.since)
     if query.until:
         where.append("COALESCE(wt.start_time, wt.end_time, wt.materialized_at) <= ?")
         params.append(query.until)
-    sql = "SELECT wt.*, wt.thread_id AS root_id " + from_clause
+    sql = "SELECT wt.thread_id FROM threads wt"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" {order_by}"
@@ -63,43 +74,6 @@ async def list_threads(
         params.extend([query.limit, query.offset])
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_thread_record(row) for row in rows]
-
-
-async def replace_thread(
-    conn: aiosqlite.Connection,
-    thread_id: str,
-    record: ThreadRecord | None,
-    transaction_depth: int,
-) -> None:
-    await conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
-    if record is not None:
-        await conn.execute(
-            """
-            INSERT INTO threads (
-                thread_id,
-                materializer_version,
-                materialized_at,
-                source_updated_at,
-                input_high_water_mark,
-                input_high_water_mark_source,
-                input_row_count,
-                start_time,
-                end_time,
-                dominant_repo,
-                session_ids_json,
-                session_count,
-                depth,
-                branch_count,
-                total_messages,
-                total_cost_usd,
-                wall_duration_ms,
-                work_event_breakdown_json,
-                payload_json,
-                search_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            thread_insert_values(record),
-        )
-    if transaction_depth == 0:
-        await conn.commit()
+    root_ids = [str(row["thread_id"]) for row in rows]
+    records = await build_thread_records_for_roots_async(conn, root_ids)
+    return [records[root_id] for root_id in root_ids if root_id in records]

@@ -2,10 +2,8 @@
 
 Covers the pure comparison/serialization logic exhaustively (fast, no I/O)
 plus one end-to-end smoke run of the full curated measurement pipeline in
-``--quick`` shape, so a broken import or signature drift in any of the four
-underlying production surfaces (revision-backfill census/replay,
-``refresh_action_pairs``, ``compute_latency_percentiles``) fails loudly here
-rather than silently in the nightly workflow.
+``--quick`` shape. The smoke run exercises revision-backfill census/replay
+and route latency through ``compute_latency_percentiles``.
 """
 
 from __future__ import annotations
@@ -183,9 +181,8 @@ def test_format_delta_table_marks_regressions_and_new_metrics() -> None:
 def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) -> None:
     """End-to-end smoke run in --quick shape over every measurement group.
 
-    Exercises the real production surfaces (revision_backfill census/replay,
-    ``refresh_action_pairs``, ``compute_latency_percentiles``) so a signature
-    or import drift in any of them fails here instead of silently in CI.
+    Exercises the real production surfaces so a signature or import drift
+    fails here instead of silently in CI.
     Only shape/type/non-negativity is asserted -- wall-clock values are
     host-variable and covered by the floors mechanism, not this test.
     """
@@ -201,8 +198,6 @@ def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) 
         "census_small_raws_per_s",
         "census_chain_revisions_per_s",
         "replay_sessions_per_min",
-        "action_pairs_refresh_mean_ms",
-        "action_pairs_refresh_p95_ms",
         "query_search_summaries_p50_ms",
         "query_search_summaries_p95_ms",
         "query_list_summaries_p50_ms",

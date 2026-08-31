@@ -2363,13 +2363,9 @@ async def refresh_session_insights_bulk(
 
     t_start = time.perf_counter()
     update_elapsed = 0.0
-    thread_elapsed = 0.0
-    aggregate_elapsed = 0.0
     try:
         from polylogue.storage.derived.session.refresh import (
             _apply_session_insight_session_updates_async,
-            _refresh_thread_roots_async,
-            refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
@@ -2380,23 +2376,8 @@ async def refresh_session_insights_bulk(
                 transaction_depth=1,
             )
             update_elapsed = time.perf_counter() - t_updates
-            t_threads = time.perf_counter()
             thread_root_ids = update.thread_root_ids
-            await _refresh_thread_roots_async(
-                conn,
-                sorted(thread_root_ids),
-                transaction_depth=1,
-            )
-            thread_elapsed = time.perf_counter() - t_threads
-            t_aggregates = time.perf_counter()
             affected_groups = update.affected_groups
-            if affected_groups:
-                await refresh_async_provider_day_aggregates(
-                    conn,
-                    affected_groups,
-                    transaction_depth=1,
-                )
-            aggregate_elapsed = time.perf_counter() - t_aggregates
             await conn.commit()
 
         elapsed = time.perf_counter() - t_start
@@ -2407,8 +2388,6 @@ async def refresh_session_insights_bulk(
             "unique_provider_days": len(affected_groups),
             "elapsed_ms": round(elapsed * 1000.0, 1),
             "update_ms": round(update_elapsed * 1000.0, 1),
-            "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
-            "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
             "update_chunk_count": len(chunk_observations),
             "update_slow_chunk_count": sum(1 for chunk in chunk_observations if chunk.slow),
         }
@@ -2431,8 +2410,6 @@ async def refresh_session_insights_bulk(
                 unique_provider_days=len(affected_groups),
                 elapsed_s=round(elapsed, 2),
                 update_s=round(update_elapsed, 2),
-                thread_refresh_s=round(thread_elapsed, 2),
-                aggregate_refresh_s=round(aggregate_elapsed, 2),
                 rate=round(len(changed_session_ids) / elapsed, 1) if elapsed > 0 else 0,
             )
         return observation

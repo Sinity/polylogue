@@ -3,8 +3,8 @@
 
 ``polylogue-1vpm.6.1`` AC6 requires that "existing delegation/correlation
 surfaces become projections/adapters or retire" -- not that they disappear.
-``delegation_facts`` (materialized by
-:mod:`polylogue.storage.sqlite.delegation_facts`, read through the
+``delegation_facts`` (derived by
+:mod:`polylogue.storage.sqlite.archive_tiers.index`, read through the
 ``delegations`` structural query unit and
 :meth:`~polylogue.storage.sqlite.archive_tiers.archive.ArchiveTier.query_delegations`)
 is a genuinely richer, typed surface than the generic work-evidence graph for

@@ -37,7 +37,7 @@ from polylogue.core.sources import origin_from_provider, origin_provider_fiber, 
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -88,7 +88,7 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
-    # ``polylogue.analysis.archive``) imports this module -- a real,
+    # ``polylogue.insights.archive``) imports this module -- a real,
     # not merely lint-flagged, circular import at module load time. This
     # type is only ever passed through here (constructed and populated by
     # ``polylogue.daemon.parse_prefetch``), never constructed, so a
@@ -5342,19 +5342,6 @@ def _session_insight_requires_archive_wide_rebuild(status: object) -> bool:
     )
 
 
-def _session_insight_aggregate_debt_count(status: object) -> int:
-    return sum(
-        int(getattr(status, attr, 0) or 0)
-        for attr in (
-            "missing_thread_materialization_count",
-            "stale_thread_count",
-            "orphan_thread_count",
-            "stale_tag_rollup_count",
-            "stale_day_summary_count",
-        )
-    )
-
-
 def _targeted_session_insight_rebuild_ids(
     conn: sqlite3.Connection | None,
     status: object,
@@ -5524,7 +5511,7 @@ class RepairResult:
 # ---------------------------------------------------------------------------
 
 
-def count_empty_sessions_sync(conn: sqlite3.Connection, *, session_ids: tuple[str, ...] | None = None) -> int:
+def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
     """Count session rows that are debris: no *content* (zero messages, or
     every message carries zero words -- see ``_empty_session_candidate_ids``)
     AND a raw artifact the current classifier positively refuses to admit as
@@ -5559,12 +5546,8 @@ def count_empty_sessions_sync(conn: sqlite3.Connection, *, session_ids: tuple[st
     Kept in lockstep with ``repair_empty_sessions``: the counter and the
     deleter must agree, or the report says one thing and the repair does
     another (both call ``_empty_session_debris_session_ids``).
-
-    ``session_ids`` narrows the count to exactly the requested sessions, the
-    same narrowing ``repair_empty_sessions`` applies, so a scoped preview and
-    a scoped execution report the same rows.
     """
-    return len(_empty_session_debris_session_ids(conn, session_ids=session_ids))
+    return len(_empty_session_debris_session_ids(conn))
 
 
 def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: int) -> bool:
@@ -5906,10 +5889,7 @@ def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_
     return not observation.parse_as_session
 
 
-def _empty_session_debris_session_ids(
-    conn: sqlite3.Connection,
-    session_ids: tuple[str, ...] | None = None,
-) -> list[str]:
+def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
     """Return ``session_id``s for message-less sessions whose raw artifact
     positively fails the current record-shape classifier.
 
@@ -5931,9 +5911,6 @@ def _empty_session_debris_session_ids(
     conn.row_factory = sqlite3.Row
     try:
         candidates = _empty_session_candidate_ids(conn)
-        if session_ids is not None:
-            requested = set(session_ids)
-            candidates = [item for item in candidates if item[0] in requested]
         if not candidates:
             return []
         source_db = _sibling_source_db_path(conn)
@@ -5954,9 +5931,7 @@ def _empty_session_debris_session_ids(
         conn.row_factory = original_row_factory
 
 
-def repair_empty_sessions(
-    config: Config, dry_run: bool = False, *, session_ids: tuple[str, ...] | None = None
-) -> RepairResult:
+def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete message-less sessions whose raw artifact positively fails the
     current record-shape classifier.
 
@@ -5970,17 +5945,15 @@ def repair_empty_sessions(
     del config
     try:
         with _open_archive_index_connection() as conn:
-            candidate_ids = _empty_session_debris_session_ids(conn, session_ids=session_ids)
+            session_ids = _empty_session_debris_session_ids(conn)
             if dry_run:
                 return _repair_result(
                     "empty_sessions",
-                    repaired_count=len(candidate_ids),
+                    repaired_count=len(session_ids),
                     success=True,
-                    detail=(
-                        f"Would: {len(candidate_ids)} rows affected" if candidate_ids else "Would: No issues found"
-                    ),
+                    detail=(f"Would: {len(session_ids)} rows affected" if session_ids else "Would: No issues found"),
                 )
-            if not candidate_ids:
+            if not session_ids:
                 return _repair_result(
                     "empty_sessions",
                     repaired_count=0,
@@ -5989,14 +5962,14 @@ def repair_empty_sessions(
                 )
             conn.executemany(
                 "DELETE FROM sessions WHERE session_id = ?",
-                [(session_id,) for session_id in candidate_ids],
+                [(session_id,) for session_id in session_ids],
             )
             conn.commit()
             return _repair_result(
                 "empty_sessions",
-                repaired_count=len(candidate_ids),
+                repaired_count=len(session_ids),
                 success=True,
-                detail=f"Repaired {len(candidate_ids)} rows",
+                detail=f"Repaired {len(session_ids)} rows",
             )
     except Exception as exc:
         return _repair_result(
@@ -6196,34 +6169,9 @@ def repair_session_insights(
     set instead of touching the full archive — used by the maintenance
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
 
-    KEEP-WITH-REASON (polylogue-ygfwa): this mutate path is *not*
-    fully redundant with the daemon's automatic convergence mechanisms
-    (the per-ingest ``make_insights_stage`` ``ConvergenceStage`` and the
-    periodic ``convergence_debt`` retry loop in ``daemon/cli.py``). Both
-    automatic mechanisms only ever call ``rebuild_session_insights_sync``
-    (per-session profile/work_events/phases). Neither one ever calls
-    ``refresh_session_insight_aggregates_sync`` — the archive-wide,
-    non-per-session-scoped refresh of thread materialization
-    (``threads``/``thread_sessions``), tag rollups
-    (``session_tag_rollups``), and provider-day aggregates. This
-    function is the *only* caller of
-    ``refresh_session_insight_aggregates_sync`` in the codebase (verified
-    by grep across ``daemon/`` and the rest of the tree, 2026-08-02): it
-    runs that refresh whenever ``_session_insight_aggregate_debt_count``
-    (``missing_thread_materialization_count``, ``stale_thread_count``,
-    ``orphan_thread_count``, ``stale_tag_rollup_count``,
-    ``stale_day_summary_count``) is nonzero. So a bump to
-    ``SESSION_INSIGHT_MATERIALIZER_VERSION`` (or any other event that
-    stales thread/tag-rollup aggregates archive-wide) leaves those
-    aggregates stale forever unless something calls this manual repair
-    path — the daemon has no automatic route to clear that debt. This
-    function is also reused directly (not via the doctor CLI) by
-    ``maintenance/rebuild_index.py``'s terminal stage to materialize
-    insights for a freshly built *inactive* generation before promotion,
-    a scenario the daemon (which only ever touches the live/active
-    generation) cannot reach at all. Do not remove the mutate path
-    without first giving thread/tag-rollup/day-summary aggregate
-    staleness its own automatic convergence mechanism.
+    Thread membership and tag rollups are query-time views over canonical
+    index evidence. This repair route remains for per-session insight rows
+    and orphan cleanup; those views need no separate repair pass.
 
     ``resolve_convergence_debt=False`` is reserved for an owned inactive
     generation. Its ``ops.db`` is a read-through link to live disposable
@@ -6231,10 +6179,7 @@ def repair_session_insights(
     clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.derived.session.rebuild import (
-        rebuild_archive_session_insights,
-        refresh_session_insight_aggregates_sync,
-    )
+    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
@@ -6251,10 +6196,9 @@ def repair_session_insights(
         with archive_context as archive:
             status = archive.session_insight_status()
             assessment = assess_session_insight_repairs(status)
-            aggregate_debt = _session_insight_aggregate_debt_count(status)
             targeted_session_ids = (
                 None
-                if session_ids is not None or (assessment.row_debt == 0 and aggregate_debt == 0)
+                if session_ids is not None or assessment.row_debt == 0
                 else _targeted_session_insight_rebuild_ids(getattr(archive, "_conn", None), status)
             )
 
@@ -6294,7 +6238,7 @@ def repair_session_insights(
                     detail=detail,
                 )
 
-            if session_ids is None and assessment.row_debt == 0 and aggregate_debt == 0:
+            if session_ids is None and assessment.row_debt == 0:
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -6310,13 +6254,6 @@ def repair_session_insights(
             )
             rebuilt_count = rebuilt.total()
             refreshed = archive.session_insight_status()
-            if session_ids is None and _session_insight_aggregate_debt_count(refreshed) > 0:
-                aggregate_counts = refresh_session_insight_aggregates_sync(
-                    archive._conn,
-                    progress_callback=progress_callback,
-                )
-                rebuilt_count += aggregate_counts.total()
-                refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
             success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
@@ -7063,19 +7000,14 @@ def _repair_raw_materialization(
 
     from polylogue.sources.revision_backfill import RevisionBackfillResult, backfill_historical_revision_evidence
 
-    # ``action_pairs_refresh_sql`` is session-scoped, but on an index tier
-    # whose planner statistics were lost during an interrupted generation
-    # transition SQLite can choose the broad ``idx_blocks_type_tool`` scan
-    # instead.  Replaying several authority components then becomes an
-    # archive-wide read for every session replacement.  Refresh only the
-    # writer-hot table before this bounded live pass; this is the same
-    # planner invariant seeded for a fresh index bootstrap, without turning
-    # raw materialization into a full rebuild.
+    # On an index tier whose planner statistics were lost during an
+    # interrupted generation transition SQLite can choose a broad block scan
+    # for each component. Refresh the writer-hot table before this bounded
+    # live pass without turning raw materialization into a full rebuild.
     with closing(sqlite3.connect(index_db, timeout=60)) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
         # A freshly reset index uses representative bootstrap statistics.
-        # ``ANALYZE blocks`` on an empty table deletes that seed and brings
-        # back the broad action-pair plan this refresh is meant to prevent.
+        # ``ANALYZE blocks`` on an empty table deletes that seed.
         if planner_conn.execute("SELECT 1 FROM blocks LIMIT 1").fetchone() is not None:
             planner_conn.execute("ANALYZE blocks")
             planner_conn.commit()
@@ -7137,22 +7069,18 @@ def _repair_raw_materialization(
                 # polylogue-qsagp: ``bulk_build=True`` is the broader
                 # bulk-GENERATION-build lifecycle (``maintenance/rebuild_index.py``'s
                 # single from-empty replay that always finishes with one
-                # archive-wide messages_fts/blocks_command_trigram/action_pairs/
-                # delegation_facts repopulate before readiness). This is the
-                # opposite shape: an incremental per-component trickle pass over
+                # archive-wide messages_fts/blocks_command_trigram repopulate
+                # before readiness). This is the opposite shape: an incremental
+                # per-component trickle pass over
                 # an already-live, already-large archive, so there is no
                 # once-at-the-end readiness step to defer to -- the archive-wide
                 # rebuild that used to run after every component here (measured
-                # 8.22 GiB FTS text / 5.07M trigram rows / 1.9M action_pairs
-                # rows, 188s+ writer holds) was that terminal-pass shape
-                # replayed at the wrong scale. ``bulk_build=False`` (with
-                # ``bulk_fts`` still True) keeps every per-session refresh of
-                # those four derived surfaces exactly in sync with each
-                # session write via the already-existing session/component-
-                # scoped writers (``refresh_action_pairs``,
-                # ``refresh_delegation_facts_for_session``,
-                # ``_bulk_fts_session_guard``'s session-scoped FTS/trigram
-                # delete+reinsert) -- O(sessions touched by this component),
+                # 8.22 GiB FTS text / 5.07M trigram rows, 188s+ writer holds)
+                # was that terminal-pass shape replayed at the wrong scale.
+                # ``bulk_build=False`` (with ``bulk_fts`` still True) keeps
+                # per-session FTS refresh in sync with each session write via
+                # the existing component-scoped writers -- O(sessions touched
+                # by this component),
                 # not O(archive). Receipt validation
                 # (``raw_authority.py``'s postflight snapshot) reads only raw/
                 # session/heads tables, never these derived surfaces, so this
@@ -7213,12 +7141,9 @@ def _repair_raw_materialization(
             execution_outcomes.append(outcome)
             continue
         replay_parts.append(part)
-        # polylogue-qsagp: the archive-wide rebuild_fts_index_sync/
-        # rebuild_command_trigram_index_sync/rebuild_all_action_pairs_sync/
-        # rebuild_all_delegation_facts_sync quartet that used to run here after
-        # every component is gone -- ``backfill_historical_revision_evidence``
-        # above now runs with ``bulk_build=False``, so each session it wrote
-        # already got its own session-scoped derived-surface refresh inline.
+        # The archive-wide FTS rebuild that used to run after every component
+        # is gone. Each session written here receives its scoped FTS refresh
+        # inline.
         current = _raw_materialization_candidate_ids(
             config,
             raw_artifact_id=raw_artifact_id,
@@ -7465,7 +7390,6 @@ def run_archive_cleanup(
     *,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
-    session_ids: tuple[str, ...] | None = None,
 ) -> list[RepairResult]:
     preview_counts = preview_counts or {}
     selected = set(targets) if targets else set(CLEANUP_TARGETS)
@@ -7473,14 +7397,10 @@ def run_archive_cleanup(
     for target_name in CLEANUP_TARGETS:
         if target_name not in selected:
             continue
-        if dry_run and session_ids is None and target_name in preview_counts:
+        if dry_run and target_name in preview_counts:
             results.append(PREVIEW_HANDLERS[target_name](count=preview_counts[target_name]))
             continue
-        repair = REPAIR_HANDLERS[target_name]
-        if target_name == "empty_sessions" and session_ids is not None:
-            results.append(repair(config, dry_run=dry_run, session_ids=session_ids))
-        else:
-            results.append(repair(config, dry_run=dry_run))
+        results.append(REPAIR_HANDLERS[target_name](config, dry_run=dry_run))
     return results
 
 
@@ -7506,30 +7426,9 @@ def run_selected_maintenance(
     if blockers:
         return blockers
     results: list[RepairResult] = []
-    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS) or (
-        SAFE_REPAIR_TARGETS if repair and not targets else ()
-    )
-    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS) or (
-        CLEANUP_TARGETS if cleanup and not targets else ()
-    )
-    effective_filter = scope_filter or MaintenanceScopeFilter()
-    selected_names = (*repair_targets, *cleanup_targets)
-    unsupported_targets: set[str] = set()
-    for target_name in selected_names:
-        unsupported = unsupported_scope_dimensions(effective_filter, target=target_name)
-        if unsupported:
-            unsupported_targets.add(target_name)
-            results.append(
-                _repair_result(
-                    target_name,
-                    repaired_count=0,
-                    success=False,
-                    detail=(f"Unsupported scope dimensions for target {target_name!r}: {', '.join(unsupported)}"),
-                )
-            )
-    repair_targets = tuple(name for name in repair_targets if name not in unsupported_targets)
-    cleanup_targets = tuple(name for name in cleanup_targets if name not in unsupported_targets)
-    if repair and repair_targets:
+    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS)
+    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS)
+    if repair:
         results.extend(
             run_safe_repairs(
                 config,
@@ -7538,18 +7437,12 @@ def run_selected_maintenance(
                 targets=repair_targets,
                 session_insight_progress_callback=session_insight_progress_callback,
                 session_insight_progress_total=session_insight_progress_total,
-                session_ids=effective_filter.session_ids,
+                session_ids=None if scope_filter is None else scope_filter.session_ids,
             )
         )
-    if cleanup and cleanup_targets:
+    if cleanup:
         results.extend(
-            run_archive_cleanup(
-                config,
-                dry_run=dry_run,
-                preview_counts=preview_counts,
-                targets=cleanup_targets,
-                session_ids=effective_filter.session_ids,
-            )
+            run_archive_cleanup(config, dry_run=dry_run, preview_counts=preview_counts, targets=cleanup_targets)
         )
     return results
 

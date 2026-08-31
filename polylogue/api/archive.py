@@ -2752,7 +2752,7 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """
     from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
 
-    # Keep pairing aligned with storage/sqlite/action_pairs.py: rank uses and
+    # Keep pairing aligned with the canonical action_pairs view: rank uses and
     # results independently by (message position, variant index, block
     # position), then join equal ranks for each (session, tool_id). This is
     # intentionally session-wide because providers commonly emit a tool use in

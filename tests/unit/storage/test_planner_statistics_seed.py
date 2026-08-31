@@ -2,10 +2,7 @@
 
 A database without ``sqlite_stat1`` makes the query planner prefer
 low-cardinality equality indexes (``idx_blocks_type_tool``) over
-session-scoped ones for writer-hot maintenance queries: the per-session
-``action_pairs`` refresh then scans the archive's entire ``tool_use``
-population on every session write — O(N^2) over a bulk rebuild, measured live
-at >20x replay slowdown (polylogue-l3tk, 2026-07-19). Bootstrap therefore
+session-scoped ones for writer-hot maintenance queries. Bootstrap therefore
 seeds representative statistics so plans are correct from the first write.
 """
 
@@ -21,16 +18,7 @@ from polylogue.maintenance.rebuild_index import (
     _refresh_generation_planner_statistics,
     _should_refresh_generation_planner_statistics,
 )
-from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
-
-
-def _block_search_plans(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        "EXPLAIN QUERY PLAN " + action_pairs_refresh_sql("?"),
-        ("session", "session", "session"),
-    ).fetchall()
-    return [str(row[3]) for row in rows if "idx_blocks" in str(row[3])]
 
 
 def test_fresh_bootstrap_seeds_planner_statistics(tmp_path: Path) -> None:
@@ -41,19 +29,6 @@ def test_fresh_bootstrap_seeds_planner_statistics(tmp_path: Path) -> None:
             "SELECT count(*) FROM sqlite_stat1 WHERE tbl IN ('blocks', 'messages', 'action_pairs')"
         ).fetchone()[0]
         assert seeded > 0
-    finally:
-        conn.close()
-
-
-def test_fresh_bootstrap_plans_session_scoped_action_pairs_refresh(tmp_path: Path) -> None:
-    """Without seeded stats this exact query planned three full
-    ``idx_blocks_type_tool (block_type=?)`` scans on a fresh database."""
-    conn = sqlite3.connect(tmp_path / "index.db")
-    try:
-        _ensure_schema(conn)
-        plans = _block_search_plans(conn)
-        assert plans, "expected block search steps in the action-pairs refresh plan"
-        assert all("idx_blocks_session_position" in step for step in plans), plans
     finally:
         conn.close()
 
@@ -82,8 +57,8 @@ def test_refresh_generation_planner_statistics_measures_real_tables(tmp_path: Pa
     conn = sqlite3.connect(db_path)
     try:
         measured_tables = {str(row[0]) for row in conn.execute("SELECT DISTINCT tbl FROM sqlite_stat1").fetchall()}
-        assert {"sessions", "messages", "blocks", "session_links", "action_pairs"} <= measured_tables
-        # During bulk replay these stores are intentionally empty until final
+        assert {"sessions", "messages", "blocks", "session_links"} <= measured_tables
+        # During bulk replay FTS stores are intentionally empty until final
         # readiness; sampling their backing tables would only add I/O.
         assert "messages_fts_data" not in measured_tables
         assert "blocks_command_trigram_data" not in measured_tables

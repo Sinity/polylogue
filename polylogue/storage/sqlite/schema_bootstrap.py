@@ -156,10 +156,10 @@ async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
 # ~470K-block index (2026-07-19) and rounded. A freshly bootstrapped database
 # has no sqlite_stat1, and without it the planner prefers low-cardinality
 # equality indexes (idx_blocks_type_tool: ~100K rows/key) over session-scoped
-# ones (idx_blocks_session_position: ~350 rows/key) for writer-hot queries like
-# action_pairs_refresh_sql — turning per-session maintenance into full
-# tool_use-population scans that grow with archive size (O(N^2) over a bulk
-# rebuild; measured >20x replay slowdown before ANALYZE). Seeding stat1 at
+# ones (idx_blocks_session_position: ~350 rows/key) for writer-hot session
+# queries, turning replacements into full tool-use population scans that grow
+# with archive size (O(N^2) over a bulk rebuild; measured >20x replay slowdown
+# before ANALYZE). Seeding stat1 at
 # bootstrap makes plans correct from the first write; later ANALYZE / PRAGMA
 # optimize passes replace these rows with measured values. Only relative
 # magnitudes matter here.
@@ -187,14 +187,7 @@ INSERT OR REPLACE INTO sqlite_stat1(tbl, idx, stat) VALUES
   ('messages', 'idx_messages_active_path', '500000 350 350 1'),
   ('messages', 'idx_messages_active_leaf', '1500 1 1'),
   ('messages', 'sqlite_autoindex_messages_1', '500000 1'),
-  ('messages', 'sqlite_autoindex_messages_2', '500000 350 1 1'),
-  ('action_pairs', 'idx_action_pairs_session_order', '190000 140 1 1'),
-  ('action_pairs', 'idx_action_pairs_message', '190000 1'),
-  ('action_pairs', 'idx_action_pairs_tool', '190000 1600 35 1'),
-  ('action_pairs', 'idx_action_pairs_semantic', '190000 19000 35 1'),
-  ('action_pairs', 'idx_action_pairs_path', '33000 6 3 1'),
-  ('action_pairs', 'idx_action_pairs_outcome', '50000 25000 6000 26 1'),
-  ('action_pairs', 'sqlite_autoindex_action_pairs_1', '190000 1');
+  ('messages', 'sqlite_autoindex_messages_2', '500000 350 1 1');
 ANALYZE sqlite_master;
 """
 
