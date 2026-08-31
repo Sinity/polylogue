@@ -107,6 +107,7 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
@@ -186,6 +187,7 @@ class PendingPreParseRawAdmissionRequest:
     native_id: str | None = None
     raw_id: str | None = None
     blob_publication_receipt_id: str | None = None
+    policy_snapshot: ExcisionPolicySnapshot | None = None
 
 
 RawAdmissionRequest: TypeAlias = PendingPreParseRawAdmissionRequest
@@ -317,6 +319,7 @@ def execute_raw_admission_plan_sync(conn: sqlite3.Connection, plan: RawAdmission
         blob_publication_receipt_id=request.blob_publication_receipt_id,
         revision=plan.revision,
         manage_transaction=True,
+        policy_snapshot=request.policy_snapshot,
     )
     return RawAdmissionResult(arm=plan.arm, raw_id=admitted_raw_id)
 
@@ -423,6 +426,7 @@ def admit_raw_observation(
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     reacquire: Callable[[], bytes | None] | None = None,
     manage_transaction: bool = True,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> RawAdmissionResult:
     """Decide and apply exactly one typed resolution arm for one raw observation.
 
@@ -516,6 +520,7 @@ def admit_raw_observation(
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
         return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=admitted_raw_id)
 
@@ -536,6 +541,7 @@ def admit_raw_observation(
             artifact=artifact,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
 
     if grouped:
@@ -554,6 +560,7 @@ def admit_raw_observation(
             additional_blob_refs=additional_blob_refs,
             revision=None,
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
         return RawAdmissionResult(arm=RawAdmissionArm.SHARED_GROUPED, raw_id=admitted_raw_id)
 
@@ -580,6 +587,7 @@ def admit_raw_observation(
                 authority=RawRevisionAuthority.ASSERTED,
             ),
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
         return RawAdmissionResult(arm=RawAdmissionArm.BASELINE, raw_id=raw_id)
 
@@ -637,6 +645,7 @@ def admit_raw_observation(
                 authority=RawRevisionAuthority.ASSERTED,
             ),
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
         return RawAdmissionResult(
             arm=RawAdmissionArm.APPEND,
@@ -669,6 +678,7 @@ def admit_raw_observation(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
             manage_transaction=manage_transaction,
+            policy_snapshot=policy_snapshot,
         )
         return RawAdmissionResult(
             arm=RawAdmissionArm.SUPERSEDE,
@@ -709,6 +719,7 @@ def admit_raw_observation(
             authority=RawRevisionAuthority.QUARANTINED,
         ),
         manage_transaction=manage_transaction,
+        policy_snapshot=policy_snapshot,
     )
     return RawAdmissionResult(
         arm=RawAdmissionArm.REFUSED_AMBIGUOUS,
@@ -733,6 +744,7 @@ def admit_raw_blob_observation(
     native_id: str | None = None,
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> RawAdmissionResult:
     """Admit a prepublished, memory-bounded raw blob pending post-parse identity."""
     return execute_raw_admission_plan_sync(
@@ -750,6 +762,7 @@ def admit_raw_blob_observation(
                 native_id=native_id,
                 raw_id=raw_id,
                 blob_publication_receipt_id=blob_publication_receipt_id,
+                policy_snapshot=policy_snapshot,
             )
         ),
     )
@@ -769,6 +782,7 @@ def admit_raw_artifact_blob_observation(
     raw_id: str | None = None,
     classification: ArtifactClassification,
     blob_publication_receipt_id: str | None = None,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> RawAdmissionResult:
     """Admit a prepublished non-session artifact with typed authority."""
     if classification.parse_as_session:
@@ -807,6 +821,7 @@ def admit_raw_artifact_blob_observation(
         ),
         revision=None,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
     return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
 
@@ -826,6 +841,7 @@ def _admit_artifact(
     artifact: ArtifactClassification,
     blob_publication_receipt_id: str | None,
     manage_transaction: bool,
+    policy_snapshot: ExcisionPolicySnapshot | None,
 ) -> RawAdmissionResult:
     origin_value = _enum_value(origin)
     artifact_id = artifact_observation_id(
@@ -863,6 +879,7 @@ def _admit_artifact(
             source_index=source_index,
         ),
         manage_transaction=manage_transaction,
+        policy_snapshot=policy_snapshot,
     )
     return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=raw_id, artifact_id=artifact_id)
 

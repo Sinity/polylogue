@@ -56,6 +56,8 @@ async def execute_raw_admission_plan_async(
         if request.capture_mode is not None
         else None
     )
+    if request.policy_snapshot is not None:
+        request.policy_snapshot.assert_admissible(request.blob_hash, source_path=request.source_path)
     # Before coordinate-sensitive raw ids, normal acquisition used the blob
     # hash itself as its raw id.  Reuse that legacy row only when it proves the
     # same coordinate and bytes; a different coordinate must retain the new

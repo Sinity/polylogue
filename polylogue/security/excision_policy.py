@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind
@@ -15,6 +15,13 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 class ExcisionPolicyError(RuntimeError):
     """A candidate or write does not satisfy the durable excision policy."""
+
+
+def _current_schema_identity() -> str:
+    return ";".join(
+        f"{tier.value}:{archive_tier_spec(tier).version}"
+        for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +39,7 @@ class ExcisionPolicySnapshot:
     audit_head: str
     source_generation_id: str | None
     code_identity: str = "polylogue.excision-policy.v1"
-    schema_identity: str = "source:39;user:11;audit:2"
+    schema_identity: str = field(default_factory=_current_schema_identity)
 
     def __post_init__(self) -> None:
         if any(len(value) != 32 for value in self.removed_hashes):

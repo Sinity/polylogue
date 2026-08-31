@@ -14,7 +14,7 @@ from enum import StrEnum
 
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
-from polylogue.security.excision_policy import ExcisionPolicySnapshot, read_excision_policy_projection
+from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 from .common import require_vocabulary
 from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
@@ -137,9 +137,6 @@ def publish_source_generation(
                 observed_at_ms,
             ),
         )
-        # Exercise the same production read path that validates a generation
-        # binding after projection replacement.
-        read_excision_policy_projection(conn, source_generation_id)
     record_source_attachments(
         conn,
         source_generation_id=source_generation_id,
