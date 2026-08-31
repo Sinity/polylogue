@@ -686,65 +686,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
-        name="mutate-reset-raw-authority-census",
-        kind=OperationKind.MAINTENANCE,
-        description=(
-            "Last-resort reset of poisoned raw-authority census bookkeeping. The route is dry-run first, "
-            "requires an exact source-tier backup-attested plan and explicit offline operator-maintenance ownership "
-            "with the daemon stopped, "
-            "and never touches parser census, accepted raws, or blobs. Fresh applies run through OperationExecutor; "
-            "only a durable already-authorized intent may resume receipt finalization offline."
-        ),
-        surfaces=("cli",),
-        mutates_state=True,
-        previewable=True,
-        idempotent=True,
-        effects=("DbRead", "DbWrite", "Destructive"),
-        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
-        executor_status="executor-routed",
-        allowed_surfaces=("maintenance",),
-        target_authority=(
-            TargetAuthorityPolicy(
-                key="raw-authority-recovery-source",
-                target_kinds=("source",),
-                required_capabilities=("archive.raw_authority_recovery",),
-                destructive_class="reset",
-                required_confirmation="bound_token",
-                allowed_durabilities=("durable",),
-                allowed_recovery=("none",),
-            ),
-        ),
-    ),
-    OperationSpec(
-        name="mutate-prune-orphaned-index-revision-seeds",
-        kind=OperationKind.MAINTENANCE,
-        description=(
-            "Remove only active-index raw revision seed rows whose source raws are absent. The route binds "
-            "the exact active generation, source snapshot, recoverable index backup, and stopped-daemon "
-            "offline operator-maintenance ownership; it never performs a broad index reset. Fresh applies run through "
-            "OperationExecutor; only a durable already-authorized intent may resume receipt finalization offline."
-        ),
-        surfaces=("cli",),
-        mutates_state=True,
-        previewable=True,
-        idempotent=True,
-        effects=("DbRead", "DbWrite", "Destructive"),
-        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
-        executor_status="executor-routed",
-        allowed_surfaces=("maintenance",),
-        target_authority=(
-            TargetAuthorityPolicy(
-                key="raw-authority-recovery-index",
-                target_kinds=("index",),
-                required_capabilities=("archive.raw_authority_recovery",),
-                destructive_class="reset",
-                required_confirmation="bound_token",
-                allowed_durabilities=("derived",),
-                allowed_recovery=("none",),
-            ),
-        ),
-    ),
-    OperationSpec(
         name="mutate-save-saved-view",
         kind=OperationKind.MAINTENANCE,
         description=(

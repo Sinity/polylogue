@@ -847,6 +847,23 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
     }
 
 
+def test_public_cohort_classification_commits_source_authority_before_return(tmp_path: Path) -> None:
+    """The public classification route makes its source transaction visible."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = _write_chain_full(archive, "transaction-owner", 0)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        assert plan.accepted_raw_ids == (baseline,)
+
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            authority = source.execute(
+                "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?",
+                (baseline,),
+            ).fetchone()
+
+    assert authority == (RawRevisionAuthority.BYTE_PROVEN.value,)
+
+
 def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acquired_at_ms: int) -> str:
     written_id = archive.write_raw_payload(
         provider=Provider.CODEX,

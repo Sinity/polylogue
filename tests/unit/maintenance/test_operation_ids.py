@@ -8,11 +8,6 @@ import pytest
 from polylogue.config import Config
 from polylogue.daemon.maintenance_registry_http import handle_status
 from polylogue.maintenance.operation_ids import validate_operation_id
-from polylogue.maintenance.raw_authority_recovery import (
-    RawAuthorityRecoveryError,
-    RawAuthorityRecoveryOperation,
-    inspect_raw_authority_recovery,
-)
 from polylogue.maintenance.registry import MaintenanceOperationRegistry
 
 
@@ -23,7 +18,7 @@ def test_validate_operation_id_rejects_untrusted_values(value: object) -> None:
 
 
 def test_validate_operation_id_preserves_opaque_ids() -> None:
-    assert validate_operation_id("raw-authority-recovery:abc-123") == "raw-authority-recovery:abc-123"
+    assert validate_operation_id("operation:abc-123") == "operation:abc-123"
 
 
 def test_validate_operation_id_rejects_none_generation_sentinel() -> None:
@@ -36,15 +31,6 @@ def test_registry_rejects_hostile_id_before_path_lookup(tmp_path: Path) -> None:
     registry = MaintenanceOperationRegistry(config=config)
     with pytest.raises(ValueError):
         registry.get_operation("../escape")
-
-
-def test_raw_recovery_rejects_hostile_id_before_archive_access(tmp_path: Path) -> None:
-    with pytest.raises(RawAuthorityRecoveryError, match="path separators"):
-        inspect_raw_authority_recovery(
-            tmp_path / "missing-archive",
-            RawAuthorityRecoveryOperation.RESET_CENSUS,
-            operation_id="../escape",
-        )
 
 
 def test_daemon_status_rejects_url_decoded_hostile_id() -> None:

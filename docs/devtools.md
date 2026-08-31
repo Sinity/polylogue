@@ -118,38 +118,6 @@ These are the commands worth remembering during normal repo work:
 
 Pattern baselines use `path:sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
 
-## Cursor-authority reconciliation
-
-`polylogue ops maintenance cursor-authority-reconcile` is a dry-run-by-default
-repair route for exactly one proven cursor-ahead source. It reads the
-configured `POLYLOGUE_ARCHIVE_ROOT` (using its resolved archive root), requires the daemon to be stopped, and
-writes a plan containing path and raw identifiers only as digests. Apply
-requires that immutable plan, a freshly verified `full_evidence` backup
-manifest with blob rollback evidence, and a new receipt path. The apply route
-uses the normal live full-ingest/replay path under one single-use exact path
-and frontier authorization. Receipts distinguish a performed ingest from an
-observed recovery, leave cursor row counts null when the before/after state did
-not prove them, and record typed deferred or failed post-ingest evidence. It
-never accepts a global cursor bypass or writes `ingest_cursor` or accepted-head
-rows directly.
-
-The dry-run form is:
-
-```text
-polylogue ops maintenance cursor-authority-reconcile \
-  --source-path-file /private/path-file \
-  --output-plan /private/reconciliation-plan.json
-```
-
-The apply form is:
-
-```text
-polylogue ops maintenance cursor-authority-reconcile --apply \
-  --plan /private/reconciliation-plan.json \
-  --backup-manifest /private/full-evidence-backup \
-  --receipt /private/reconciliation-receipt.json
-```
-
 ## Validation and Evidence
 
 When changing semantics, validation, or surfaces:

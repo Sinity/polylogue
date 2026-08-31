@@ -25,9 +25,8 @@ whose recomputed id matches its own ``ref_id`` exactly is provably the blob
 for that hook event; anything else (no match, or more than one candidate
 matching) is left alone rather than guessed at.
 
-Read-only: only ``polylogue.maintenance.hook_payload_ref_reconciliation_apply``
-mutates the archive, and only for the confirmed, non-ambiguous matches this
-module reports.
+Read-only matching and staging primitives used by current blob publication and
+liveness checks. This module does not expose a source-tier mutation route.
 """
 
 from __future__ import annotations

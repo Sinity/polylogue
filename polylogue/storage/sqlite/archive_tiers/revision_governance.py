@@ -1232,8 +1232,6 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
 def classify_raw_revision_cohort_for_rebuild_repair(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
-    *,
-    manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the offline rebuild/backfill repair path.
 
@@ -1249,21 +1247,28 @@ def classify_raw_revision_cohort_for_rebuild_repair(
     watcher -- see ``classify_raw_revision_cohort_for_live_watch`` for why
     the same guard is unsound there.
 
-    ``manage_transaction=False`` (polylogue batched-rebuild path) leaves the
-    classification's ``raw_sessions`` authority updates uncommitted in the
-    caller's open batch window instead of committing per cohort. This is
-    safe under the same contract as the census batching: classification is
-    derived purely from durable raw bytes and re-derives identically on a
-    resumed pass, so a crash that discards an uncommitted batch loses no
-    authority evidence -- the resume re-classifies the same cohorts from
-    scratch. The follow-up ``raw_revision_replay_plan`` read runs on the
-    SAME source connection and sees the uncommitted updates.
+    This entry point owns the source transaction. Batch rebuilds use the
+    explicitly caller-owned ``*_in_transaction`` variant below.
     """
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
         check_source_path_identity_split=True,
-        manage_transaction=manage_transaction,
+        manage_transaction=True,
+        source_effects=True,
+    )
+
+
+def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+) -> RevisionReplayPlan:
+    """Classify one rebuild cohort inside the caller's open source transaction."""
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        manage_transaction=False,
         source_effects=True,
     )
 
@@ -1285,8 +1290,6 @@ def classify_raw_revision_cohort_for_frozen_candidate(
 def classify_raw_revision_cohort_for_live_watch(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
-    *,
-    manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the live incremental-watch path.
 
@@ -1300,14 +1303,28 @@ def classify_raw_revision_cohort_for_live_watch(
     et al.). Applying the rebuild-repair guard here would wrongly quarantine
     that legitimate replacement as "divergent evidence".
 
-    See ``classify_raw_revision_cohort_for_rebuild_repair`` for the
-    ``manage_transaction`` contract.
+    This entry point owns the source transaction. A caller that already owns
+    the transaction uses the explicitly named ``*_in_transaction`` variant.
     """
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
         check_source_path_identity_split=False,
-        manage_transaction=manage_transaction,
+        manage_transaction=True,
+        source_effects=True,
+    )
+
+
+def classify_raw_revision_cohort_for_live_watch_in_transaction(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+) -> RevisionReplayPlan:
+    """Classify one live-watch cohort inside the caller's open transaction."""
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=False,
+        manage_transaction=False,
         source_effects=True,
     )
 

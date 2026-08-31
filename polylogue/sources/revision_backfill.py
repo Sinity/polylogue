@@ -2433,13 +2433,10 @@ def backfill_historical_revision_evidence(
                 plan = (
                     archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
                     if owned_inactive_generation is not None
-                    else archive.classify_raw_revision_cohort_for_rebuild_repair(
-                        logical_key,
-                        # Batched replay defers the classification's source.db
-                        # authority updates into the same batch window as the replay
-                        # writes (idempotent, re-derived on resume -- see
-                        # classify_raw_revision_cohort_for_rebuild_repair's docstring).
-                        manage_transaction=not replay_batched,
+                    else (
+                        archive.classify_raw_revision_cohort_for_rebuild_repair_in_transaction(logical_key)
+                        if replay_batched
+                        else archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
                     )
                 )
                 stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (

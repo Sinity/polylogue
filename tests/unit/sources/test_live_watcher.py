@@ -27,6 +27,7 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.core.enums import Provider
 from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -47,6 +48,7 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -344,9 +346,7 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
-    from polylogue.maintenance import cursor_authority_reconcile as reconcile
-    from polylogue.maintenance.cursor_authority_reconcile import cursor_authority_path_digest
-    from polylogue.sources.live.batch import scoped_cursor_authority_authorization
+    from polylogue.sources.live.batch import cursor_authority_path_digest, scoped_cursor_authority_authorization
 
     processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
     shadow_index = tmp_path / "index.db"
@@ -354,7 +354,10 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     active_index.parent.mkdir(parents=True)
     shutil.copy2(shadow_index, active_index)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-    projection = reconcile._projection_for(tmp_path)
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        raw_materialization_readiness_snapshot(tmp_path),
+    )
     sample = projection.cursor_ahead_samples[0]
     shadow_before = shadow_index.read_bytes()
     active_before = active_index.read_bytes()
