@@ -18,6 +18,7 @@ import pytest
 
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
+from polylogue.core.evidence_value import refine_evidence_value
 from polylogue.storage.usage import (
     SESSION_USAGE_RECONCILED_COST_FAMILY,
     SESSION_USAGE_RECONCILED_TOKENS_FAMILY,
@@ -199,6 +200,17 @@ def test_live_claude_row_prefers_current_catalog_price(
     assert reconciled.conflicts == ()
     assert [observation.value for observation in reconciliation.superseded_cost_observations()] == [22.946558]
     SESSION_USAGE_RECONCILED_COST_FAMILY.require(reconciled)
+
+    # The winner is determined by the declared authority order, not by the
+    # order in which the two observations reach the resolver.
+    reversed_inputs = refine_evidence_value(
+        reconciliation.legacy_cost_evidence,
+        reconciliation.catalog_cost_evidence,
+        spec=SESSION_USAGE_RECONCILED_COST_FAMILY,
+    )
+    assert reversed_inputs.value_state == "known"
+    assert reversed_inputs.value == 7.648853
+    assert reversed_inputs.conflicts == ()
 
 
 def test_multi_model_reprice_keeps_each_model_rate() -> None:
