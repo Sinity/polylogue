@@ -2169,6 +2169,37 @@ def test_archive_coverage_averages_render_none_not_zero_over_empty_denominator(t
     assert day_row.thinking_percentage is None
 
 
+def test_archive_coverage_origin_group_includes_model_usage_cost(tmp_path: Path) -> None:
+    """Origin coverage reports the stored session model usage cost."""
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="priced-origin-coverage",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                model_name="priced-model",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced coverage")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+        facade._conn.execute(
+            "UPDATE session_model_usage SET cost_usd = ?, cost_provenance = 'priced' WHERE session_id = ?",
+            (1.25, session_id),
+        )
+        facade._conn.commit()
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.list_archive_coverage_insights(group_by="origin")
+
+    assert len(rows) == 1
+    assert rows[0].total_cost_usd == pytest.approx(1.25)
+
+
 def test_list_archive_debt_insights_correct_while_main_connection_holds_transaction(tmp_path: Path) -> None:
     """Cross-tier debt reads use their own connection, not the long-lived one.
 
