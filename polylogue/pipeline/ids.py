@@ -60,7 +60,6 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "message_type",
             "material_origin",
             "parent_message_provider_id",
-            "position",
             "branch_index",
             "variant_index",
             "is_active_path",
@@ -115,6 +114,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedMessage": {
         "parent_message_position": "parser-only linkage resolved to the stored parent identity",
         "owner_coordinate": "parser-only ownership evidence resolved before storage",
+        "position": "parser-only occurrence coordinate used for ordering and owner resolution",
         "input_tokens": "provider usage measurement is owned by usage/cost derivation",
         "output_tokens": "provider usage measurement is owned by usage/cost derivation",
         "cache_read_tokens": "provider usage measurement is owned by usage/cost derivation",
@@ -151,6 +151,20 @@ def validate_semantic_hash_partition() -> None:
                 f"{name} semantic hash partition drift: missing={sorted(fields - hashed - excluded)}, "
                 f"duplicate={sorted(hashed & excluded)}, stale={sorted((hashed | excluded) - fields)}"
             )
+
+
+def _hash_field_value(value: object) -> JSONValue:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    elif isinstance(value, list):
+        value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
+    if isinstance(value, Mapping):
+        value = dict(value)
+    return cast(JSONValue, _normalize_nested_for_hash(value))
+
+
+def _model_hash_payload(model: object, fields: frozenset[str]) -> dict[str, JSONValue]:
+    return {field: _hash_field_value(getattr(model, field)) for field in sorted(fields)}
 
 
 # Sentinel values to distinguish None from empty in hash computations
@@ -330,17 +344,7 @@ def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     """Build the declared semantic payload for a single content block."""
     validate_semantic_hash_partition()
-    payload: dict[str, JSONValue] = {}
-    for field in sorted(_HASHED_FIELDS["ParsedContentBlock"]):
-        value = getattr(block, field)
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
-        elif isinstance(value, list):
-            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
-        if isinstance(value, Mapping):
-            value = dict(value)
-        payload[field] = cast(JSONValue, _normalize_nested_for_hash(value))
-    return payload
+    return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"])
 
 
 def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
@@ -378,15 +382,7 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 def _message_comparison_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     """Build the declared semantic payload that distinguishes a message."""
     validate_semantic_hash_partition()
-    payload: dict[str, JSONValue] = {}
-    for field in sorted(_HASHED_FIELDS["ParsedMessage"] - {"blocks", "provider_message_id"}):
-        value = getattr(message, field)
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
-        elif isinstance(value, list):
-            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
-        payload[field] = cast(JSONValue, _normalize_nested_for_hash(value))
-    payload["provider_message_id"] = _normalize_for_hash(message.provider_message_id)
+    payload = _model_hash_payload(message, _HASHED_FIELDS["ParsedMessage"] - {"blocks", "provider_message_id"})
     if message.blocks and not _is_redundant_text_only_block(message):
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
     else:
@@ -929,14 +925,9 @@ def _session_tree_hash(
     attachments_payload: list[dict[str, JSONValue]],
     session_events_payload: list[dict[str, JSONValue]],
 ) -> str:
-    session_fields: dict[str, object] = {}
-    for field in sorted(_HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}):
-        value = getattr(convo, field)
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
-        elif isinstance(value, list):
-            value = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in value]
-        session_fields[field] = _normalize_nested_for_hash(value)
+    session_fields = _model_hash_payload(
+        convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+    )
     return hash_payload(
         _session_hash_payload(
             title=convo.title,
