@@ -23,6 +23,7 @@ from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.usage import session_usage_costs_for_connection
 
 
 def _make_archive(tmp_path: Path) -> sqlite3.Connection:
@@ -169,6 +170,24 @@ class TestTokenAggregation:
 
 
 class TestCostUsdComputation:
+    def test_provider_and_catalog_costs_remain_distinct_and_provider_wins(self, tmp_path: Path) -> None:
+        conn = _make_archive(tmp_path)
+        with conn:
+            write_parsed_session_to_archive(
+                conn,
+                _session(
+                    messages=[_msg(provider_message_id="m1", model_name="claude-sonnet-4-5", input_tokens=1_000_000)],
+                    reported_cost_usd=7.0,
+                ),
+            )
+            row = conn.execute("SELECT provider_cost_usd, catalog_cost_usd FROM session_model_usage").fetchone()
+        assert row is not None
+        assert row["provider_cost_usd"] == pytest.approx(7.0)
+        assert row["catalog_cost_usd"] == pytest.approx(3.0)
+        assert session_usage_costs_for_connection(conn, ["claude-code-session:test-session-1"])[
+            "claude-code-session:test-session-1"
+        ].provider_reported_usd == pytest.approx(7.0)
+
     def test_cost_usd_matches_estimate_cost_for_known_model(self, tmp_path: Path) -> None:
         conn = _make_archive(tmp_path)
         messages = [
@@ -182,10 +201,12 @@ class TestCostUsdComputation:
         with conn:
             write_parsed_session_to_archive(conn, _session(messages=messages))
 
-        row = conn.execute("SELECT cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'").fetchone()
+        row = conn.execute(
+            "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
+        ).fetchone()
         assert row is not None
         expected = estimate_cost(1_000_000, 1_000_000, "claude-sonnet-4-5")
-        assert row["cost_usd"] == pytest.approx(expected, rel=1e-9)
+        assert row["catalog_cost_usd"] == pytest.approx(expected, rel=1e-9)
         conn.close()
 
     def test_unknown_model_gets_null_cost(self, tmp_path: Path) -> None:
@@ -202,10 +223,10 @@ class TestCostUsdComputation:
             write_parsed_session_to_archive(conn, _session(messages=messages))
 
         row = conn.execute(
-            "SELECT cost_usd FROM session_model_usage WHERE model_name = 'some-future-model-xyz-not-in-catalog'"
+            "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'some-future-model-xyz-not-in-catalog'"
         ).fetchone()
         assert row is not None
-        assert row["cost_usd"] is None
+        assert row["catalog_cost_usd"] is None
         conn.close()
 
     def test_cost_usd_uses_cache_tokens_when_present(self, tmp_path: Path) -> None:
@@ -223,10 +244,12 @@ class TestCostUsdComputation:
         with conn:
             write_parsed_session_to_archive(conn, _session(messages=messages))
 
-        row = conn.execute("SELECT cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'").fetchone()
+        row = conn.execute(
+            "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
+        ).fetchone()
         expected = estimate_cost(0, 0, "claude-sonnet-4-5", 1_000_000, 1_000_000)
         assert row is not None
-        assert row["cost_usd"] == pytest.approx(expected, rel=1e-9)
+        assert row["catalog_cost_usd"] == pytest.approx(expected, rel=1e-9)
         conn.close()
 
     def test_zero_token_model_gets_null_cost(self, tmp_path: Path) -> None:
@@ -243,10 +266,12 @@ class TestCostUsdComputation:
         with conn:
             write_parsed_session_to_archive(conn, session)
 
-        row = conn.execute("SELECT cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'").fetchone()
+        row = conn.execute(
+            "SELECT catalog_cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
+        ).fetchone()
         assert row is not None
         # No messages → no token aggregation → cost_usd stays NULL
-        assert row["cost_usd"] is None
+        assert row["catalog_cost_usd"] is None
         conn.close()
 
 

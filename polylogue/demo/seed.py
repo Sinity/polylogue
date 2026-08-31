@@ -1560,7 +1560,7 @@ def _demo_usage_has_settled(archive_root: Path) -> bool:
     try:
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd) AS total_cost_usd
+            SELECT COALESCE(SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd
             FROM sessions AS s
             LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
             WHERE s.session_id = ?

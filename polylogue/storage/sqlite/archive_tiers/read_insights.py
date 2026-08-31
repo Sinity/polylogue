@@ -442,7 +442,7 @@ class ArchiveReadInsights:
                 COUNT(DISTINCT COALESCE(s.root_session_id, s.session_id)) AS logical_session_count,
                 SUM(s.message_count) AS message_count,
                 SUM(s.word_count) AS total_words,
-                SUM(COALESCE((SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd)
+                SUM(COALESCE((SELECT COALESCE(SUM(u.catalog_cost_usd), s.reported_cost_usd)
                               FROM session_model_usage u WHERE u.session_id = s.session_id), 0.0)) AS total_cost_usd,
                 SUM(COALESCE(sp.total_duration_ms, 0)) AS total_duration_ms,
                 SUM(COALESCE(sp.wall_duration_ms, 0)) AS total_wall_duration_ms,

@@ -99,6 +99,26 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
+
+@dataclass(frozen=True)
+class CatalogCost:
+    value: float
+
+
+@dataclass(frozen=True)
+class ProviderCost:
+    value: float
+
+
+def _write_provider_cost(conn: sqlite3.Connection, session_id: str, model_name: str, cost: ProviderCost) -> None:
+    """Pass through a provider dollar value without catalog computation."""
+    conn.execute(
+        """UPDATE session_model_usage SET provider_cost_usd = ?
+           WHERE session_id = ? AND model_name = ?""",
+        (cost.value, session_id, model_name),
+    )
+
+
 logger = get_logger(__name__)
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
@@ -5494,8 +5514,7 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
             output_tokens = 0,
             cache_read_tokens = 0,
             cache_write_tokens = 0,
-            cost_usd = NULL,
-            cost_provenance = NULL
+            catalog_cost_usd = NULL
         WHERE session_id = ?
           AND model_name != ?
           AND NOT EXISTS (
@@ -5522,26 +5541,11 @@ def _price_provider_usage_tokens(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
-) -> tuple[str | None, float | None]:
+) -> CatalogCost | None:
     """Catalog-price disjoint-lane token totals for a provider-usage rollup row.
 
-    Returns ``(cost_provenance, cost_usd)``. Mirrors
-    ``_aggregate_message_tokens_into_model_usage``'s pricing (same catalog,
-    same "no fabrication" contract): a catalog hit with billable tokens > 0
-    yields ``'priced'`` plus a real ``cost_usd``; anything else -- unknown
-    model, no catalog entry, zero billable tokens -- yields
-    ``cost_provenance = None`` (no claim), never a 'priced'/'origin_reported'
-    label with a NULL cost (polylogue-shnc: 5,016 rows previously asserted
-    ``cost_provenance = 'priced'`` with NULL cost and NULL catalog).
-
-    ``cost_provenance`` is deliberately NOT ``'origin_reported'`` here: that
-    label is reserved for a genuine provider-reported DOLLAR total
-    (``sessions.reported_cost_usd``, polylogue-gt1z) -- these rows carry
-    provider-reported TOKEN counts priced against the catalog, which is a
-    different evidentiary claim. Conflating the two previously made
-    ``list_cost_rollup_insights`` read a catalog estimate as if OpenAI itself
-    had reported that dollar figure (``archive.py``'s
-    ``provider_reported_usd=... if provenance in {"exact","origin_reported"}``).
+    Return a catalog-computed cost. Provider-reported dollars use a separate
+    ``ProviderCost`` write path and can never enter this function.
     """
     from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
 
@@ -5549,17 +5553,17 @@ def _price_provider_usage_tokens(
     billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
     pricing = PRICING.get(normalized)
     if pricing is None or billable <= 0:
-        return None, None
+        return None
     # A zero cache rate is also the catalog's sentinel for an omitted rate.
     # Do not persist a complete-looking cost for a paid model while silently
     # assigning its cached lanes a zero price.
     if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
         if cache_read_tokens and pricing.cache_read_usd_per_1m == 0.0:
-            return None, None
+            return None
         if cache_write_tokens and pricing.cache_write_usd_per_1m == 0.0:
-            return None, None
+            return None
     cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
-    return "priced", cost_usd
+    return CatalogCost(cost_usd)
 
 
 def _upsert_provider_usage_model_rollup(
@@ -5576,7 +5580,7 @@ def _upsert_provider_usage_model_rollup(
     output_tokens = max(int(output_tokens), 0)
     cache_read_tokens = max(int(cache_read_tokens), 0)
     cache_write_tokens = max(int(cache_write_tokens), 0)
-    cost_provenance, cost_usd = _price_provider_usage_tokens(
+    catalog_cost = _price_provider_usage_tokens(
         conn,
         model_name,
         input_tokens=input_tokens,
@@ -5589,15 +5593,14 @@ def _upsert_provider_usage_model_rollup(
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance, cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            catalog_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
-            cost_provenance    = excluded.cost_provenance,
-            cost_usd           = excluded.cost_usd
+            catalog_cost_usd   = excluded.catalog_cost_usd
         """,
         (
             session_id,
@@ -5606,8 +5609,7 @@ def _upsert_provider_usage_model_rollup(
             output_tokens,
             cache_read_tokens,
             cache_write_tokens,
-            cost_provenance,
-            cost_usd,
+            None if catalog_cost is None else catalog_cost.value,
         ),
     )
 
@@ -5638,7 +5640,7 @@ def _increment_provider_usage_model_rollup(
     total_output = int((existing[1] if existing else 0) or 0) + output_tokens
     total_cache_read = int((existing[2] if existing else 0) or 0) + cache_read_tokens
     total_cache_write = int((existing[3] if existing else 0) or 0) + cache_write_tokens
-    cost_provenance, cost_usd = _price_provider_usage_tokens(
+    catalog_cost = _price_provider_usage_tokens(
         conn,
         model_name,
         input_tokens=total_input,
@@ -5651,15 +5653,14 @@ def _increment_provider_usage_model_rollup(
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance, cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            catalog_cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
-            cost_provenance    = excluded.cost_provenance,
-            cost_usd           = excluded.cost_usd
+            catalog_cost_usd   = excluded.catalog_cost_usd
         """,
         (
             session_id,
@@ -5668,8 +5669,7 @@ def _increment_provider_usage_model_rollup(
             total_output,
             total_cache_read,
             total_cache_write,
-            cost_provenance,
-            cost_usd,
+            None if catalog_cost is None else catalog_cost.value,
         ),
     )
 
@@ -5718,19 +5718,26 @@ def _seed_session_model_usage_rows(
     model_usage_sql = (
         """
         INSERT OR REPLACE INTO session_model_usage (
-            session_id, model_name, cost_provenance
-        ) VALUES (?, ?, NULL)
+            session_id, model_name
+        ) VALUES (?, ?)
         """
         if replace_existing_model_rows
         else """
         INSERT INTO session_model_usage (
-            session_id, model_name, cost_provenance
-        ) VALUES (?, ?, NULL)
+            session_id, model_name
+        ) VALUES (?, ?)
         ON CONFLICT(session_id, model_name) DO NOTHING
         """
     )
     for model_name in sorted(model_names):
         conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
+    if session.reported_cost_usd is not None and len(model_names) == 1:
+        _write_provider_cost(
+            conn,
+            session_id,
+            next(iter(model_names)),
+            ProviderCost(session.reported_cost_usd),
+        )
     if aggregate_message_tokens:
         _aggregate_message_tokens_into_model_usage(conn, session_id)
 
@@ -5794,7 +5801,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         sum_cache_write: int = int(row[4] or 0)
         msg_count: int = int(row[5] or 0)
 
-        # Compute cost_usd from the curated catalog when a price entry exists.
+        # Compute catalog_cost_usd from the curated catalog when a price entry exists.
         # estimate_cost() reads the in-memory PRICING dict directly -- there
         # is no DB-backed rate mirror to keep in sync (polylogue-v2mg dropped
         # model_prices, and polylogue-resk dropped the price_catalogs
@@ -5802,15 +5809,15 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         normalized = _normalize_model(model_name)
         billable = sum_input + sum_output + sum_cache_read + sum_cache_write
         if normalized in PRICING and billable > 0:
-            cost_usd: float | None = estimate_cost(sum_input, sum_output, model_name, sum_cache_read, sum_cache_write)
-            row_provenance: str | None = "priced"
+            catalog_cost_usd: float | None = estimate_cost(
+                sum_input, sum_output, model_name, sum_cache_read, sum_cache_write
+            )
         else:
             # polylogue-shnc: no catalog price (or no billable tokens) means no
             # claim at all -- NOT 'priced' with a NULL cost_usd, which is the
             # exact self-contradiction the forensic audit found on 5,016 live
             # rows.
-            cost_usd = None
-            row_provenance = None
+            catalog_cost_usd = None
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
@@ -5823,17 +5830,15 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 session_id, model_name,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 message_count,
-                cost_usd,
-                cost_provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                catalog_cost_usd
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, model_name) DO UPDATE SET
                 input_tokens       = excluded.input_tokens,
                 output_tokens      = excluded.output_tokens,
                 cache_read_tokens  = excluded.cache_read_tokens,
                 cache_write_tokens = excluded.cache_write_tokens,
                 message_count      = excluded.message_count,
-                cost_usd           = excluded.cost_usd,
-                cost_provenance    = excluded.cost_provenance
+                catalog_cost_usd    = excluded.catalog_cost_usd
             WHERE (
                 COALESCE(session_model_usage.input_tokens, 0)
                 + COALESCE(session_model_usage.output_tokens, 0)
@@ -5849,8 +5854,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 sum_cache_read,
                 sum_cache_write,
                 msg_count,
-                cost_usd,
-                row_provenance,
+                catalog_cost_usd,
             ),
         )
 

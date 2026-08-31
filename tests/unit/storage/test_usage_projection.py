@@ -97,7 +97,7 @@ def test_paid_model_with_missing_cache_rate_is_not_persisted_as_priced(
     from polylogue.storage.sqlite.archive_tiers.write import _price_provider_usage_tokens
 
     conn = sqlite3.connect(":memory:")
-    provenance, cost = _price_provider_usage_tokens(
+    catalog_cost = _price_provider_usage_tokens(
         conn,
         "paid-without-cache-rate",
         input_tokens=100,
@@ -106,8 +106,7 @@ def test_paid_model_with_missing_cache_rate_is_not_persisted_as_priced(
         cache_write_tokens=0,
     )
     conn.close()
-    assert provenance is None
-    assert cost is None
+    assert catalog_cost is None
 
 
 def test_projection_rejects_paid_model_with_missing_cache_write_rate(
