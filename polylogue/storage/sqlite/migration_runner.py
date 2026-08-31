@@ -27,6 +27,7 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _LOGGER = logging.getLogger(__name__)
@@ -2147,7 +2148,10 @@ def prove_durable_fresh_ddl_parity(
     migrated_by_ref = {item.object_ref: item for item in migrated.objects}
     fresh_by_ref = {item.object_ref: item for item in fresh.objects}
     missing = tuple(sorted(set(fresh_by_ref) - set(migrated_by_ref)))
-    unexpected = tuple(sorted(set(migrated_by_ref) - set(fresh_by_ref)))
+    retired_extras = (set(migrated_by_ref) - set(fresh_by_ref)) & _retired_schema_objects_for_parity(tier)
+    unexpected = tuple(sorted((set(migrated_by_ref) - set(fresh_by_ref)) - retired_extras))
+    parity_migrated_objects = tuple(item for item in migrated.objects if item.object_ref not in retired_extras)
+    parity_migrated = _schema_inventory_from_objects(parity_migrated_objects)
     changed = tuple(
         sorted(
             object_ref
@@ -2161,14 +2165,14 @@ def prove_durable_fresh_ddl_parity(
         and not missing
         and not unexpected
         and not changed
-        and migrated.sha256 == fresh.sha256
+        and parity_migrated.sha256 == fresh.sha256
     )
     return DurableFreshDDLParityProof(
         tier=tier,
         target_version=target_version,
         migrated_version=migrated_version,
         fresh_version=fresh_version,
-        migrated_inventory_sha256=migrated.sha256,
+        migrated_inventory_sha256=parity_migrated.sha256,
         fresh_inventory_sha256=fresh.sha256,
         missing_objects=missing,
         unexpected_objects=unexpected,
@@ -2176,6 +2180,24 @@ def prove_durable_fresh_ddl_parity(
         evidence_ref=evidence,
         matches=matches,
     )
+
+
+def _retired_schema_objects_for_parity(tier: ArchiveTier) -> frozenset[str]:
+    """Return migrated-only objects explicitly retired from fresh DDL."""
+    return RETIRED_SOURCE_SCHEMA_OBJECTS if tier is ArchiveTier.SOURCE else frozenset()
+
+
+def _schema_inventory_from_objects(objects: tuple[DurableSchemaObjectEvidence, ...]) -> DurableSchemaInventory:
+    payload = [
+        {
+            "object_type": item.object_type,
+            "name": item.name,
+            "table_name": item.table_name,
+            "definition_sha256": item.definition_sha256,
+        }
+        for item in objects
+    ]
+    return DurableSchemaInventory(objects=objects, sha256=_canonical_json_sha256(payload))
 
 
 def _durable_table_counts(conn: sqlite3.Connection) -> tuple[tuple[str, int], ...]:

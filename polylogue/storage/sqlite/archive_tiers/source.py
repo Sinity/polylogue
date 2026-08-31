@@ -6,11 +6,26 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
+from typing import Final
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 SOURCE_SCHEMA_VERSION = 40
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
+# These objects may remain in a migrated historical source tier. Fresh source
+# generations omit them, and parity excludes only this explicit retired set.
+RETIRED_SOURCE_SCHEMA_OBJECTS: Final[frozenset[str]] = frozenset(
+    {
+        "table:raw_authority_artifact_census_receipts",
+        "index:idx_raw_authority_artifact_census_receipts_applied_at",
+        "table:raw_authority_artifact_census_checkpoints",
+        "table:raw_authority_artifact_census_checkpoint_members",
+        "index:idx_raw_authority_artifact_census_checkpoint_members_page",
+        "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete",
+        "index:idx_raw_sessions_raw_authority_census_candidates",
+    }
+)
+
 # ddl-lifecycle-waiver: version DROP TABLE artifact-census schema objects are
 # omitted from fresh source generations; frozen historical databases remain
 # readable and are not migrated by this change.
@@ -1024,4 +1039,4 @@ INSERT OR IGNORE INTO audit_continuity_control(
 
 """
 
-__all__ = ["SOURCE_DDL", "SOURCE_SCHEMA_VERSION"]
+__all__ = ["RETIRED_SOURCE_SCHEMA_OBJECTS", "SOURCE_DDL", "SOURCE_SCHEMA_VERSION"]
