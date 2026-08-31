@@ -67,6 +67,25 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             generation_id=generation_id,
             lifecycle_action=lifecycle_action,
         )
+    if snapshot.current_version == SCHEMA_VERSION:
+        missing_error: sqlite3.Error | None
+        try:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
+        except sqlite3.Error as exc:
+            columns = set()
+            missing_error = exc
+        else:
+            missing_error = None
+        if missing_error is not None or "reported_cost_usd" not in columns:
+            suffix = f" Generation {generation_id}" if generation_id is not None else ""
+            raise SchemaVersionMismatchError(
+                f"Archive index schema shape does not match runtime version {SCHEMA_VERSION}.{suffix} "
+                "Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`.",
+                current_version=snapshot.current_version,
+                expected_version=SCHEMA_VERSION,
+                generation_id=generation_id,
+                lifecycle_action="rebuild_index",
+            ) from missing_error
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

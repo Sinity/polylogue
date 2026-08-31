@@ -368,6 +368,24 @@ def test_assert_readable_archive_layout_also_rejects_mismatch(tmp_path: Path) ->
         conn.close()
 
 
+def test_readable_layout_rejects_shape_drift_with_typed_refusal(tmp_path: Path) -> None:
+    """A matching user_version does not authorize a generation with an older shape."""
+    db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION)
+    conn = sqlite3.connect(db_path)
+    try:
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn, generation_id="gen-old")
+        error = caught.value
+        assert error.current_version == SCHEMA_VERSION
+        assert error.expected_version == SCHEMA_VERSION
+        assert error.generation_id == "gen-old"
+        assert error.lifecycle_action == "rebuild_index"
+        assert "gen-old" in str(error)
+        assert "rebuild" in str(error).lower()
+    finally:
+        conn.close()
+
+
 def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: the async
     bootstrap path enforces the same policy as the sync path.
