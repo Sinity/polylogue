@@ -395,7 +395,9 @@ class ArchiveReadInsights:
                 SUM(s.tool_use_count) AS tool_use_count,
                 SUM(s.thinking_count) AS thinking_count,
                 SUM(CASE WHEN s.tool_use_count > 0 THEN 1 ELSE 0 END) AS sessions_with_tools,
-                SUM(CASE WHEN s.thinking_count > 0 THEN 1 ELSE 0 END) AS sessions_with_thinking
+                SUM(CASE WHEN s.thinking_count > 0 THEN 1 ELSE 0 END) AS sessions_with_thinking,
+                SUM(COALESCE((SELECT COALESCE(SUM(u.cost_usd), s.reported_cost_usd)
+                              FROM session_model_usage u WHERE u.session_id = s.session_id), 0.0)) AS total_cost_usd
             FROM sessions s
             {where}
             GROUP BY s.origin
@@ -535,6 +537,7 @@ def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsigh
         thinking_count=int(row["thinking_count"] or 0),
         total_sessions_with_tools=sessions_with_tools,
         total_sessions_with_thinking=sessions_with_thinking,
+        total_cost_usd=float(row["total_cost_usd"] or 0.0),
         tool_use_percentage=((sessions_with_tools / session_count) * 100 if session_count else None),
         thinking_percentage=((sessions_with_thinking / session_count) * 100 if session_count else None),
     )
