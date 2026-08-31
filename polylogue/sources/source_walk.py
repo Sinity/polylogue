@@ -117,6 +117,11 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
         and artifact_rule_for_path(provider, str(path)) is not None
     ):
         return True
+    # Declared artifact paths can use formats that have no reliable suffix,
+    # such as Claude Code tool-result sidecars. Let the owning declaration
+    # admit those paths while keeping ordinary source discovery suffix-bound.
+    if artifact_rule_for_path(provider, str(path)) is not None:
+        return True
     if (
         provider is Provider.ANTIGRAVITY
         and "brain" in {part.lower() for part in path.parts[:-1]}

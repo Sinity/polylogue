@@ -26,7 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
@@ -207,6 +207,17 @@ class WatchSource:
 
     def accepts(self, path: Path) -> bool:
         name = path.name.lower()
+        # A declared artifact rule is the source-owned escape hatch for
+        # extensionless and path-scoped artifacts. Check it before suffixes,
+        # then keep suffixes as the ordinary source filter.
+        from polylogue.sources.origin_specs import artifact_rule_for_path
+
+        try:
+            provider = Provider.from_string(self.name)
+        except ValueError:
+            return any(name.endswith(suffix) for suffix in self.suffixes)
+        if artifact_rule_for_path(provider, str(path)) is not None:
+            return True
         return any(name.endswith(suffix) for suffix in self.suffixes)
 
     def ignores_directory(self, path: Path) -> bool:

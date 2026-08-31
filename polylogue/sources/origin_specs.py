@@ -925,19 +925,11 @@ def _claude_code_spec() -> OriginSpec:
                     "tool call), so content heuristics alone cannot refuse this family; this path rule "
                     "is the only reliable gate (polylogue-omsw)."
                 ),
-                # Deliberately NOT widened to every extension a tool result
-                # can carry (a real corpus scan found genuine ``.txt``/
-                # ``.html`` tool-results content too -- see the sibling
-                # classification test): ``artifact_suffixes_for_provider``
-                # feeds ``live/watcher.py``'s Claude Code ``WatchSource``
-                # acquisition suffix filter directly, so adding a suffix here
-                # would widen what gets *acquired* archive-wide, not merely
-                # what this rule classifies. ``.json`` is the one extension
-                # already inside the acquired/watched set today; the
-                # ``path_pattern`` match above still refuses any other
-                # extension's *content* once a raw row for it exists via
-                # some other acquisition route (zip replay, reindex), since
-                # ``matches()`` doesn't consult ``path_suffixes`` at all.
+                # Tool-result output is opaque and Claude Code has emitted
+                # JSON, text, HTML, and extensionless files. The path pattern
+                # admits all four forms; only JSON participates in the
+                # ordinary suffix projection because text and HTML are
+                # path-scoped and must not widen the Claude root globally.
                 path_suffixes=(".json",),
             ),
             OriginArtifactRule(

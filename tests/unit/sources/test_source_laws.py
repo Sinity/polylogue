@@ -81,7 +81,7 @@ from polylogue.sources.source_parsing import (
     iter_source_sessions,
     iter_source_sessions_with_raw,
 )
-from polylogue.sources.source_walk import _has_supported_extension
+from polylogue.sources.source_walk import _has_supported_extension, _is_supported_source_path
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from tests.infra.source_builders import GenericSessionBuilder, make_claude_chat_message
@@ -1045,6 +1045,30 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
 )
 def test_has_supported_extension_contract(filename: str, expected: bool) -> None:
     assert _has_supported_extension(Path(filename)) is expected
+
+
+def test_declared_claude_tool_result_paths_are_discovered_without_global_suffix_widening(tmp_path: Path) -> None:
+    """The OriginSpec path rule admits every observed sidecar filename form.
+
+    Anti-vacuity: removing the declaration-backed path check drops the
+    extensionless sidecar, while adding a global ``.txt`` or ``.html`` rule
+    would admit the unrelated files below.
+    """
+    sidecar_dir = tmp_path / "session" / "tool-results"
+    sidecar_dir.mkdir(parents=True)
+    sidecars = [
+        sidecar_dir / "toolu.json",
+        sidecar_dir / "toolu.txt",
+        sidecar_dir / "toolu.html",
+        sidecar_dir / "toolu",
+    ]
+    for path in sidecars:
+        path.write_bytes(b"opaque tool output")
+    unrelated = tmp_path / "session" / "notes.txt"
+    unrelated.write_bytes(b"ordinary text")
+
+    assert all(_is_supported_source_path(path, provider=Provider.CLAUDE_CODE) for path in sidecars)
+    assert not _is_supported_source_path(unrelated, provider=Provider.CLAUDE_CODE)
 
 
 def test_record_cursor_failure_updates_state_exactly() -> None:

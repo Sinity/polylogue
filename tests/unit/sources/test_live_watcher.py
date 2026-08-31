@@ -3619,6 +3619,20 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
     assert src.accepts(tmp_path / "README.md") is False
 
 
+def test_claude_watch_source_accepts_declared_tool_result_extensions_and_extensionless_files(
+    tmp_path: Path,
+) -> None:
+    """Watcher admission follows the Claude OriginSpec path declaration."""
+    source = WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",))
+    tool_results = tmp_path / "session" / "tool-results"
+
+    assert source.accepts(tool_results / "toolu.json") is True
+    assert source.accepts(tool_results / "toolu.txt") is True
+    assert source.accepts(tool_results / "toolu.html") is True
+    assert source.accepts(tool_results / "toolu") is True
+    assert source.accepts(tmp_path / "session" / "notes.txt") is False
+
+
 def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
     """A nested explicit root owns its files regardless of source order."""
     root = tmp_path / "codex"
