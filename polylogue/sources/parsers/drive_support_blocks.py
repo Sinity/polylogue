@@ -10,6 +10,11 @@ from .base import ParsedContentBlock, ParsedSessionEvent
 
 _SUCCESS_OUTCOMES = frozenset({"ok", "success", "succeeded", "completed", "outcome_ok"})
 _ERROR_OUTCOME_MARKERS = ("error", "fail", "timeout", "deadline", "cancel", "blocked")
+_GEMINI_CODE_EXECUTION_OUTCOMES = {
+    "OUTCOME_OK": False,
+    "OUTCOME_FAILED": True,
+    "OUTCOME_DEADLINE_EXCEEDED": True,
+}
 
 
 def _optional_int(payload: JSONDocument, *keys: str) -> int | None:
@@ -36,12 +41,20 @@ def _tool_result_error(metadata: JSONDocument, exit_code: int | None) -> bool | 
             return value
         if key == "error" and isinstance(value, str) and value:
             return True
-    outcome = metadata.get("outcome") or metadata.get("status")
+    outcome = metadata.get("outcome")
     if isinstance(outcome, str) and outcome:
-        normalized = outcome.strip().lower()
-        if normalized in _SUCCESS_OUTCOMES:
+        normalized_outcome = outcome.strip().upper()
+        if normalized_outcome in _GEMINI_CODE_EXECUTION_OUTCOMES:
+            return _GEMINI_CODE_EXECUTION_OUTCOMES[normalized_outcome]
+        if normalized_outcome in {"OUTCOME_UNSPECIFIED"}:
+            return None
+
+    status = metadata.get("status")
+    if isinstance(status, str) and status:
+        normalized_status = status.strip().lower()
+        if normalized_status in _SUCCESS_OUTCOMES:
             return False
-        if any(marker in normalized for marker in _ERROR_OUTCOME_MARKERS):
+        if any(marker in normalized_status for marker in _ERROR_OUTCOME_MARKERS):
             return True
     if exit_code is not None:
         return exit_code != 0

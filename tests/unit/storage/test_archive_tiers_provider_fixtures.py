@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from copy import deepcopy
 from pathlib import Path
 from typing import cast
+
+import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
@@ -71,6 +74,30 @@ def test_archive_tiers_writer_materializes_drive_payload(tmp_path: Path) -> None
     assert [message.role for message in envelope.messages] == ["user", "assistant", "user", "assistant"]
     assert [message.is_active_leaf for message in envelope.messages] == [False, False, False, True]
     assert search_archive_blocks(conn, "Paris") == [f"{message_ids[1]}:0"]
+
+
+@pytest.mark.parametrize(("outcome", "expected_error"), [("OUTCOME_OK", False), ("OUTCOME_FAILED", True)])
+def test_archive_tiers_writer_round_trips_gemini_code_execution_outcome(
+    tmp_path: Path, outcome: str, expected_error: bool
+) -> None:
+    payload = deepcopy(_load_drive_payload("code_execution_session.json"))
+    chunked_prompt = cast(JSONDocument, payload["chunkedPrompt"])
+    chunks = cast(list[JSONDocument], chunked_prompt["chunks"])
+    result_chunk = next(chunk for chunk in chunks if "codeExecutionResult" in chunk)
+    result = result_chunk["codeExecutionResult"]
+    assert isinstance(result, dict)
+    result["outcome"] = outcome
+
+    conn = _connect(tmp_path / f"index-{outcome}.db")
+    [session] = parse_payload(Provider.DRIVE, payload, "drive-fixture")
+    session_id = write_parsed_session_to_archive(conn, session)
+    envelope = read_archive_session_envelope(conn, session_id)
+    result_block = next(
+        block for message in envelope.messages for block in message.blocks if block.block_type == "tool_result"
+    )
+
+    assert result_block.tool_result_is_error == int(expected_error)
+    assert result_block.tool_result_exit_code is None
 
 
 def test_archive_tiers_writer_materializes_antigravity_payload(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.scenarios import CorpusSpec
@@ -520,6 +521,39 @@ def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     # polylogue-5dfu: None, not TitleSource.UNKNOWN -- NULL already means
     # "no title evidence" on this nullable column.
     assert result.title_source is None
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_error"),
+    [
+        ("OUTCOME_OK", False),
+        ("OUTCOME_FAILED", True),
+        ("OUTCOME_DEADLINE_EXCEEDED", True),
+        ("OUTCOME_UNSPECIFIED", None),
+        (None, None),
+    ],
+)
+def test_parse_chunked_prompt_maps_structured_code_execution_outcome(
+    outcome: str | None, expected_error: bool | None
+) -> None:
+    result_payload: JSONDocument = {"output": "error-shaped prose"}
+    if outcome is not None:
+        result_payload["outcome"] = outcome
+    payload: JSONDocument = {
+        "id": f"gemini-outcome-{outcome or 'absent'}",
+        "chunkedPrompt": {
+            "chunks": [
+                {"id": "user", "role": "user", "text": "run it"},
+                {"id": "result", "role": "model", "codeExecutionResult": result_payload},
+            ]
+        },
+    }
+
+    session = parse_chunked_prompt("gemini", payload, "fallback-id")
+    result_block = next(block for block in session.messages[1].blocks if block.type is BlockType.TOOL_RESULT)
+
+    assert result_block.is_error is expected_error
+    assert result_block.exit_code is None
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachments() -> None:
