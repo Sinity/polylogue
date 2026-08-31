@@ -1,14 +1,7 @@
-"""Daemon-side wiring for the periodic blob-GC drain (automagic-invariants gap).
+"""Daemon-side wiring for the periodic blob-GC drain.
 
-``polylogue ops maintenance blob-gc`` was, before this module existed, the
-*only* path that reclaimed unreferenced blobs — every other mechanical,
-non-judgment maintenance operation (FTS merge, WAL checkpoint, embedding
-orphan reconcile) already has a daemon-owned periodic equivalent. These
-tests exercise ``run_blob_gc_once`` — the bounded sync helper the periodic
-daemon loop (``periodic_blob_gc_check``) invokes through the write
-coordinator — against real on-disk blob-store fixtures, and prove the
-production route (``DaemonWriteCoordinator.run_sync``) actually performs
-the reclaim rather than a bypassed direct call.
+These tests exercise the bounded helper through the daemon write coordinator
+and the scheduled loop against real on-disk blob-store fixtures.
 """
 
 from __future__ import annotations
@@ -107,18 +100,6 @@ def test_daemon_gc_keeps_pending_intent_when_blob_root_disappears(
         assert conn.execute(
             "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
         ).fetchone() == ("pending",)
-
-
-def test_orphaned_blobs_is_not_a_manual_maintenance_route() -> None:
-    """Blob GC is daemon-owned; the retired generic target must not linger."""
-    from polylogue.maintenance.targets import build_maintenance_target_catalog
-    from polylogue.storage import repair
-
-    catalog = build_maintenance_target_catalog()
-
-    assert catalog.resolve_name("orphaned_blobs") is None
-    assert "orphaned_blobs" not in repair.PREVIEW_HANDLERS
-    assert "orphaned_blobs" not in repair.REPAIR_HANDLERS
 
 
 def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:

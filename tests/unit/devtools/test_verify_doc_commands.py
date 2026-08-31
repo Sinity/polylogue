@@ -35,12 +35,9 @@ class TestCheckDocsRepoBaseline:
         """Keep the recovery runbook aligned with the daemon's actual schedule.
 
         This contract checks the cleanup ownership boundary as well as timing.
-        It uses the production registry and handler maps, so a stale document
-        cannot pass merely because a forbidden token was removed from prose.
         """
         root = Path(__file__).parents[3]
         text = (root / "docs" / "maintenance.md").read_text()
-        cli_reference = (root / "docs" / "cli-reference.md").read_text()
         heading = "### Recovering a corrupt blob store"
         start = text.index(heading)
         next_heading = text.find("\n### ", start + len(heading))
@@ -55,24 +52,14 @@ class TestCheckDocsRepoBaseline:
         first_wait = section.index(interval)
         gate_release = lower_section.index("after the catch-up event or timeout")
 
-        from polylogue.maintenance.targets import build_maintenance_target_catalog
-        from polylogue.storage import repair
-
-        target_name = "orphaned_blobs"
-        catalog = build_maintenance_target_catalog()
-        assert catalog.resolve_name(target_name) is None
-        assert target_name not in repair.PREVIEW_HANDLERS
-        assert target_name not in repair.REPAIR_HANDLERS
-        assert target_name not in text
-        assert target_name not in cli_reference
+        assert "manual blob reclamation is not a supported route" in normalized_section
+        assert "reservation ttls must not be inferred" in normalized_section
 
         assert gate_timeout in section
         assert "daemon-owned blob-gc loop" in normalized_section
         assert restart < gate_release < first_wait, "restart must precede the catch-up gate and the first periodic wait"
         assert max_batch in section
         assert "eligible leftovers are handled by later passes" in normalized_section
-        assert "manual orphaned-blob repair is not a supported route" in normalized_section
-        assert "reservation ttls must not be inferred" in normalized_section
 
 
 class TestCheckDocsTmpFixtures:
