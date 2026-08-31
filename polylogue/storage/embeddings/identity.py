@@ -14,7 +14,6 @@ from polylogue.storage.derivation_identity import (
     DerivationSubject,
     compose_derivation_key_digest,
 )
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 EMBEDDING_SUBJECT_GRAIN = "archive-message-vectors"
 EMBEDDING_MESSAGE_GRAIN = "archive-message-vector"
@@ -37,6 +36,10 @@ EMBEDDING_INPUT_TYPE = "document"
 EMBEDDING_NORMALIZATION = "provider-default"
 EMBEDDING_TOOL_IMPLEMENTATION = "polylogue.sqlite-vec-v1"
 EMBEDDING_OUTPUT_SCHEMA_VERSION = 1
+# This describes the shape of the text sent to the provider.  It is deliberately
+# independent of the rebuildable index schema: index identity changes do not
+# change an embedding request for unchanged input text.
+EMBEDDING_INPUT_SCHEMA_VERSION = "archive-message-input-v1"
 EMBEDDING_SOURCE_HASH_SQL_FUNCTION = "polylogue_embedding_source_hash"
 EMBEDDING_DERIVATION_KEY_SQL_FUNCTION = "polylogue_embedding_derivation_key"
 VECTOR_DERIVATION_HASH_SQL_FUNCTION = "polylogue_vector_derivation_hash"
@@ -94,7 +97,7 @@ class EmbeddingRecipe:
             input_type=input_type,
             normalization=normalization,
             tool_implementation=tool_implementation,
-            input_schema_version=input_schema_version or f"archive-index-v{INDEX_SCHEMA_VERSION}",
+            input_schema_version=input_schema_version or EMBEDDING_INPUT_SCHEMA_VERSION,
             request_options=request_options,
             element_type=element_type,
         )
@@ -395,6 +398,7 @@ __all__ = [
     "EMBEDDING_DERIVATION_KEY_SQL_FUNCTION",
     "VECTOR_DERIVATION_HASH_SQL_FUNCTION",
     "EMBEDDING_INPUT_TYPE",
+    "EMBEDDING_INPUT_SCHEMA_VERSION",
     "EMBEDDING_MODEL_REVISION",
     "EMBEDDING_NORMALIZATION",
     "EMBEDDING_PROVIDER",
