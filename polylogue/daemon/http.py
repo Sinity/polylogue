@@ -43,9 +43,10 @@ from polylogue.daemon.execution import (
     current_cancellation,
 )
 from polylogue.daemon.route_contracts import (
+    DAEMON_ROUTE_DECLARATIONS,
     RouteContract,
-    daemon_route_declaration,
     route_contract_for_pattern,
+    route_contract_from_declaration,
 )
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.user_state_http import RouteMethod
@@ -316,16 +317,13 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
     return (
         _static_get_route("/api/health/check", "_handle_health_check"),
         _static_get_route("/api/health", "_handle_health"),
-        _declared_static_get_route("GET", "/api/status"),
         _static_get_route("/api/webui/observability", "_handle_webui_observability"),
         _static_get_route("/api/webui/freshness", "_handle_webui_source_freshness", passes_params=True),
         _static_get_route("/api/overview", "_handle_overview"),
         _static_get_route("/api/events", "_handle_events", passes_params=True),
         _static_get_route("/api/agents/coordination", "_handle_agent_coordination", passes_params=True),
-        _declared_static_get_route("GET", "/api/sessions"),
         _static_get_route("/api/facets", "_handle_facets", passes_params=True),
         _static_get_route("/api/provider-usage", "_handle_provider_usage", passes_params=True),
-        _declared_static_get_route("GET", "/api/query-units"),
         _static_get_route("/api/archive-debt", "_handle_archive_debt", passes_params=True),
         _static_get_route("/api/import/explain", "_handle_import_explain", passes_params=True),
         _static_get_route("/api/refs/resolve", "_handle_ref_resolve", passes_params=True),
@@ -340,16 +338,24 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/sources", "_handle_sources"),
         _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
         _static_get_route("/api/maintenance/operations", "_handle_maintenance_operations"),
-    )
+    ) + tuple(route for route in _declared_get_routes() if isinstance(route, _StaticGetRoute))
 
 
 def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
     """Build a production GET adapter from the shared route declaration."""
 
-    declaration = daemon_route_declaration(method, path)
+    declaration = next(
+        declaration
+        for declaration in DAEMON_ROUTE_DECLARATIONS
+        if declaration.method == method.upper() and declaration.path == path
+    )
     binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    try:
+        contract = route_contract_for_pattern(method, path)
+    except KeyError:
+        contract = route_contract_from_declaration(declaration)
     return _StaticGetRoute(
-        contract=route_contract_for_pattern(method, path),
+        contract=contract,
         segments=_route_segments(declaration.path),
         handler_name=binding.symbol,
         passes_params=True,
@@ -359,12 +365,20 @@ def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
 def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedGetRoute:
     """Build a parameterized adapter entirely from a declared route spec."""
 
-    declaration = daemon_route_declaration(method, path)
+    declaration = next(
+        declaration
+        for declaration in DAEMON_ROUTE_DECLARATIONS
+        if declaration.method == method.upper() and declaration.path == path
+    )
     binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
     parts = _route_segments(declaration.path)
     parameter_index = next(index for index, part in enumerate(parts) if part.startswith(":"))
+    try:
+        contract = route_contract_for_pattern(method, path)
+    except KeyError:
+        contract = route_contract_from_declaration(declaration)
     return _ParameterizedGetRoute(
-        contract=route_contract_for_pattern(method, path),
+        contract=contract,
         prefix=parts[:parameter_index],
         suffix=parts[parameter_index + 1 :],
         handler_name=binding.symbol,
@@ -372,11 +386,50 @@ def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedG
     )
 
 
+def _declared_get_routes() -> tuple[_StaticGetRoute | _ParameterizedGetRoute, ...]:
+    """Build every migrated GET adapter from the declaration registry."""
+
+    routes: list[_StaticGetRoute | _ParameterizedGetRoute] = []
+    for declaration in DAEMON_ROUTE_DECLARATIONS:
+        if declaration.method != "GET":
+            continue
+        parts = _route_segments(declaration.path)
+        if any(part.startswith(":") for part in parts):
+            routes.append(_declared_parameterized_get_route("GET", declaration.path))
+        else:
+            routes.append(_declared_static_get_route("GET", declaration.path))
+    return tuple(routes)
+
+
+def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHandler]) -> None:
+    """Fail startup when a migrated declaration cannot reach the installed router."""
+
+    declared = tuple((item.method, item.path) for item in DAEMON_ROUTE_DECLARATIONS)
+    if len(declared) != len(set(declared)):
+        raise RuntimeError("duplicate daemon route declaration method/path")
+    generated_routes = _declared_get_routes()
+    generated = tuple((route.contract.method, route.pattern) for route in generated_routes)
+    installed_routes: tuple[_StaticGetRoute | _ParameterizedGetRoute, ...] = (
+        _static_get_routes() + _parameterized_get_routes()
+    )
+    installed = tuple(
+        (route.contract.method, route.pattern)
+        for route in installed_routes
+        if (route.contract.method, route.pattern) in set(declared)
+    )
+    if generated != declared or installed != declared:
+        missing = sorted(set(declared) - set(installed))
+        extra = sorted(set(installed) - set(declared))
+        raise RuntimeError(f"daemon declaration generation mismatch: missing={missing}, extra={extra}")
+    for route in generated_routes:
+        if not callable(getattr(handler_class, route.handler_name, None)):
+            raise RuntimeError(f"daemon route adapter is unreachable: {route.handler_name}")
+
+
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
     return (
         _parameterized_get_route("/api/sessions/:id", "_handle_get_session", passes_params=True),
         _parameterized_get_route("/api/sessions/:id/messages", "_handle_get_messages", passes_params=True),
-        _declared_parameterized_get_route("GET", "/api/sessions/:id/read"),
         _parameterized_get_route("/api/sessions/:id/raw", "_handle_get_session_raw"),
         _parameterized_get_route("/api/sessions/:id/cost", "_handle_get_session_cost"),
         _parameterized_get_route("/api/sessions/:id/evidence-summary", "_handle_get_session_evidence_summary"),
@@ -393,7 +446,7 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
         _parameterized_get_route("/api/webui/insights/:name", "_handle_webui_insight", passes_params=True),
         _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
         _parameterized_get_route("/api/maintenance/status/:id", "_handle_maintenance_status"),
-    )
+    ) + tuple(route for route in _declared_get_routes() if isinstance(route, _ParameterizedGetRoute))
 
 
 def _normalize_session_route_id(identifier: str) -> str:
@@ -6199,6 +6252,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         webui_dist_root: Path | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
+        validate_declared_route_reachability(handler_class)
         self.auth_token = auth_token
         self.api_host = api_host
         self.webui_dist_root = webui_dist_root

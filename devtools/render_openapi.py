@@ -388,6 +388,32 @@ def _build_openapi_document() -> dict[str, Any]:
                     "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,
                 },
             },
+            "/api/status": {
+                "get": {
+                    "summary": "Report daemon status and archive readiness",
+                    "description": "Returns the daemon status payload and readiness state.",
+                    "operationId": "getStatus",
+                    "security": _protected_read_security(),
+                    "responses": {
+                        "200": {
+                            "description": "Daemon status payload.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "description": "DaemonStatusPayload; fields vary with enabled daemon components.",
+                                        "additionalProperties": True,
+                                    }
+                                }
+                            },
+                        },
+                        "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
+                        "403": _protected_auth_error_response(
+                            "Host, origin, or web credential scope was not admitted."
+                        ),
+                    },
+                }
+            },
             "/api/sessions": {
                 "get": {
                     "summary": "Ranked session search and list",
@@ -926,17 +952,23 @@ def _build_openapi_document() -> dict[str, Any]:
     # Route identity and transport metadata are generated for every migrated
     # route. The surrounding operation details remain schema-owned above.
     for declaration in DAEMON_ROUTE_DECLARATIONS:
-        operation = document["paths"].get(declaration.path, {}).get(declaration.method.lower())
+        openapi_path = declaration.path.replace(":id", "{session_id}")
+        operation = document["paths"].get(openapi_path, {}).get(declaration.method.lower())
         if operation is None:
-            continue
+            raise RuntimeError(
+                f"missing OpenAPI operation for daemon declaration: {declaration.method} {declaration.path}"
+            )
         words = declaration.kernel.public_name.split("-")
         operation["operationId"] = words[0] + "".join(word.title() for word in words[1:])
         operation["security"] = _protected_read_security()
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,
+            "method": declaration.method,
+            "path": declaration.path,
             "request_contract": declaration.request_contract,
             "response_contract": declaration.response_contract,
             "auth_policy": declaration.auth_policy,
+            "domain_operation": declaration.domain_operation,
             "owner_path": declaration.kernel.owner_path,
         }
     return document

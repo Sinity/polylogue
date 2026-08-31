@@ -826,7 +826,7 @@ export type QueryUnitsError = QueryErrorPayload | WebCredentialFailurePayload;
 export type QueryParameters = Omit<QueryUnitsParameters, "continuation" | "expression"> & { readonly expression: string };
 export type QueryPage = Page<MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload | FileQueryRowPayload | RunQueryRowPayload | ObservedEventQueryRowPayload | ContextSnapshotQueryRowPayload | DelegationQueryRowPayload | QueryUnitAggregateRowPayload, QueryUnitEnvelope | QueryUnitAggregateEnvelope>;
 
-export type ReadSessionViewParameters = {
+export type ReadSessionParameters = {
   readonly session_id: string;
   readonly at_position?: string;
   readonly confidence_threshold?: number;
@@ -842,12 +842,18 @@ export type ReadSessionViewParameters = {
   readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context";
   readonly window_hours?: number;
 };
-export type ReadSessionViewResponse = SessionReadViewEnvelope;
-export type ReadSessionViewError = QueryErrorPayload | WebCredentialFailurePayload;
+export type ReadSessionResponse = SessionReadViewEnvelope;
+export type ReadSessionError = QueryErrorPayload | WebCredentialFailurePayload;
 
 export type RevokeWebCredentialParameters = Record<string, never>;
 export type RevokeWebCredentialResponse = WebCredentialRevocationPayload;
 export type RevokeWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
+
+export type StatusParameters = Record<string, never>;
+export type StatusResponse = {
+  readonly [key: string]: unknown;
+};
+export type StatusError = QueryErrorPayload | WebCredentialFailurePayload;
 
 function isSearchEnvelope(value: unknown): value is SearchEnvelope {
   return (
@@ -1047,11 +1053,11 @@ export class PolylogueClient {
     });
   }
 
-  readSessionView(
-    parameters: ReadSessionViewParameters,
+  readSession(
+    parameters: ReadSessionParameters,
     options: RequestOptions = {},
-  ): Promise<ReadSessionViewResponse> {
-    return this.#transport.request<ReadSessionViewResponse, ReadSessionViewError>(
+  ): Promise<ReadSessionResponse> {
+    return this.#transport.request<ReadSessionResponse, ReadSessionError>(
       {
         method: "GET",
         path: `/api/sessions/${encodeURIComponent(String(parameters.session_id))}/read`,
@@ -1083,6 +1089,19 @@ export class PolylogueClient {
       {
         method: "DELETE",
         path: "/api/web-auth/session",
+      },
+      options,
+    );
+  }
+
+  status(
+    parameters: StatusParameters = {},
+    options: RequestOptions = {},
+  ): Promise<StatusResponse> {
+    return this.#transport.request<StatusResponse, StatusError>(
+      {
+        method: "GET",
+        path: "/api/status",
       },
       options,
     );
