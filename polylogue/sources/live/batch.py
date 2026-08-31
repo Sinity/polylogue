@@ -111,9 +111,12 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
+    claude_semantic_frontier_for_prefix,
     codex_append_payload,
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
+    decode_claude_semantic_frontier,
+    encode_claude_semantic_frontier,
     encode_cursor_hash_authority,
     fingerprint_file,
     jsonl_complete_prefix,
@@ -144,7 +147,7 @@ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggre
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.origin_specs import artifact_rule_for_path, recognize_source_class
+from polylogue.sources.origin_specs import artifact_rule_for_path, frontier_kind_for_origin, recognize_source_class
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
@@ -1454,6 +1457,19 @@ class LiveBatchProcessor:
             )
             tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
             bytes_read += cursor_state_bytes + prefix_bytes
+        if frontier_kind_for_origin(
+            origin_from_provider(Provider.from_string(resolved_source_name))
+        ) == "claude-header-body" and path.suffix.lower() in {".jsonl", ".ndjson"}:
+            semantic_authority = claude_semantic_frontier_for_prefix(
+                path, frontier_byte_size if frontier_byte_size is not None else byte_size
+            )
+            if semantic_authority is None:
+                self._last_cursor_write_stale = True
+                self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
+                return bytes_read
+            last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
+            tail_hash = semantic_authority
+            bytes_read += last_nl
         final_prefix_proof = self._full_capture_still_matches(
             path,
             stat=stat,
@@ -3843,6 +3859,26 @@ class LiveBatchProcessor:
         if blob_hash_hex is None or len(blob_hash_hex) != 64:
             return None
         byte_offset = head.blob_size
+        tail_hash = encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0)
+        if (
+            frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            == "claude-header-body"
+        ):
+            blob_path = source_db.parent / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
+            try:
+                payload = blob_path.read_bytes()
+                newline = payload.find(b"\n")
+                if newline < 0:
+                    return None
+                json_loads(payload[: newline + 1])
+                body = payload[newline + 1 :]
+                boundary = jsonl_complete_prefix(body)
+                if boundary.malformed_record or boundary.prefix_size != len(body):
+                    return None
+                tail_hash = encode_claude_semantic_frontier(header=payload[: newline + 1], body=body)
+                byte_offset = len(payload)
+            except (OSError, UnicodeDecodeError, ValueError):
+                return None
         return CursorRecord(
             source_path=str(path),
             byte_size=byte_offset,
@@ -3852,12 +3888,7 @@ class LiveBatchProcessor:
             updated_at=datetime.now(UTC).isoformat(),
             parser_fingerprint=self._current_parser_fingerprint(),
             content_fingerprint=head.source_revision,
-            # The prefix hash IS the 'full' raw's own blob hash (its content is
-            # exactly bytes[0:byte_offset] of the source at capture time); the
-            # tail-hash component is never read by ``_append_plan`` (only the
-            # prefix half of the encoded authority is consulted there), so it
-            # is filled with the same digest rather than re-reading the blob.
-            tail_hash=encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0),
+            tail_hash=tail_hash,
             source_name=None,
             st_dev=None,
             st_ino=None,
@@ -3981,7 +4012,19 @@ class LiveBatchProcessor:
         if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
-        if expected_prefix_hash is None:
+        claude_frontier = (
+            decode_claude_semantic_frontier(cursor.tail_hash)
+            if frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            == "claude-header-body"
+            else None
+        )
+        if (
+            frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            == "claude-header-body"
+            and claude_frontier is None
+        ):
+            return None
+        if claude_frontier is None and expected_prefix_hash is None:
             return None
         try:
             with path.open("rb") as handle:
@@ -4012,7 +4055,23 @@ class LiveBatchProcessor:
                     # above no longer holds) or authority resolving through
                     # another path.
                     return _DEFER_APPEND
-                start_offset = max(cursor.byte_offset, 0)
+                if claude_frontier is not None:
+                    header_end = handle.readline()
+                    if not header_end.endswith(b"\n"):
+                        return _DEFER_APPEND
+                    try:
+                        json_loads(header_end)
+                    except (UnicodeDecodeError, ValueError):
+                        return None
+                    start_offset = len(header_end) + claude_frontier.body_bytes
+                    handle.seek(len(header_end))
+                    stable_body = handle.read(claude_frontier.body_bytes)
+                    if len(stable_body) != claude_frontier.body_bytes:
+                        return _DEFER_APPEND
+                    if sha256(stable_body).hexdigest() != claude_frontier.body_sha256:
+                        return None
+                else:
+                    start_offset = max(cursor.byte_offset, 0)
                 append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
                 handle.seek(start_offset)
                 payload = handle.read(append_window)
@@ -4026,25 +4085,28 @@ class LiveBatchProcessor:
                 tail_start = max(0, last_complete_newline - 64 * 1024)
                 handle.seek(tail_start)
                 accepted_tail = handle.read(last_complete_newline - tail_start)
-                handle.seek(0)
                 accepted_hasher = sha256()
-                remaining = start_offset
-                while remaining > 0:
-                    chunk = handle.read(min(1 << 20, remaining))
-                    if not chunk:
-                        return _DEFER_APPEND
-                    accepted_hasher.update(chunk)
-                    remaining -= len(chunk)
-                if accepted_hasher.hexdigest() != expected_prefix_hash:
-                    return None
+                if claude_frontier is None:
+                    handle.seek(0)
+                    remaining = start_offset
+                    while remaining > 0:
+                        chunk = handle.read(min(1 << 20, remaining))
+                        if not chunk:
+                            return _DEFER_APPEND
+                        accepted_hasher.update(chunk)
+                        remaining -= len(chunk)
+                    if accepted_hasher.hexdigest() != expected_prefix_hash:
+                        return None
                 remaining = last_complete_newline - start_offset
-                while remaining > 0:
-                    chunk = handle.read(min(1 << 20, remaining))
-                    if not chunk:
-                        return _DEFER_APPEND
-                    accepted_hasher.update(chunk)
-                    remaining -= len(chunk)
-                accepted_prefix_hash = accepted_hasher.hexdigest()
+                accepted_prefix_hash = None
+                if claude_frontier is None:
+                    while remaining > 0:
+                        chunk = handle.read(min(1 << 20, remaining))
+                        if not chunk:
+                            return _DEFER_APPEND
+                        accepted_hasher.update(chunk)
+                        remaining -= len(chunk)
+                    accepted_prefix_hash = accepted_hasher.hexdigest()
                 final_stat = os.fstat(handle.fileno())
         except OSError:
             return None
@@ -4431,15 +4493,24 @@ class LiveBatchProcessor:
             )
         assert tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        stored_tail_hash = (
-            encode_cursor_hash_authority(
-                plan.accepted_prefix_hash,
-                tail_hash,
-                ctime_ns=plan.ctime_ns or 0,
+        if (
+            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
+            == "claude-header-body"
+        ):
+            stored_tail_hash = claude_semantic_frontier_for_prefix(plan.path, plan.last_complete_newline)
+            if stored_tail_hash is None:
+                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
+                return False
+        else:
+            stored_tail_hash = (
+                encode_cursor_hash_authority(
+                    plan.accepted_prefix_hash,
+                    tail_hash,
+                    ctime_ns=plan.ctime_ns or 0,
+                )
+                if plan.accepted_prefix_hash is not None
+                else tail_hash
             )
-            if plan.accepted_prefix_hash is not None
-            else tail_hash
-        )
         updated = self._cursor.set(
             plan.path,
             plan.stat_size,

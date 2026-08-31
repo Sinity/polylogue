@@ -42,6 +42,7 @@ _DEFAULT_LIVE_FULL_INGEST_WORKERS = 1
 _BROWSER_CAPTURE_PREFIX_PROBE_BYTES = 1 * 1024 * 1024
 _BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
 _CURSOR_HASH_AUTHORITY_PREFIX = "sha256-prefix-v1"
+_CLAUDE_FRONTIER_PREFIX = "claude-semantic-v1"
 
 
 def codex_append_payload(
@@ -109,6 +110,77 @@ def cursor_tail_hash(authority: str | None) -> str | None:
         return None
     assert authority is not None
     return authority.split(":")[2]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaudeSemanticFrontier:
+    """Accepted Claude Code observation: replaceable header plus stable body."""
+
+    header_sha256: str
+    body_sha256: str
+    body_bytes: int
+
+
+def encode_claude_semantic_frontier(*, header: bytes, body: bytes) -> str:
+    """Encode the evidence needed to resume after a mutable-header rewrite."""
+    return (
+        f"{_CLAUDE_FRONTIER_PREFIX}:{hashlib.sha256(header).hexdigest()}:{hashlib.sha256(body).hexdigest()}:{len(body)}"
+    )
+
+
+def decode_claude_semantic_frontier(value: str | None) -> ClaudeSemanticFrontier | None:
+    if value is None:
+        return None
+    parts = value.split(":")
+    if len(parts) != 4 or parts[0] != _CLAUDE_FRONTIER_PREFIX:
+        return None
+    if not (_sha256_hex(parts[1]) and _sha256_hex(parts[2]) and parts[3].isdigit()):
+        return None
+    return ClaudeSemanticFrontier(parts[1], parts[2], int(parts[3]))
+
+
+def claude_semantic_frontier_from_path(path: Path) -> tuple[str, int, int] | None:
+    """Return frontier authority, body start, and complete body end.
+
+    A first record and every body record must be complete. A partial first
+    record is therefore deferred instead of being interpreted as an empty body.
+    """
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    newline = payload.find(b"\n")
+    if newline < 0:
+        return None
+    header = payload[: newline + 1]
+    try:
+        json_loads(header)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    body = payload[newline + 1 :]
+    boundary = jsonl_complete_prefix(body)
+    if boundary.malformed_record or boundary.prefix_size != len(body):
+        return None
+    return encode_claude_semantic_frontier(header=header, body=body), newline + 1, len(payload)
+
+
+def claude_semantic_frontier_for_prefix(path: Path, end_offset: int) -> str | None:
+    """Encode a Claude frontier ending at one accepted complete-record boundary."""
+    try:
+        with path.open("rb") as handle:
+            header = handle.readline()
+            if not header.endswith(b"\n") or len(header) > end_offset:
+                return None
+            json_loads(header)
+            body = handle.read(end_offset - len(header))
+            if len(body) != end_offset - len(header):
+                return None
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    boundary = jsonl_complete_prefix(body)
+    if boundary.malformed_record or boundary.prefix_size != len(body):
+        return None
+    return encode_claude_semantic_frontier(header=header, body=body)
 
 
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:
