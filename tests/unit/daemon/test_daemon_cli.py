@@ -2217,7 +2217,19 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
     assert recorded["enable_source_catchup"] is False
     recorded_sources = recorded["sources"]
     assert isinstance(recorded_sources, tuple)
-    assert tuple(source.root for source in recorded_sources) == (Path("/tmp/codex"),)
+    roots = {source.root for source in recorded_sources}
+    assert Path("/tmp/codex") in roots
+    assert {source.name for source in recorded_sources} >= {
+        "claude-code",
+        "claude-code-todos",
+        "codex",
+        "gemini-cli",
+        "hermes",
+        "antigravity",
+        "browser-capture",
+        "inbox",
+        "hooks",
+    }
 
 
 def test_polylogued_run_rejects_empty_component_set() -> None:
@@ -2277,7 +2289,11 @@ def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Pat
     root_a = tmp_path / "claude-code"
     root_b = tmp_path / "codex"
 
-    with patch("polylogue.daemon.cli.asyncio.run") as run:
+    typed_default = WatchSource(name="typed-default", root=tmp_path / "typed-default")
+    with (
+        patch("polylogue.daemon.cli.default_sources", return_value=(typed_default,)),
+        patch("polylogue.daemon.cli.asyncio.run") as run,
+    ):
         result = CliRunner().invoke(
             main,
             [
@@ -2293,7 +2309,7 @@ def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Pat
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
-    assert "Watching 2 source(s); debounce=2.0s" in result.stderr
+    assert "Watching 3 source(s); debounce=2.0s" in result.stderr
 
 
 def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
@@ -2407,10 +2423,44 @@ def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[s
 
     sources = daemon_cli._watch_sources_from_roots((inbox, ordinary))
 
-    assert sources == (
-        WatchSource(name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES),
-        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    assert next(source for source in sources if source.root == inbox) == WatchSource(
+        name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES
     )
+    assert next(source for source in sources if source.root == ordinary) == WatchSource(
+        name="ordinary-jsonl-root",
+        root=ordinary,
+        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
+    )
+    assert {source.name for source in sources} >= {
+        "claude-code",
+        "claude-code-todos",
+        "codex",
+        "gemini-cli",
+        "hermes",
+        "antigravity",
+        "browser-capture",
+    }
+
+
+def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    default_root = next(source.root for source in daemon_cli.default_sources() if source.name == "codex")
+    sources = daemon_cli._watch_sources_from_roots((default_root,))
+
+    assert sum(source.root == default_root for source in sources) == 1
+    assert next(source for source in sources if source.root == default_root).name == "codex"
+
+
+def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    root = workspace_env["archive_root"] / "export-root"
+    source = next(source for source in daemon_cli._watch_sources_from_roots((root,)) if source.root == root)
+
+    assert source.suffixes == (".json", ".jsonl", ".ndjson", ".zip")
+    assert ".db" not in source.suffixes
+    assert ".sqlite" not in source.suffixes
 
 
 def test_explicit_browser_capture_root_keeps_capture_suffixes(
@@ -2426,10 +2476,24 @@ def test_explicit_browser_capture_root_keeps_capture_suffixes(
 
     sources = daemon_cli._watch_sources_from_roots((spool, ordinary))
 
-    assert sources == (
-        WatchSource(name="browser-capture", root=spool, suffixes=(".json",)),
-        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    assert next(source for source in sources if source.root == spool) == WatchSource(
+        name="browser-capture", root=spool, suffixes=(".json",)
     )
+    assert next(source for source in sources if source.root == ordinary).suffixes == (
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".zip",
+    )
+    assert {source.name for source in sources} >= {
+        "claude-code",
+        "claude-code-todos",
+        "codex",
+        "gemini-cli",
+        "hermes",
+        "antigravity",
+        "browser-capture",
+    }
 
 
 def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: Path) -> None:
@@ -2443,9 +2507,14 @@ def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: 
         browser_capture_spool_path=override_spool,
     )
 
-    assert sources == (
-        WatchSource(name="browser-capture", root=override_spool, suffixes=(".json",)),
-        WatchSource(name="ordinary-jsonl-root", root=ordinary, suffixes=(".jsonl",)),
+    assert next(source for source in sources if source.root == override_spool) == WatchSource(
+        name="browser-capture", root=override_spool, suffixes=(".json",)
+    )
+    assert next(source for source in sources if source.root == ordinary).suffixes == (
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".zip",
     )
 
 

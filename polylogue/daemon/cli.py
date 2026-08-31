@@ -128,6 +128,10 @@ _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINA
 # whose entire purpose is converging one oversized, resource-blocked
 # component in a single pass once the ordinary conveyor is quiescent.
 _RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
+
+# An additional root is content-detected by the ordinary export route. SQLite
+# remains admitted only by typed provider sources such as Hermes and Codex.
+_ADDITIONAL_SOURCE_SUFFIXES = (".json", ".jsonl", ".ndjson", ".zip")
 # polylogue-qlae: the same bounded-hold technique applied to the daemon's
 # other unbounded writer-holding actor. Journal aggregation (2026-07-29 to
 # 2026-07-31) measured `maintenance.drive_catchup` hold_max=18,623s -- a
@@ -485,23 +489,14 @@ def _watch_sources_from_roots(
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
 ) -> tuple[WatchSource, ...]:
-    """Build watch sources for explicit daemon roots.
+    """Build typed default sources plus configured additional roots.
 
-    An explicit ``--root`` normally means a JSONL session tree. The archive
-    inbox is different: ``polylogue import`` stages approved exports there,
-    including ChatGPT ``.json`` files and zipped takeouts, so an isolated
-    daemon pointed at that inbox must keep the same suffix contract as the
-    default inbox source.
+    The archive inbox is different: ``polylogue import`` stages approved
+    exports there, including ChatGPT ``.json`` files and zipped takeouts, so
+    it keeps the same suffix contract as the default inbox source. Other
+    additional roots use content detection over ordinary export formats.
 
     """
-    if not roots:
-        sources = list(default_sources(hermes_root=hermes_root))
-        if browser_capture_spool_path is not None:
-            spool = browser_capture_spool_path.expanduser()
-            sources = [source for source in sources if source.name != "browser-capture"]
-            sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
-        return tuple(sources)
-
     from polylogue.paths import archive_root, browser_capture_spool_root
 
     inbox_root = (archive_root() / "inbox").resolve(strict=False)
@@ -510,16 +505,27 @@ def _watch_sources_from_roots(
         if browser_capture_spool_path is not None
         else browser_capture_spool_root()
     ).resolve(strict=False)
-    explicit_sources: list[WatchSource] = []
+
+    sources = list(default_sources(hermes_root=hermes_root))
+    if browser_capture_spool_path is not None:
+        spool = browser_capture_spool_path.expanduser()
+        sources = [source for source in sources if source.name != "browser-capture"]
+        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
+
+    known_roots = {source.root.resolve(strict=False) for source in sources}
     for root in roots:
         resolved = root.resolve(strict=False)
+        if resolved in known_roots:
+            continue
         if resolved == inbox_root:
-            explicit_sources.append(WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES))
+            source = WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES)
         elif resolved == browser_root:
-            explicit_sources.append(WatchSource(name="browser-capture", root=root, suffixes=(".json",)))
+            source = WatchSource(name="browser-capture", root=root, suffixes=(".json",))
         else:
-            explicit_sources.append(WatchSource(name=root.name, root=root, suffixes=(".jsonl",)))
-    return tuple(explicit_sources)
+            source = WatchSource(name=root.name, root=root, suffixes=_ADDITIONAL_SOURCE_SUFFIXES)
+        sources.append(source)
+        known_roots.add(resolved)
+    return tuple(sources)
 
 
 def _active_index_db_path() -> Path:
@@ -3741,7 +3747,7 @@ def health_command(
     "roots",
     multiple=True,
     type=click.Path(exists=False, path_type=Path),
-    help="Override watch root (repeatable).",
+    help="Add a watch root alongside typed defaults (repeatable).",
 )
 @click.option(
     "--debounce-s",
@@ -3969,7 +3975,7 @@ def run_command(
     "roots",
     multiple=True,
     type=click.Path(exists=False, path_type=Path),
-    help="Override watch root (repeatable).",
+    help="Add a watch root alongside typed defaults (repeatable).",
 )
 @click.option(
     "--debounce-s",
@@ -4026,6 +4032,7 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
 
 
 __all__ = [
+    "default_sources",
     "health_command",
     "main",
     "run_command",
