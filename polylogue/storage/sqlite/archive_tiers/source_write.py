@@ -18,6 +18,7 @@ from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, Valida
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 
@@ -64,9 +65,7 @@ def _is_raw_failure_artifact_kind(artifact_kind: object) -> bool:
 
 def pending_raw_logical_source_key(*, origin: Origin | str, source_path: str, source_index: int, raw_id: str) -> str:
     """Return the typed identity used until a parser proves the session key."""
-    origin_value = _enum_value(origin)
-    if origin_value is None:
-        raise ValueError("origin is required for pending raw identity")
+    origin_value = require_vocabulary(origin, Origin, field="origin")
     return f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}{origin_value}:{source_index}:{source_path}:{raw_id}"
 
 
@@ -260,7 +259,7 @@ def record_capture_mode_observation(
     bytes were obtained (polylogue-buns AC1/AC2). A ``None`` capture_mode is
     a no-op: unknown provenance is not itself an observation.
     """
-    value = _enum_value(capture_mode)
+    value = require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None
     if value is None:
         return
     conn.execute(
@@ -348,7 +347,7 @@ def deterministic_raw_session_id(
     native_id: str | None = None,
 ) -> str:
     """Deterministic text identifier for an archive raw session."""
-    origin_value = _enum_value(origin)
+    origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
         raise ValueError("origin is required for raw session ids")
     digest = hashlib.sha256()
@@ -487,8 +486,8 @@ def refine_raw_origin(conn: sqlite3.Connection, *, raw_id: str, origin: Origin |
     placeholder so a confident origin is never silently overwritten; a genuine
     contradiction is raised by the identity assertions instead.
     """
-    origin_value = _enum_value(origin)
-    if origin_value is None or origin_value == Origin.UNKNOWN_EXPORT.value:
+    origin_value = require_vocabulary(origin, Origin, field="origin")
+    if origin_value == Origin.UNKNOWN_EXPORT.value:
         return
     conn.execute(
         "UPDATE raw_sessions SET origin = ? WHERE raw_id = ? AND origin = ?",
@@ -658,7 +657,7 @@ def write_source_raw_session(
     rollback-on-error itself.
     """
     conn.execute("PRAGMA foreign_keys = ON")
-    origin_value = _enum_value(origin)
+    origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
     blob_hash = deterministic_blob_hash(payload)
@@ -689,7 +688,7 @@ def write_source_raw_session(
             (
                 resolved_raw_id,
                 origin_value,
-                _enum_value(capture_mode),
+                require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
                 source_index,
@@ -700,10 +699,14 @@ def write_source_raw_session(
                 parsed_at_ms,
                 parse_error,
                 validated_at_ms,
-                _enum_value(validation_status),
+                require_vocabulary(validation_status, ValidationStatus, field="validation_status")
+                if validation_status is not None
+                else None,
                 validation_error,
                 validation_drift_count,
-                _enum_value(validation_mode),
+                require_vocabulary(validation_mode, ValidationMode, field="validation_mode")
+                if validation_mode is not None
+                else None,
                 _json_dumps(detection_warnings),
                 revision.logical_source_key if revision else None,
                 revision.kind.value if revision else "unknown",
@@ -735,7 +738,7 @@ def write_source_raw_session(
         if capture_mode is not None:
             conn.execute(
                 "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
-                (_enum_value(capture_mode), resolved_raw_id),
+                (require_vocabulary(capture_mode, Provider, field="capture_mode"), resolved_raw_id),
             )
         record_capture_mode_observation(
             conn,
@@ -816,7 +819,7 @@ def write_source_hook_event(
     which really is this row's primary key in ``raw_hook_events``.
     """
     conn.execute("PRAGMA foreign_keys = ON")
-    if _enum_value(origin) is None:
+    if require_vocabulary(origin, Origin, field="origin") is None:
         raise ValueError("origin is required for hook events")
     blob_hash = deterministic_blob_hash(payload)
     if is_blob_hash_excised(conn, blob_hash):
@@ -899,7 +902,7 @@ def write_source_raw_session_blob_ref(
     if len(blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
     conn.execute("PRAGMA foreign_keys = ON")
-    origin_value = _enum_value(origin)
+    origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
     if is_blob_hash_excised(conn, blob_hash):
@@ -925,7 +928,7 @@ def write_source_raw_session_blob_ref(
             (
                 resolved_raw_id,
                 origin_value,
-                _enum_value(capture_mode),
+                require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
                 source_index,
@@ -963,7 +966,7 @@ def write_source_raw_session_blob_ref(
         if capture_mode is not None:
             conn.execute(
                 "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
-                (_enum_value(capture_mode), resolved_raw_id),
+                (require_vocabulary(capture_mode, Provider, field="capture_mode"), resolved_raw_id),
             )
         record_capture_mode_observation(
             conn,
@@ -1312,11 +1315,11 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
         (
             artifact.artifact_id,
             raw_id,
-            _enum_value(artifact.origin),
+            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
             artifact.source_path,
             artifact.source_index,
             artifact.artifact_kind,
-            _enum_value(artifact.support_status),
+            require_vocabulary(artifact.support_status, ArtifactSupportStatus, field="artifact.support_status"),
             artifact.classification_reason,
             int(artifact.parse_as_session),
             int(artifact.schema_eligible),
@@ -1355,10 +1358,15 @@ def upsert_raw_artifact(
     )
     coordinate_params: tuple[object, ...]
     if failure_kind:
-        coordinate_params = (raw_id, _enum_value(artifact.origin), artifact.source_path, artifact.source_index)
+        coordinate_params = (
+            raw_id,
+            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
+            artifact.source_path,
+            artifact.source_index,
+        )
     else:
         coordinate_params = (
-            _enum_value(artifact.origin),
+            require_vocabulary(artifact.origin, Origin, field="artifact.origin"),
             artifact.source_path,
             artifact.source_index,
             *sorted(RAW_FAILURE_EVIDENCE_KINDS),
@@ -1436,7 +1444,7 @@ def _insert_hook_event(
         (hook_event.hook_event_id,),
     ).fetchone()
     incoming = (
-        _enum_value(hook_event.origin),
+        require_vocabulary(hook_event.origin, Origin, field="hook_event.origin"),
         hook_event.native_id,
         hook_event.session_native_id,
         hook_event.event_type,

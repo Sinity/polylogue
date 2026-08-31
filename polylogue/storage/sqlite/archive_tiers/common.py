@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from polylogue.core.enums import (
     PolylogueStrEnum,
     nullable_sql_check_in,
@@ -41,6 +43,20 @@ def literal_check(column: str, *values: str) -> str:
 def nullable_check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
     """Return a nullable enum CHECK expression."""
     return nullable_sql_check_in(column, enum_type)
+
+
+def require_vocabulary(value: object, vocabulary: type[PolylogueStrEnum] | Iterable[object], *, field: str) -> str:
+    """Return a persisted vocabulary value, rejecting values outside its set."""
+    candidate = str(value.value) if isinstance(value, PolylogueStrEnum) else str(value)
+    allowed = (
+        tuple(item.value for item in vocabulary)
+        if isinstance(vocabulary, type) and issubclass(vocabulary, PolylogueStrEnum)
+        else tuple(str(item.value) if isinstance(item, PolylogueStrEnum) else str(item) for item in vocabulary)
+    )
+    if candidate not in allowed:
+        choices = ", ".join(repr(item) for item in allowed)
+        raise ValueError(f"{field} must be one of: {choices}; got {candidate!r}")
+    return candidate
 
 
 def order_check(later: str, earlier: str, *, nullable: bool = True) -> str:
@@ -116,4 +132,5 @@ __all__ = [
     "literal_check",
     "nullable_check",
     "order_check",
+    "require_vocabulary",
 ]
