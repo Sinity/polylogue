@@ -20,7 +20,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import MembershipRevision, _relation, classify_membership_revisions
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
-from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution, session_revision_projection
+from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution, session_content_hash, session_revision_projection
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 
 
@@ -325,6 +325,28 @@ def test_block_reference_discriminator_leaves_unique_content_keys_unchanged() ->
     ]
 
     assert message_owner_resolution(first_references).keys == message_owner_resolution(other_references).keys
+
+def test_session_content_hash_degrades_ambiguous_attachment_to_unowned() -> None:
+    """A parseable session must survive an attachment owner ambiguity.
+
+    The strict revision projection still rejects ambiguous ownership. The
+    ingest content hash instead records the attachment without a guessed
+    message anchor, allowing the writer to retain the session and typed
+    attachment evidence.
+    """
+    repeated = [
+        _id_less("assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
+        for position in (0, 1)
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="drive-doc",
+        message_provider_id="",
+        message_position=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    assert session_content_hash(_session(repeated, [attachment]))
 
 
 def test_duplicate_stable_owner_evidence_without_physical_coordinate_fails_closed() -> None:

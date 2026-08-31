@@ -51,6 +51,7 @@ from polylogue.core.enums import (
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp
@@ -3850,7 +3851,12 @@ def _write_attachments(
     resolved_message_ids: dict[int, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     for attachment in attachments:
-        owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        try:
+            owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        except MessageOwnerAmbiguityError:
+            # The attachment remains represented by the session hash and raw
+            # evidence, but no message owner is safe to guess.
+            continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
             resolved_message_ids[id(attachment)] = message_id

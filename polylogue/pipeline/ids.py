@@ -906,6 +906,8 @@ def _session_hash_payload(
 
 def _session_hash_components(
     convo: ParsedSession,
+    *,
+    tolerate_ambiguous_attachment_owners: bool = False,
 ) -> tuple[list[dict[str, JSONValue]], list[dict[str, JSONValue]], list[dict[str, JSONValue]]]:
     """Build the hash-stable message/attachment/event payloads once.
 
@@ -925,13 +927,15 @@ def _session_hash_components(
         _message_hash_payload(message, comparison_id)
         for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
     ]
-    attachments_payload = [
-        _attachment_hash_payload(
-            attachment,
-            message_owner_anchor=attachment_message_owner_key(attachment, owner_resolution),
-        )
-        for attachment in convo.attachments
-    ]
+    attachments_payload: list[dict[str, JSONValue]] = []
+    for attachment in convo.attachments:
+        try:
+            owner_anchor = attachment_message_owner_key(attachment, owner_resolution)
+        except MessageOwnerAmbiguityError:
+            if not tolerate_ambiguous_attachment_owners:
+                raise
+            owner_anchor = None
+        attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
     session_events_payload = [
         {
             "event_index": event_index,
@@ -975,7 +979,9 @@ def session_content_hash(convo: ParsedSession) -> ContentHash:
     ``_EXCLUDED_FIELDS``; parsed fields may not silently fall through.
     """
     validate_semantic_hash_partition()
-    messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
+    messages_payload, attachments_payload, session_events_payload = _session_hash_components(
+        convo, tolerate_ambiguous_attachment_owners=True
+    )
     return ContentHash(
         _session_tree_hash(
             convo,
