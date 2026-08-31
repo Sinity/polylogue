@@ -252,7 +252,6 @@ def _claude_code_content_fallback(rng: random.Random, role: str, index: int, the
                 "type": "tool_result",
                 "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
                 "content": _text_for_role(rng, "assistant", turn_index=index, theme=theme),
-                "is_error": False,
             }
         ]
     # thinking
@@ -328,7 +327,6 @@ def _codex_content_fallback(rng: random.Random, role: str, index: int, theme: Se
                 "tool_use_id": str(uuid.UUID(int=rng.getrandbits(128), version=4)),
                 "content": text,
                 "text": text,
-                "is_error": False,
             }
         ]
     if block_type == "thinking":
