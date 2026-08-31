@@ -827,6 +827,11 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     }
     row["semantic_receipt"] = receipt
     row["receipt_schema_version"] = 1
+    # Keep the join identity addressable on the history row as well as in the
+    # versioned receipt.  This is provenance only; lifecycle state remains
+    # owned by AgentCTL and semantic status remains verifier-owned.
+    if "agentctl" in receipt:
+        row["agentctl"] = receipt["agentctl"]
     return row
 
 
