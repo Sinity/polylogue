@@ -30,6 +30,7 @@ from polylogue.sources.origin_specs import (
     public_origin_tokens,
     recognize_source_class,
     schema_observed_leaf_values,
+    topology_capability_census,
     undeclared_schema_values,
     validate_assembly_spec_parity,
     validate_stream_parser_parity,
@@ -155,6 +156,32 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_topology_capability_census_is_complete_and_typed() -> None:
+    """Every current origin has an explicit disposition for every dimension."""
+    census = topology_capability_census()
+    dimensions = {
+        "message_parent",
+        "message_branch_state",
+        "session_parent_target",
+        "inheritance_branch_point",
+        "parent_dispatch",
+    }
+    assert set(census) == set(Origin)
+    assert all(set(rows) == dimensions for rows in census.values())
+    assert all(
+        cell["state"] in {"carried", "positive-derived", "structurally-absent"}
+        and cell["evidence"]
+        and (cell["state"] != "structurally-absent" or cell["reason"])
+        for rows in census.values()
+        for cell in rows.values()
+    )
+
+    codex = census[Origin.CODEX_SESSION.value]
+    hermes = census[Origin.HERMES_SESSION.value]
+    assert codex["session_parent_target"]["state"] == "carried"
+    assert hermes["session_parent_target"]["state"] == "carried"
 
 
 def test_public_origin_projections_cover_declared_specs_coherently() -> None:
