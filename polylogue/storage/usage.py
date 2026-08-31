@@ -2384,18 +2384,30 @@ def _session_usage_source_ref(session_id: str, source: str) -> ObjectRef:
 def _cost_provenance_authority(
     provenance: str,
 ) -> Literal["provider-reported", "catalog-derived", "model-derived"]:
-    """Classify a legacy ``cost_provenance``/``cost_is_estimated`` label.
+    """Classify a legacy label for the profile token fallback.
 
-    Mirrors ``_usage_lane_authority`` above: an exact/provider-reported label
-    is treated as authoritative money, a prior catalog-priced computation is
-    ``catalog-derived``, and anything estimated/unknown is the weakest,
-    ``model-derived`` tier -- the same tier a stale profile estimate carries.
+    An exact/provider-reported label supplies structural token support, while
+    catalog-priced and estimated labels leave the profile token total at the
+    model-derived tier.
     """
 
     if provenance in {"exact", "provider_reported"}:
         return "provider-reported"
     if provenance in {"priced", "origin_reported", "catalog_priced"}:
         return "catalog-derived"
+    return "model-derived"
+
+
+def _legacy_cost_authority(
+    provenance: str,
+) -> Literal["provider-reported", "model-derived"]:
+    """Classify persisted money without equating it to a current reprice."""
+
+    if provenance in {"exact", "provider_reported"}:
+        return "provider-reported"
+    # Persisted catalog estimates can use an older price snapshot. The fresh
+    # catalog observation must therefore remain the stronger catalog-derived
+    # contribution during reconciliation.
     return "model-derived"
 
 
@@ -2587,7 +2599,7 @@ def _legacy_cost_evidence(
     fact_ref = _session_usage_fact_ref(session_id, "catalog-api-equivalent-cost")
     source_ref = _session_usage_source_ref(session_id, "cost_insight")
     known = cost_usd > 0
-    authority = _cost_provenance_authority(cost_provenance)
+    authority = _legacy_cost_authority(cost_provenance)
     exclusions: tuple[CoverageExclusion, ...] = ()
     if not known:
         exclusions = (CoverageExclusion(subject_ref=source_ref, reason="no_tokens"),)
@@ -2627,8 +2639,9 @@ class SessionUsageReconciliation:
     figure off that same profile row. This snapshot reconciles the token
     lane (``session_model_usage`` vs ``session_profiles``) and the money
     lane (a fresh catalog reprice of the winning tokens vs the legacy
-    persisted cost) independently, through EvidenceValue authority ordering
-    (provider-reported > structural/catalog-derived > model-derived).
+    persisted cost) independently. Cost reconciliation gives the fresh
+    catalog reprice precedence over persisted cost; exact provider money
+    remains explicitly labeled provider-reported in cost computation.
 
     Nothing is discarded: every input source survives as a labeled
     ``contributions`` entry on the reconciled EvidenceValue, so a caller can

@@ -1093,6 +1093,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # cannot distinguish provider dollars from catalog computation.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=82,
+        # Session insight cost provenance now describes the source of
+        # aggregate dollars. Existing derived rows need semantic reprocessing
+        # to replace the old provider-reported label where catalog pricing was
+        # used.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

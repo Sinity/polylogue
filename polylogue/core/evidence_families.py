@@ -215,7 +215,9 @@ SESSION_USAGE_RECONCILED_COST_FAMILY: Final = FactFamilySpec(
     ),
     allowed_states=frozenset({"known", "unknown"}),
     allowed_authorities=frozenset({"provider-reported", "catalog-derived", "model-derived"}),
-    authority_precedence=("provider-reported", "catalog-derived", "model-derived"),
+    # A current catalog reprice supersedes a persisted cost, including rows
+    # written before aggregate cost provenance was corrected.
+    authority_precedence=("catalog-derived", "provider-reported", "model-derived"),
 )
 
 _COMMON_AXES: Final[frozenset[EvidenceAxis]] = frozenset(
