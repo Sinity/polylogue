@@ -370,6 +370,18 @@ def apply_index_fast_forward(conn: sqlite3.Connection, plan: IndexFastForwardPla
             raise
         else:
             conn.commit()
+    # Derived-tier identity is part of the current index contract and must
+    # be stamped on copy-forward generations as well as fresh boots.
+    from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        stamp_derived_schema_identity(conn, ArchiveTier.INDEX.value)
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
     _enqueue_targeted_reprocess_debt(conn, plan)
 
 

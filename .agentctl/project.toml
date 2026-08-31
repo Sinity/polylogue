@@ -76,6 +76,7 @@ flag = "--apply"
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
+estimate_memory_bytes = 16000000000
 # Nightly master-boundary corpus: failures reach the coordinator through the
 # events spool; green nights stay silent. Off-peak, odd minute by convention.
 schedule = "*-*-* 03:17:00"

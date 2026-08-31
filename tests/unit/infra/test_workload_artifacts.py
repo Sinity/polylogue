@@ -1429,6 +1429,7 @@ print(json.dumps({"key": artifact.manifest.key, "root": str(artifact.root)}))
 """
 
 
+@pytest.mark.timeout(600)
 @pytest.mark.uses_real_clock("spawns a fresh interpreter; no timestamp assertions")
 def test_seeded_archive_corruption_is_refused_by_a_fresh_process(tmp_path: Path) -> None:
     """The memo is per-process: a NEW process still validates in full.

@@ -118,6 +118,9 @@ def _canonical_schema_objects() -> dict[str, str]:
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX])
         ensure_runtime_indexes_sync(conn)
+        from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+        conn.executescript(DERIVED_SCHEMA_META_DDL)
         return _schema_objects(conn)
 
 

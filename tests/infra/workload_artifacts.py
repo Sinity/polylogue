@@ -458,35 +458,49 @@ def build_immutable_tree(
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return None
 
-    with lock_path.open("a+") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        cached = load()
-        if cached is not None:
-            return cached
-        if final_root.exists():
-            _remove_tree(final_root)
-        staging = staging_root / f"{name}.{uuid.uuid4().hex}"
-        staging.mkdir()
-        try:
-            builder(staging)
-            files = _archive_files(staging)
-            manifest = {
-                "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
-                "key": key,
-                "files": files,
-            }
-            (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-            _publish_sealed_staging(staging, final_root)
-        except Exception:
-            _remove_tree(staging)
-            raise
-        artifact = load()
-        if artifact is None:
-            raise RuntimeError("published immutable tree failed validation")
-        return artifact
+    # Cache GC takes the same cache-root capability before it inspects or
+    # removes a final artifact. Holding it across validation, construction,
+    # and publication closes the gap between the per-key lock and the final
+    # tree lock, including for generic fixture trees.
+    domain = _open_lock_domain(cache_root)
+    try:
+        with lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            cached = load()
+            if cached is not None:
+                return cached
+            if final_root.exists():
+                _remove_tree(final_root)
+            staging = staging_root / f"{name}.{uuid.uuid4().hex}"
+            staging.mkdir()
+            try:
+                builder(staging)
+                files = _archive_files(staging)
+                manifest = {
+                    "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
+                    "key": key,
+                    "files": files,
+                }
+                (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+                _publish_sealed_staging(staging, final_root)
+            except Exception:
+                _remove_tree(staging)
+                raise
+            artifact = load()
+            if artifact is None:
+                raise RuntimeError("published immutable tree failed validation")
+            return artifact
+    finally:
+        _release_lock_domain(domain)
 
 
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
+    """Clone an immutable tree while pinning its publication capability."""
+    with _shared_artifact_read_locks(artifact.root):
+        return _clone_immutable_tree_unlocked(artifact, destination)
+
+
+def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
     """Clone an immutable tree into a private writable root."""
     if _is_symlink_node(destination):
         raise ValueError(f"clone destination is a symlink: {destination}")
@@ -3150,30 +3164,19 @@ def _authenticate_clone_copy(
 
 
 @contextlib.contextmanager
-def _shared_seeded_artifact_read_locks(artifact: SeededArchiveArtifact) -> Iterator[None]:
-    """Hold the cache, per-key, and source-root leases during a clone.
-
-    Lock order is cache root, per-key lock, then final artifact root.  GC
-    acquires the same sequence exclusively, so it cannot unlink the source
-    after validation and before the clone has finished reading it.
-    """
-    cache_root = artifact.root.parent.parent
+def _shared_artifact_read_locks(root: Path) -> Iterator[None]:
+    """Hold cache and publication-root leases while reading an artifact."""
+    cache_root = root.parent.parent
     cache_fd = _open_pinned_dir(cache_root)
     key_fd = -1
     root_fd = -1
     try:
         fcntl.flock(cache_fd, fcntl.LOCK_SH)
         try:
-            key_fd = _open_authenticated_lock(cache_root / ".locks" / f"{artifact.root.name}.lock", shared=True)
+            key_fd = _open_authenticated_lock(cache_root / ".locks" / f"{root.name}.lock", shared=True)
         except FileNotFoundError:
-            # Keep the small generic symlink-rejection fixture usable. Real
-            # seeded artifacts always have the cache lock domain, and GC
-            # safety for those artifacts uses all three locks above.
-            root_fd = _open_pinned_dir(artifact.root)
-            fcntl.flock(root_fd, fcntl.LOCK_SH)
-            yield
-            return
-        root_fd = _open_pinned_dir(artifact.root)
+            pass
+        root_fd = _open_pinned_dir(root)
         fcntl.flock(root_fd, fcntl.LOCK_SH)
         yield
     finally:
@@ -3188,6 +3191,18 @@ def _shared_seeded_artifact_read_locks(artifact: SeededArchiveArtifact) -> Itera
         with contextlib.suppress(OSError):
             fcntl.flock(cache_fd, fcntl.LOCK_UN)
         os.close(cache_fd)
+
+
+@contextlib.contextmanager
+def _shared_seeded_artifact_read_locks(artifact: SeededArchiveArtifact) -> Iterator[None]:
+    """Hold the cache, per-key, and source-root leases during a clone.
+
+    Lock order is cache root, per-key lock, then final artifact root.  GC
+    acquires the same sequence exclusively, so it cannot unlink the source
+    after validation and before the clone has finished reading it.
+    """
+    with _shared_artifact_read_locks(artifact.root):
+        yield
 
 
 def acquire_query_only_seeded_archive(
