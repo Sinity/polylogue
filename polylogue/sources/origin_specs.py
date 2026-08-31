@@ -59,6 +59,7 @@ TopologyCapabilityDimension = Literal[
     "inheritance_branch_point",
     "parent_dispatch",
 ]
+SourceFrontierKind = Literal["exact-prefix", "claude-header-body"]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
@@ -579,6 +580,8 @@ class OriginSpec:
     #: Compatibility-only and non-session evidence origins can remain in the
     #: authoritative enum without being advertised as query choices.
     public_filter: bool = True
+    #: The source-level continuation law consumed by acquisition and cuts.
+    frontier_kind: SourceFrontierKind = "exact-prefix"
     #: Ordered executable detector claims. Parser modules keep their shape
     #: predicates; this declaration owns which predicates may classify input.
     detector_bindings: tuple[DetectorBinding, ...] = ()
@@ -904,6 +907,7 @@ def _claude_code_spec() -> OriginSpec:
             "reparse Claude Code sessions and re-inventory workflow artifacts when the Claude parser, "
             "orchestration artifact parser, or sidecar assembly fingerprint changes"
         ),
+        frontier_kind="claude-header-body",
         artifact_rules=(
             OriginArtifactRule(
                 kind="tool_result_sidecar",
@@ -2095,6 +2099,11 @@ def parser_fingerprint_for_origin(origin: Origin | str) -> str:
     return _ORIGIN_SPECS_BY_ORIGIN[normalized].parser_fingerprint()
 
 
+def frontier_kind_for_origin(origin: Origin | str) -> SourceFrontierKind:
+    """Return the declared source continuation law for one origin."""
+    return _ORIGIN_SPECS_BY_ORIGIN[Origin.from_string(origin)].frontier_kind
+
+
 def validate_stream_parser_parity(stream_record_providers: frozenset[Provider]) -> tuple[OriginSpecDiagnostic, ...]:
     """Check that declared ``stream_parser_path`` presence matches dispatch's stream-record providers.
 
@@ -2173,6 +2182,7 @@ def validate_assembly_spec_parity(
 __all__ = [
     "DROPPED_VALUE_VOCABULARIES",
     "ORIGIN_SPECS",
+    "frontier_kind_for_origin",
     "ORIGIN_SPEC_REGISTRY",
     "ArtifactParsePolicy",
     "DroppedValueVocabulary",

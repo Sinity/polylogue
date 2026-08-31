@@ -89,6 +89,40 @@ def test_jsonl_complete_prefix_is_lexical_and_newline_bound(
     )
 
 
+def test_claude_frontier_accepts_header_replacement_and_conserves_body(tmp_path: Path) -> None:
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="mutable-header",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    assert processor._record_append_cursor(plan)
+    original_body = path.read_bytes().split(b"\n", 1)[1]
+    replacement = b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"new"},"uuid":"header","sessionId":"mutable-header"}\n'
+    second_append = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    path.write_bytes(replacement + original_body + second_append)
+
+    revised = processor._append_plan(path)
+
+    assert isinstance(revised, _AppendPlan)
+    assert revised.payload == second_append
+    assert revised.start_offset == len(replacement) + len(original_body)
+
+
+def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="rewritten-body",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    assert processor._record_append_cursor(plan)
+    header, body = path.read_bytes().split(b"\n", 1)
+    path.write_bytes(header + b"\n" + body.replace(b'"zero"', b'"changed"', 1))
+
+    assert processor._append_plan(path) is None
+
+
 @pytest.mark.parametrize(
     ("provider", "stable_session_identity", "status"),
     [
