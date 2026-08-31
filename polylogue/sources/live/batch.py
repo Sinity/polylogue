@@ -34,7 +34,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     append_source_revision,
 )
-from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_replay
+from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
@@ -3817,6 +3817,23 @@ class LiveBatchProcessor:
         except ValueError:
             return None
         if not replay_plan.accepted_chain:
+            return None
+        candidate_by_id = {candidate.raw_id: candidate for candidate in candidates}
+        if any(
+            application.decision is ApplicationDecision.AMBIGUOUS
+            and candidate_by_id[application.raw_id].kind is RawRevisionKind.APPEND
+            for application in replay_plan.applications
+        ):
+            # Durable ambiguity is a full-snapshot boundary.  In particular,
+            # do not reconstruct from a baseline behind an overlapping or
+            # legacy append whose byte frontier was never recorded.
+            return None
+        if any(
+            candidate.kind is RawRevisionKind.APPEND
+            and candidate.authority is RawRevisionAuthority.BYTE_PROVEN
+            and (candidate.append_start_offset is None or candidate.append_end_offset is None)
+            for candidate in candidates
+        ):
             return None
         head_raw_id = replay_plan.accepted_chain[-1]
         head = next(candidate for candidate in candidates if candidate.raw_id == head_raw_id)

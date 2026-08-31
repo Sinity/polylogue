@@ -184,6 +184,7 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             "older byte-proven full baseline",
         )
 
+    accepted_edges: list[tuple[int, int]] = []
     while True:
         children = [
             candidate
@@ -197,6 +198,19 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
         ]
         if not children:
             break
+        # A later-generation same-start observation with a longer end is a
+        # superseding observation of the same frontier.  Equal-generation
+        # candidates remain an unresolved branch.
+        if len(children) > 1 and len({child.acquisition_generation for child in children}) > 1:
+            longest_end = max(child.append_end_offset or 0 for child in children)
+            superseding = [
+                child
+                for child in children
+                if child.acquisition_generation == max(item.acquisition_generation for item in children)
+                and child.append_end_offset == longest_end
+            ]
+            if superseding:
+                children = superseding
         if len(children) > 1:
             for child in children:
                 applications[child.raw_id] = RevisionApplication(
@@ -217,6 +231,31 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
         )
         accepted = child
         accepted_chain.append(child.raw_id)
+        assert child.append_start_offset is not None
+        assert child.append_end_offset is not None
+        accepted_edges.append((child.append_start_offset, child.append_end_offset))
+
+    # A start strictly inside an accepted append window cannot be replayed as
+    # a continuation: admitting it would splice two incompatible byte ranges.
+    # Same-start re-observations are handled above as supersession.
+    accepted_ids = set(accepted_chain)
+    for candidate in candidates:
+        if (
+            candidate.raw_id in accepted_ids
+            or candidate.kind is not RawRevisionKind.APPEND
+            or candidate.authority is not RawRevisionAuthority.BYTE_PROVEN
+            or candidate.append_start_offset is None
+            or candidate.append_end_offset is None
+        ):
+            continue
+        if any(start < candidate.append_start_offset < end for start, end in accepted_edges):
+            applications[candidate.raw_id] = RevisionApplication(
+                candidate.raw_id,
+                ApplicationDecision.AMBIGUOUS,
+                accepted.raw_id,
+                accepted.source_revision,
+                "append window starts inside an accepted append window",
+            )
 
     for candidate in candidates:
         if candidate.raw_id in applications:
