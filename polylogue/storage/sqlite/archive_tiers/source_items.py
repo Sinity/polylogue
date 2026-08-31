@@ -14,6 +14,7 @@ from enum import StrEnum
 
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
+from polylogue.security.excision_policy import ExcisionPolicySnapshot, read_excision_policy_projection
 
 from .common import require_vocabulary
 from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
@@ -65,6 +66,7 @@ def publish_source_generation(
     origin: Origin | str | None = None,
     source_paths: Mapping[str, str] | None = None,
     attachments: tuple[SourceAttachment, ...] = (),
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> tuple[str, ...]:
     """Publish every manifest coordinate before any read/decode/admission work."""
     if len(manifest_digest) != 64:
@@ -103,6 +105,41 @@ def publish_source_generation(
                 observed_at_ms,
             ),
         )
+    if policy_snapshot is not None:
+        conn.execute("""CREATE TABLE IF NOT EXISTS excision_policy_projections (
+            source_generation_id TEXT PRIMARY KEY REFERENCES source_generations(source_generation_id) ON DELETE CASCADE,
+            policy_digest TEXT NOT NULL CHECK(length(policy_digest) = 64),
+            user_generation INTEGER NOT NULL CHECK(user_generation >= 0),
+            audit_generation INTEGER NOT NULL CHECK(audit_generation >= 0),
+            audit_head TEXT NOT NULL CHECK(length(audit_head) = 64),
+            assertion_refs_json TEXT NOT NULL DEFAULT '[]',
+            generated_at_ms INTEGER NOT NULL CHECK(generated_at_ms >= 0)
+        ) STRICT""")
+        conn.execute(
+            """INSERT INTO excision_policy_projections(
+               source_generation_id, policy_digest, user_generation, audit_generation,
+               audit_head, assertion_refs_json, generated_at_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_generation_id) DO UPDATE SET
+                 policy_digest=excluded.policy_digest,
+                 user_generation=excluded.user_generation,
+                 audit_generation=excluded.audit_generation,
+                 audit_head=excluded.audit_head,
+                 assertion_refs_json=excluded.assertion_refs_json,
+                 generated_at_ms=excluded.generated_at_ms""",
+            (
+                source_generation_id,
+                policy_snapshot.digest,
+                policy_snapshot.user_generation,
+                policy_snapshot.audit_generation,
+                policy_snapshot.audit_head,
+                json.dumps(policy_snapshot.assertion_refs, separators=(",", ":")),
+                observed_at_ms,
+            ),
+        )
+        # Exercise the same production read path that validates a generation
+        # binding after projection replacement.
+        read_excision_policy_projection(conn, source_generation_id)
     record_source_attachments(
         conn,
         source_generation_id=source_generation_id,
