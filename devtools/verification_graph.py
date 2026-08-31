@@ -22,6 +22,25 @@ from devtools.testmon_bootstrap import canonical_test_nodeid
 GRAPH_PROTOCOL = 1
 GRAPH_ROOTS = Path(".cache/verify/graph/roots")
 GRAPH_CHILDREN = Path(".cache/verify/graph/children")
+# A worktree may read immutable roots from another checkout (normally the main
+# checkout that ran the complete corpus) instead of copying them. The roots are
+# content-addressed and eligibility is re-validated on every read, so sharing
+# is safe by construction; publication never writes through the indirection.
+GRAPH_PARENT_ENV = "POLYLOGUE_VERIFY_GRAPH_PARENT"
+
+
+def _root_bases(root: Path) -> tuple[Path, ...]:
+    """Directories that may hold immutable graph roots, local first."""
+    bases = [root / GRAPH_ROOTS]
+    external = os.environ.get(GRAPH_PARENT_ENV)
+    if external:
+        candidate = Path(external)
+        if candidate.name != "roots":
+            candidate = candidate / GRAPH_ROOTS
+        if candidate != bases[0]:
+            bases.append(candidate)
+    return tuple(bases)
+
 
 # These are deliberately explicit.  Adding an input is an authority change,
 # and the mutation matrix can enumerate this list rather than trusting a
@@ -251,24 +270,29 @@ def publish_selected_child(
 
 def eligible_root(root: Path, graph_digest: str) -> Path | None:
     """Return a root only when its immutable manifest is structurally eligible."""
-    path = root / GRAPH_ROOTS / graph_digest / "manifest.json"
-    payload = _read(path)
-    if payload is None or payload.get("kind") != "verification-graph-root":
-        return None
-    if payload.get("graph_digest") != graph_digest or payload.get("complete") is not True:
-        return None
-    if payload.get("terminal_status") != "success" or payload.get("selected") is not False:
-        return None
-    return path
+    for base in _root_bases(root):
+        path = base / graph_digest / "manifest.json"
+        payload = _read(path)
+        if payload is None or payload.get("kind") != "verification-graph-root":
+            continue
+        if payload.get("graph_digest") != graph_digest or payload.get("complete") is not True:
+            continue
+        if payload.get("terminal_status") != "success" or payload.get("selected") is not False:
+            continue
+        return path
+    return None
 
 
 def latest_eligible_root(root: Path) -> tuple[str, Path] | None:
     """Find the newest eligible root without treating directory order as authority."""
     candidates: list[tuple[str, float, Path]] = []
-    base = root / GRAPH_ROOTS
-    if not base.is_dir():
+    manifests: list[Path] = []
+    for base in _root_bases(root):
+        if base.is_dir():
+            manifests.extend(base.glob("*/manifest.json"))
+    if not manifests:
         return None
-    for manifest in base.glob("*/manifest.json"):
+    for manifest in manifests:
         payload = _read(manifest)
         if payload is None:
             continue

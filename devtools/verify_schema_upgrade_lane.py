@@ -187,7 +187,10 @@ def _render_archive_ddl(ref: str | None) -> dict[ArchiveTier, str]:
         capture_output=True,
         cwd=ROOT,
     ).stdout
-    with tempfile.TemporaryDirectory(prefix="polylogue-schema-", dir="/realm/tmp/work") as checkout:
+    scratch = "/realm/tmp/work"
+    with tempfile.TemporaryDirectory(
+        prefix="polylogue-schema-", dir=scratch if os.path.isdir(scratch) else None
+    ) as checkout:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
             tar.extractall(checkout, filter="data")
         (Path(checkout) / "polylogue" / "_build_info.py").write_text(
