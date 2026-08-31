@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from polylogue.logging import BoundLoggerLike
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,7 +490,41 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
             conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
 
 
-def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3.Connection:
+def _archive_tier_for_path(path: str | Path) -> ArchiveTier | None:
+    """Resolve a conventional archive filename without importing at module load."""
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    return next((tier for tier in ArchiveTier if Path(path).name == f"{tier.value}.db"), None)
+
+
+def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: ArchiveTier | None) -> None:
+    """Reject a known archive tier before any caller can issue SQL against it."""
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    resolved_tier = tier if tier is not None else _archive_tier_for_path(path)
+    if resolved_tier is None:
+        return
+    try:
+        expected = ARCHIVE_VERSION_BY_TIER[resolved_tier]
+    except KeyError as exc:
+        raise ValueError(f"unknown archive tier: {resolved_tier!r}") from exc
+    found = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if found != expected:
+        raise SchemaSkew(
+            tier=resolved_tier.value,
+            expected=expected,
+            found=found,
+            remedy="rebuild or migrate the tier with the current runtime before retrying",
+        )
+
+
+def open_connection(
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    tier: ArchiveTier | None = None,
+) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
     This is a lightweight one-shot factory: it opens the file, applies the
@@ -502,6 +537,7 @@ def open_connection(path: str | Path, *, timeout: float = DB_TIMEOUT) -> sqlite3
     """
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
+        _assert_schema_supported(conn, path, tier)
         for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
@@ -519,6 +555,7 @@ def open_daemon_connection(
     *,
     timeout: float = DB_TIMEOUT,
     busy_timeout_ms: int | None = None,
+    tier: ArchiveTier | None = None,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection for daemon maintenance/ops writes.
 
@@ -529,6 +566,7 @@ def open_daemon_connection(
     """
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
+        _assert_schema_supported(conn, path, tier)
         for stmt in DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS:
             if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
                 stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
@@ -570,6 +608,7 @@ def open_readonly_connection(
     timeout: float = READ_DB_TIMEOUT,
     immutable: bool = False,
     opened_main_fd: int | None = None,
+    tier: ArchiveTier | None = None,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -605,6 +644,7 @@ def open_readonly_connection(
         database_uri = descriptor_uri
     conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
     try:
+        _assert_schema_supported(conn, path, tier)
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
     except BaseException:
