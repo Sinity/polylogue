@@ -183,11 +183,10 @@ def test_file_probe_exceptions_log_and_fail_toward_work(
     paths = [tmp_path / "one.jsonl", tmp_path / "two.jsonl"]
     session_ids = ["codex-session:s1", "codex-session:s2"]
 
-    def locked_connection(_path: Path, *, timeout: float) -> sqlite3.Connection:
-        del timeout
+    def locked_connection(*_args: object, **_kwargs: object) -> sqlite3.Connection:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", locked_connection)
+    monkeypatch.setattr(sqlite3, "connect", locked_connection)
     warning_exc_info: list[object] = []
     real_warning = stages.logger.warning
 
