@@ -145,6 +145,13 @@ cache = "none"
 timeout_seconds = 7200
 scratch = "nvme"
 
+[operations.harvest.verdict]
+# The domain verdict decides the terminal phase: a refused publication
+# (red gate, rebase conflict) must not read as a succeeded job (sinnix-u9if).
+success = ["HARVEST_OK", "HARVEST_EMPTY"]
+refusal = ["GATE_RED", "REBASE_CONFLICT"]
+failure = ["HARVEST_ERROR"]
+
 [operations.harvest.parameters.authorize]
 type = "bool"
 flag = "--authorize"
