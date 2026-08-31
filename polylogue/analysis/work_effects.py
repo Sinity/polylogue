@@ -148,8 +148,6 @@ class GitCommitEffectAdapter:
         since_ms: int | None = None,
         until_ms: int | None = None,
     ) -> tuple[ObservedRepositoryEffect, ...]:
-        if not (self.repo_path / ".git").exists():
-            raise EffectAdapterUnavailableError(f"{self.repo_path} is not a git repository")
         head_sha = _run_git(self.repo_path, ["rev-parse", self.ref])
         if head_sha is None:
             raise EffectAdapterUnavailableError(

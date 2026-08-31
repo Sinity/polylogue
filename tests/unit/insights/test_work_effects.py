@@ -95,6 +95,24 @@ def test_git_commit_adapter_reads_real_commit_history(tmp_path: Path) -> None:
     assert effect.repository_snapshot_ref.kind == "context-snapshot"
 
 
+def test_git_commit_adapter_accepts_repository_subdirectory(tmp_path: Path) -> None:
+    """A repository path may identify a directory below the checkout root.
+
+    Anti-vacuity: requiring ``repo_path/.git`` to exist makes this fail because
+    the adapter is deliberately given a nested directory.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    sha = _commit(repo, filename="a.txt", message="fix: collect from a nested path")
+    subdirectory = repo / "nested"
+    subdirectory.mkdir()
+
+    effects = GitCommitEffectAdapter(repo_path=subdirectory).collect()
+
+    assert [effect.ref.object_id for effect in effects] == [sha]
+
+
 def test_git_commit_adapter_time_bounds_exclude_out_of_window_commits(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
