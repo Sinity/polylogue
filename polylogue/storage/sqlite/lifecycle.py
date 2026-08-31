@@ -1061,6 +1061,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=78,
+        # Message identity provenance is assigned by the parsed-session
+        # lowering path. Existing rows require replay because native ids that
+        # collide are deliberately downgraded to positional identity.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

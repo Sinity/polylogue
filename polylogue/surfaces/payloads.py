@@ -715,6 +715,7 @@ class SessionFlagsPayload(SurfacePayloadModel):
 
 _MESSAGE_MASK: tuple[tuple[str, str], ...] = (
     ("id", "id"),
+    ("identity_source", "identity_source"),
     ("role", "role"),
     ("text", "text"),
     ("timestamp", "timestamp"),
@@ -851,6 +852,7 @@ _MessageRenderEnvelopeBase = _create_projection_model(
     default_overrides=_MESSAGE_DEFAULT_OVERRIDES,
     field_order=(
         "id",
+        "identity_source",
         "role",
         "text",
         "target_ref",
@@ -1119,6 +1121,7 @@ def message_render_envelope_from_domain(
 ) -> MessageRenderEnvelope:
     values = _domain_values(message, _MESSAGE_MASK)
     values.update(
+        identity_source=getattr(message, "identity_source", "positional"),
         role=role_label(message.role),
         text=message.text or "",
         message_type=role_label(getattr(message, "message_type", "message") or "message"),

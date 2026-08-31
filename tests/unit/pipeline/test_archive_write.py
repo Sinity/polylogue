@@ -89,6 +89,38 @@ async def test_writes_new_session_and_message_rows(async_backend: SQLiteBackend)
     assert await _count(async_backend, "SELECT COUNT(*) FROM messages WHERE session_id = ?", session_id) == 1
 
 
+async def test_writer_records_identity_source_for_native_and_positional_messages(
+    async_backend: SQLiteBackend,
+) -> None:
+    """The write-path assignment, not the generated id shape, is authoritative."""
+    session = ParsedSession(
+        source_name=Provider.UNKNOWN,
+        provider_session_id="identity-source-conv",
+        title="Identity source",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="native-message", role=Role.USER, text="native"),
+            ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="positional"),
+        ],
+        attachments=[],
+    )
+
+    session_id = await ingest_session(session, async_backend)
+
+    async with async_backend.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT native_id, identity_source FROM messages WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            )
+        ).fetchall()
+    assert [(row["native_id"], row["identity_source"]) for row in rows] == [
+        ("native-message", "native"),
+        (None, "positional"),
+    ]
+
+
 async def test_idempotent_reingest_leaves_one_session_and_stable_hash(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.UNKNOWN,

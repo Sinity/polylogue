@@ -15,6 +15,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Origin
 
 class Message(MessageRuntimeMixin, BaseModel):
     id: str
+    identity_source: str = "positional"
     role: Role
     text: str | None = None
     timestamp: datetime | None = None

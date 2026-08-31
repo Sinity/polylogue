@@ -2381,6 +2381,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) ->
     ]
     return Message(
         id=message.message_id,
+        identity_source=message.identity_source,
         role=Role.normalize(message.role),
         text=text,
         timestamp=parse_archive_datetime(message.occurred_at),
