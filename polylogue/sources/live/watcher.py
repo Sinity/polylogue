@@ -1619,9 +1619,10 @@ class LiveWatcher:
             return _ArchivedCursorReconciliation.UNAVAILABLE
         source_provider = provider_from_origin(Origin.from_string(str(origin))) if origin is not None else None
         if source_provider is Provider.CLAUDE_CODE:
-            tail_hash = claude_semantic_frontier_for_prefix(path, archived_size)
-            if tail_hash is None:
+            semantic_tail_hash = claude_semantic_frontier_for_prefix(path, archived_size)
+            if semantic_tail_hash is None:
                 return _ArchivedCursorReconciliation.INCOMPATIBLE
+            tail_hash = semantic_tail_hash
         else:
             tail_hash = encode_cursor_hash_authority(
                 content_fingerprint,
