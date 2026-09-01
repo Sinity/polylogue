@@ -269,6 +269,8 @@ class VerifyRun:
         missing_executable_paths: Sequence[str] = (),
         runtime_data_paths: Sequence[str] = (),
         environment_digest: str | None = None,
+        packages_digest: str | None = None,
+        plan_digest: str | None = None,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -277,6 +279,8 @@ class VerifyRun:
             "missing_executable_paths": list(missing_executable_paths),
             "runtime_data_paths": list(runtime_data_paths),
             "environment_digest": environment_digest,
+            "packages_digest": packages_digest,
+            "plan_digest": plan_digest,
         }
         self.write()
 
@@ -793,6 +797,7 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
             "exit_code",
             "diagnosis",
             "artifact_dir",
+            "git_dirty",
             "testmon_selection",
             "pytest_aggregate",
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
     classify_native_testmon_changes,
+    installed_packages_digest,
     prepare_native_testmon_environment,
 )
 from devtools.toolchain import venv_bin, venv_python
@@ -503,10 +505,27 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
     return VerificationScope.AFFECTED
 
 
-def _corpus_already_verified(*, head: str, environment: str) -> str | None:
-    """The run id of a successful complete-corpus run at this head and environment, if any."""
+def _execution_plan_digest() -> str:
+    """Inputs of the whole verification plan beyond Python collection: worker
+    count and the JavaScript toolchain the js-tests gate runs under."""
+    node = shutil.which("node")
+    node_version = ""
+    if node:
+        try:
+            node_version = subprocess.run(
+                [node, "--version"], capture_output=True, text=True, timeout=10, check=False
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            node_version = "unavailable"
+    payload = {"workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""), "node": node_version}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _corpus_already_verified(*, head: str, environment: str, packages: str, plan: str) -> str | None:
+    """The run id of the newest complete-corpus attempt at this head, environment,
+    package set, and execution plan, if that attempt was a clean-tree success."""
     for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
-        if row.get("tier") != "all" or row.get("status") != "success":
+        if row.get("tier") != "all":
             continue
         receipt = row.get("semantic_receipt")
         selection = row.get("testmon_selection")
@@ -514,12 +533,25 @@ def _corpus_already_verified(*, head: str, environment: str) -> str | None:
         if not (isinstance(receipt, Mapping) and isinstance(selection, Mapping) and isinstance(aggregate, Mapping)):
             continue
         if (
-            receipt.get("source_revision") == head
-            and selection.get("environment_digest") == environment
+            receipt.get("source_revision") != head
+            or selection.get("environment_digest") != environment
+            or selection.get("packages_digest") != packages
+            or selection.get("plan_digest") != plan
+        ):
+            continue
+        if aggregate.get("covered_by_run"):
+            # A skip is not an attempt; the attempt it reused is older.
+            continue
+        # The newest attempt decides: a later failed recompute must not be
+        # hidden behind an older green.
+        if (
+            row.get("status") == "success"
+            and row.get("git_dirty") is False
             and aggregate.get("complete_corpus_covered") is True
         ):
             run_id = row.get("run_id")
             return run_id if isinstance(run_id, str) else None
+        return None
     return None
 
 
@@ -761,6 +793,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 sys.stderr.write(f"verify: {exc}\n")
                 return 125
+            packages = installed_packages_digest()
+            plan = _execution_plan_digest()
             run.record_selection(
                 selection_mode=mode,
                 state_status=preparation.local_state.status,
@@ -768,9 +802,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 missing_executable_paths=preparation.local_state.missing_executable_paths,
                 runtime_data_paths=impact.runtime_data_paths,
                 environment_digest=preparation.environment_name,
+                packages_digest=packages,
+                plan_digest=plan,
             )
-            if args.all_tests and not args.recompute:
-                covered = _corpus_already_verified(head=head, environment=preparation.environment_name)
+            if args.all_tests and not args.recompute and preparation.local_state.valid:
+                # A graph that needs bootstrapping is itself a reason to run:
+                # the skip covers verification, not the graph.
+                covered = _corpus_already_verified(
+                    head=head, environment=preparation.environment_name, packages=packages, plan=plan
+                )
                 if covered is not None and not git_dirty(ROOT):
                     # The corpus at this head under this environment is already
                     # a recorded fact; rerunning it changes nothing but the

@@ -581,7 +581,7 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
         lambda *_a, **_k: SimpleNamespace(
             selection_mode="affected",
             environment_name="env-1",
-            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=()),
+            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
         ),
     )
     monkeypatch.setattr(
@@ -592,12 +592,19 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
                 "tier": "all",
                 "status": "success",
                 "run_id": "run-prior",
+                "git_dirty": False,
                 "semantic_receipt": {"source_revision": "head"},
-                "testmon_selection": {"environment_digest": "env-1"},
+                "testmon_selection": {
+                    "environment_digest": "env-1",
+                    "packages_digest": "pkgs-1",
+                    "plan_digest": "plan-1",
+                },
                 "pytest_aggregate": {"complete_corpus_covered": True},
             }
         ],
     )
+    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
+    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: "plan-1")
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
     def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
@@ -608,3 +615,47 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
     assert verify._main(["--all"]) == 0
     assert history["diagnosis"] == "corpus_already_verified"
     assert history["pytest_aggregate"]["covered_by_run"] == "run-prior"
+
+
+def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity, one clause each: a moved package set or plan runs; a dirty
+    source run is not coverage; a newer failed recompute is not hidden behind
+    an older green; a prior skip is not an attempt."""
+
+    def row(
+        run_id: str,
+        *,
+        status: str = "success",
+        dirty: bool = False,
+        packages: str = "pkgs-1",
+        plan: str = "plan-1",
+        covered_by: str | None = None,
+    ) -> dict[str, Any]:
+        aggregate: dict[str, Any] = {"complete_corpus_covered": covered_by is None}
+        if covered_by:
+            aggregate["covered_by_run"] = covered_by
+        return {
+            "tier": "all",
+            "status": status,
+            "run_id": run_id,
+            "git_dirty": dirty,
+            "semantic_receipt": {"source_revision": "head"},
+            "testmon_selection": {"environment_digest": "env-1", "packages_digest": packages, "plan_digest": plan},
+            "pytest_aggregate": aggregate,
+        }
+
+    def covered(rows: list[dict[str, Any]], **inputs: str) -> str | None:
+        monkeypatch.setattr(verify, "read_verify_history", lambda _p: rows)
+        return verify._corpus_already_verified(
+            head="head",
+            environment="env-1",
+            packages=inputs.get("packages", "pkgs-1"),
+            plan=inputs.get("plan", "plan-1"),
+        )
+
+    assert covered([row("green")]) == "green"
+    assert covered([row("green")], packages="pkgs-2") is None
+    assert covered([row("green")], plan="plan-2") is None
+    assert covered([row("dirty", dirty=True)]) is None
+    assert covered([row("green"), row("red-later", status="failed")]) is None
+    assert covered([row("green"), row("skip", covered_by="green")]) == "green"
