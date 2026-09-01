@@ -37,13 +37,6 @@ from devtools.testmon_bootstrap import (
 from devtools.toolchain import venv_bin, venv_python
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
-from devtools.verification_graph import (
-    attest_corpus,
-    graph_identity,
-    latest_eligible_root,
-    publish_complete_root,
-    publish_selected_child,
-)
 from devtools.verification_ledger import (
     append_failure_ledger,
     ledger_records,
@@ -175,13 +168,6 @@ def _devtools_cmd(*args: str) -> list[str]:
     return [venv_python(root=ROOT), "-m", "devtools", *(part for arg in args for part in arg.split())]
 
 
-def _native_pytest_environment() -> dict[str, str | None]:
-    return {
-        "HYPOTHESIS_PROFILE": os.environ.get("HYPOTHESIS_PROFILE") or "default",
-        "POLYLOGUE_CI": os.environ.get("POLYLOGUE_CI"),
-    }
-
-
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     try:
         workers = max(0, int(os.environ.get("POLYLOGUE_PYTEST_WORKERS", "0")))
@@ -199,18 +185,15 @@ def _native_pytest_steps(
     parallel_worker_args: Sequence[str],
     serial_worker_args: Sequence[str],
     storage_scale_worker_args: Sequence[str],
-    full_corpus: bool = False,
 ) -> list[tuple[str, list[str]]]:
     if testmon_mode == "affected":
         testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
-    elif testmon_mode == "bootstrap":
-        # A bootstrap must trace the corpus so it can publish the graph that
-        # makes later affected verification safe.  Deliberate --all runs do
-        # not need that graph and would otherwise duplicate testmon's
-        # dependency state in every xdist worker.
-        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
     elif testmon_mode == "all":
-        testmon_args = []
+        # The complete corpus is what publishes the dependency graph that
+        # affected verification selects from, so it always traces. It runs as
+        # one collection: testmon deletes every recorded test a run did not
+        # collect, so a partitioned run keeps only its last partition.
+        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
     else:
         raise ValueError(f"unsupported native testmon mode: {testmon_mode}")
     base = [
@@ -243,25 +226,12 @@ def _native_pytest_steps(
         ]
         return [*command, "-m", marker, "-p", "no:randomly", *workers]
 
-    parallel_steps = (
-        [
-            (
-                f"pytest native parallel {batch + 1}/3 ({testmon_mode})",
-                [
-                    *lane_command(f"parallel-{batch + 1}-of-3", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
-                    f"--polylogue-file-batch={batch}/3",
-                ],
-            )
-            for batch in range(3)
-        ]
-        if full_corpus or testmon_mode == "all"
-        else [
-            (
-                f"pytest native parallel ({testmon_mode})",
-                lane_command("parallel", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
-            )
-        ]
-    )
+    parallel_steps = [
+        (
+            f"pytest native parallel ({testmon_mode})",
+            lane_command("parallel", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
+        )
+    ]
     return [
         *parallel_steps,
         (
@@ -281,10 +251,7 @@ def build_verify_steps(
     commit: bool = False,
     testmon_mode: str = "affected",
     testmon_environment: str = "",
-    full_corpus: bool | None = None,
 ) -> list[tuple[str, list[str]]]:
-    if full_corpus is None:
-        full_corpus = testmon_mode == "all"
     steps = [
         ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
@@ -319,7 +286,7 @@ def build_verify_steps(
             ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
         ]
     if not quick and not commit:
-        if testmon_mode not in {"affected", "bootstrap", "all"} or not testmon_environment:
+        if testmon_mode not in {"affected", "all"} or not testmon_environment:
             raise ValueError("a valid native testmon selection and environment are required")
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _native_pytest_steps(
@@ -328,7 +295,6 @@ def build_verify_steps(
             parallel_worker_args=_pytest_worker_args(),
             serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
-            full_corpus=full_corpus,
         )
     return steps
 
@@ -337,6 +303,13 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    # Every managed pytest run writes the shared dependency graph: testmon
+    # replaces the edges of each test it executes. A run under a reduced
+    # Hypothesis budget records fewer edges for its property tests, and every
+    # later affected selection inherits the blind spot, so all graph writers
+    # trace under one full profile.
+    env["HYPOTHESIS_PROFILE"] = "default"
+    env.pop("POLYLOGUE_CI", None)
 
 
 def _clear_pytest_report(command: Sequence[str]) -> None:
@@ -651,7 +624,6 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
-    _record_graph_authority(run, payload)
     existing = read_failure_ledger(ROOT / ".cache/verify/failure-ledger.jsonl")
     verify_history = read_verify_history(ROOT / ".cache/verify/history.jsonl")
     records = ledger_records(payload, history=verify_history)
@@ -671,78 +643,6 @@ def _finish_and_record_verification(
         except (FileNotFoundError, ValueError, OSError):
             pass
     return payload
-
-
-def _record_graph_authority(run: VerifyRun, payload: dict[str, Any]) -> None:
-    """Attach immutable graph evidence after, and only after, run finalization."""
-    nodeids: list[str] = []
-    for step in payload.get("steps", []):
-        if not isinstance(step, Mapping):
-            continue
-        artifact = step.get("artifact_dir")
-        if not isinstance(artifact, str):
-            continue
-        report = _read_json(ROOT / artifact / PYTEST_CANONICAL_REPORT_NAME)
-        for test in (report or {}).get("tests", []):
-            if isinstance(test, Mapping) and isinstance(test.get("nodeid"), str):
-                nodeids.append(test["nodeid"])
-    selection = payload.get("testmon_selection")
-    selection = selection if isinstance(selection, Mapping) else {}
-    environment = selection.get("environment_digest")
-    if not isinstance(environment, str) or not nodeids:
-        return
-    corpus = attest_corpus(nodeids, root=ROOT)
-    digest = graph_identity(
-        tree=payload.get("git_head"),
-        code=payload.get("git_head"),
-        dependency_lock=environment,
-        installed_distributions=environment,
-        interpreter=f"{sys.implementation.name}:{sys.version}",
-        toolchain=sys.executable,
-        plugins=environment,
-        harness=environment,
-        corpus_attestation=corpus.digest,
-        schemas=environment,
-        configuration=environment,
-        platform=sys.platform,
-        execution_policy=payload.get("tier"),
-    )
-    aggregate = payload.get("pytest_aggregate")
-    aggregate = aggregate if isinstance(aggregate, Mapping) else {}
-    complete = aggregate.get("complete_corpus_covered") is True
-    graph_payload: dict[str, Any] = {
-        "graph_digest": digest,
-        "corpus": {"digest": corpus.digest, "count": len(corpus.nodeids)},
-        "selected": payload.get("tier") not in {"all", "quick", "commit"},
-    }
-    if complete and payload.get("exit_code") == 0:
-        published = publish_complete_root(
-            ROOT,
-            graph_digest=digest,
-            corpus=corpus,
-            run_id=run.run_id,
-            terminal_status="success",
-            complete=True,
-        )
-        graph_payload["authority"] = "root" if published else "root-existing"
-    elif payload.get("tier") == "affected":
-        parent = latest_eligible_root(ROOT)
-        if parent is not None:
-            child = publish_selected_child(
-                ROOT,
-                parent_digest=parent[0],
-                graph_digest=digest,
-                selection=corpus.nodeids,
-                change_lineage={"base": parent[0], "head": payload.get("git_head")},
-                outcome={"exit_code": payload.get("exit_code"), "status": payload.get("status")},
-                run_id=run.run_id,
-            )
-            graph_payload.update({"authority": "child", "parent_digest": parent[0], "child": str(child)})
-        else:
-            graph_payload["authority"] = "refused-no-parent"
-    payload["verification_graph"] = graph_payload
-    run._payload["verification_graph"] = graph_payload
-    run.write()
 
 
 def _aggregate_pytest_results(
@@ -822,8 +722,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 preparation = prepare_native_testmon_environment(
                     ROOT,
                     required_executable_paths=impact.executable_paths,
-                    pytest_profile=_native_pytest_environment()["HYPOTHESIS_PROFILE"] or "default",
-                    pytest_environment=_native_pytest_environment(),
                 )
             except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
                 payload = _finish_and_record_verification(
@@ -857,41 +755,11 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 _emit_native_testmon_refusal(preparation=preparation, reason=preparation.local_state.reason)
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 return 2
-            if not args.all_tests and latest_eligible_root(ROOT) is None:
-                # A native testmon database is not selected-test authority.
-                # Refuse explicitly rather than widening to the full corpus.
-                run.record_selection(
-                    selection_mode=mode,
-                    state_status=preparation.local_state.status,
-                    state_reason="no immutable complete parent graph root is available; selected verification refused",
-                    missing_executable_paths=preparation.local_state.missing_executable_paths,
-                    runtime_data_paths=impact.runtime_data_paths,
-                    environment_digest=preparation.environment_name,
-                )
-                payload = _finish_and_record_verification(
-                    run=run,
-                    exit_code=2,
-                    duration_s=time.monotonic() - started,
-                    diagnosis="verification_graph_parent_unavailable",
-                    verification_scope=scope.value,
-                    final_git_head=git_head(ROOT),
-                )
-                _emit_native_testmon_refusal(
-                    preparation=preparation,
-                    reason="no immutable complete parent graph root is available; selected verification refused",
-                )
-                _emit(payload, use_json=args.json, operation=agentctl_operation)
-                return 2
         steps = build_verify_steps(
             quick=args.quick,
             commit=args.commit,
-            # Full verification must trace failures into the graph while
-            # still exercising the complete corpus in its worker batches.
-            testmon_mode="bootstrap"
-            if args.all_tests or (preparation and preparation.selection_mode == "bootstrap")
-            else mode,
+            testmon_mode=mode,
             testmon_environment=preparation.environment_name if preparation else "",
-            full_corpus=args.all_tests,
         )
         results: list[dict[str, Any]] = []
         exit_code = 0
@@ -899,8 +767,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             rc, elapsed, metadata = _run(label, command, run=run)
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
             if rc:
-                exit_code = rc
-                break
+                exit_code = exit_code or rc
+                if not args.all_tests:
+                    break
+                # A complete-corpus run reports the whole corpus and finishes
+                # publishing the graph; stopping at the first red step would
+                # leave both partial.
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
             run=run,
@@ -927,7 +799,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mode=mode,
         exit_code=exit_code,
     )
-    diagnosis = next((str(result["diagnosis"]) for result in reversed(results) if result["exit"] != 0), None)
+    # The retained exit code is the first failure's; its diagnosis must be too.
+    diagnosis = next((str(result["diagnosis"]) for result in results if result["exit"] != 0), None)
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,

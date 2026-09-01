@@ -46,10 +46,15 @@ def test_stale_provisioned_graph_is_discarded_not_inherited(
     older than the environment it is provisioned into.
     """
     _seed_graph(tmp_path, "polylogue-stale-environment")
+    sidecar = tmp_path / ".cache" / "testmon" / "testmondata-wal"
+    sidecar.write_bytes(b"")
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
     assert main([]) == 0
     assert not (tmp_path / ".cache" / "testmon" / "testmondata").exists()
+    # A surviving sidecar reads as damaged state and refuses the lane's
+    # verification, which is worse than the stale seed it came with.
+    assert not sidecar.exists()
     assert "discarded" in capsys.readouterr().out  # type: ignore[attr-defined]
 
 
@@ -76,3 +81,26 @@ def test_absent_graph_provisions_without_a_seed(tmp_path: Path, capsys: object, 
 
     assert main([]) == 0
     assert "absent" in capsys.readouterr().out  # type: ignore[attr-defined]
+
+
+def test_seed_removal_failure_is_a_typed_error_result(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
+    """A seed that cannot be removed reports state error, never a traceback.
+
+    Anti-vacuity: letting the repair error escape leaves lane provisioning
+    with no JSON result to classify.
+    """
+    _seed_graph(tmp_path, "polylogue-stale-environment")
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    def refuse(_root: Path) -> tuple[Path, ...]:
+        from devtools.testmon_bootstrap import NativeTestmonRepairError
+
+        raise NativeTestmonRepairError("refusing to remove hard-linked owned SQLite path")
+
+    monkeypatch.setattr("devtools.testmon_provision.remove_invalid_native_testmon_state", refuse)  # type: ignore[attr-defined]
+
+    assert main(["--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert payload["state"] == "error"
+    assert payload["discarded"] is False
+    assert "hard-linked" in payload["reason"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
-RECEIPT_SCHEMA_VERSION: Final = 1
+RECEIPT_SCHEMA_VERSION: Final = 2
 MAX_GATE_OUTCOMES: Final = 16
 MAX_DIAGNOSTIC_PATHS: Final = 16
 MAX_PUBLIC_STRING_LENGTH: Final = 160
@@ -15,7 +15,6 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
     """Project verifier semantics without duplicating AgentCTL job metadata."""
     selection = _mapping(payload.get("testmon_selection"))
     aggregate = _mapping(payload.get("pytest_aggregate"))
-    graph = _mapping(payload.get("verification_graph"))
     missing_paths = _strings(selection.get("missing_executable_paths"))
     runtime_data_paths = _strings(selection.get("runtime_data_paths"))
     verification_scope = _string(payload.get("verification_scope"))
@@ -29,10 +28,6 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
         },
         "testmon_environment": {
             "environment_digest": _string(selection.get("environment_digest")),
-            "graph_content_digest": _string(graph.get("graph_digest")),
-            "graph_content_digest_available": isinstance(graph.get("graph_digest"), str),
-            "graph_authority": _string(graph.get("authority")),
-            "graph_parent_digest": _string(graph.get("parent_digest")),
             "state": _string(selection.get("state_status")),
             "reason": _string(selection.get("state_reason")),
         },
