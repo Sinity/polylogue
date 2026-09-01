@@ -198,7 +198,7 @@ def test_deferred_legacy_claude_cursor_keeps_unverified_prefix_nonsemantic(tmp_p
     assert decode_claude_semantic_frontier(updated.tail_hash) is None
 
 
-def test_deferred_claude_cursor_rebases_frontier_after_header_rewrite(tmp_path: Path) -> None:
+def test_deferred_claude_cursor_refuses_semantic_authority_after_header_rewrite(tmp_path: Path) -> None:
     source = tmp_path / "session.jsonl"
     old_header = b'{"sessionId":"claude-session"}\n'
     body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
@@ -234,10 +234,8 @@ def test_deferred_claude_cursor_rebases_frontier_after_header_rewrite(tmp_path: 
 
     updated = cursor.get_record(source)
     assert updated is not None
-    decoded = decode_claude_semantic_frontier(updated.tail_hash)
-    assert decoded is not None
-    assert decoded.body_bytes == len(body)
-    assert decoded.header_sha256 == hashlib.sha256(new_header).hexdigest()
+    assert decode_claude_semantic_frontier(updated.tail_hash) is None
+    assert _processor(tmp_path, cursor)._append_plan(source) is None
 
 
 def test_deferred_append_without_marker_replans_every_tick_forever(tmp_path: Path) -> None:
