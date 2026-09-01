@@ -15,6 +15,7 @@ from enum import StrEnum
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 
+from .common import require_vocabulary
 from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
 
 
@@ -68,6 +69,7 @@ def publish_source_generation(
     """Publish every manifest coordinate before any read/decode/admission work."""
     if len(manifest_digest) != 64:
         raise ValueError("manifest_digest must be a SHA-256 hex digest")
+    origin_value = require_vocabulary(origin, Origin, field="origin") if origin is not None else None
     ids = tuple(
         source_item_id(source_generation_id=source_generation_id, logical_coordinate=c, addressing_mode=addressing_mode)
         for c in coordinates
@@ -95,7 +97,7 @@ def publish_source_generation(
                 item_id,
                 coordinate,
                 addressing_mode,
-                getattr(origin, "value", origin),
+                origin_value,
                 (source_paths or {}).get(coordinate),
                 observed_at_ms,
                 observed_at_ms,

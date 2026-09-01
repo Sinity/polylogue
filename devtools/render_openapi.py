@@ -959,7 +959,7 @@ def _build_openapi_document() -> dict[str, Any]:
                 f"missing OpenAPI operation for daemon declaration: {declaration.method} {declaration.path}"
             )
         words = declaration.kernel.public_name.split("-")
-        operation["operationId"] = words[0] + "".join(word.title() for word in words[1:])
+        operation.setdefault("operationId", words[0] + "".join(word.title() for word in words[1:]))
         operation["security"] = _protected_read_security()
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,

@@ -1896,7 +1896,9 @@ def _pricing_lane_reports(
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    0 AS reasoning_output_tokens,
                    COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens), 0) AS total_tokens,
-                   COALESCE(SUM(u.catalog_cost_usd), 0.0) AS stored_cost_usd
+                   COALESCE(SUM(CASE WHEN u.provider_cost_usd IS NOT NULL THEN u.provider_cost_usd
+                                     WHEN u.catalog_cost_usd IS NOT NULL THEN u.catalog_cost_usd
+                                     ELSE 0.0 END), 0.0) AS stored_cost_usd
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             {_where_origin(origin, table_alias="s")}

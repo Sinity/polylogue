@@ -3,6 +3,8 @@
 import hashlib
 import sqlite3
 
+import pytest
+
 from polylogue.core.enums import IngestOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_items import (
@@ -38,6 +40,23 @@ def test_manifest_is_published_before_read_and_identity_is_generation_bound() ->
     assert source_item_id(source_generation_id="g1", logical_coordinate="x", addressing_mode="path") != source_item_id(
         source_generation_id="g2", logical_coordinate="x", addressing_mode="path"
     )
+
+
+def test_manifest_rejects_unknown_origin_before_persisting_it() -> None:
+    conn = _source()
+
+    with pytest.raises(ValueError, match="origin must be one of"):
+        publish_source_generation(
+            conn,
+            source_generation_id="invalid-origin",
+            manifest_digest="d" * 64,
+            addressing_mode="path",
+            coordinates=("a.json",),
+            observed_at_ms=1,
+            origin="not-an-origin",
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 0
 
 
 def test_transition_is_idempotent_and_census_blocks_missing_or_admitted_without_raw() -> None:

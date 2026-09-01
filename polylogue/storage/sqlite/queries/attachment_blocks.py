@@ -32,6 +32,7 @@ async def get_blocks(
             semantic_type,
             tool_result_is_error,
             tool_result_exit_code,
+            tool_outcome,
             tool_result_outcome_unknown_reason,
             signature
         FROM blocks

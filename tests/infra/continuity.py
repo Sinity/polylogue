@@ -404,9 +404,6 @@ def _seed_cost_usage(
     )
     builder.save()
     with sqlite3.connect(db_path) as conn:
-        # polylogue-shnc: 'origin_reported' now requires cost_usd set (CHECK
-        # constraint, v49) -- reserved for a genuine provider-reported dollar
-        # figure, not merely provider-reported tokens with no known price.
         # This scenario seed has no catalog-price guarantee for an arbitrary
         # scenario-declared model, so it makes no cost claim (NULL).
         conn.execute(
@@ -414,7 +411,7 @@ def _seed_cost_usage(
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens, message_count,
-                cost_provenance
+                provider_cost_usd
             ) VALUES (?, ?, ?, ?, ?, ?, 1, NULL)
             """,
             (

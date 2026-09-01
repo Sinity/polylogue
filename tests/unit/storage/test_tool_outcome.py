@@ -241,12 +241,116 @@ def test_real_parser_unknown_shape_is_admitted_by_writer(
         conn.close()
 
 
+@pytest.mark.parametrize("content_type", ["execution_output", "computer_output", "citable_code_output"])
+def test_chatgpt_declared_unknown_output_is_admitted_without_inventing_success(
+    content_type: str, tmp_path: Path
+) -> None:
+    """Recognized ChatGPT result shapes with no status become explicit unknown.
+
+    Anti-vacuity: removing the writer's content-type normalization makes this
+    supported parser output raise instead of storing ``unknown``.
+    """
+    conn = _connect(tmp_path / f"chatgpt-{content_type}.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            _session(
+                Provider.CHATGPT,
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    tool_id="call-1",
+                    text="provider has not reported a terminal status",
+                    metadata={"content_type": content_type},
+                ),
+            ),
+        )
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
+            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
+    finally:
+        conn.close()
+
+
 def test_unpaired_tool_use_is_no_result(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "no-result.db")
     try:
         session_id = write_parsed_session_to_archive(conn, _session(Provider.CODEX, None))
         assert conn.execute("SELECT tool_outcome FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == (
             ToolOutcome.NO_RESULT.value
+        )
+    finally:
+        conn.close()
+
+
+def test_merge_selects_unknown_verdict_as_one_atomic_legacy_projection(tmp_path: Path) -> None:
+    """A newer unknown result cannot inherit an older success flag.
+
+    Anti-vacuity: removing correlated-field normalization from the merge
+    leaves ``tool_outcome='unknown'`` paired with ``is_error=0``.
+    """
+    conn = _connect(tmp_path / "merged-verdict.db")
+    try:
+        first = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="done", is_error=False),
+        )
+        second = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id="call-1",
+                text="done",
+                outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+            ),
+        )
+        session_id = write_parsed_session_to_archive(conn, first)
+        write_parsed_session_to_archive(conn, second)
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
+            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("first_exit_code", "second_is_error"),
+    [(2, False), (0, True)],
+)
+def test_merge_known_verdict_clears_conflicting_legacy_exit_code(
+    first_exit_code: int, second_is_error: bool, tmp_path: Path
+) -> None:
+    conn = _connect(tmp_path / f"merged-exit-{first_exit_code}.db")
+    try:
+        first = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id="call-1",
+                text="first",
+                is_error=first_exit_code != 0,
+                exit_code=first_exit_code,
+            ),
+        )
+        second = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="second", is_error=second_is_error),
+        )
+        session_id = write_parsed_session_to_archive(conn, first)
+        write_parsed_session_to_archive(conn, second)
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_exit_code FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (
+            ToolOutcome.ERROR.value if second_is_error else ToolOutcome.OK.value,
+            int(second_is_error),
+            None,
         )
     finally:
         conn.close()

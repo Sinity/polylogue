@@ -199,6 +199,7 @@ def _native_pytest_steps(
     parallel_worker_args: Sequence[str],
     serial_worker_args: Sequence[str],
     storage_scale_worker_args: Sequence[str],
+    full_corpus: bool = False,
 ) -> list[tuple[str, list[str]]]:
     if testmon_mode == "affected":
         testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
@@ -253,7 +254,7 @@ def _native_pytest_steps(
             )
             for batch in range(3)
         ]
-        if testmon_mode == "all"
+        if full_corpus or testmon_mode == "all"
         else [
             (
                 f"pytest native parallel ({testmon_mode})",
@@ -275,8 +276,15 @@ def _native_pytest_steps(
 
 
 def build_verify_steps(
-    *, quick: bool, commit: bool = False, testmon_mode: str = "affected", testmon_environment: str = ""
+    *,
+    quick: bool,
+    commit: bool = False,
+    testmon_mode: str = "affected",
+    testmon_environment: str = "",
+    full_corpus: bool | None = None,
 ) -> list[tuple[str, list[str]]]:
+    if full_corpus is None:
+        full_corpus = testmon_mode == "all"
     steps = [
         ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
@@ -320,6 +328,7 @@ def build_verify_steps(
             parallel_worker_args=_pytest_worker_args(),
             serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
             storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
+            full_corpus=full_corpus,
         )
     return steps
 
@@ -876,11 +885,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         steps = build_verify_steps(
             quick=args.quick,
             commit=args.commit,
-            # Keep the graph-building plugin for a fresh checkout, but omit
-            # it from an explicit complete-corpus run where it adds no
-            # selection coverage and amplifies worker memory.
-            testmon_mode="bootstrap" if preparation and preparation.selection_mode == "bootstrap" else mode,
+            # Full verification must trace failures into the graph while
+            # still exercising the complete corpus in its worker batches.
+            testmon_mode="bootstrap"
+            if args.all_tests or (preparation and preparation.selection_mode == "bootstrap")
+            else mode,
             testmon_environment=preparation.environment_name if preparation else "",
+            full_corpus=args.all_tests,
         )
         results: list[dict[str, Any]] = []
         exit_code = 0

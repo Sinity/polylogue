@@ -26,7 +26,14 @@ def test_starting_the_daemon_bounds_its_idle_lifetime(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert verify._mypy_cmd() == ["dmypy", "run", "--", "--no-error-summary"]
+    dmypy = str(verify.ROOT / ".venv/bin/dmypy")
+    assert verify._mypy_cmd() == [
+        dmypy,
+        "run",
+        f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}",
+        "--",
+        "--no-error-summary",
+    ]
 
     start = next(argv for argv in calls if "start" in argv)
     assert f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}" in start

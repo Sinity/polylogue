@@ -172,6 +172,32 @@ def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_pa
     assert headline_row.logical_model_rollup_usage == row.logical_model_rollup_usage
 
 
+def test_origin_report_pricing_lane_uses_provider_dollars() -> None:
+    conn = _connect(Path(":memory:"))
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash,
+            reported_cost_usd
+        ) VALUES ('codex-session', 'provider-dollars',
+                  'provider dollars', 'standard', 1, 1, 0, 0, zeroblob(32), 2.5)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, provider_cost_usd, catalog_cost_usd
+        ) VALUES ('codex-session:provider-dollars', 'gpt-5', 2.5, 1.0)
+        """
+    )
+
+    report = origin_usage_report_from_connection(conn, archive_root=Path("/tmp"), origin="codex-session")
+    lane = next(item for item in report.pricing_lanes if item.provenance == "origin_reported")
+
+    assert lane.stored_cost_usd == pytest.approx(2.5)
+
+
 def test_origin_usage_report_labels_physical_and_logical_model_rollups(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     conn.execute(

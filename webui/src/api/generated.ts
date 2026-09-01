@@ -765,19 +765,11 @@ export type BootstrapWebCredentialParameters = Record<string, never>;
 export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
 export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
 
-export type FindParameters = {
-  readonly cursor?: string;
-  readonly limit?: number;
-  readonly offset?: number;
-  readonly provider?: string;
-  readonly query?: string;
-  readonly retrieval_lane?: "auto" | "dialogue" | "actions" | "hybrid" | "semantic";
-  readonly since?: string;
+export type GetStatusParameters = Record<string, never>;
+export type GetStatusResponse = {
+  readonly [key: string]: unknown;
 };
-export type FindResponse = SearchEnvelope | SessionListResponse;
-export type FindError = QueryErrorPayload | WebCredentialFailurePayload;
-export type SearchParameters = Omit<FindParameters, "cursor" | "query"> & { readonly query: string };
-export type SearchPage = Page<SessionSearchHitPayload, SearchEnvelope>;
+export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload;
 
 export type ListAssertionClaimsParameters = {
   readonly context_inject?: boolean;
@@ -826,7 +818,7 @@ export type QueryUnitsError = QueryErrorPayload | WebCredentialFailurePayload;
 export type QueryParameters = Omit<QueryUnitsParameters, "continuation" | "expression"> & { readonly expression: string };
 export type QueryPage = Page<MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload | FileQueryRowPayload | RunQueryRowPayload | ObservedEventQueryRowPayload | ContextSnapshotQueryRowPayload | DelegationQueryRowPayload | QueryUnitAggregateRowPayload, QueryUnitEnvelope | QueryUnitAggregateEnvelope>;
 
-export type ReadSessionParameters = {
+export type ReadSessionViewParameters = {
   readonly session_id: string;
   readonly at_position?: string;
   readonly confidence_threshold?: number;
@@ -842,26 +834,26 @@ export type ReadSessionParameters = {
   readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context";
   readonly window_hours?: number;
 };
-export type ReadSessionResponse = SessionReadViewEnvelope;
-export type ReadSessionError = QueryErrorPayload | WebCredentialFailurePayload;
+export type ReadSessionViewResponse = SessionReadViewEnvelope;
+export type ReadSessionViewError = QueryErrorPayload | WebCredentialFailurePayload;
 
 export type RevokeWebCredentialParameters = Record<string, never>;
 export type RevokeWebCredentialResponse = WebCredentialRevocationPayload;
 export type RevokeWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload;
 
-export type StatusParameters = Record<string, never>;
-export type StatusResponse = {
-  readonly [key: string]: unknown;
+export type SearchSessionsParameters = {
+  readonly cursor?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly provider?: string;
+  readonly query?: string;
+  readonly retrieval_lane?: "auto" | "dialogue" | "actions" | "hybrid" | "semantic";
+  readonly since?: string;
 };
-export type StatusError = QueryErrorPayload | WebCredentialFailurePayload;
-
-function isSearchEnvelope(value: unknown): value is SearchEnvelope {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    Array.isArray((value as { readonly hits?: unknown }).hits)
-  );
-}
+export type SearchSessionsResponse = SearchEnvelope | SessionListResponse;
+export type SearchSessionsError = QueryErrorPayload | WebCredentialFailurePayload;
+export type SearchParameters = Omit<SearchSessionsParameters, "cursor" | "query"> & { readonly query: string };
+export type SearchPage = Page<SessionSearchHitPayload, SearchEnvelope>;
 
 function isQueryUnitEnvelope(value: unknown): value is QueryUnitEnvelope {
   return (
@@ -876,6 +868,14 @@ function isQueryUnitAggregateEnvelope(value: unknown): value is QueryUnitAggrega
     typeof value === "object" &&
     value !== null &&
     Array.isArray((value as { readonly items?: unknown }).items)
+  );
+}
+
+function isSearchEnvelope(value: unknown): value is SearchEnvelope {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { readonly hits?: unknown }).hits)
   );
 }
 
@@ -899,66 +899,17 @@ export class PolylogueClient {
     );
   }
 
-  find(
-    parameters: FindParameters = {},
+  getStatus(
+    parameters: GetStatusParameters = {},
     options: RequestOptions = {},
-  ): Promise<FindResponse> {
-    return this.#transport.request<FindResponse, FindError>(
+  ): Promise<GetStatusResponse> {
+    return this.#transport.request<GetStatusResponse, GetStatusError>(
       {
         method: "GET",
-        path: "/api/sessions",
-        query: {
-          cursor: parameters.cursor,
-          limit: parameters.limit,
-          offset: parameters.offset,
-          provider: parameters.provider,
-          query: parameters.query,
-          retrieval_lane: parameters.retrieval_lane,
-          since: parameters.since,
-        },
+        path: "/api/status",
       },
       options,
     );
-  }
-
-  search(
-    parameters: SearchParameters,
-    options: RequestOptions = {},
-  ): AsyncIterable<SearchPage> {
-    return iteratePages<SearchPage>(async (cursor) => {
-      const { offset: _offset, ...continuedParameters } = parameters;
-      const requestParameters =
-        cursor === null
-          ? parameters
-          : { ...continuedParameters, cursor: cursor };
-      const envelope = await this.find(requestParameters, options);
-      if (!(isSearchEnvelope(envelope))) {
-        throw new TypeError("find returned a non-page envelope");
-      }
-      const exactTotal = typeof envelope.total === "number";
-      const exactCoverage = exactTotal && (envelope.exactness === "exact" || envelope.exactness == null);
-      const qualificationValues = new Set<string>(["capped","sampled","estimate"]);
-      const qualification =
-        typeof envelope.exactness === "string" &&
-        qualificationValues.has(envelope.exactness)
-          ? envelope.exactness
-          : "unknown";
-      const coverage = exactCoverage
-        ? { kind: "exact" as const, total: envelope.total as number }
-        : {
-            kind: "qualified" as const,
-            total: exactTotal ? (envelope.total as number) : null,
-            qualification: qualification as "capped" | "sampled" | "estimate" | "unknown",
-          };
-      return {
-        items: envelope.hits,
-        cursor: envelope.next_cursor ?? null,
-        coverage,
-        queryRef: null,
-        resultRef: null,
-        envelope: envelope as SearchEnvelope,
-      };
-    });
   }
 
   listAssertionClaims(
@@ -1053,11 +1004,11 @@ export class PolylogueClient {
     });
   }
 
-  readSession(
-    parameters: ReadSessionParameters,
+  readSessionView(
+    parameters: ReadSessionViewParameters,
     options: RequestOptions = {},
-  ): Promise<ReadSessionResponse> {
-    return this.#transport.request<ReadSessionResponse, ReadSessionError>(
+  ): Promise<ReadSessionViewResponse> {
+    return this.#transport.request<ReadSessionViewResponse, ReadSessionViewError>(
       {
         method: "GET",
         path: `/api/sessions/${encodeURIComponent(String(parameters.session_id))}/read`,
@@ -1094,16 +1045,65 @@ export class PolylogueClient {
     );
   }
 
-  status(
-    parameters: StatusParameters = {},
+  searchSessions(
+    parameters: SearchSessionsParameters = {},
     options: RequestOptions = {},
-  ): Promise<StatusResponse> {
-    return this.#transport.request<StatusResponse, StatusError>(
+  ): Promise<SearchSessionsResponse> {
+    return this.#transport.request<SearchSessionsResponse, SearchSessionsError>(
       {
         method: "GET",
-        path: "/api/status",
+        path: "/api/sessions",
+        query: {
+          cursor: parameters.cursor,
+          limit: parameters.limit,
+          offset: parameters.offset,
+          provider: parameters.provider,
+          query: parameters.query,
+          retrieval_lane: parameters.retrieval_lane,
+          since: parameters.since,
+        },
       },
       options,
     );
+  }
+
+  search(
+    parameters: SearchParameters,
+    options: RequestOptions = {},
+  ): AsyncIterable<SearchPage> {
+    return iteratePages<SearchPage>(async (cursor) => {
+      const { offset: _offset, ...continuedParameters } = parameters;
+      const requestParameters =
+        cursor === null
+          ? parameters
+          : { ...continuedParameters, cursor: cursor };
+      const envelope = await this.searchSessions(requestParameters, options);
+      if (!(isSearchEnvelope(envelope))) {
+        throw new TypeError("searchSessions returned a non-page envelope");
+      }
+      const exactTotal = typeof envelope.total === "number";
+      const exactCoverage = exactTotal && (envelope.exactness === "exact" || envelope.exactness == null);
+      const qualificationValues = new Set<string>(["capped","sampled","estimate"]);
+      const qualification =
+        typeof envelope.exactness === "string" &&
+        qualificationValues.has(envelope.exactness)
+          ? envelope.exactness
+          : "unknown";
+      const coverage = exactCoverage
+        ? { kind: "exact" as const, total: envelope.total as number }
+        : {
+            kind: "qualified" as const,
+            total: exactTotal ? (envelope.total as number) : null,
+            qualification: qualification as "capped" | "sampled" | "estimate" | "unknown",
+          };
+      return {
+        items: envelope.hits,
+        cursor: envelope.next_cursor ?? null,
+        coverage,
+        queryRef: null,
+        resultRef: null,
+        envelope: envelope as SearchEnvelope,
+      };
+    });
   }
 }

@@ -457,7 +457,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-xd0ha: v83 admits the deliberate unknown tool-outcome state and
 # exposes it through the actions view. Existing normalized rows need fresh
 # parser replay to preserve their unknown-outcome reasons.
-INDEX_SCHEMA_VERSION = 83
+# v84 corrects delegation cost-estimation semantics when provider dollars are
+# present without catalog pricing. Existing derived rows need fresh replay so
+# the view definition is installed on every index generation.
+INDEX_SCHEMA_VERSION = 84
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1613,6 +1616,7 @@ SELECT
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,
     (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
+                 WHEN COUNT(u.provider_cost_usd) > 0 THEN 0
                  WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,

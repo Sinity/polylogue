@@ -2344,6 +2344,36 @@ def test_reported_costs_skip_message_token_aggregate_on_plain_append(
     assert aggregate_calls == [session_id, session_id]
 
 
+def test_merge_append_replaces_prior_provider_total_on_model_switch(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-provider-cost-switch",
+        models_used=["gpt-old"],
+        reported_cost_usd=1.0,
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, model_name="gpt-old")],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-provider-cost-switch",
+        models_used=["gpt-new"],
+        reported_cost_usd=2.0,
+        messages=[ParsedMessage(provider_message_id="m2", role=Role.ASSISTANT, model_name="gpt-new")],
+    )
+
+    session_id = write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second, merge_append=True)
+
+    rows = conn.execute(
+        "SELECT model_name, provider_cost_usd FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+        (session_id,),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [
+        {"model_name": "gpt-new", "provider_cost_usd": 2.0},
+        {"model_name": "gpt-old", "provider_cost_usd": None},
+    ]
+
+
 def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     clear_plan = conn.execute(

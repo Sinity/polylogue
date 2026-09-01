@@ -39,7 +39,10 @@ EMBEDDING_OUTPUT_SCHEMA_VERSION = 1
 # This describes the shape of the text sent to the provider.  It is deliberately
 # independent of the rebuildable index schema: index identity changes do not
 # change an embedding request for unchanged input text.
-EMBEDDING_INPUT_SCHEMA_VERSION = "archive-message-input-v1"
+# Keep the compatibility token used before the index/embedding identity split.
+# This field describes the provider request, so the split itself does not
+# invalidate content-addressed vectors.
+EMBEDDING_INPUT_SCHEMA_VERSION = "archive-index-v79"
 EMBEDDING_SOURCE_HASH_SQL_FUNCTION = "polylogue_embedding_source_hash"
 EMBEDDING_DERIVATION_KEY_SQL_FUNCTION = "polylogue_embedding_derivation_key"
 VECTOR_DERIVATION_HASH_SQL_FUNCTION = "polylogue_vector_derivation_hash"
