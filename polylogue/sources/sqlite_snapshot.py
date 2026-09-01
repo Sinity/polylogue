@@ -10,6 +10,7 @@ import tempfile
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
@@ -115,6 +116,62 @@ def sqlite_source_revision(path: Path) -> str:
             hasher.update(f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}".encode())
         hasher.update(b"\0")
     return hasher.hexdigest()
+
+
+def sqlite_logical_revision(path: Path) -> str:
+    """Digest SQLite schema and logical rows, independent of page layout.
+
+    Filesystem metadata and SQLite page images change for ordinary commits,
+    checkpoints, and vacuuming. Source continuity therefore needs a digest of
+    the declared database contents. Values are encoded with their SQLite type
+    so text, integers, blobs, and NULL remain distinct.
+    """
+    source_uri = f"{path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(source_uri, uri=True)) as conn:
+        tables = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        digest = hashlib.sha256()
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            schema_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            schema = None if schema_row is None else schema_row[0]
+            columns = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+            order = ", ".join(
+                '"' + str(row[1]).replace('"', '""') + '"'
+                for row in sorted(columns, key=lambda row: int(row[5]) if row[5] else 10**9)
+            )
+            rows = conn.execute(f"SELECT * FROM {quoted}" + (f" ORDER BY {order}" if order else "")).fetchall()
+            digest.update(
+                json.dumps(
+                    [table, schema, [row[1] for row in columns]],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            digest.update(b"\0")
+            encoded_rows: list[list[list[Any]]] = []
+            for row in rows:
+                encoded: list[list[Any]] = []
+                for value in row:
+                    if isinstance(value, bytes):
+                        encoded.append(["blob", value.hex()])
+                    elif value is None:
+                        encoded.append(["null", None])
+                    else:
+                        encoded.append([type(value).__name__, value])
+                encoded_rows.append(encoded)
+            if not order:
+                encoded_rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+            for row in encoded_rows:
+                digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
+                digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
@@ -224,5 +281,6 @@ __all__ = [
     "sqlite_staging_metadata_path",
     "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
+    "sqlite_logical_revision",
     "sqlite_source_revision",
 ]
