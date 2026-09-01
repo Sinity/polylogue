@@ -3679,9 +3679,10 @@ async def test_claude_sidecar_owner_bypasses_unchanged_cursor_filter(tmp_path: P
         ingested.extend(paths)
 
     try:
-        watcher._batch_processor.require_cursor_authority = lambda: None  # type: ignore[method-assign]
-        watcher._needs_work_from_state = lambda *args, **kwargs: False  # type: ignore[method-assign]
-        watcher._ingest_files = fake_ingest  # type: ignore[method-assign]
+        test_watcher = cast(Any, watcher)
+        test_watcher._batch_processor.require_cursor_authority = lambda: None
+        test_watcher._needs_work_from_state = lambda *args, **kwargs: False
+        test_watcher._ingest_files = fake_ingest
         watcher._enqueue(sidecar)
         assert await watcher._flush_pending() is True
         assert ingested == [sidecar, root_transcript] or ingested == [root_transcript, sidecar]

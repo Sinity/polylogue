@@ -581,7 +581,7 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     outcome_counts = Counter(
         str(record["authority_outcome"])
         for record in extended_records
-        if isinstance(record, dict) and record.get("cohort") != "source_missing" and "authority_outcome" in record
+        if record.get("cohort") != "source_missing" and "authority_outcome" in record
     )
     allowed_outcomes = {outcome.value for outcome in AuthorityOutcome}
     invalid_outcomes = sorted(set(outcome_counts) - allowed_outcomes)
