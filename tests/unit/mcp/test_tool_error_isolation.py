@@ -26,7 +26,6 @@ import pytest
 from polylogue.core.errors import SchemaSkewError, SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
-from polylogue.storage.sqlite.schema_bootstrap import SchemaSkewError as DerivedSchemaSkewError
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest
 
 
@@ -92,8 +91,9 @@ def test_schema_skew_surface_preserves_structured_recovery_fields() -> None:
 
 def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> None:
     from polylogue.mcp.server_support import _exception_to_error_json
+    from polylogue.storage.sqlite.schema_bootstrap import SchemaSkewError
 
-    body = json.loads(_exception_to_error_json("read", DerivedSchemaSkewError("index", "expected", "found")))
+    body = json.loads(_exception_to_error_json("read", SchemaSkewError("index", "expected", "found")))
 
     assert body["code"] == "schema_skew"
     assert body["tier"] == "index"

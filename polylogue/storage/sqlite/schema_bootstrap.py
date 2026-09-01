@@ -24,23 +24,11 @@ from typing import Literal
 
 import aiosqlite
 
+from polylogue.core.errors import SchemaSkewError
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 
 SCHEMA_DDL = INDEX_DDL
 SCHEMA_VERSION = INDEX_SCHEMA_VERSION
-
-
-class SchemaSkewError(RuntimeError):
-    """A tier was opened with a schema identity different from this build."""
-
-    def __init__(self, tier: str, expected: str, found: str | None) -> None:
-        self.tier = tier
-        self.expected = expected
-        self.found = found
-        super().__init__(
-            f"{tier} derived schema identity mismatch: expected {expected}, found {found!r}; "
-            "stale derived tier; daemon convergence rebuilds it"
-        )
 
 
 SchemaSkew = SchemaSkewError

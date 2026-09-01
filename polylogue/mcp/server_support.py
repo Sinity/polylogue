@@ -31,7 +31,6 @@ from polylogue.logging import get_logger
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
 from polylogue.services import RuntimeServices
-from polylogue.storage.sqlite.schema_bootstrap import SchemaSkewError as DerivedSchemaSkewError
 from polylogue.surfaces.payloads import serialize_surface_payload
 
 if TYPE_CHECKING:
@@ -446,7 +445,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             tool=fn_name,
             valid_values=valid_values,
         )
-    elif isinstance(exc, (SchemaSkewError, DerivedSchemaSkewError)):
+    elif isinstance(exc, SchemaSkewError):
         payload = MCPErrorPayload(
             message=str(exc),
             code="schema_skew",
