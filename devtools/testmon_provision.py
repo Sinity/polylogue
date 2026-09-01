@@ -10,8 +10,10 @@ from pathlib import Path
 
 from devtools.testmon_bootstrap import (
     TESTMON_DATA_RELPATH,
+    NativeTestmonRepairError,
     NativeTestmonState,
     inspect_native_testmon_environment,
+    remove_invalid_native_testmon_state,
     testmon_environment_digest,
 )
 
@@ -52,10 +54,15 @@ def main(argv: list[str] | None = None) -> int:
     # dangerous: affected verification already refuses to represent it as
     # coverage. Discarding it leaves the workspace in the state of one that was
     # never seeded, which provisions.
+    # The seed's SQLite sidecars go with it: a sidecar without its database
+    # reads as damaged state and refuses the lane's verification outright.
     database = root / TESTMON_DATA_RELPATH
     payload["discarded"] = payload["state"] not in {"valid", "error"} and database.exists()
     if payload["discarded"]:
-        database.unlink()
+        try:
+            remove_invalid_native_testmon_state(root)
+        except NativeTestmonRepairError as exc:
+            payload.update({"state": "error", "reason": f"{type(exc).__name__}: {exc}", "discarded": False})
 
     if args.json:
         json.dump(payload, sys.stdout, sort_keys=True)

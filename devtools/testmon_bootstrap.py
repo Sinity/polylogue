@@ -25,13 +25,12 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
-import os
 import platform
 import sqlite3
 import stat
 import sys
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -65,10 +64,6 @@ _ENVIRONMENT_INPUTS = (
     # verify.py's behaviour remains covered the ordinary way: the tests that
     # import it carry real testmon edges to it.
     "devtools/pytest_collection_contract.py",
-)
-_PYTEST_ENVIRONMENT_KEYS = (
-    "HYPOTHESIS_PROFILE",
-    "POLYLOGUE_CI",
 )
 
 
@@ -343,11 +338,14 @@ def _installed_distributions() -> tuple[tuple[str, str], ...]:
 def testmon_environment_digest(
     repo_root: Path,
     *,
-    pytest_profile: str = "default",
-    pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
 ) -> str:
-    """Return the native testmon environment name for collection semantics."""
+    """Return the native testmon environment name for collection semantics.
+
+    Only what changes collection is hashed. Process environment such as the
+    hypothesis profile changes example budgets, not the collected corpus, and
+    hashing it gave every shell and the daemon a different graph.
+    """
     root = repo_root.resolve()
     _ensure_deadline(deadline_monotonic)
     payload = {
@@ -365,11 +363,6 @@ def testmon_environment_digest(
             _environment_input_paths(root, deadline_monotonic=deadline_monotonic),
             deadline_monotonic=deadline_monotonic,
         ),
-        "pytest_environment": {
-            key: (os.environ.get(key) if pytest_environment is None else pytest_environment.get(key))
-            for key in _PYTEST_ENVIRONMENT_KEYS
-        },
-        "pytest_profile": pytest_profile,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return f"polylogue-{hashlib.sha256(encoded).hexdigest()}"
@@ -662,10 +655,9 @@ def inspect_native_testmon_environment(
                 if not environment_rows:
                     # A sound database that simply does not carry this
                     # environment is not damaged state. The file is shared by
-                    # every environment name (the hypothesis-profile fallback
-                    # probes two in a single invocation), so reporting "invalid"
-                    # here invites the caller to delete another environment's
-                    # graph on a routine miss.
+                    # every environment name, so reporting "invalid" here
+                    # invites the caller to delete another environment's graph
+                    # on a routine miss.
                     return NativeTestmonState("absent", f"native environment {environment_name!r} is absent")
                 return NativeTestmonState("invalid", "native environment is ambiguous")
             environment_id = int(environment_rows[0][0])
@@ -826,19 +818,12 @@ def prepare_native_testmon_environment(
     repo_root: Path,
     *,
     required_executable_paths: Sequence[str] = (),
-    pytest_profile: str = "default",
-    pytest_environment: Mapping[str, str | None] | None = None,
     deadline_monotonic: float | None = None,
 ) -> NativeTestmonPreparation:
     """Inspect and repair derived state owned by this checkout only."""
     root = repo_root.resolve()
     _validate_owned_state_parents(root)
-    environment_name = testmon_environment_digest(
-        root,
-        pytest_profile=pytest_profile,
-        pytest_environment=pytest_environment,
-        deadline_monotonic=deadline_monotonic,
-    )
+    environment_name = testmon_environment_digest(root, deadline_monotonic=deadline_monotonic)
     local_data = root / TESTMON_DATA_RELPATH
     local_data.parent.mkdir(parents=True, exist_ok=True)
     _validate_owned_state_parents(root)

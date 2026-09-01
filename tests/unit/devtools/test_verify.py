@@ -225,78 +225,58 @@ def test_native_selection_partitions_semantic_lanes() -> None:
     ]
 
 
-def test_explicit_full_corpus_does_not_load_testmon_workers() -> None:
+def test_full_corpus_traces_without_selecting_and_without_partitioning() -> None:
+    """The complete corpus publishes the graph affected selection needs.
+
+    Anti-vacuity: partitioning the parallel lane keeps only the last
+    partition's tests in the graph (testmon deletes what a run did not
+    collect), and dropping --testmon leaves the graph untouched.
+    """
     steps = verify.build_verify_steps(
         quick=False,
         testmon_mode="all",
         testmon_environment="polylogue-test",
     )
 
-    assert [label for label, _command in steps[-5:-2]] == [
-        "pytest native parallel 1/3 (all)",
-        "pytest native parallel 2/3 (all)",
-        "pytest native parallel 3/3 (all)",
+    assert [label for label, _command in steps[-3:]] == [
+        "pytest native parallel (all)",
+        "pytest native serial (all)",
+        "pytest native storage-scale (all)",
     ]
-    for _label, command in steps[-5:]:
-        assert "--testmon" not in command
-
-
-def test_bootstrap_traces_without_selecting_testmon() -> None:
-    steps = verify.build_verify_steps(
-        quick=False,
-        testmon_mode="bootstrap",
-        testmon_environment="polylogue-test",
-    )
-
     for _label, command in steps[-3:]:
         assert "--testmon" in command
         assert "--testmon-noselect" in command
         assert "--testmon-forceselect" not in command
         assert "--testmon-env=polylogue-test" in command
+        assert not any(item.startswith("--polylogue-file-batch") for item in command)
 
 
-def test_full_corpus_bootstrap_traces_and_keeps_three_worker_batches() -> None:
-    steps = verify.build_verify_steps(
-        quick=False,
-        testmon_mode="bootstrap",
-        testmon_environment="polylogue-test",
-        full_corpus=True,
-    )
+def test_full_corpus_forces_the_fullest_hypothesis_profile() -> None:
+    """The graph producer never traces under a reduced example budget.
 
-    parallel = [(label, command) for label, command in steps if "native parallel" in label]
-    assert len(parallel) == 3
-    for label, command in parallel:
-        assert "--testmon" in command, label
-        assert "--testmon-noselect" in command, label
-
-
-def test_affected_corpus_retains_testmon_selection() -> None:
-    steps = verify.build_verify_steps(
-        quick=False,
-        testmon_mode="affected",
-        testmon_environment="polylogue-test",
-    )
-
-    for _label, command in steps[-3:]:
-        assert "--testmon" in command
-        assert "--testmon-forceselect" in command
-        assert "--testmon-env=polylogue-test" in command
+    Anti-vacuity: without the override a shell exporting HYPOTHESIS_PROFILE=ci
+    publishes a graph missing edges only the default budget reaches, and every
+    lane's affected selection inherits the blind spot.
+    """
+    env = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
+    verify._normalize_managed_pytest_environment(env, full_corpus=True)
+    assert env["HYPOTHESIS_PROFILE"] == "default"
+    assert "POLYLOGUE_CI" not in env
+    affected = {"HYPOTHESIS_PROFILE": "ci"}
+    verify._normalize_managed_pytest_environment(affected)
+    assert affected["HYPOTHESIS_PROFILE"] == "ci"
 
 
-def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
+def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
     aggregate = verify._aggregate_pytest_results(
         [
             {
-                "name": "pytest native parallel 1/3 (all)",
-                "statistics": {"selected_count": 10, "terminal_count": 10, "outcomes": {"passed": 7, "skipped": 1}},
-            },
-            {
-                "name": "pytest native parallel 2/3 (all)",
-                "statistics": {"selected_count": 11, "terminal_count": 11, "outcomes": {"passed": 11}},
-            },
-            {
-                "name": "pytest native parallel 3/3 (all)",
-                "statistics": {"selected_count": 6, "terminal_count": 6, "outcomes": {"passed": 5, "xfailed": 1}},
+                "name": "pytest native parallel (all)",
+                "statistics": {
+                    "selected_count": 27,
+                    "terminal_count": 27,
+                    "outcomes": {"passed": 23, "skipped": 1, "xfailed": 1},
+                },
             },
             {
                 "name": "pytest native serial (all)",
@@ -307,7 +287,7 @@ def test_full_corpus_aggregate_sums_recycled_worker_batches() -> None:
                 "statistics": {"selected_count": 1, "terminal_count": 1, "outcomes": {"passed": 1}},
             },
         ],
-        expected_step_count=5,
+        expected_step_count=3,
         mode="all",
         exit_code=0,
     )
@@ -437,6 +417,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         command: list[str],
         *,
         run: VerifyRun,
+        **_kwargs: object,
     ) -> tuple[int, float, dict[str, object]]:
         run.start_step(label=label, cmd=command)
         raise verify.VerificationInterrupted(signal.SIGTERM)

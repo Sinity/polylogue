@@ -220,28 +220,20 @@ def test_environment_digest_changes_with_collection_semantics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-q'\n", encoding="utf-8")
-    initial = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    initial = _testmon_environment_digest(tmp_path)
 
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-ra'\n", encoding="utf-8")
-    config_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    config_changed = _testmon_environment_digest(tmp_path)
     monkeypatch.setattr("devtools.testmon_bootstrap._installed_distributions", lambda: (("pytest", "changed"),))
-    distributions_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
+    distributions_changed = _testmon_environment_digest(tmp_path)
+    # Process environment that changes example budgets, not collection, must
+    # not rename the environment: the daemon and every shell share one graph.
+    monkeypatch.setenv("HYPOTHESIS_PROFILE", "ci")
     monkeypatch.setenv("POLYLOGUE_CI", "testmon-digest-contract")
-    managed_environment_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=include")
-    profile_changed = _testmon_environment_digest(tmp_path, pytest_profile="slow=exclude")
+    process_environment_changed = _testmon_environment_digest(tmp_path)
 
-    assert (
-        len(
-            {
-                initial,
-                config_changed,
-                distributions_changed,
-                managed_environment_changed,
-                profile_changed,
-            }
-        )
-        == 5
-    )
+    assert len({initial, config_changed, distributions_changed}) == 3
+    assert process_environment_changed == distributions_changed
 
 
 def test_environment_digest_changes_when_root_conftest_is_added(tmp_path: Path) -> None:
@@ -634,12 +626,7 @@ def test_probing_an_absent_environment_preserves_another_environments_graph(tmp_
     assert absent.status == "absent"
     assert "some-other-environment" in absent.reason
 
-    prepare_native_testmon_environment(
-        tmp_path,
-        required_executable_paths=(),
-        pytest_profile="default",
-        pytest_environment={"HYPOTHESIS_PROFILE": "default"},
-    )
+    prepare_native_testmon_environment(tmp_path, required_executable_paths=())
 
     assert data.exists(), "probing an absent environment deleted the shared database"
     survivor = inspect_native_testmon_environment(data, environment_name=resident)
