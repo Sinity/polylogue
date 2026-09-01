@@ -1089,7 +1089,7 @@ def _copy_referenced_blobs(
     unproven: list[dict[str, str]] = []
     reference_evidence["recoverability_proofs"] = _source_recoverability_proofs(
         source_db,
-        root=source_db.parent,
+        root=source_blob_root.parent,
         missing_hashes=missing_hashes & source_hashes,
         unproven=unproven,
         source_bytes_cache={},

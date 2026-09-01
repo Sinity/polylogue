@@ -596,6 +596,76 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
     assert missing_source["missing_canonical_blob_count"] == 1
 
 
+@pytest.mark.contract
+def test_full_evidence_backup_proves_retired_root_recorded_path(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A recorded path under a retired archive root re-anchors onto the root in force.
+
+    Anti-vacuity: proofs resolve against the archive root, not the backup
+    staging directory — staging holds no inbox/, so resolving there reports
+    source_missing for material the archive still has.
+    """
+    archive_root = workspace_env["archive_root"]
+    inbox = archive_root / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    source_path = inbox / "export.zip"
+    records = [
+        {"metadata": "bundle sibling"},
+        {"id": "recoverable", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+        {"id": "second", "mapping": {"node": {"message": {"author": {"role": "user"}}}}},
+    ]
+    member_payload = json.dumps(records, separators=(",", ":")).encode()
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("conversations.json", member_payload)
+    retired_recorded_path = f"{tmp_path / 'retired-root' / 'inbox' / 'export.zip'}:conversations.json"
+    payload = dumps_bytes(records[1])
+    blob_hash = hashlib.sha256(payload).digest()
+    raw_id = zip_member_raw_id(
+        source_path=retired_recorded_path,
+        entry_ordinal=0,
+        split_index=0,
+        blob_hash=blob_hash.hex(),
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                raw_id,
+                "claude-ai-export",
+                "recoverable",
+                retired_recorded_path,
+                0,
+                blob_hash,
+                len(payload),
+                1,
+                "passed",
+            ),
+        )
+        conn.execute("UPDATE raw_sessions SET capture_mode = 'unknown' WHERE raw_id = ?", (raw_id,))
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, raw_id, "raw_payload", retired_recorded_path, len(payload), 1),
+        )
+        conn.execute(
+            "INSERT INTO raw_container_coordinates VALUES (?, 'zip-v2', ?, ?)",
+            (raw_id, 0, 0),
+        )
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["missing_canonical_blob_count"] == 0
+    assert result.verification["recoverable_source_blob_count"] == 1
+
+
 def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     workspace_env: dict[str, Path],
     tmp_path: Path,
