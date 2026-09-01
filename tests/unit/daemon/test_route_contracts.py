@@ -132,6 +132,16 @@ def test_duplicate_generated_route_fails_the_reachability_oracle(monkeypatch: py
         validate_declared_route_reachability(DaemonAPIHandler)
 
 
+def test_duplicate_installed_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Duplicating an installed binding cannot silently create two authorities."""
+
+    installed = _static_get_routes()
+    monkeypatch.setattr("polylogue.daemon.http._static_get_routes", lambda: installed + installed[-1:])
+
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        validate_declared_route_reachability(DaemonAPIHandler)
+
+
 def test_find_route_is_registered_once_in_the_shared_declaration_kernel() -> None:
     """The production adapter and metadata must consume one route declaration."""
 
