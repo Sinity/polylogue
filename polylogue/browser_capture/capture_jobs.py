@@ -662,10 +662,18 @@ class CaptureJobRegistry:
         if retention is not None:
             if not isinstance(retention, dict) or retention.get("state") not in {"active", "held", "eligible"}:
                 raise CaptureJobError(400, "invalid_retention_state")
+            hold_reason = retention.get("hold_reason")
+            timeline_authoritative = retention.get("timeline_authoritative", True)
+            if (
+                not isinstance(timeline_authoritative, bool)
+                or (retention["state"] == "held" and (not isinstance(hold_reason, str) or not hold_reason))
+                or (retention["state"] != "held" and hold_reason is not None)
+            ):
+                raise CaptureJobError(400, "invalid_retention_state")
             retention = {
                 "state": retention["state"],
-                "hold_reason": retention.get("hold_reason"),
-                "timeline_authoritative": retention.get("timeline_authoritative", True),
+                "hold_reason": hold_reason,
+                "timeline_authoritative": timeline_authoritative,
             }
         ttl = body.get("lease_ttl_seconds")
         if ttl is not None and (not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 300):
@@ -705,6 +713,7 @@ class CaptureJobRegistry:
                     "kind": "capture_job_update",
                     "revision": row["revision"],
                     "retry": current_retry,
+                    "retention": current_retention,
                     "lease_expires_at": lease["expires_at"],
                     "acknowledged_at": _stamp(now),
                     "no_op": True,
@@ -722,6 +731,7 @@ class CaptureJobRegistry:
                 "kind": "capture_job_update",
                 "revision": revision,
                 "retry": next_retry,
+                "retention": next_retention,
                 "lease_expires_at": next_lease["expires_at"],
                 "acknowledged_at": _stamp(now),
             }
@@ -756,12 +766,22 @@ class CaptureJobRegistry:
                 if len(deleted) >= limit:
                     break
                 retention = json.loads(row["retention_json"])
+                retry = json.loads(row["retry_json"])
                 lease = self._lease(row)
                 if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
                     continue
-                expires_at = lease.get("expires_at") if lease else None
-                if isinstance(expires_at, str) and datetime.fromisoformat(expires_at.replace("Z", "+00:00")) > current:
+                if retry.get("state") not in {"completed", "abandoned"}:
                     continue
+                if lease is not None:
+                    expires_at = lease.get("expires_at")
+                    if not isinstance(expires_at, str):
+                        continue
+                    try:
+                        lease_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if lease_expires_at.tzinfo is None or lease_expires_at > current:
+                        continue
                 if row["checkpoint_sequence"] is None or not row["receipt_json"]:
                     continue
                 connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))

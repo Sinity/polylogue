@@ -51,6 +51,10 @@ def project_capture_job_timelines(events: list[dict[str, object]]) -> dict[str, 
         if isinstance(refs, dict) and isinstance(refs.get("conversation_ref"), str) and refs["conversation_ref"]:
             timelines[refs["conversation_ref"]].append(event)
     return {
-        key: sorted(value, key=lambda item: str(item.get("occurred_at", "")), reverse=True)
+        key: sorted(
+            value,
+            key=lambda item: revision if isinstance((revision := item.get("event_revision")), int) else -1,
+            reverse=True,
+        )
         for key, value in timelines.items()
     }
