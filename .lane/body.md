@@ -21,6 +21,6 @@ Residual risk
 The full corpus was not run. No durable schema migration is required. The parser fingerprint change affects codex-session and hermes-session.
 
 LANE-BRANCH: feature/packet/polylogue-ksgg.3
-LANE-COMMIT: 6d54e1a
+LANE-COMMIT: d7449bf
 LANE-QUICK: green
 LANE-CLASSIFICATION: parser semantics changed for codex-session and hermes-session; no schema migration
