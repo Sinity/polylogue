@@ -188,6 +188,19 @@ def test_from_archive_row_propagates_position_and_active_path_state() -> None:
     assert payload.is_active_leaf is True
 
 
+def test_from_archive_row_preserves_identity_source() -> None:
+    row = MessageRecord(
+        message_id=MessageId("m1"),
+        session_id=SessionId("c1"),
+        provider_message_id="native-m1",
+        role=Role.USER,
+        content_hash=ContentHash("0" * 64),
+        identity_source="native",
+    )
+
+    assert message_render_envelope_from_archive_row(row, session_id="c1").identity_source == "native"
+
+
 def test_message_envelope_propagates_content_flags() -> None:
     msg = _build_message(
         has_paste=True,

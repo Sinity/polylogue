@@ -19,6 +19,7 @@ import ast
 import gzip
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -37,7 +38,6 @@ from polylogue.declarations import (
     OutputSpec,
     validate_registry,
 )
-from polylogue.logging import get_logger
 from polylogue.sources.detection import (
     CompiledDetectorRegistry,
     DetectionMode,
@@ -45,7 +45,7 @@ from polylogue.sources.detection import (
     compile_detector_registry,
 )
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
@@ -328,13 +328,15 @@ def _absent_topology(reason: str) -> TopologyCapability:
     return TopologyCapability("structurally-absent", (reason,), reason)
 
 
-_DEFAULT_TOPOLOGY_CAPABILITIES = TopologyCapabilities(
-    message_parent=_absent_topology("no provider message-parent field is admitted"),
-    message_branch_state=_absent_topology("no provider branch-state field is admitted"),
-    session_parent_target=_absent_topology("no provider session-parent target is admitted"),
-    inheritance_branch_point=_absent_topology("no provider inheritance boundary is admitted"),
-    parent_dispatch=_absent_topology("no provider parent-dispatch identity is admitted"),
-)
+def _no_topology_capabilities(origin: Origin) -> TopologyCapabilities:
+    prefix = f"{origin.value} admits no"
+    return TopologyCapabilities(
+        message_parent=_absent_topology(f"{prefix} provider message-parent field"),
+        message_branch_state=_absent_topology(f"{prefix} provider branch-state field"),
+        session_parent_target=_absent_topology(f"{prefix} provider session-parent target"),
+        inheritance_branch_point=_absent_topology(f"{prefix} provider inheritance boundary"),
+        parent_dispatch=_absent_topology(f"{prefix} provider parent-dispatch identity"),
+    )
 
 
 def recognize_source_class(
@@ -480,7 +482,7 @@ def schema_observed_leaf_values(provider: str, field_path: str, *, schema_root: 
         try:
             document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
         except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as error:
-            logger.warning("schema_package_unreadable", path=str(path), error=str(error))
+            logger.warning("schema_package_unreadable path=%s error=%s", path, error)
             continue
         for node in _resolve_schema_path(document, segments):
             observed = node.get("x-polylogue-values")
@@ -575,7 +577,7 @@ class OriginSpec:
     #: CLI ``--origin`` shell completion). Declared here so no surface keeps a
     #: second hand-maintained per-origin description inventory.
     display_description: str
-    topology_capabilities: TopologyCapabilities = _DEFAULT_TOPOLOGY_CAPABILITIES
+    topology_capabilities: TopologyCapabilities
     #: Whether this origin is offered as a public filter/completion choice.
     #: Compatibility-only and non-session evidence origins can remain in the
     #: authoritative enum without being advertised as query choices.
@@ -828,7 +830,7 @@ def _declaration(origin: Origin, *, lifecycle: OriginLifecycle, discovery: str) 
 
 def _claude_code_spec() -> OriginSpec:
     origin = Origin.CLAUDE_CODE_SESSION
-    return OriginSpec(
+    spec = OriginSpec(
         origin=origin,
         declaration=_declaration(origin, lifecycle="executable", discovery="Claude Code JSONL and sidecar admission."),
         lifecycle="executable",
@@ -1018,7 +1020,24 @@ def _claude_code_spec() -> OriginSpec:
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",
+        topology_capabilities=_no_topology_capabilities(origin),
     )
+    topology_capabilities = TopologyCapabilities(
+        message_parent=TopologyCapability("carried", ("claude_code.parentUuid",)),
+        message_branch_state=TopologyCapability(
+            "positive-derived",
+            ("code_parser._finalize_code_session.branch_type",),
+            "branch type is derived from record evidence",
+        ),
+        session_parent_target=TopologyCapability(
+            "positive-derived",
+            ("code_parser._finalize_code_session.parent_session_provider_id",),
+            "parent session is derived from the Claude sessionId relationship",
+        ),
+        inheritance_branch_point=_absent_topology("Claude Code wire carries no inheritance boundary"),
+        parent_dispatch=_absent_topology("Claude Code child records do not carry an admitted parent dispatch field"),
+    )
+    return replace(spec, topology_capabilities=topology_capabilities)
 
 
 def artifact_rule_for_path(provider: Provider, source_path: str) -> OriginArtifactRule | None:
@@ -1055,7 +1074,7 @@ def artifact_suffixes_for_provider(
 
 def _chatgpt_spec() -> OriginSpec:
     origin = Origin.CHATGPT_EXPORT
-    return OriginSpec(
+    spec = OriginSpec(
         origin=origin,
         declaration=_declaration(
             origin, lifecycle="executable", discovery="ChatGPT document and bundled export admission."
@@ -1074,6 +1093,21 @@ def _chatgpt_spec() -> OriginSpec:
         fidelity_notes=("Browser capture remains an acquisition mode and is not a new public origin.",),
         semantic_reparse="reparse when ChatGPT document parsing fingerprints change",
         display_description="ChatGPT web exports (lab: OpenAI)",
+        topology_capabilities=_no_topology_capabilities(origin),
+    )
+    return replace(
+        spec,
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability("carried", ("chatgpt.mapping.parent",)),
+            message_branch_state=TopologyCapability("carried", ("chatgpt.mapping.children",)),
+            session_parent_target=_absent_topology("ChatGPT exports carry no session-parent target"),
+            inheritance_branch_point=TopologyCapability(
+                "positive-derived",
+                ("chatgpt.mapping.parent", "chatgpt.mapping.children"),
+                "branch boundaries are derived from mapping ancestry",
+            ),
+            parent_dispatch=_absent_topology("ChatGPT exports carry no parent-dispatch identity"),
+        ),
     )
 
 
@@ -1096,6 +1130,7 @@ def _grok_spec() -> OriginSpec:
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
         display_description="Grok account-data exports (lab: xAI)",
+        topology_capabilities=_no_topology_capabilities(Origin.GROK_EXPORT),
     )
 
 
@@ -1115,6 +1150,7 @@ def _executable_spec(
     fidelity_notes: tuple[str, ...] = (),
     assembly_spec_path: str | None = None,
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
+    topology_capabilities: TopologyCapabilities,
 ) -> OriginSpec:
     return OriginSpec(
         origin=origin,
@@ -1135,6 +1171,7 @@ def _executable_spec(
         artifact_rules=artifact_rules,
         display_description=display_description,
         public_filter=public_filter,
+        topology_capabilities=topology_capabilities,
     )
 
 
@@ -1207,6 +1244,7 @@ def _codex_spec() -> OriginSpec:
             "ParsedMessage plumbed through every codex.py message "
             "constructor, not an additive per-event change.",
         ),
+        topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
     )
     carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
     return replace(
@@ -1231,6 +1269,7 @@ def _gemini_cli_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
         display_description="Gemini CLI local sessions (lab: Google)",
+        topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "
             "registered as a DroppedValueVocabulary (polylogue-2qx) against "
@@ -1276,6 +1315,7 @@ def _hermes_spec() -> OriginSpec:
             "this bead's declaration reads, not merely a different provider "
             "argument to the same function.",
         ),
+        topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
     )
     carried = TopologyCapability(
         "carried", ("hermes_state.sessions.parent_session_id", "hermes ATIF parent_session_id")
@@ -1338,6 +1378,7 @@ def _antigravity_spec() -> OriginSpec:
                 path_suffixes=(".md",),
             ),
         ),
+        topology_capabilities=_no_topology_capabilities(Origin.ANTIGRAVITY_SESSION),
     )
 
 
@@ -1367,11 +1408,12 @@ def _beads_spec() -> OriginSpec:
         semantic_reparse="no parser; retain the reserved vocabulary until a Beads session adapter is admitted",
         display_description="Reserved Beads issue origin (not admitted)",
         public_filter=False,
+        topology_capabilities=_no_topology_capabilities(Origin.BEADS_ISSUE),
     )
 
 
 def _claude_ai_spec() -> OriginSpec:
-    return _executable_spec(
+    spec = _executable_spec(
         Origin.CLAUDE_AI_EXPORT,
         provider=Provider.CLAUDE_AI,
         tightness=80,
@@ -1382,6 +1424,22 @@ def _claude_ai_spec() -> OriginSpec:
         # bd polylogue-4zqh3: sole-copy attachment-byte recovery sidecar.
         assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
+        topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_AI_EXPORT),
+    )
+    return replace(
+        spec,
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability(
+                "carried", ("claude.common._message_parent_id -> ParsedMessage.parent_message_provider_id",)
+            ),
+            message_branch_state=TopologyCapability(
+                "positive-derived",
+                ("claude.common.normalize_chat_messages branch_index/variant_index/is_active_path/is_active_leaf",),
+            ),
+            session_parent_target=_absent_topology("Claude AI export has no session-parent target"),
+            inheritance_branch_point=_absent_topology("Claude AI export has no inheritance boundary"),
+            parent_dispatch=_absent_topology("Claude AI export has no parent dispatch identity"),
+        ),
     )
 
 
@@ -1418,6 +1476,7 @@ def _claude_design_spec() -> OriginSpec:
             "is still moving. No committed schema-harvest package exists yet -- see the 'proposed' "
             "completeness maturity below.",
         ),
+        topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_DESIGN_SESSION),
     )
 
 
@@ -1461,6 +1520,21 @@ def _aistudio_drive_spec() -> OriginSpec:
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
         display_description="Google AI Studio / Drive exports (lab: Google)",
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability(
+                "carried",
+                (
+                    "drive._branch_parent_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id",
+                ),
+            ),
+            message_branch_state=TopologyCapability(
+                "positive-derived",
+                ("drive.parse_chunked_prompt active path and fill_linear_parent_chain",),
+            ),
+            session_parent_target=_absent_topology("AI Studio and Drive exports have no session-parent target"),
+            inheritance_branch_point=_absent_topology("AI Studio and Drive exports have no inheritance boundary"),
+            parent_dispatch=_absent_topology("AI Studio and Drive exports have no parent dispatch identity"),
+        ),
     )
 
 
@@ -1487,6 +1561,7 @@ def _unknown_spec() -> OriginSpec:
         semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
         display_description="Unrecognized fallback exports",
         public_filter=False,
+        topology_capabilities=_no_topology_capabilities(Origin.UNKNOWN_EXPORT),
     )
 
 

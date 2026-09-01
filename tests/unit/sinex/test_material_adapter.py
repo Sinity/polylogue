@@ -15,6 +15,8 @@ from polylogue.core.enums import (
     Provider,
     Role,
     SessionKind,
+    ToolOutcome,
+    ToolResultUnknownReason,
 )
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
@@ -68,6 +70,14 @@ def _parsed_session() -> ParsedSession:
                 tool_name="Shell",
                 tool_id="t1",
                 tool_input={"cmd": "pwd"},
+                tool_outcome=ToolOutcome.OK,
+            ),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id="t1",
+                text="unknown result",
+                tool_outcome=ToolOutcome.UNKNOWN,
+                outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
             ),
         ],
     )
@@ -109,12 +119,35 @@ def _parsed_session() -> ParsedSession:
 def test_adapter_covers_every_available_material_unit_and_names_gaps() -> None:
     material = session_material_from_parsed_session(_parsed_session(), session_id="claude-code-session:s1")
     assert len(material.messages) == 2
-    assert sum(len(message.blocks) for message in material.messages) == 2
+    assert sum(len(message.blocks) for message in material.messages) == 3
+    assert material.messages[1].blocks[0].tool_outcome is ToolOutcome.UNKNOWN
+    assert material.messages[1].blocks[1].tool_outcome is ToolOutcome.UNKNOWN
+    assert material.messages[1].blocks[1].tool_result_outcome_unknown_reason == "not_reported"
     assert sum(len(message.attachments) for message in material.messages) == 1
     assert len(material.lineage) == 1
     assert len(material.usage) == 1
     assert len(material.session_events) == 1
     assert {gap.gap_kind for gap in material.fidelity_gaps} == {"unsupported_normalized_fields"}
+
+
+def test_adapter_derives_tool_outcomes_before_publication() -> None:
+    parsed = _parsed_session()
+    tool_use, tool_result = parsed.messages[1].blocks
+    parsed.messages[1].blocks = [
+        tool_use.model_copy(update={"tool_outcome": None}),
+        tool_result.model_copy(
+            update={
+                "tool_outcome": None,
+                "is_error": False,
+                "outcome_unknown_reason": None,
+            }
+        ),
+    ]
+
+    material = session_material_from_parsed_session(parsed, session_id="claude-code-session:s1")
+
+    assert material.messages[1].blocks[0].tool_outcome is ToolOutcome.OK
+    assert material.messages[1].blocks[1].tool_outcome is ToolOutcome.OK
 
 
 def test_production_adapter_runs_real_encoder_verifier_decoder_and_preserves_wire_names() -> None:

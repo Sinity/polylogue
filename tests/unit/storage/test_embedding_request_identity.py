@@ -62,17 +62,26 @@ def test_complete_requests_deduplicate_without_message_identity() -> None:
 
 
 def test_default_recipe_is_independent_of_index_schema_version(monkeypatch: MonkeyPatch) -> None:
-    """Fresh index rebuilds retain cache addresses for unchanged provider input."""
+    """Fresh identity imports retain cache addresses for unchanged provider input."""
+    import importlib
+
+    import polylogue.storage.embeddings.identity as identity
     import polylogue.storage.sqlite.archive_tiers.index as index
 
-    before = _recipe()
+    before = identity.EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
+    original_version = index.INDEX_SCHEMA_VERSION
     monkeypatch.setattr(index, "INDEX_SCHEMA_VERSION", index.INDEX_SCHEMA_VERSION + 1)
-    after = _recipe()
+    importlib.reload(identity)
+    after = identity.EmbeddingRecipe.current(model="voyage-4", dimensions=1024)
 
     assert before.input_schema_version == "archive-index-v79"
     assert after.input_schema_version == before.input_schema_version
     assert after.recipe_hash == before.recipe_hash
     assert (
-        EmbeddingRequestSpec(recipe=after, input_text="same").vector_derivation_hash
-        == EmbeddingRequestSpec(recipe=before, input_text="same").vector_derivation_hash
+        identity.EmbeddingRequestSpec(recipe=after, input_text="same").vector_derivation_hash
+        == identity.EmbeddingRequestSpec(recipe=before, input_text="same").vector_derivation_hash
     )
+
+    monkeypatch.undo()
+    assert original_version == index.INDEX_SCHEMA_VERSION
+    importlib.reload(identity)

@@ -1191,6 +1191,7 @@ def message_render_envelope_from_archive_row(message: Any, *, session_id: object
         content_blocks.append(row)
     values = {
         "id": message_id,
+        "identity_source": getattr(message, "identity_source", "positional"),
         "role": role_label(getattr(message, "role", "")),
         "text": text,
         "timestamp": (

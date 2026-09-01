@@ -118,7 +118,12 @@ def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
     assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
     assert processor._record_append_cursor(plan)
     header, body = path.read_bytes().split(b"\n", 1)
-    path.write_bytes(header + b"\n" + body.replace(b'"zero"', b'"changed"', 1))
+    path.write_bytes(
+        header
+        + b"\n"
+        + body.replace(b'"one"', b'"changed"', 1)
+        + b'{"type":"assistant","message":{"role":"assistant","content":"tail"},"uuid":"message-2"}\n'
+    )
 
     assert processor._append_plan(path) is None
 

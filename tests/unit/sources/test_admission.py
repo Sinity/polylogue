@@ -86,11 +86,23 @@ def test_round_robin_keeps_small_sibling_live() -> None:
     assert calls == ["whale-1", "small-1"]
 
 
+def test_scheduler_drains_units_added_after_iteration_yields() -> None:
+    scheduler = FairAdmissionScheduler()
+
+    def add_late_unit() -> str:
+        scheduler.add(AdmissionUnit("late", lambda: "late-result"))
+        return "first-result"
+
+    scheduler.add(AdmissionUnit("first", add_late_unit))
+
+    assert list(scheduler.run()) == [("first", "first-result"), ("late", "late-result")]
+
+
 def test_round_robin_bounds_each_source_and_isolates_poison() -> None:
     calls: list[str] = []
     scheduler = FairAdmissionScheduler()
     scheduler.add(AdmissionUnit("whale", lambda: calls.append("whale-1")))
-    scheduler.add(AdmissionUnit("whale", lambda: (_ for _ in ()).throw(RuntimeError("poison"))))
+    scheduler.add(AdmissionUnit("whale", lambda: (_ for _ in ()).throw(ValueError("poison"))))
     scheduler.add(AdmissionUnit("whale", lambda: calls.append("whale-3")))
     scheduler.add(AdmissionUnit("small", lambda: calls.append("small-1")))
 
@@ -98,3 +110,4 @@ def test_round_robin_bounds_each_source_and_isolates_poison() -> None:
 
     assert calls == ["whale-1", "small-1", "whale-3"]
     assert isinstance(results[2][1], AdmissionFailure)
+    assert results[2][1].retryable is False

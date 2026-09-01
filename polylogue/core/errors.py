@@ -92,12 +92,25 @@ class SchemaSkewError(DatabaseError):
     code = "schema_skew"
     http_status_code = HTTPStatus.CONFLICT
 
-    def __init__(self, *, tier: str, expected: object, found: object, remedy: str) -> None:
+    def __init__(
+        self,
+        tier: str,
+        expected: object,
+        found: object,
+        remedy: str | None = None,
+    ) -> None:
         self.tier = tier
         self.expected = expected
         self.found = found
-        self.remedy = remedy
-        super().__init__(f"{tier} schema skew: expected {expected}, found {found}. {remedy}")
+        self.remedy = remedy or "rebuild_index"
+        if remedy is None:
+            message = (
+                f"{tier} derived schema identity mismatch: expected {expected}, found {found!r}; "
+                "stale derived tier; daemon convergence rebuilds it"
+            )
+        else:
+            message = f"{tier} schema skew: expected {expected}, found {found}. {remedy}"
+        super().__init__(message)
 
 
 SchemaSkew = SchemaSkewError

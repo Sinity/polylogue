@@ -23,7 +23,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.core.errors import SchemaSkewError, SchemaVersionMismatchError
 from polylogue.mcp.server import build_server
 from polylogue.mcp.server_support import _async_safe_call, _safe_call
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest
@@ -69,6 +69,37 @@ class TestSchemaVersionMismatchSurface:
         assert body["tool"] == "search"
         assert body["current_version"] == 99
         assert body["expected_version"] == 16
+
+
+def test_schema_skew_surface_preserves_structured_recovery_fields() -> None:
+    from polylogue.mcp.server_support import _exception_to_error_json
+
+    body = json.loads(
+        _exception_to_error_json(
+            "read",
+            SchemaSkewError(tier="index", expected={"version": 82}, found={"version": 81}, remedy="rebuild_index"),
+        )
+    )
+
+    assert body["code"] == "schema_skew"
+    assert body["message"].startswith("index schema skew:")
+    assert body["tier"] == "index"
+    assert body["expected"] == {"version": 82}
+    assert body["found"] == {"version": 81}
+    assert body["remedy"] == "rebuild_index"
+
+
+def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> None:
+    from polylogue.mcp.server_support import _exception_to_error_json
+    from polylogue.storage.sqlite.schema_bootstrap import SchemaSkewError
+
+    body = json.loads(_exception_to_error_json("read", SchemaSkewError("index", "expected", "found")))
+
+    assert body["code"] == "schema_skew"
+    assert body["tier"] == "index"
+    assert body["expected"] == "expected"
+    assert body["found"] == "found"
+    assert body["remedy"] == "rebuild_index"
 
 
 class TestTopLevelIsolation:

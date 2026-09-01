@@ -46,6 +46,7 @@ from polylogue.sources.live.batch import (
 )
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    claude_semantic_frontier_for_prefix,
     cursor_ctime_ns,
     cursor_prefix_hash,
     cursor_tail_hash,
@@ -306,6 +307,7 @@ class LiveWatcher:
         self._owns_parse_stage = parse_stage is None
         self._parse_stage: LiveParseStage | None = parse_stage if parse_stage is not None else LiveParseStage()
         self._pending_paths: set[Path] = set()
+        self._forced_reparse_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
@@ -886,6 +888,13 @@ class LiveWatcher:
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
         self._pending_paths.add(path)
+        if self._source_name_for(path).split(":", 1)[0] == "claude-code" and path.parent.name == "tool-results":
+            session_dir = path.parent.parent
+            root_transcript = session_dir.parent / f"{session_dir.name}.jsonl"
+            owners = [root_transcript, *sorted((session_dir / "subagents").glob("agent-*.jsonl"))]
+            owner_paths = {owner for owner in owners if owner.is_file()}
+            self._pending_paths.update(owner_paths)
+            self._forced_reparse_paths.update(owner_paths)
         self._last_enqueue_at = time.monotonic()
         self._ensure_pending_scheduled()
 
@@ -989,6 +998,8 @@ class LiveWatcher:
                 return False
             paths = list(self._pending_paths)
             self._pending_paths.clear()
+            forced_paths = self._forced_reparse_paths.intersection(paths)
+            self._forced_reparse_paths.difference_update(paths)
 
         async def flush_batch() -> None:
             # Filtering a changed-file batch invokes cursor reconciliation and
@@ -1006,7 +1017,9 @@ class LiveWatcher:
                         stat = path.stat()
                     except FileNotFoundError:
                         continue
-                    if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                    if path in forced_paths or self._needs_work_from_state(
+                        path, stat=stat, cursor=cursor_records.get(path)
+                    ):
                         needed.append(path)
             if not needed:
                 self._defer_unaccounted_failed_retries(paths)
@@ -1038,6 +1051,7 @@ class LiveWatcher:
             # authorized debounce flush.
             async with self._batch_lock:
                 self._pending_paths.update(paths)
+                self._forced_reparse_paths.update(forced_paths)
             return True
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
@@ -1045,6 +1059,7 @@ class LiveWatcher:
             logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(paths))
             async with self._batch_lock:
                 self._pending_paths.update(paths)
+                self._forced_reparse_paths.update(forced_paths)
             await asyncio.sleep(self._debounce_s)
         return True
 
@@ -1611,6 +1626,18 @@ class LiveWatcher:
             post_read_stat.st_ctime_ns,
         ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
             return _ArchivedCursorReconciliation.UNAVAILABLE
+        source_provider = provider_from_origin(Origin.from_string(str(origin))) if origin is not None else None
+        if source_provider is Provider.CLAUDE_CODE:
+            semantic_tail_hash = claude_semantic_frontier_for_prefix(path, archived_size)
+            if semantic_tail_hash is None:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
+            tail_hash = semantic_tail_hash
+        else:
+            tail_hash = encode_cursor_hash_authority(
+                content_fingerprint,
+                tail_hash,
+                ctime_ns=stat.st_ctime_ns,
+            )
         self._cursor.set(
             path,
             archived_size,
@@ -1618,11 +1645,7 @@ class LiveWatcher:
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
-            tail_hash=encode_cursor_hash_authority(
-                content_fingerprint,
-                tail_hash,
-                ctime_ns=stat.st_ctime_ns,
-            ),
+            tail_hash=tail_hash,
             source_name=provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
             else self._source_name_for(path),

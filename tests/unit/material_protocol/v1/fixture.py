@@ -22,7 +22,16 @@ segmentation/stable-anchor test and are not checked in as golden bytes.
 
 from __future__ import annotations
 
-from polylogue.core.enums import BlockType, LinkType, MaterialOrigin, MessageType, Origin, Role, SessionKind
+from polylogue.core.enums import (
+    BlockType,
+    LinkType,
+    MaterialOrigin,
+    MessageType,
+    Origin,
+    Role,
+    SessionKind,
+    ToolOutcome,
+)
 from polylogue.material_protocol.v1 import (
     AttachmentInput,
     BlockInput,
@@ -99,6 +108,7 @@ def build_small_session_material() -> SessionMaterial:
                 text="3 passed in 0.42s",
                 tool_result_is_error=False,
                 tool_result_exit_code=0,
+                tool_outcome=ToolOutcome.OK,
             ),
         ),
     )
@@ -138,6 +148,7 @@ def build_small_session_material() -> SessionMaterial:
                 text="ERROR: no tests matched 'missing'",
                 tool_result_is_error=True,
                 tool_result_exit_code=4,
+                tool_outcome=ToolOutcome.ERROR,
             ),
         ),
     )

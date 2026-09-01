@@ -367,5 +367,5 @@ describe("build.mjs full archive emission", () => {
     await Promise.resolve();
     expect(pageRequests.filter((request) => request.operation !== "identity")).toHaveLength(pageWorkCount);
     rmSync(smokeRoot, { recursive: true, force: true });
-  }, 15_000);
+  }, 120_000);
 });

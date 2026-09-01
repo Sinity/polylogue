@@ -146,22 +146,18 @@ def claude_semantic_frontier_from_path(path: Path) -> tuple[str, int, int] | Non
     record is therefore deferred instead of being interpreted as an empty body.
     """
     try:
-        payload = path.read_bytes()
+        end_offset = path.stat().st_size
     except OSError:
         return None
-    newline = payload.find(b"\n")
-    if newline < 0:
+    frontier = claude_semantic_frontier_for_prefix(path, end_offset)
+    if frontier is None:
         return None
-    header = payload[: newline + 1]
     try:
-        json_loads(header)
-    except (UnicodeDecodeError, ValueError):
+        with path.open("rb") as handle:
+            header = handle.readline()
+    except OSError:
         return None
-    body = payload[newline + 1 :]
-    boundary = jsonl_complete_prefix(body)
-    if boundary.malformed_record or boundary.prefix_size != len(body):
-        return None
-    return encode_claude_semantic_frontier(header=header, body=body), newline + 1, len(payload)
+    return frontier, len(header), end_offset
 
 
 def claude_semantic_frontier_for_prefix(path: Path, end_offset: int) -> str | None:
@@ -172,15 +168,19 @@ def claude_semantic_frontier_for_prefix(path: Path, end_offset: int) -> str | No
             if not header.endswith(b"\n") or len(header) > end_offset:
                 return None
             json_loads(header)
-            body = handle.read(end_offset - len(header))
-            if len(body) != end_offset - len(header):
-                return None
+            body_bytes = end_offset - len(header)
+            body_hasher = hashlib.sha256()
+            while body_bytes:
+                line = handle.readline()
+                if not line or len(line) > body_bytes or not line.endswith(b"\n"):
+                    return None
+                body_hasher.update(line)
+                body_bytes -= len(line)
+                if line.strip():
+                    json_loads(line)
     except (OSError, UnicodeDecodeError, ValueError):
         return None
-    boundary = jsonl_complete_prefix(body)
-    if boundary.malformed_record or boundary.prefix_size != len(body):
-        return None
-    return encode_claude_semantic_frontier(header=header, body=body)
+    return f"{_CLAUDE_FRONTIER_PREFIX}:{hashlib.sha256(header).hexdigest()}:{body_hasher.hexdigest()}:{end_offset - len(header)}"
 
 
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:

@@ -502,7 +502,15 @@ def _candidate_result(
             unresolved=True,
         )
         if current_route_data.get("status") == "error" or stored_route.error is not None
-        else compare_normalized_contributions(stored_contribution, current_contribution)
+        else (
+            ContributionComparison(
+                ComparisonOutcome.CONTENT_DIVERGENT,
+                ("sessions",),
+                unresolved=True,
+            )
+            if not stored_contribution.sessions or not current_contribution.sessions
+            else compare_normalized_contributions(stored_contribution, current_contribution)
+        )
     )
     return {
         **record,
@@ -551,13 +559,7 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     for record in records:
         if not isinstance(record, dict) or record.get("cohort") == "source_missing":
             if isinstance(record, dict):
-                extended_records.append(
-                    {
-                        **record,
-                        "authority_outcome": AuthorityOutcome.UNRESOLVED_BLOCKER.value,
-                        "authority_evidence": "source_missing_requires_ordinary_restoration_and_admission",
-                    }
-                )
+                extended_records.append(record)
             else:
                 extended_records.append(record)
         else:
@@ -577,7 +579,9 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
         if _route_status(comparison, "stored_route") == "error" or _route_status(comparison, "current_route") == "error"
     )
     outcome_counts = Counter(
-        str(record["authority_outcome"]) for record in extended_records if "authority_outcome" in record
+        str(record["authority_outcome"])
+        for record in extended_records
+        if record.get("cohort") != "source_missing" and "authority_outcome" in record
     )
     allowed_outcomes = {outcome.value for outcome in AuthorityOutcome}
     invalid_outcomes = sorted(set(outcome_counts) - allowed_outcomes)
@@ -598,9 +602,16 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
             continue
         seen_hashes.add(blob_hash)
         size = record.get("size_bytes", record.get("blob_size_bytes"))
-        if isinstance(size, int) and size >= 0:
-            distinct_bytes += size
-    unresolved_count = outcome_counts[AuthorityOutcome.UNRESOLVED_BLOCKER.value]
+        if not isinstance(size, int) or size < 0:
+            try:
+                size = store.blob_path(blob_hash).stat().st_size
+            except OSError as exc:
+                raise ValueError(f"candidate blob {blob_hash} has no reliable size") from exc
+        distinct_bytes += size
+    source_missing_count = sum(
+        1 for record in records if isinstance(record, dict) and record.get("cohort") == "source_missing"
+    )
+    unresolved_count = outcome_counts[AuthorityOutcome.UNRESOLVED_BLOCKER.value] + source_missing_count
     return {
         **census,
         "normalized_comparison": {
@@ -610,6 +621,7 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
             "source_missing_candidate_count_untouched": sum(
                 1 for record in records if isinstance(record, dict) and record.get("cohort") == "source_missing"
             ),
+            "source_missing_candidate_count_unresolved": source_missing_count,
             "outcome_counts": dict(sorted(outcomes.items())),
             "authority_outcome_counts": dict(
                 sorted(

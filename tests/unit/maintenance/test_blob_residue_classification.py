@@ -103,8 +103,14 @@ def test_extend_census_leaves_source_missing_records_unchanged(tmp_path: Path) -
     source = tmp_path / "capture.jsonl"
     source.write_bytes(_FIXTURE.read_bytes())
     store = BlobStore(tmp_path / "blob")
-    blob_hash, _size = store.write_from_path(source)
-    missing = {"cohort": "source_missing", "blob_hash": "missing", "recorded_source": None}
+    blob_hash, size = store.write_from_path(source)
+    missing = {
+        "cohort": "source_missing",
+        "blob_hash": "missing",
+        "recorded_source": None,
+        "size_bytes": 7,
+        "authority_outcome": AuthorityOutcome.UNRESOLVED_BLOCKER.value,
+    }
     present = {
         "cohort": "claude_leading_record_or_prefix",
         "origin": "claude-code-session",
@@ -121,11 +127,12 @@ def test_extend_census_leaves_source_missing_records_unchanged(tmp_path: Path) -
     assert isinstance(records, list)
     assert isinstance(comparison, dict)
     last_record = cast(dict[str, object], records[-1])
-    assert last_record["blob_hash"] == "missing"
-    assert last_record["authority_outcome"] == AuthorityOutcome.UNRESOLVED_BLOCKER.value
+    assert last_record == missing
     assert comparison["present_source_candidate_count"] == 577
     assert comparison["source_missing_candidate_count_untouched"] == 1
+    assert comparison["source_missing_candidate_count_unresolved"] == 1
     assert comparison["candidate_record_count"] == 578
+    assert comparison["candidate_distinct_bytes"] == size + 7
     assert comparison["unresolved_candidate_count"] == 1
     authority_values = cast(list[str], comparison["authority_outcome_values"])
     assert set(authority_values) == {

@@ -99,7 +99,7 @@ def _schema_documents(provider_dir: Path) -> list[dict[str, object]]:
         try:
             payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
         except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError) as error:
-            logger.warning("schema_package_unreadable", path=str(path), error=str(error))
+            logger.warning("schema_package_unreadable path=%s error=%s", path, error)
             continue
         if isinstance(payload, dict):
             documents.append(payload)
@@ -114,7 +114,7 @@ def _referenced_strings(paths: list[Path]) -> frozenset[str]:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (OSError, SyntaxError, UnicodeDecodeError) as error:
-            logger.warning("parser_source_unreadable", path=str(path), error=str(error))
+            logger.warning("parser_source_unreadable path=%s error=%s", path, error)
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):

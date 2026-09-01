@@ -1757,7 +1757,12 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     documents: list[ChatGPTLoweredDocument] = []
     shared_record = _payload_record(payload)
     if shared_record is not None and chatgpt.looks_like_shared_decode(shared_record):
-        conversation_id = shared_record.get("shared_conversation_id")
+        conversation_id = (
+            optional_string(shared_record.get("id"))
+            or optional_string(shared_record.get("uuid"))
+            or optional_string(shared_record.get("conversation_id"))
+            or optional_string(shared_record.get("shared_conversation_id"))
+        )
         if isinstance(conversation_id, str) and conversation_id:
             return [
                 ChatGPTLoweredDocument(

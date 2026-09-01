@@ -195,6 +195,7 @@ class CorpusArtifactManifest:
 
     def __post_init__(self) -> None:
         _reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
+        _reject_semantic_metadata(self.files, location="corpus artifact manifest files")
 
     @property
     def manifest_id(self) -> str:
@@ -613,6 +614,7 @@ class WorkloadProfile:
             raise ValueError("workload profile requires a name and purpose")
         if not self.family_ids or not self.profile_tokens:
             raise ValueError("workload profile requires semantic corpus identity")
+        _reject_semantic_metadata(self.family_ids, location="workload profile")
         _reject_semantic_metadata(self.profile_tokens, location="workload profile")
 
     def corpus_specs(self, shapes: tuple[WorkloadSessionShape, ...]) -> tuple[CorpusSpec, ...]:
@@ -1431,6 +1433,7 @@ def _manifest_file_entries(files: tuple[dict[str, object], ...]) -> tuple[tuple[
     """Validate manifest file records before any keyed access or filesystem use."""
     entries: list[tuple[str, int, str]] = []
     for item in files:
+        _reject_semantic_metadata(item, location="seeded archive manifest file")
         path_value = item.get("path")
         size_value = item.get("size")
         hash_value = item.get("sha256")

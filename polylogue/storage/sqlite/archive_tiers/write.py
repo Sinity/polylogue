@@ -46,7 +46,6 @@ from polylogue.core.enums import (
     Provider,
     SessionKind,
     ToolOutcome,
-    ToolResultUnknownReason,
     admitted_session_kind,
 )
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -66,6 +65,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
@@ -583,12 +583,12 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
-    hook_parent_provider_id = _authoritative_parent_claim(
-        source_conn,
-        origin=origin.value,
-        child_native_id=native_id,
-    )
     if not merge_append:
+        hook_parent_provider_id = _authoritative_parent_claim(
+            source_conn,
+            origin=origin.value,
+            child_native_id=native_id,
+        )
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
@@ -833,9 +833,7 @@ def write_parsed_session_to_archive(
                     _sqlite_text(session.title),
                     admitted_session_kind(
                         session.session_kind,
-                        branch_type=(
-                            BranchType.SUBAGENT if hook_parent_provider_id is not None else session.branch_type
-                        ),
+                        branch_type=session.branch_type,
                     ).value,
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
@@ -1529,7 +1527,6 @@ def read_archive_session_envelope(
             ArchiveMessageRow(
                 message_id=message["message_id"],
                 native_id=message["native_id"],
-                identity_source=message["identity_source"],
                 role=message["role"],
                 position=message["position"],
                 variant_index=message["variant_index"],
@@ -2295,174 +2292,6 @@ def _build_block_rows(
     return rows
 
 
-def _derive_tool_outcomes(
-    messages: list[ParsedMessage], events: Sequence[ParsedSessionEvent], *, origin: Origin
-) -> list[ParsedMessage]:
-    """Resolve tool outcomes from each origin's structured parser evidence.
-
-    ``is_error`` and exit codes are parser-normalized evidence. Claude Code
-    additionally carries outcome fields in its record-level execution event.
-    A result without any such evidence is a parser defect and refuses the
-    write. A tool-use without a paired result is a recorded interruption and
-    receives the distinct, known ``no_result`` outcome.
-    """
-    sidecar: dict[str, ToolOutcome] = {}
-    sidecar_exit_codes: dict[str, int] = {}
-    for event in events:
-        if origin is not Origin.CLAUDE_CODE_SESSION or event.event_type != "claude_tool_execution_result":
-            continue
-        tool_id = event.payload.get("tool_use_id")
-        if not isinstance(tool_id, str):
-            continue
-        payload = event.payload
-        raw_error = payload.get("is_error", payload.get("isError"))
-        raw_exit = payload.get("exit_code", payload.get("exitCode"))
-        event_candidates: list[ToolOutcome] = []
-        if isinstance(raw_error, bool):
-            event_candidates.append(ToolOutcome.ERROR if raw_error else ToolOutcome.OK)
-        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
-            event_candidates.append(ToolOutcome.ERROR if raw_exit else ToolOutcome.OK)
-            sidecar_exit_codes[tool_id] = raw_exit
-        if not event_candidates:
-            continue
-        if len(set(event_candidates)) > 1:
-            raise ValueError(
-                f"tool outcome derivation refused for origin {origin.value!r}: "
-                f"conflicting execution evidence for tool_id={tool_id!r}"
-            )
-        candidate = event_candidates[0]
-        previous = sidecar.get(tool_id)
-        if previous is not None and previous is not candidate:
-            raise ValueError(
-                f"tool outcome derivation refused for origin {origin.value!r}: "
-                f"conflicting execution evidence for tool_id={tool_id!r}"
-            )
-        sidecar[tool_id] = candidate
-
-    result_outcomes: dict[str, list[ToolOutcome]] = defaultdict(list)
-    for message in messages:
-        for block in message.blocks:
-            if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
-                continue
-            unknown_reason = _tool_result_unknown_reason(block, origin=origin)
-            result_candidates: list[ToolOutcome] = []
-            if block.tool_outcome is not None:
-                result_candidates.append(block.tool_outcome)
-            if isinstance(block.is_error, bool):
-                result_candidates.append(ToolOutcome.ERROR if block.is_error else ToolOutcome.OK)
-            if isinstance(block.exit_code, int) and not isinstance(block.exit_code, bool):
-                result_candidates.append(ToolOutcome.ERROR if block.exit_code else ToolOutcome.OK)
-            if block.tool_id in sidecar:
-                result_candidates.append(sidecar[block.tool_id])
-            sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
-            if sidecar_exit is not None and not isinstance(block.exit_code, int):
-                result_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
-            if unknown_reason is not None and not any(
-                candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in result_candidates
-            ):
-                result_candidates.append(ToolOutcome.UNKNOWN)
-            distinct = set(result_candidates)
-            if any(candidate is ToolOutcome.NO_RESULT for candidate in distinct) or len(distinct) > 1:
-                raise ValueError(
-                    f"tool outcome derivation refused for origin {origin.value!r}: "
-                    f"conflicting result evidence for tool_id={block.tool_id!r}"
-                )
-            outcome = next(iter(distinct), None)
-            if outcome is None:
-                raise ValueError(
-                    f"tool outcome derivation refused for origin {origin.value!r}: "
-                    f"unsupported tool_result block shape tool_id={block.tool_id!r}"
-                )
-            result_outcomes[block.tool_id].append(outcome)
-
-    use_ranks: dict[str, int] = defaultdict(int)
-    updated: list[ParsedMessage] = []
-    for message in messages:
-        blocks: list[ParsedContentBlock] = []
-        for block in message.blocks:
-            if block.type is BlockType.TOOL_RESULT:
-                unknown_reason = _tool_result_unknown_reason(block, origin=origin)
-                resolved_candidates: list[ToolOutcome] = []
-                if block.tool_outcome is not None:
-                    resolved_candidates.append(block.tool_outcome)
-                if isinstance(block.is_error, bool):
-                    resolved_candidates.append(ToolOutcome.ERROR if block.is_error else ToolOutcome.OK)
-                if isinstance(block.exit_code, int) and not isinstance(block.exit_code, bool):
-                    resolved_candidates.append(ToolOutcome.ERROR if block.exit_code else ToolOutcome.OK)
-                if block.tool_id in sidecar:
-                    resolved_candidates.append(sidecar[block.tool_id])
-                sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
-                if sidecar_exit is not None and not isinstance(block.exit_code, int):
-                    resolved_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
-                if unknown_reason is not None and not any(
-                    candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in resolved_candidates
-                ):
-                    resolved_candidates.append(ToolOutcome.UNKNOWN)
-                if any(candidate is ToolOutcome.NO_RESULT for candidate in resolved_candidates):
-                    raise ValueError(
-                        f"tool outcome derivation refused for origin {origin.value!r}: "
-                        f"tool_result cannot be no_result for tool_id={block.tool_id!r}"
-                    )
-                distinct = set(resolved_candidates)
-                if len(distinct) > 1:
-                    raise ValueError(
-                        f"tool outcome derivation refused for origin {origin.value!r}: "
-                        f"conflicting result evidence for tool_id={block.tool_id!r}"
-                    )
-                outcome = next(iter(distinct), None)
-                if outcome is None:
-                    raise ValueError(
-                        f"tool outcome derivation refused for origin {origin.value!r}: "
-                        f"unsupported tool_result block shape tool_id={block.tool_id!r}"
-                    )
-                exit_code = block.exit_code
-                if exit_code is None and block.tool_id in sidecar_exit_codes:
-                    exit_code = sidecar_exit_codes[block.tool_id]
-                is_error = None if outcome is ToolOutcome.UNKNOWN else outcome is ToolOutcome.ERROR
-                blocks.append(
-                    block.model_copy(
-                        update={
-                            "tool_outcome": outcome,
-                            "is_error": is_error,
-                            "exit_code": exit_code,
-                            "outcome_unknown_reason": (unknown_reason if outcome is ToolOutcome.UNKNOWN else None),
-                        }
-                    )
-                )
-            elif block.type is BlockType.TOOL_USE:
-                if block.tool_id and use_ranks[block.tool_id] < len(result_outcomes.get(block.tool_id, ())):
-                    outcome = result_outcomes[block.tool_id][use_ranks[block.tool_id]]
-                    use_ranks[block.tool_id] += 1
-                elif block.tool_id and block.tool_id in sidecar:
-                    outcome = sidecar[block.tool_id]
-                else:
-                    outcome = ToolOutcome.NO_RESULT
-                blocks.append(block.model_copy(update={"tool_outcome": outcome}))
-            else:
-                blocks.append(block)
-        updated.append(message.model_copy(update={"blocks": blocks}))
-    return updated
-
-
-def _tool_result_unknown_reason(block: ParsedContentBlock, *, origin: Origin) -> str | None:
-    if block.outcome_unknown_reason is not None:
-        return block.outcome_unknown_reason
-    if (
-        origin is Origin.CHATGPT_EXPORT
-        and isinstance(block.metadata, Mapping)
-        and block.metadata.get("content_type")
-        in {
-            "execution_output",
-            "computer_output",
-            "citable_code_output",
-        }
-    ):
-        return ToolResultUnknownReason.NOT_REPORTED.value
-    if block.file_edit is not None:
-        return ToolResultUnknownReason.NOT_REPORTED.value
-    return None
-
-
 def _blocks_insert_sql() -> str:
     spec = archive_tiers_specs.BLOCKS_SPEC
     return f"""
@@ -2829,7 +2658,6 @@ def _coalesce_block_row(
             merged_values[idx] = _json_dumps(merged_json) if merged_json is not None else None
         else:
             merged_values[idx] = _coalesce_scalar(new_row[idx], old_row[idx])
-    _normalize_merged_tool_verdict(merged_values, b_idx)
     is_error_value = merged_values[b_idx["tool_result_is_error"]]
     merged_values[b_idx["content_hash"]] = _block_content_hash(
         block_type=cast(str, merged_values[b_idx["block_type"]]),
@@ -2845,28 +2673,6 @@ def _coalesce_block_row(
         outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
     )
     return tuple(merged_values)
-
-
-def _normalize_merged_tool_verdict(merged_values: list[object], b_idx: dict[str, int]) -> None:
-    """Keep canonical tool outcome and compatibility fields as one verdict."""
-    if merged_values[b_idx["block_type"]] != BlockType.TOOL_RESULT.value:
-        return
-    outcome = merged_values[b_idx["tool_outcome"]]
-    if outcome == ToolOutcome.OK.value:
-        merged_values[b_idx["tool_result_is_error"]] = 0
-        if merged_values[b_idx["tool_result_exit_code"]] not in (None, 0):
-            merged_values[b_idx["tool_result_exit_code"]] = None
-        merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
-    elif outcome == ToolOutcome.ERROR.value:
-        merged_values[b_idx["tool_result_is_error"]] = 1
-        if merged_values[b_idx["tool_result_exit_code"]] == 0:
-            merged_values[b_idx["tool_result_exit_code"]] = None
-        merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
-    elif outcome in {ToolOutcome.UNKNOWN.value, ToolOutcome.NO_RESULT.value}:
-        merged_values[b_idx["tool_result_is_error"]] = None
-        merged_values[b_idx["tool_result_exit_code"]] = None
-        if outcome == ToolOutcome.NO_RESULT.value:
-            merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
 
 
 def _message_content_hash_from_rows(
@@ -5946,10 +5752,6 @@ def _seed_session_model_usage_rows(
     for model_name in sorted(model_names):
         conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
     if session.reported_cost_usd is not None and len(model_names) == 1:
-        conn.execute(
-            "UPDATE session_model_usage SET provider_cost_usd = NULL WHERE session_id = ?",
-            (session_id,),
-        )
         _write_provider_cost(
             conn,
             session_id,

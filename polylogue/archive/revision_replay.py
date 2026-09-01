@@ -195,6 +195,7 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             and candidate.predecessor_raw_id == accepted.raw_id
             and candidate.append_start_offset
             == (accepted.blob_size if accepted.kind is RawRevisionKind.FULL else accepted.append_end_offset)
+            and candidate.append_end_offset is not None
         ]
         if not children:
             break
@@ -202,15 +203,12 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
         # superseding observation of the same frontier.  Equal-generation
         # candidates remain an unresolved branch.
         if len(children) > 1 and len({child.acquisition_generation for child in children}) > 1:
-            longest_end = max(child.append_end_offset or 0 for child in children)
-            superseding = [
-                child
-                for child in children
-                if child.acquisition_generation == max(item.acquisition_generation for item in children)
-                and child.append_end_offset == longest_end
-            ]
-            if superseding:
-                children = superseding
+            newest_generation = max(item.acquisition_generation for item in children)
+            newest = [child for child in children if child.acquisition_generation == newest_generation]
+            if len(newest) == 1 and newest[0].append_end_offset is not None:
+                newest_end = newest[0].append_end_offset
+                if all(newest_end > (child.append_end_offset or -1) for child in children if child is not newest[0]):
+                    children = newest
         if len(children) > 1:
             for child in children:
                 applications[child.raw_id] = RevisionApplication(
@@ -246,6 +244,7 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
             or candidate.authority is not RawRevisionAuthority.BYTE_PROVEN
             or candidate.append_start_offset is None
             or candidate.append_end_offset is None
+            or candidate.baseline_raw_id != baseline.raw_id
         ):
             continue
         if any(start < candidate.append_start_offset < end for start, end in accepted_edges):

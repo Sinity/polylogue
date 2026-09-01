@@ -16,6 +16,7 @@ from polylogue.core.enums import (
     MaterialOrigin,
     PasteBoundary,
     Provider,
+    SessionKind,
     SessionRefKind,
     TitleSource,
     ToolResultUnknownReason,
@@ -65,6 +66,7 @@ _PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+)[^\]]*\]")
 _BACKGROUND_TASK_ID_METADATA_KEY = "claude_background_task_id"
 _BACKGROUND_COMPLETION_STATUS_METADATA_KEY = "claude_background_completion_status"
 _BACKGROUND_OUTPUT_FILE_METADATA_KEY = "claude_background_output_file"
+_PROMPT_SUGGESTION_PREFIX = "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code."
 
 
 def _detect_paste_spans(text: str | None) -> list[ParsedPasteEvidence]:
@@ -1585,6 +1587,13 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
     text = extract_message_text(raw_content)
     envelope_role = _record_role(item, message)
+    if (
+        acc.session_kind_value is None
+        and envelope_role is Role.USER
+        and isinstance(text, str)
+        and text.lstrip().startswith(_PROMPT_SUGGESTION_PREFIX)
+    ):
+        acc.session_kind_value = SessionKind.PROMPT_SUGGESTION.value
     content_blocks = _content_blocks_from_record(message, text)
     content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
     content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
@@ -1952,6 +1961,11 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=str(composed_session_id),
+        session_kind=(
+            SessionKind.PROMPT_SUGGESTION
+            if acc.session_kind_value == SessionKind.PROMPT_SUGGESTION.value
+            else SessionKind.STANDARD
+        ),
         title=title,
         title_source=title_source,
         title_ref=title_ref,

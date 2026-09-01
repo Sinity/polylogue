@@ -1,20 +1,36 @@
 Summary
 
-Add one render-boundary helper and use it for human-facing session dates in CLI lists, streamed headers, rich session headers, archive stats, correlation windows, and Org export. Machine JSON/ISO payloads and stored timestamps remain unchanged.
+Completes the reviewed triage fixes and addresses four follow-up findings from Codex review.
 
 Problem
 
-Human-facing paths formatted UTC wall-clock values without a zone marker, causing local session history to appear shifted. The timestamp census identified direct render sites in `polylogue/cli/query_output.py`, `polylogue/cli/query_stats.py`, `polylogue/insights/correlation_view.py`, and `polylogue/rendering/formatting.py`.
+Legacy Claude cursors could mint semantic authority from unverified current bytes. Claude AI and AI Studio/Drive topology declarations omitted parser-carried data. Sinex publication encoded parser tool results before canonical outcomes were derived.
 
 Solution
 
-`polylogue.core.localtime.format_local_datetime` converts aware datetimes to the host-local timezone and emits a zone marker for datetime displays; date-only displays still receive local date conversion. Legacy naive values are interpreted as UTC at this boundary. Fixed `America/Los_Angeles` tests cover offset conversion and a local-date boundary crossing.
+Legacy cursors retain nonsemantic authority and therefore take the established full-ingest path after a rewrite. Claude AI and AI Studio/Drive now declare their carried message parents and derived branch state. A source-level tool-outcome helper is shared by the archive writer and Sinex adapter, so publication uses the same canonical outcome derivation.
 
 Verification
 
-- `nix develop --accept-flake-config --command python -m devtools test tests/unit/core/test_localtime.py tests/unit/cli/test_query_fmt.py tests/unit/cli/test_correlate_view.py tests/unit/cli/test_archive_query.py`: 187 passed, 1 existing pytest rewrite warning.
-- `nix develop --accept-flake-config --command python -m devtools verify --quick`: all quick checks green, including format, lint, mypy, layering, generated surfaces, timestamp doctrine, and schema/privacy checks.
-- `git fetch origin && git rebase origin/master`: up to date.
-- Post-rebase quick gate and pre-push quick gate: green.
+- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_deferred_append_dedup.py`: 7 passed.
+- `nix develop --accept-flake-config --command devtools test tests/unit/sinex/test_material_adapter.py`: 5 passed.
+- `nix develop --accept-flake-config --command devtools test tests/unit/storage/test_tool_outcome.py`: 26 passed.
+- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_origin_specs.py -k topology_capability_census_is_complete_and_typed`: 1 passed.
+- `nix develop --accept-flake-config --command devtools verify --quick`: exit 0.
 
-Residual risk: the complete corpus and live daemon were not run; this change does not alter their storage or wire representations.
+Residual risk
+
+The complete corpus and live daemon were not run. The previously filed replay coverage gap remains in `polylogue-rkdej`.
+
+Disposition
+
+| Finding | Result |
+| --- | --- |
+| 3908111340 | Legacy Claude cursors no longer upgrade unverified current bytes. |
+| 3908111349 | Claude AI topology declares carried parents and derived branch state. |
+| 3908111353 | Sinex derives canonical tool outcomes before publication encoding. |
+| 3908242286 | AI Studio/Drive topology declares carried parents and derived branch state. |
+
+LANE-BRANCH: fix/codex-triage-rest
+LANE-COMMIT: d4490a148
+LANE-QUICK: green
