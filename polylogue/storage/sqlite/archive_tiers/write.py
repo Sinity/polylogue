@@ -583,13 +583,12 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
-    hook_parent_provider_id: str | None = None
+    hook_parent_provider_id = _authoritative_parent_claim(
+        source_conn,
+        origin=origin.value,
+        child_native_id=native_id,
+    )
     if not merge_append:
-        hook_parent_provider_id = _authoritative_parent_claim(
-            source_conn,
-            origin=origin.value,
-            child_native_id=native_id,
-        )
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
@@ -2855,9 +2854,13 @@ def _normalize_merged_tool_verdict(merged_values: list[object], b_idx: dict[str,
     outcome = merged_values[b_idx["tool_outcome"]]
     if outcome == ToolOutcome.OK.value:
         merged_values[b_idx["tool_result_is_error"]] = 0
+        if merged_values[b_idx["tool_result_exit_code"]] not in (None, 0):
+            merged_values[b_idx["tool_result_exit_code"]] = None
         merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
     elif outcome == ToolOutcome.ERROR.value:
         merged_values[b_idx["tool_result_is_error"]] = 1
+        if merged_values[b_idx["tool_result_exit_code"]] == 0:
+            merged_values[b_idx["tool_result_exit_code"]] = None
         merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
     elif outcome in {ToolOutcome.UNKNOWN.value, ToolOutcome.NO_RESULT.value}:
         merged_values[b_idx["tool_result_is_error"]] = None

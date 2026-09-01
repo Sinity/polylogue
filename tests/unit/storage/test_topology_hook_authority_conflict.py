@@ -276,6 +276,26 @@ def test_hook_only_edge_is_written_when_inference_found_none(tmp_path: Path) -> 
     )
 
 
+def test_hook_only_classification_survives_merge_append(tmp_path: Path) -> None:
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+
+    write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
+    appended = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=_CHILD,
+        title=_CHILD,
+        messages=[_msg(f"{_CHILD}-append", Role.USER, "appended content", 1)],
+    )
+    write_parsed_session_to_archive(index, appended, source_conn=source, merge_append=True)
+
+    assert (
+        index.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0] == "subagent"
+    )
+
+
 def test_agreeing_evidence_upgrades_the_single_edge(tmp_path: Path) -> None:
     """Agreement is not a conflict: one edge, marked authoritative."""
     index = _index_conn(tmp_path / "index.db")

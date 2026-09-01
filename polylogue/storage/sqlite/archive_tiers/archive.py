@@ -2666,7 +2666,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    u.model_name AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN COUNT(DISTINCT u.model_name) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -2678,7 +2678,8 @@ class ArchiveStore:
                    COALESCE(
                        CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
                             WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                            WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END,
+                            WHEN s.reported_cost_usd IS NOT NULL
+                                 AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported' END,
                        'unknown'
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
@@ -2692,7 +2693,8 @@ class ArchiveStore:
                      u.model_name,
                      CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
                           WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
-                          WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported'
+                          WHEN s.reported_cost_usd IS NOT NULL
+                               AND (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN 'origin_reported'
                           ELSE 'unknown' END
             """,
             tuple(params),

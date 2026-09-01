@@ -318,6 +318,44 @@ def test_merge_selects_unknown_verdict_as_one_atomic_legacy_projection(tmp_path:
         conn.close()
 
 
+@pytest.mark.parametrize(
+    ("first_exit_code", "second_is_error"),
+    [(2, False), (0, True)],
+)
+def test_merge_known_verdict_clears_conflicting_legacy_exit_code(
+    first_exit_code: int, second_is_error: bool, tmp_path: Path
+) -> None:
+    conn = _connect(tmp_path / f"merged-exit-{first_exit_code}.db")
+    try:
+        first = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id="call-1",
+                text="first",
+                is_error=first_exit_code != 0,
+                exit_code=first_exit_code,
+            ),
+        )
+        second = _session(
+            Provider.CLAUDE_CODE,
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="second", is_error=second_is_error),
+        )
+        session_id = write_parsed_session_to_archive(conn, first)
+        write_parsed_session_to_archive(conn, second)
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_exit_code FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (
+            ToolOutcome.ERROR.value if second_is_error else ToolOutcome.OK.value,
+            int(second_is_error),
+            None,
+        )
+    finally:
+        conn.close()
+
+
 def test_result_without_structural_evidence_refuses_write(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "refused.db")
     try:
