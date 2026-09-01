@@ -2223,6 +2223,7 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
         "claude-code",
         "claude-code-todos",
         "codex",
+        "codex-state",
         "gemini-cli",
         "hermes",
         "antigravity",
