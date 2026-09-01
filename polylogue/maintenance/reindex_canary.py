@@ -6,8 +6,10 @@ candidate. Historical index differences are diagnostic evidence only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+import stat
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -18,6 +20,36 @@ from typing import cast
 
 class CanarySelectionError(ValueError):
     """The sealed source cohort cannot be selected safely."""
+
+
+def _sealed_selection_key(seal: str, origin: str, raw_id: str, session_id: str) -> str:
+    """Return the stable member order for one sealed source cohort."""
+    return hashlib.sha256(f"{seal}\0{origin}\0{raw_id}\0{session_id}".encode()).hexdigest()
+
+
+def _require_digest(value: str | None) -> str:
+    if value is None or len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
+        raise CanarySelectionError("canary selection requires a sealed source manifest digest")
+    return value.lower()
+
+
+def _contained_path(path: Path, root: Path, *, label: str) -> Path:
+    """Reject links and paths outside an operation-owned evidence root."""
+    path = path.absolute()
+    root = root.absolute()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise CanarySelectionError(f"{label} is outside the operation evidence root") from exc
+    current = root
+    for component in path.relative_to(root).parts:
+        current /= component
+        try:
+            if stat.S_ISLNK(current.lstat().st_mode):
+                raise CanarySelectionError(f"{label} contains a symlink component")
+        except FileNotFoundError:
+            pass
+    return path
 
 
 class DifferenceOperation(StrEnum):
@@ -34,6 +66,7 @@ class CanarySelection:
     selected_raw_ids: tuple[str, ...]
     sampled_session_ids: tuple[str, ...] = ()
     origin_counts: tuple[tuple[str, int], ...] = ()
+    origin_denominators: tuple[tuple[str, int], ...] = ()
     source_manifest_digest: str | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -44,6 +77,7 @@ class CanarySelection:
             "selected_raw_ids": list(self.selected_raw_ids),
             "sampled_session_ids": list(self.sampled_session_ids),
             "origin_counts": dict(self.origin_counts),
+            "origin_denominators": dict(self.origin_denominators),
             "source_manifest_digest": self.source_manifest_digest,
         }
 
@@ -77,6 +111,19 @@ class CanaryDiffReport:
     differences: tuple[RowDifference, ...]
 
     @property
+    def gross_counts(self) -> dict[str, int]:
+        """Expose bounded forensic totals without making rows acceptance data."""
+        counts = Counter(item.operation.value for item in self.differences)
+        return {name: counts.get(name, 0) for name in ("removed", "changed", "added")}
+
+    @property
+    def stable_identity_examples(self) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {"table": item.table, "operation": item.operation.value, "identity": dict(item.identity)}
+            for item in self.differences[:20]
+        )
+
+    @property
     def counts_by_operation(self) -> dict[str, int]:
         return dict(sorted(Counter(item.operation.value for item in self.differences).items()))
 
@@ -94,8 +141,10 @@ class CanaryDiffReport:
                 "difference_count": len(self.differences),
                 "counts_by_operation": self.counts_by_operation,
                 "counts_by_table": self.counts_by_table,
+                "gross_counts": self.gross_counts,
+                "stable_identity_examples": list(self.stable_identity_examples),
             },
-            "differences": [item.to_dict() for item in self.differences],
+            "differences": [item.to_dict() for item in self.differences[:1000]],
         }
 
 
@@ -121,11 +170,19 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
 
 
 def select_canary_sessions(
-    index_path: Path, *, sessions_per_origin: int = 100, source_manifest_digest: str | None = None
+    index_path: Path,
+    *,
+    sessions_per_origin: int = 100,
+    source_manifest_digest: str | None = None,
+    required_origins: Iterable[str] = (),
 ) -> CanarySelection:
     """Select a deterministic cohort from the sealed source-backed index."""
     if sessions_per_origin <= 0:
         raise CanarySelectionError("sessions_per_origin must be positive")
+    # Standalone forensic callers lack an archive root; bind them to the
+    # immutable input file. Production callers provide the sealed source
+    # snapshot explicitly.
+    seal = _require_digest(source_manifest_digest or hashlib.sha256(Path(index_path).read_bytes()).hexdigest())
     with _open_read_only(Path(index_path)) as connection:
         rows = connection.execute(
             "SELECT session_id, origin, raw_id, sort_key_ms FROM sessions WHERE raw_id IS NOT NULL ORDER BY origin, (sort_key_ms IS NULL), sort_key_ms DESC, session_id"
@@ -133,7 +190,17 @@ def select_canary_sessions(
     selected: list[str] = []
     counts: Counter[str] = Counter()
     raw_by_session: dict[str, str] = {}
-    for row in rows:
+    denominators = Counter(str(row["origin"]) for row in rows)
+    origins = set(denominators)
+    missing_origins = sorted(set(required_origins) - origins)
+    if missing_origins:
+        raise CanarySelectionError(
+            f"sealed source cohort has no denominator for origin(s): {', '.join(missing_origins)}"
+        )
+    for row in sorted(
+        rows,
+        key=lambda row: _sealed_selection_key(seal, str(row["origin"]), str(row["raw_id"]), str(row["session_id"])),
+    ):
         origin = str(row["origin"])
         if counts[origin] >= sessions_per_origin:
             continue
@@ -143,15 +210,18 @@ def select_canary_sessions(
         counts[origin] += 1
     if not selected:
         raise CanarySelectionError("sealed source cohort is empty")
+    if len(raw_by_session) != len(set(raw_by_session.values())):
+        raise CanarySelectionError("sealed source cohort contains duplicate selected members")
     selected_ids = tuple(sorted(selected))
     return CanarySelection(
-        Path(index_path),
-        sessions_per_origin,
-        selected_ids,
-        tuple(sorted(raw_by_session.values())),
-        selected_ids,
-        tuple(sorted(counts.items())),
-        source_manifest_digest,
+        index_path=Path(index_path),
+        sessions_per_origin=sessions_per_origin,
+        selected_session_ids=selected_ids,
+        selected_raw_ids=tuple(sorted(raw_by_session.values())),
+        sampled_session_ids=selected_ids,
+        origin_counts=tuple(sorted(counts.items())),
+        origin_denominators=tuple(sorted(denominators.items())),
+        source_manifest_digest=seal,
     )
 
 
@@ -175,7 +245,14 @@ def run_reindex_canary(
     current = active if input_index is None else TierFileIdentity.resolve("index", Path(input_index))
     if not current.same_file(active):
         raise CanarySelectionError("canary input index must be the configured active generation")
-    selection = select_canary_sessions(current.resolved_path, sessions_per_origin=sessions_per_origin)
+    from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
+
+    source_seal = rebuild_source_evidence_snapshot(root)
+    selection = select_canary_sessions(
+        current.resolved_path,
+        sessions_per_origin=sessions_per_origin,
+        source_manifest_digest=source_seal,
+    )
     from polylogue.daemon.bulk_rebuild import run_daemon_canary_rebuild
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
@@ -196,6 +273,9 @@ def run_reindex_canary(
     )
     if candidate is None or not candidate.is_absolute() or not candidate.exists():
         raise CanarySelectionError("daemon candidate evidence has no inactive index")
+    _contained_path(candidate, root / ".index-generations", label="candidate index")
+    if candidate.samefile(current.resolved_path):
+        raise CanarySelectionError("candidate index is the active generation")
     if isinstance(generation, dict) and generation.get("state") not in (None, "inactive"):
         raise CanarySelectionError("candidate generation is not inactive")
     return CanaryRunResult(
