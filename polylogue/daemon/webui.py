@@ -1551,9 +1551,88 @@ def render_webui_asset_error(detail: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
   <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>WebUI unavailable · Polylogue</title></head>
-  <body><main><h1>WebUI unavailable</h1><p>{html.escape(detail)}</p><p><a href="/">Open the legacy reader</a></p></main></body>
+  <body><main><h1>WebUI unavailable</h1><p>{html.escape(detail)}</p><p><a href="/">Return to archive overview</a></p></main></body>
 </html>
 """
+
+
+def render_typed_data_page(
+    bundle: WebUIAssetBundle,
+    *,
+    title: str,
+    heading: str,
+    description: str,
+    payload: Mapping[str, object] | None,
+    empty: str,
+) -> str:
+    """Render a small semantic projection for secondary typed routes.
+
+    The daemon supplies already-shaped envelopes; this renderer only chooses
+    labels and links. It deliberately does not inspect archive rows or
+    recreate provider-specific hydration rules in the browser.
+    """
+    entry = bundle.entrypoint()
+    styles = "\n".join(
+        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    rows: list[str] = []
+    scalar_rows: list[str] = []
+    if payload:
+        for key, value in payload.items():
+            if key in {"items", "entries", "results"} and isinstance(value, list):
+                for item in value:
+                    if isinstance(item, Mapping):
+                        label = (
+                            item.get("name")
+                            or item.get("session_title")
+                            or item.get("session_id")
+                            or item.get("target_id")
+                            or "item"
+                        )
+                        detail = (
+                            item.get("state")
+                            or item.get("status")
+                            or item.get("snippet")
+                            or item.get("message_id")
+                            or ""
+                        )
+                        item_id = item.get("attachment_id") or item.get("message_id")
+                        anchor = item.get("message_anchor")
+                        href = ""
+                        if isinstance(anchor, str) and anchor.startswith("#") and item_id:
+                            session_id = item.get("session_id")
+                            if session_id:
+                                href = (
+                                    f' href="/app/sessions/{quote(str(session_id), safe="")}'
+                                    f'{html.escape(anchor, quote=True)}"'
+                                )
+                        label_html = html.escape(str(label))
+                        if href:
+                            label_html = f"<a{href}>{label_html}</a>"
+                        rows.append(
+                            f'<li class="activity-row" data-item-kind="{html.escape(key, quote=True)}">'
+                            f"<h2>{label_html}</h2><p>{html.escape(str(detail))}</p></li>"
+                        )
+            elif key not in {"items", "entries", "results"} and value is not None:
+                scalar_rows.append(
+                    f"<div><dt>{html.escape(str(key).replace('_', ' ').title())}</dt>"
+                    f"<dd>{html.escape(str(value))}</dd></div>"
+                )
+    content = ""
+    if scalar_rows:
+        content += f'<dl class="pl-reader-meta">{"".join(scalar_rows)}</dl>'
+    if rows:
+        content += f'<ul class="activity-list">{"".join(rows)}</ul>'
+    if not content:
+        content = f'<p class="lede">{html.escape(empty)}</p>'
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>{html.escape(title)} · Polylogue</title>{styles}</head>
+<body><a class="skip-link" href="#main">Skip to {html.escape(heading.lower())}</a>
+{_render_site_header("/app")}
+<main id="main" class="page-shell"><h1>{html.escape(heading)}</h1><p class="lede">{html.escape(description)}</p>
+<section class="activity-panel" aria-labelledby="typed-data-title"><h2 id="typed-data-title">{html.escape(heading)}</h2>
+{content}</section></main></body></html>"""
 
 
 def _message_rows(page: QueryUnitEnvelope | None) -> tuple[MessageQueryRowPayload, ...]:
@@ -1634,5 +1713,6 @@ __all__ = [
     "render_search_page",
     "render_session_list_page",
     "render_session_read_page",
+    "render_typed_data_page",
     "render_webui_asset_error",
 ]

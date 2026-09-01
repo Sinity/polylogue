@@ -1864,32 +1864,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_webui_session_read(path[1])
             return
 
-        # Workspace, paste, and attachment entrypoints remain legacy-only
-        # capabilities until their typed replacements land. The canonical
-        # archive reader never delegates to this branch.
         if len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_web_shell()
+            self._serve_webui_workspace(path[1], params)
             return
 
-        # Paste browser is a standalone reader page (#1201). Served
-        # alongside the main web shell, unauthenticated like the main
-        # shell because the daemon binds to loopback by default and the
-        # page only embeds JS that calls the authenticated archive API.
         if path == ["p"]:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_paste_browser_page()
+            self._serve_webui_pastes(params)
             return
 
-        # Attachment library is a standalone reader page (#1199). Same
-        # auth posture as ``/p`` — the page only embeds JS that calls
-        # the authenticated archive API.
         if path == ["a"]:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_attachment_library_page()
+            self._serve_webui_attachments(params)
             return
 
         # Kubernetes-style probes. Unauthenticated by convention — k8s,
@@ -2171,6 +2161,82 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
         self._send_html(HTTPStatus.OK, WEB_SHELL_HTML)
+
+    def _serve_webui_secondary(
+        self, *, title: str, heading: str, description: str, payload: Mapping[str, object] | None, empty: str
+    ) -> None:
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_typed_data_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+            body = render_typed_data_page(
+                bundle, title=title, heading=heading, description=description, payload=payload, empty=empty
+            )
+        except WebUIAssetError as exc:
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+        self._send_webui_html(HTTPStatus.OK, body)
+
+    def _serve_webui_workspace(self, mode: str, params: dict[str, list[str]]) -> None:
+        archive_root = _web_reader_archive_root()
+        payload: Mapping[str, object] | None = None
+        if archive_root is not None and mode == "stack":
+            ids = workspace_routes.parse_id_list(params)
+            if ids:
+                payload = self._do_archive_stack(archive_root, ids, self._get_param(params, "focus"))
+        elif archive_root is not None and mode == "compare":
+            left = self._get_param(params, "left")
+            right = self._get_param(params, "right")
+            if left and right:
+                result = self._do_archive_compare(
+                    archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt"
+                )
+                payload = result if isinstance(result, Mapping) else None
+        self._serve_webui_secondary(
+            title=f"Workspace · {mode}",
+            heading=f"Workspace {mode}",
+            description="A typed, bounded workspace projection with explicit missing and degraded targets.",
+            payload=payload,
+            empty="Choose valid session targets to load this workspace view.",
+        )
+
+    def _serve_webui_pastes(self, params: dict[str, list[str]]) -> None:
+        limit = max(1, min(self._get_int(params, "limit", 200), 500))
+        offset = max(0, self._get_int(params, "offset", 0))
+        payload = self._sync_run(lambda poly: self._do_paste_browser(poly, limit=limit, offset=offset))
+        self._serve_webui_secondary(
+            title="Pastes",
+            heading="Paste evidence",
+            description="Messages with structured paste evidence and bounded source links.",
+            payload=payload if isinstance(payload, Mapping) else None,
+            empty="No paste evidence is available in this archive.",
+        )
+
+    def _serve_webui_attachments(self, params: dict[str, list[str]]) -> None:
+        limit = max(1, min(self._get_int(params, "limit", 200), 500))
+        offset = max(0, self._get_int(params, "offset", 0))
+        payload = self._sync_run(
+            lambda poly: self._do_attachment_library(
+                poly,
+                limit=limit,
+                offset=offset,
+                mime_filter=self._get_param(params, "mime") or "",
+                state_filter=self._get_param(params, "state") or "",
+                session_filter=self._get_param(params, "session") or "",
+            )
+        )
+        self._serve_webui_secondary(
+            title="Attachments",
+            heading="Attachment library",
+            description="Attachment metadata with honest availability and preview states.",
+            payload=payload if isinstance(payload, Mapping) else None,
+            empty="No attachments are available in this archive.",
+        )
 
     def _serve_webui_archive_overview(self) -> None:
         from polylogue.archive.query.execution_control import (
