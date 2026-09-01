@@ -50,6 +50,12 @@ def test_openapi_read_view_route_uses_shared_http_capability_contract() -> None:
     assert "message_role" not in parameters
 
 
+def test_openapi_preserves_explicit_read_session_operation_id() -> None:
+    document = _build_openapi_document()
+
+    assert document["paths"]["/api/sessions/{session_id}/read"]["get"]["operationId"] == "readSessionView"
+
+
 def test_openapi_publishes_typed_first_party_credential_contract() -> None:
     """A generated browser client can bootstrap without shell-owned globals."""
 

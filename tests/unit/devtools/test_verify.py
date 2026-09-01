@@ -79,7 +79,13 @@ def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytes
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert verify._mypy_cmd() == [dmypy, "run", "--", "--no-error-summary"]
+    assert verify._mypy_cmd() == [
+        dmypy,
+        "run",
+        f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}",
+        "--",
+        "--no-error-summary",
+    ]
     assert calls == [
         [dmypy, "status"],
         [dmypy, "start", f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
@@ -247,6 +253,21 @@ def test_bootstrap_traces_without_selecting_testmon() -> None:
         assert "--testmon-noselect" in command
         assert "--testmon-forceselect" not in command
         assert "--testmon-env=polylogue-test" in command
+
+
+def test_full_corpus_bootstrap_traces_and_keeps_three_worker_batches() -> None:
+    steps = verify.build_verify_steps(
+        quick=False,
+        testmon_mode="bootstrap",
+        testmon_environment="polylogue-test",
+        full_corpus=True,
+    )
+
+    parallel = [(label, command) for label, command in steps if "native parallel" in label]
+    assert len(parallel) == 3
+    for label, command in parallel:
+        assert "--testmon" in command, label
+        assert "--testmon-noselect" in command, label
 
 
 def test_affected_corpus_retains_testmon_selection() -> None:
