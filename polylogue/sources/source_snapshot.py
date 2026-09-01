@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Protocol
 
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_source_revision
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_logical_revision
 
 _FICLONE = 0x40049409
 _MANIFEST_VERSION = 2
@@ -417,9 +417,9 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
     result: list[CutItem] = []
     for coordinate, path, info in _walk_files(root):
         if mode is SnapshotMode.SQLITE_BACKUP:
-            identity = sqlite_source_revision(path)
-            # The revision is the SQLite strategy's logical identity. Hashing a
-            # live database here adds a race and is discarded by the strategy.
+            identity = sqlite_logical_revision(path)
+            # Logical content is the continuity identity. Filesystem metadata
+            # and page layout are transport observations, not source meaning.
             content_sha256 = identity
         else:
             identity = _identity(info)
@@ -547,9 +547,9 @@ class _SQLiteStrategy(_FilesystemStrategy):
         snapshot_sqlite_database(root, destination)
         if not destination.exists():
             raise SourceSnapshotError(f"SQLite backup was not published: {root}")
-        if sqlite_source_revision(root) != baseline[0].identity:
+        if sqlite_logical_revision(root) != baseline[0].identity:
             raise SourceMutationError(f"SQLite source changed during backup: {root}")
-        digest = _sha256_path(destination)
+        digest = sqlite_logical_revision(destination)
         size = destination.stat().st_size
         return tuple(
             CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination)) for item in baseline

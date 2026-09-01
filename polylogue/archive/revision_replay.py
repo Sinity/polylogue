@@ -231,8 +231,8 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
         )
         accepted = child
         accepted_chain.append(child.raw_id)
-        assert child.append_start_offset is not None
-        assert child.append_end_offset is not None
+        if child.append_start_offset is None or child.append_end_offset is None:
+            raise ValueError("byte-proven append is missing its complete offset window")
         accepted_edges.append((child.append_start_offset, child.append_end_offset))
 
     # A start strictly inside an accepted append window cannot be replayed as

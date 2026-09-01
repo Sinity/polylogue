@@ -22,7 +22,7 @@ from polylogue.sources.source_snapshot import (
     preflight_source_cut,
     reacquire_candidate,
 )
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_logical_revision
 
 
 def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,6 +303,16 @@ def test_sqlite_cut_refuses_a_commit_during_online_backup(tmp_path: Path, monkey
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
             tmp_path / "cut",
         )
+
+
+def test_sqlite_continuity_uses_logical_rows_not_page_layout(tmp_path: Path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    for path, rows in ((first, ((2, "b"), (1, "a"))), (second, ((1, "a"), (2, "b")))):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE values_table (id INTEGER PRIMARY KEY, value TEXT)")
+            conn.executemany("INSERT INTO values_table VALUES (?, ?)", rows)
+    assert sqlite_logical_revision(first) == sqlite_logical_revision(second)
 
 
 @pytest.mark.parametrize("role", [SourceRole.SPOOL, SourceRole.QUEUE])
