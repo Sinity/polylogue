@@ -106,7 +106,7 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         )[:MAX_GATE_OUTCOMES]
     }
     corpus = _mapping(aggregate.get("corpus"))
-    outcomes: dict[str, Any] = {
+    projected: dict[str, Any] = {
         "present": bool(aggregate),
         "selection_mode": _string(aggregate.get("selection_mode")),
         "selected_count": _integer(aggregate.get("selected_union_count")),
@@ -120,8 +120,8 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
     covered_by = aggregate.get("covered_by_run")
     if isinstance(covered_by, str) and covered_by:
         # A skipped complete run names the run whose coverage it inherits.
-        outcomes["covered_by_run"] = covered_by[:MAX_PUBLIC_STRING_LENGTH]
-    return outcomes
+        projected["covered_by_run"] = covered_by[:MAX_PUBLIC_STRING_LENGTH]
+    return projected
 
 
 def _selection_widened(selection: Mapping[str, Any]) -> bool:
