@@ -1108,6 +1108,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # projection. Existing rows require fresh parser replay.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=84,
+        # Delegation cost estimation now treats provider-reported dollars as
+        # exact even when catalog pricing is unavailable. Existing derived
+        # rows need the updated view definition.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
