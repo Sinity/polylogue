@@ -266,6 +266,7 @@ async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> 
                                 type=BlockType.TOOL_RESULT,
                                 tool_id="edit-tool-1",
                                 text="applied",
+                                outcome_unknown_reason="not_reported",
                                 file_edit=ParsedFileEdit(
                                     file_path="/tmp/foo.py",
                                     structured_patch=[
