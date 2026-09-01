@@ -3736,39 +3736,11 @@ class LiveBatchProcessor:
     def _resynthesize_cursor_from_source(self, path: Path) -> CursorRecord | None:
         """Reconstruct an append-eligible cursor from durable ``source.db`` evidence.
 
-        ``ingest_cursor`` (``CursorStore``) lives in the **disposable** ``ops.db``
-        tier: every reset (index rebuild, schema mismatch, ``polylogue ops
-        reset``) wipes it, forcing the next observation of every still-growing
-        file back onto the full-capture path even though the file itself
-        hasn't changed shape at all (polylogue-aex0, see
-        ``docs/design/prefix-blob-reclamation.md``'s "forward-fix sibling"
-        section). This is a *secondary* lookup, tried only when
-        :meth:`_append_plan`'s primary ``ops.db`` cursor is absent or
-        unusable; it never weakens ``RawRevisionAuthority`` -- the exact same
-        ``plan_revision_replay`` the durable classifier already uses is the
-        sole source of truth for which raw is the accepted head.
-
-        Only a ``revision_kind='full'`` accepted head is resynthesized. An
-        append-kind head's stored raw payload is not reliably byte-identical
-        to the live file at that offset: historical Codex append rows (from
-        before polylogue-u19l) had a synthetic ``session_meta`` line
-        injected ahead of the real delta by ``_append_payload_for_provider``,
-        and this code path cannot cheaply tell an old row from a new one, so
-        it cannot stand in for a verified file-byte prefix -- and reusing a
-        *stale* full baseline
-        behind an already-accepted append chain would create a second
-        sibling append candidate at the same offset, making
-        ``plan_revision_replay`` mark the whole chain ambiguous. Declining
-        whenever the head isn't 'full' avoids both hazards. This still
-        covers the dominant real-world case: the very next observation of a
-        file after an ops.db reset takes the full-capture path and writes a
-        fresh byte-proven 'full' revision, which this fallback can
-        immediately use so the *following* observation resumes appending
-        instead of full-recapturing forever.
-
-        Returns ``None`` whenever the durable evidence is ambiguous, absent,
-        or not a 'full' head -- callers fall through to the existing
-        full-capture path exactly as before this fallback existed.
+        The disposable ``ops.db`` cursor is the primary source.  This fallback
+        accepts a unique byte-proven full chain, including legacy append rows
+        only when retained blobs form contiguous slices of the current source
+        bytes.  It recomputes their revision and offsets before replay.  Any
+        missing or ambiguous evidence falls through to full capture.
         """
         source_db = self._archive_source_db_path()
         if not source_db.exists():
