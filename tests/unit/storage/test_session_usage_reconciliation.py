@@ -163,42 +163,54 @@ def test_reconciled_cost_prefers_fresh_catalog_price_over_stale_zero() -> None:
         ("catalog_priced", ("model-derived",)),
     ),
 )
-def test_live_claude_row_prefers_current_catalog_price(
+def test_synthetic_claude_row_preserves_exact_provider_price(
     profile_cost_provenance: str,
     legacy_authority: tuple[str, ...],
 ) -> None:
-    """The live stale Claude row resolves to the current catalog price."""
+    """An exact provider total wins while an estimated legacy total does not."""
 
     rows = (
         ModelUsageTotals(
             model_name="claude-opus-4-8",
-            input_tokens=81_532,
-            output_tokens=11_306,
-            cache_read_tokens=3_655_173,
-            cache_write_tokens=820_953,
+            input_tokens=12_345,
+            output_tokens=6_789,
+            cache_read_tokens=123_456,
+            cache_write_tokens=7_890,
         ),
     )
     reconciliation = build_session_usage_reconciliation(
-        "claude-code-session:5896e890-b744-4692-a5d3-d83e0b2b8c4d:agent-a587f12e763694b2b",
+        "claude-code-session:synthetic-agent-001",
         observed_at="2026-08-31T00:00:00+00:00",
         model_usage_rows=rows,
-        profile_total_input_tokens=81_532,
-        profile_total_output_tokens=11_306,
-        profile_total_cache_read_tokens=3_655_173,
-        profile_total_cache_write_tokens=820_953,
-        profile_cost_usd=22.946558,
+        profile_total_input_tokens=1_234,
+        profile_total_output_tokens=567,
+        profile_total_cache_read_tokens=8_901,
+        profile_total_cache_write_tokens=234,
+        profile_cost_usd=3.21,
         profile_cost_provenance=profile_cost_provenance,
         reconciled_model="claude-opus-4-8",
     )
 
-    assert reconciliation.catalog_cost_evidence.value == 7.648853
-    assert reconciliation.legacy_cost_evidence.value == 22.946558
+    expected_catalog = round(
+        estimate_cost(
+            input_tokens=12_345,
+            output_tokens=6_789,
+            cache_read_tokens=123_456,
+            cache_write_tokens=7_890,
+            model="claude-opus-4-8",
+        ),
+        6,
+    )
+    assert reconciliation.catalog_cost_evidence.value == expected_catalog
+    assert reconciliation.legacy_cost_evidence.value == 3.21
     assert reconciliation.legacy_cost_evidence.measurement_authority == legacy_authority
     reconciled = reconciliation.reconciled_cost_evidence
     assert reconciled.value_state == "known"
-    assert reconciled.value == 7.648853
+    expected_value = 3.21 if profile_cost_provenance == "provider_reported" else expected_catalog
+    assert reconciled.value == expected_value
     assert reconciled.conflicts == ()
-    assert [observation.value for observation in reconciliation.superseded_cost_observations()] == [22.946558]
+    expected_superseded = expected_catalog if profile_cost_provenance == "provider_reported" else 3.21
+    assert [observation.value for observation in reconciliation.superseded_cost_observations()] == [expected_superseded]
     SESSION_USAGE_RECONCILED_COST_FAMILY.require(reconciled)
 
     # The winner is determined by the declared authority order, not by the
@@ -209,7 +221,7 @@ def test_live_claude_row_prefers_current_catalog_price(
         spec=SESSION_USAGE_RECONCILED_COST_FAMILY,
     )
     assert reversed_inputs.value_state == "known"
-    assert reversed_inputs.value == 7.648853
+    assert reversed_inputs.value == expected_value
     assert reversed_inputs.conflicts == ()
 
 

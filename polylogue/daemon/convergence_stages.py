@@ -498,7 +498,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
         if not db_path.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return False
@@ -564,10 +564,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             return _archive_insights_check_many(archive_db, paths, archive_root=db_path.parent)
         if not db_path.exists() or not paths:
             return set()
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
         try:
-            conn = open_connection(db_path, timeout=5.0)
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return set()
@@ -644,10 +642,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             return _archive_insights_check_sessions(archive_db, session_ids)
         if not db_path.exists():
             return set()
-        from polylogue.storage.sqlite.connection_profile import open_connection
-
         try:
-            conn = open_connection(db_path, timeout=5.0)
+            conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
             try:
                 if not _table_exists(conn, "session_profiles"):
                     return set()

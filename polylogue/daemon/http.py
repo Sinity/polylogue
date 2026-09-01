@@ -417,7 +417,7 @@ def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHand
         for route in installed_routes
         if (route.contract.method, route.pattern) in set(declared)
     )
-    if generated != declared or installed != declared:
+    if set(generated) != set(declared) or set(installed) != set(declared):
         missing = sorted(set(declared) - set(installed))
         extra = sorted(set(installed) - set(declared))
         raise RuntimeError(f"daemon declaration generation mismatch: missing={missing}, extra={extra}")

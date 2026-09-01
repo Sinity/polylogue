@@ -102,6 +102,56 @@ def test_same_start_longer_append_supersedes_shorter_observation() -> None:
     assert decisions["short"].decision is ApplicationDecision.DEFERRED
 
 
+def test_same_start_equal_length_successors_remain_ambiguous() -> None:
+    baseline = _candidate("base", RawRevisionKind.FULL, 0, size=100)
+    older = _candidate("older", RawRevisionKind.APPEND, 1, predecessor="base", baseline="base", start=100, end=200)
+    newer = _candidate("newer", RawRevisionKind.APPEND, 2, predecessor="base", baseline="base", start=100, end=200)
+
+    assert _decisions([baseline, older, newer]) == {
+        "base": ApplicationDecision.SELECTED_BASELINE,
+        "older": ApplicationDecision.AMBIGUOUS,
+        "newer": ApplicationDecision.AMBIGUOUS,
+    }
+
+
+def test_multiple_newest_successors_remain_ambiguous() -> None:
+    baseline = _candidate("base", RawRevisionKind.FULL, 0, size=100)
+    left = _candidate("left", RawRevisionKind.APPEND, 2, predecessor="base", baseline="base", start=100, end=200)
+    right = _candidate("right", RawRevisionKind.APPEND, 2, predecessor="base", baseline="base", start=100, end=250)
+    older = _candidate("older", RawRevisionKind.APPEND, 1, predecessor="base", baseline="base", start=100, end=150)
+
+    assert _decisions([baseline, left, right, older]) == {
+        "base": ApplicationDecision.SELECTED_BASELINE,
+        "left": ApplicationDecision.AMBIGUOUS,
+        "right": ApplicationDecision.AMBIGUOUS,
+        "older": ApplicationDecision.AMBIGUOUS,
+    }
+
+
+def test_incomplete_successor_bounds_are_deferred() -> None:
+    baseline = _candidate("base", RawRevisionKind.FULL, 0, size=100)
+    incomplete = _candidate("incomplete", RawRevisionKind.APPEND, 1, predecessor="base", baseline="base", start=100)
+
+    assert _decisions([baseline, incomplete]) == {
+        "base": ApplicationDecision.SELECTED_BASELINE,
+        "incomplete": ApplicationDecision.DEFERRED,
+    }
+
+
+def test_overlap_from_superseded_baseline_is_deferred() -> None:
+    old = _candidate("old", RawRevisionKind.FULL, 0, size=100)
+    baseline = _candidate("base", RawRevisionKind.FULL, 1, size=100)
+    accepted = _candidate(
+        "accepted", RawRevisionKind.APPEND, 2, predecessor="base", baseline="base", start=100, end=250
+    )
+    old_append = _candidate(
+        "old-append", RawRevisionKind.APPEND, 3, predecessor="old", baseline="old", start=180, end=220
+    )
+
+    decisions = _decisions([old, baseline, accepted, old_append])
+    assert decisions["old-append"] is ApplicationDecision.DEFERRED
+
+
 def _codex_jsonl(records: list[dict[str, object]]) -> bytes:
     return b"".join(json.dumps(record, separators=(",", ":")).encode() + b"\n" for record in records)
 

@@ -713,9 +713,7 @@ def _historical_snapshot_prefix_payload(
     rows, but append rows use ``source_index=-1`` and are not eligible.
     """
     revision_kind = str(row.get("revision_kind") or "")
-    if revision_kind != "full" and not (
-        revision_kind == "unknown" and str(row.get("origin") or "") == "claude-code-session"
-    ):
+    if revision_kind not in {"full", "unknown"}:
         return False, None, None
     source_index = row.get("source_index")
     if not isinstance(source_index, (int, str)):
@@ -738,7 +736,7 @@ def _historical_snapshot_prefix_payload(
         return False, None, None
     path = Path(source_path)
     try:
-        if path.stat().st_size <= expected_size:
+        if path.stat().st_size < expected_size:
             return False, None, None
         with path.open("rb") as handle:
             payload = handle.read(expected_size)
@@ -793,10 +791,10 @@ def _legacy_append_replay(
         expected_size = int(size_value)
     except (TypeError, ValueError):
         return None, "legacy_append_window_missing", None, None
-    starts = [size for timestamp, size in path_rows if timestamp < acquired_at_ms]
-    if not starts:
+    predecessors = [(timestamp, size) for timestamp, size in path_rows if timestamp < acquired_at_ms]
+    if not predecessors:
         return None, "legacy_append_window_missing", None, None
-    start = max(starts)
+    _timestamp, start = max(predecessors)
     provider = Provider.from_string(str(row.get("capture_mode") or ""))
     if provider is Provider.UNKNOWN:
         provider = provider_from_origin(Origin.from_string(str(row.get("origin") or "")))
@@ -838,13 +836,14 @@ def _source_recoverability_proofs(
         reference_rows = _raw_session_reference_rows(conn)
         for row in reference_rows:
             if (
-                str(row.get("revision_kind") or "") == "full"
+                str(row.get("revision_kind") or "") in {"full", "unknown"}
                 and row.get("source_path")
                 and row.get("source_index") is not None
             ):
                 try:
                     if int(row["source_index"]) == 0:
-                        prior_full_sizes.setdefault(str(row["source_path"]), []).append(
+                        resolved_path = _resolved_source_path(str(row["source_path"]), root)
+                        prior_full_sizes.setdefault(resolved_path, []).append(
                             (int(row["acquired_at_ms"]), int(row["size_bytes"]))
                         )
                 except (TypeError, ValueError):
