@@ -593,6 +593,7 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
                 "status": "success",
                 "run_id": "run-prior",
                 "git_dirty": False,
+                "git_head": "head",
                 "semantic_receipt": {"source_revision": "head"},
                 "testmon_selection": {
                     "environment_digest": "env-1",
@@ -630,6 +631,7 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: p
         packages: str = "pkgs-1",
         plan: str = "plan-1",
         covered_by: str | None = None,
+        start_head: str = "head",
     ) -> dict[str, Any]:
         aggregate: dict[str, Any] = {"complete_corpus_covered": covered_by is None}
         if covered_by:
@@ -639,6 +641,7 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: p
             "status": status,
             "run_id": run_id,
             "git_dirty": dirty,
+            "git_head": start_head,
             "semantic_receipt": {"source_revision": "head"},
             "testmon_selection": {"environment_digest": "env-1", "packages_digest": packages, "plan_digest": plan},
             "pytest_aggregate": aggregate,
@@ -659,3 +662,5 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: p
     assert covered([row("dirty", dirty=True)]) is None
     assert covered([row("green"), row("red-later", status="failed")]) is None
     assert covered([row("green"), row("skip", covered_by="green")]) == "green"
+    # A run whose HEAD advanced while it ran verified a mixture, not this head.
+    assert covered([row("moved", start_head="older")]) is None

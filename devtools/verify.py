@@ -517,8 +517,39 @@ def _execution_plan_digest() -> str:
             ).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             node_version = "unavailable"
-    payload = {"workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""), "node": node_version}
+    npm = shutil.which("npm")
+    npm_version = ""
+    if npm:
+        try:
+            npm_version = subprocess.run(
+                [npm, "--version"], capture_output=True, text=True, timeout=10, check=False
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            npm_version = "unavailable"
+    payload = {
+        "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
+        "node": node_version,
+        "npm": npm_version,
+    }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _packages_drift(packages: str) -> bool:
+    """Whether the installed set differs from the newest complete run's.
+
+    A dependency version does not rename the environment (testmon cannot see
+    inside site-packages), so this is recorded on the receipt rather than
+    used to discard the graph; the next complete run re-traces under the new
+    set because its skip rule keys on packages_digest.
+    """
+    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
+        if row.get("tier") != "all":
+            continue
+        selection = row.get("testmon_selection")
+        recorded = selection.get("packages_digest") if isinstance(selection, Mapping) else None
+        if isinstance(recorded, str):
+            return recorded != packages
+    return False
 
 
 def _corpus_already_verified(*, head: str, environment: str, packages: str, plan: str) -> str | None:
@@ -547,6 +578,7 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
         if (
             row.get("status") == "success"
             and row.get("git_dirty") is False
+            and row.get("git_head") == head
             and aggregate.get("complete_corpus_covered") is True
         ):
             run_id = row.get("run_id")
@@ -781,6 +813,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     ROOT,
                     required_executable_paths=impact.executable_paths,
                 )
+                packages = installed_packages_digest()
+                plan = _execution_plan_digest()
             except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
                 payload = _finish_and_record_verification(
                     run=run,
@@ -793,8 +827,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 _emit(payload, use_json=args.json, operation=agentctl_operation)
                 sys.stderr.write(f"verify: {exc}\n")
                 return 125
-            packages = installed_packages_digest()
-            plan = _execution_plan_digest()
             run.record_selection(
                 selection_mode=mode,
                 state_status=preparation.local_state.status,
@@ -804,6 +836,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 environment_digest=preparation.environment_name,
                 packages_digest=packages,
                 plan_digest=plan,
+                packages_drift=_packages_drift(packages),
             )
             if args.all_tests and not args.recompute and preparation.local_state.valid:
                 # A graph that needs bootstrapping is itself a reason to run:

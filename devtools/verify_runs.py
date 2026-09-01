@@ -271,6 +271,7 @@ class VerifyRun:
         environment_digest: str | None = None,
         packages_digest: str | None = None,
         plan_digest: str | None = None,
+        packages_drift: bool = False,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -281,6 +282,7 @@ class VerifyRun:
             "environment_digest": environment_digest,
             "packages_digest": packages_digest,
             "plan_digest": plan_digest,
+            "packages_drift": packages_drift,
         }
         self.write()
 
@@ -797,6 +799,7 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
             "exit_code",
             "diagnosis",
             "artifact_dir",
+            "git_head",
             "git_dirty",
             "testmon_selection",
             "pytest_aggregate",
@@ -932,17 +935,40 @@ def prune_successful_verify_runs(
                     }
                 )
 
+        # A skipped complete run has no detail of its own; it must not spend
+        # the successful-detail quota, and the run it names as coverage stays
+        # retained while any receipt still points at it.
+        skipped_ids: set[str] = set()
+        pinned_ids: set[str] = set()
+        for run_id, row in durable.items():
+            if row.get("diagnosis") == "corpus_already_verified":
+                skipped_ids.add(run_id)
+            aggregate = row.get("pytest_aggregate")
+            covered = aggregate.get("covered_by_run") if isinstance(aggregate, Mapping) else None
+            if isinstance(covered, str) and covered:
+                pinned_ids.add(covered)
         successes = sorted(
-            (candidate for candidate in candidates if candidate["status"] == "success"),
+            (
+                candidate
+                for candidate in candidates
+                if candidate["status"] == "success" and candidate["run_id"] not in skipped_ids
+            ),
             key=lambda item: (item["finished_at"], item["run_id"]),
             reverse=True,
         )
+        pinned = [
+            candidate
+            for candidate in candidates
+            if candidate["run_id"] in pinned_ids and candidate not in successes[:max_successful]
+        ]
         failures = sorted(
             (candidate for candidate in candidates if candidate["status"] != "success"),
             key=lambda item: (item["finished_at"], item["run_id"]),
             reverse=True,
         )
-        retained = [candidate["run_id"] for candidate in successes[:max_successful]]
+        retained = [candidate["run_id"] for candidate in successes[:max_successful]] + [
+            candidate["run_id"] for candidate in pinned
+        ]
         retained_failures: list[str] = []
         keep_failure_names: set[str] = set()
         if failures:
@@ -962,7 +988,11 @@ def prune_successful_verify_runs(
                 keep_failure_names.add(candidate["name"])
                 used_bytes += candidate["size"]
 
-        keep_names = {candidate["name"] for candidate in successes[:max_successful]} | keep_failure_names
+        keep_names = (
+            {candidate["name"] for candidate in successes[:max_successful]}
+            | {candidate["name"] for candidate in pinned}
+            | keep_failure_names
+        )
         pruned: list[str] = []
         for candidate in candidates:
             if candidate["name"] in keep_names:
