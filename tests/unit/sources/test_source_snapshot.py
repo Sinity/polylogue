@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -303,6 +304,50 @@ def test_sqlite_cut_refuses_a_commit_during_online_backup(tmp_path: Path, monkey
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
             tmp_path / "cut",
         )
+
+
+def test_sqlite_cut_refuses_a_backup_with_a_different_logical_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: publishing a backup from another logical state must fail."""
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('source')")
+        conn.commit()
+
+    original_backup = snapshot_sqlite_database
+
+    def backup_with_different_content(source: Path, destination: Path) -> None:
+        original_backup(source, destination)
+        with sqlite3.connect(destination) as conn:
+            conn.execute("INSERT INTO state VALUES ('not-source')")
+            conn.commit()
+
+    monkeypatch.setattr("polylogue.sources.source_snapshot.snapshot_sqlite_database", backup_with_different_content)
+    with pytest.raises(SourceMutationError, match="backup does not match source logical revision"):
+        execute_source_cut(
+            preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
+            tmp_path / "cut",
+        )
+
+
+def test_sqlite_cut_manifest_hashes_the_published_backup_bytes(tmp_path: Path) -> None:
+    """Mutation: a logical revision cannot replace the retained-byte hash."""
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('source')")
+        conn.commit()
+
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
+        tmp_path / "cut",
+    )
+
+    candidate = result.candidate_manifest.items[0]
+    retained = reacquire_candidate(result)[0]
+    assert candidate.content_sha256 == hashlib.sha256(retained.path.read_bytes()).hexdigest()
 
 
 def test_sqlite_continuity_uses_logical_rows_not_page_layout(tmp_path: Path) -> None:

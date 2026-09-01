@@ -549,7 +549,9 @@ class _SQLiteStrategy(_FilesystemStrategy):
             raise SourceSnapshotError(f"SQLite backup was not published: {root}")
         if sqlite_logical_revision(root) != baseline[0].identity:
             raise SourceMutationError(f"SQLite source changed during backup: {root}")
-        digest = sqlite_logical_revision(destination)
+        if sqlite_logical_revision(destination) != baseline[0].identity:
+            raise SourceMutationError(f"SQLite backup does not match source logical revision: {root}")
+        digest = _sha256_path(destination)
         size = destination.stat().st_size
         return tuple(
             CutItem(item.source_id, item.coordinate, item.identity, digest, size, str(destination)) for item in baseline

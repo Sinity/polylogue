@@ -1,36 +1,29 @@
 Summary
 
-Completes the reviewed triage fixes and addresses four follow-up findings from Codex review.
+SQLite source snapshots now bind source continuity to deterministic schema and logical-row identity. The immutable backup remains the parser input, while source drift during backup is rejected. Existing durable append-frontier resynthesis and ambiguous-frontier fallback remain on the rebased master base.
 
 Problem
 
-Legacy Claude cursors could mint semantic authority from unverified current bytes. Claude AI and AI Studio/Drive topology declarations omitted parser-carried data. Sinex publication encoded parser tool results before canonical outcomes were derived.
+Filesystem metadata and SQLite page layout change during ordinary commits, checkpoints, and vacuuming. Using those observations as source continuity evidence can create needless revisions or accept a snapshot that does not represent one logical source state.
 
 Solution
 
-Legacy cursors retain nonsemantic authority and therefore take the established full-ingest path after a rewrite. Claude AI and AI Studio/Drive now declare their carried message parents and derived branch state. A source-level tool-outcome helper is shared by the archive writer and Sinex adapter, so publication uses the same canonical outcome derivation.
+Compute the logical revision before and after the online backup, and compare it with the staged backup before publication. Add coverage for equivalent SQLite databases with different insertion order.
 
 Verification
 
-- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_deferred_append_dedup.py`: 7 passed.
-- `nix develop --accept-flake-config --command devtools test tests/unit/sinex/test_material_adapter.py`: 5 passed.
-- `nix develop --accept-flake-config --command devtools test tests/unit/storage/test_tool_outcome.py`: 26 passed.
-- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_origin_specs.py -k topology_capability_census_is_complete_and_typed`: 1 passed.
-- `nix develop --accept-flake-config --command devtools verify --quick`: exit 0.
+`nix develop --accept-flake-config --command devtools test tests/unit/sources/test_source_snapshot.py tests/unit/sources/parsers/test_codex_state.py -k 'sqlite or snapshot or logical'` passed: 23 tests.
+
+`nix develop --accept-flake-config --command devtools test tests/unit/sources/test_source_snapshot.py::test_sqlite_cut_manifest_hashes_the_published_backup_bytes` passed: 1 test.
+
+`nix develop --accept-flake-config --command devtools test tests/unit/pipeline -k 'sqlite or acquire'` passed: 14 tests.
+
+`nix develop --accept-flake-config --command devtools test tests/property -k 'append or source'` passed: 4 tests.
+
+`nix develop --accept-flake-config --command devtools verify --quick` passed all checks.
+
+`nix develop --accept-flake-config --command devtools verify` refused because the compatible native testmon graph is absent.
 
 Residual risk
 
-The complete corpus and live daemon were not run. The previously filed replay coverage gap remains in `polylogue-rkdej`.
-
-Disposition
-
-| Finding | Result |
-| --- | --- |
-| 3908111340 | Legacy Claude cursors no longer upgrade unverified current bytes. |
-| 3908111349 | Claude AI topology declares carried parents and derived branch state. |
-| 3908111353 | Sinex derives canonical tool outcomes before publication encoding. |
-| 3908242286 | AI Studio/Drive topology declares carried parents and derived branch state. |
-
-LANE-BRANCH: fix/codex-triage-rest
-LANE-COMMIT: d4490a148
-LANE-QUICK: green
+The full affected verification corpus was not run because the required native testmon graph is unavailable. The broader append selection had three inherited failures caused by stale derived schema identity before append processing.
