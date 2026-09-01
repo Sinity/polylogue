@@ -156,6 +156,7 @@ def block_record(session_id: str, message_id: str, block: BlockInput) -> dict[st
         "tool_result_is_error": block.tool_result_is_error,
         "tool_result_exit_code": block.tool_result_exit_code,
         "tool_outcome": block.tool_outcome,
+        "tool_result_outcome_unknown_reason": block.tool_result_outcome_unknown_reason,
         "semantic_type": block.semantic_type,
         "media_type": block.media_type,
         "language": block.language,

@@ -24,6 +24,7 @@ from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     EmbeddingRetrievalNotReadyError,
     PolylogueError,
+    SchemaSkewError,
     SchemaVersionMismatchError,
 )
 from polylogue.logging import get_logger
@@ -443,6 +444,18 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             field=field,
             tool=fn_name,
             valid_values=valid_values,
+        )
+    elif isinstance(exc, SchemaSkewError):
+        payload = MCPErrorPayload(
+            message=str(exc),
+            code=exc.code,
+            error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
+            tier=exc.tier,
+            expected=exc.expected,
+            found=exc.found,
+            remedy=exc.remedy,
         )
     elif isinstance(exc, SchemaVersionMismatchError):
         payload = MCPErrorPayload(

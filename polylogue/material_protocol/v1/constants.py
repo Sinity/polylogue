@@ -18,7 +18,8 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: v2: head/transcript split — mutable summary records (session, lineage,
 #: usage) moved into a per-revision head segment; transcript segments carry
 #: only immutable records and are the sole byte-reuse surface for appends.
-SEMANTICS_VERSION = 2
+#: v3: block records carry canonical tool outcomes and unknown-outcome reasons.
+SEMANTICS_VERSION = 3
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
 CANONICALIZER_VERSION = 1

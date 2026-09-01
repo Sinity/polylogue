@@ -27,6 +27,7 @@ from polylogue.core.enums import (
     Origin,
     Role,
     SessionKind,
+    ToolOutcome,
 )
 from polylogue.core.json import JSONValue
 from polylogue.core.web_urls import native_id_from_session_id
@@ -203,6 +204,8 @@ def _block_input(position: int, block: object) -> BlockInput | None:
     tool_id = _attr(block, "tool_id")
     is_error = _attr(block, "tool_result_is_error", "is_error")
     exit_code = _attr(block, "tool_result_exit_code", "exit_code")
+    tool_outcome = _attr(block, "tool_outcome")
+    unknown_reason = _attr(block, "tool_result_outcome_unknown_reason", "outcome_unknown_reason")
     metadata = _attr(block, "metadata", default={})
     semantic_type = _attr(block, "semantic_type")
     if semantic_type is None and isinstance(metadata, Mapping):
@@ -220,6 +223,10 @@ def _block_input(position: int, block: object) -> BlockInput | None:
         tool_input=_json_object(tool_input) if isinstance(tool_input, Mapping) else None,
         tool_result_is_error=is_error if isinstance(is_error, bool) else None,
         tool_result_exit_code=(exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None),
+        tool_outcome=tool_outcome
+        if isinstance(tool_outcome, ToolOutcome)
+        else (ToolOutcome(str(tool_outcome)) if tool_outcome is not None else None),
+        tool_result_outcome_unknown_reason=unknown_reason if isinstance(unknown_reason, str) else None,
         semantic_type=semantic_type if isinstance(semantic_type, str) else None,
         media_type=media_type if isinstance(media_type, str) else None,
         language=language if isinstance(language, str) else None,
@@ -253,6 +260,8 @@ def _parsed_block_input(position: int, block: ParsedContentBlock) -> BlockInput:
         tool_input=_json_object(block.tool_input) if block.tool_input is not None else None,
         tool_result_is_error=block.is_error,
         tool_result_exit_code=block.exit_code,
+        tool_outcome=block.tool_outcome,
+        tool_result_outcome_unknown_reason=block.outcome_unknown_reason,
         semantic_type=semantic_type if isinstance(semantic_type, str) else None,
         media_type=block.media_type,
         language=language if isinstance(language, str) else None,

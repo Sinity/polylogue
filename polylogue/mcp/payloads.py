@@ -93,6 +93,10 @@ class MCPErrorPayload(SurfacePayloadModel):
     expected_version: int | None = None
     generation_id: str | None = None
     lifecycle_action: str | None = None
+    tier: str | None = None
+    expected: object | None = None
+    found: object | None = None
+    remedy: str | None = None
     # Embedding-readiness surface (#1503 AC4): when an MCP tool body
     # raises ``EmbeddingRetrievalNotReadyError`` the readiness status
     # enum value is exposed so clients can render the same actionable

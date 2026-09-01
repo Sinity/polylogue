@@ -45,6 +45,7 @@ class BlockInput:
     tool_result_is_error: bool | None = None
     tool_result_exit_code: int | None = None
     tool_outcome: ToolOutcome | None = None
+    tool_result_outcome_unknown_reason: str | None = None
     semantic_type: str | None = None
     media_type: str | None = None
     language: str | None = None
