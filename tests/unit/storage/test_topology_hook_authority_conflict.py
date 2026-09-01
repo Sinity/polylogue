@@ -271,6 +271,9 @@ def test_hook_only_edge_is_written_when_inference_found_none(tmp_path: Path) -> 
     assert set(links) == {_HOOK_PARENT}
     assert links[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
     assert links[_HOOK_PARENT]["link_type"] == LinkType.SUBAGENT.value
+    assert (
+        index.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0] == "subagent"
+    )
 
 
 def test_agreeing_evidence_upgrades_the_single_edge(tmp_path: Path) -> None:

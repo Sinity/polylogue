@@ -172,3 +172,34 @@ def test_cost_rollups_sum_provider_precedence_across_sessions(tmp_path: Path) ->
     assert len(timeline_rollups) == 1
     assert timeline_rollups[0].stored_cost_usd == pytest.approx(15.0)
     assert timeline_rollups[0].cost_provenance_counts == {"origin_reported": 3}
+
+
+def test_cost_rollup_labels_session_reported_fallback_as_origin_reported() -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY, origin TEXT, sort_key_ms INTEGER,
+            updated_at_ms INTEGER, reported_cost_usd REAL
+        );
+        CREATE TABLE session_model_usage (
+            session_id TEXT, model_name TEXT, input_tokens INTEGER,
+            output_tokens INTEGER, cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER, provider_cost_usd REAL,
+            catalog_cost_usd REAL, cost_credits REAL
+        );
+        CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
+        INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, 7.5);
+        INSERT INTO session_model_usage VALUES ('s1', 'gpt-5', 0, 0, 0, 0, NULL, NULL, NULL);
+        """
+    )
+    archive = ArchiveStore.__new__(ArchiveStore)
+    archive._conn = conn
+
+    [rollup] = archive.list_cost_rollup_insights(origin="chatgpt-export")
+
+    assert rollup.total_usd == pytest.approx(7.5)
+    assert rollup.basis.provider_reported_usd == pytest.approx(7.5)

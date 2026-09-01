@@ -69,6 +69,7 @@ def test_default_recipe_is_independent_of_index_schema_version(monkeypatch: Monk
     monkeypatch.setattr(index, "INDEX_SCHEMA_VERSION", index.INDEX_SCHEMA_VERSION + 1)
     after = _recipe()
 
+    assert before.input_schema_version == "archive-index-v79"
     assert after.input_schema_version == before.input_schema_version
     assert after.recipe_hash == before.recipe_hash
     assert (

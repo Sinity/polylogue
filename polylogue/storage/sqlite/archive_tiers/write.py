@@ -46,6 +46,7 @@ from polylogue.core.enums import (
     Provider,
     SessionKind,
     ToolOutcome,
+    ToolResultUnknownReason,
     admitted_session_kind,
 )
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -582,6 +583,7 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
+    hook_parent_provider_id: str | None = None
     if not merge_append:
         hook_parent_provider_id = _authoritative_parent_claim(
             source_conn,
@@ -832,7 +834,9 @@ def write_parsed_session_to_archive(
                     _sqlite_text(session.title),
                     admitted_session_kind(
                         session.session_kind,
-                        branch_type=session.branch_type,
+                        branch_type=(
+                            BranchType.SUBAGENT if hook_parent_provider_id is not None else session.branch_type
+                        ),
                     ).value,
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
@@ -1526,6 +1530,7 @@ def read_archive_session_envelope(
             ArchiveMessageRow(
                 message_id=message["message_id"],
                 native_id=message["native_id"],
+                identity_source=message["identity_source"],
                 role=message["role"],
                 position=message["position"],
                 variant_index=message["variant_index"],
@@ -2340,6 +2345,7 @@ def _derive_tool_outcomes(
         for block in message.blocks:
             if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
                 continue
+            unknown_reason = _tool_result_unknown_reason(block, origin=origin)
             result_candidates: list[ToolOutcome] = []
             if block.tool_outcome is not None:
                 result_candidates.append(block.tool_outcome)
@@ -2352,7 +2358,7 @@ def _derive_tool_outcomes(
             sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
             if sidecar_exit is not None and not isinstance(block.exit_code, int):
                 result_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
-            if block.outcome_unknown_reason is not None and not any(
+            if unknown_reason is not None and not any(
                 candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in result_candidates
             ):
                 result_candidates.append(ToolOutcome.UNKNOWN)
@@ -2376,6 +2382,7 @@ def _derive_tool_outcomes(
         blocks: list[ParsedContentBlock] = []
         for block in message.blocks:
             if block.type is BlockType.TOOL_RESULT:
+                unknown_reason = _tool_result_unknown_reason(block, origin=origin)
                 resolved_candidates: list[ToolOutcome] = []
                 if block.tool_outcome is not None:
                     resolved_candidates.append(block.tool_outcome)
@@ -2388,7 +2395,7 @@ def _derive_tool_outcomes(
                 sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
                 if sidecar_exit is not None and not isinstance(block.exit_code, int):
                     resolved_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
-                if block.outcome_unknown_reason is not None and not any(
+                if unknown_reason is not None and not any(
                     candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in resolved_candidates
                 ):
                     resolved_candidates.append(ToolOutcome.UNKNOWN)
@@ -2419,9 +2426,7 @@ def _derive_tool_outcomes(
                             "tool_outcome": outcome,
                             "is_error": is_error,
                             "exit_code": exit_code,
-                            "outcome_unknown_reason": (
-                                block.outcome_unknown_reason if outcome is ToolOutcome.UNKNOWN else None
-                            ),
+                            "outcome_unknown_reason": (unknown_reason if outcome is ToolOutcome.UNKNOWN else None),
                         }
                     )
                 )
@@ -2438,6 +2443,25 @@ def _derive_tool_outcomes(
                 blocks.append(block)
         updated.append(message.model_copy(update={"blocks": blocks}))
     return updated
+
+
+def _tool_result_unknown_reason(block: ParsedContentBlock, *, origin: Origin) -> str | None:
+    if block.outcome_unknown_reason is not None:
+        return block.outcome_unknown_reason
+    if (
+        origin is Origin.CHATGPT_EXPORT
+        and isinstance(block.metadata, Mapping)
+        and block.metadata.get("content_type")
+        in {
+            "execution_output",
+            "computer_output",
+            "citable_code_output",
+        }
+    ):
+        return ToolResultUnknownReason.NOT_REPORTED.value
+    if block.file_edit is not None:
+        return ToolResultUnknownReason.NOT_REPORTED.value
+    return None
 
 
 def _blocks_insert_sql() -> str:
@@ -2806,6 +2830,7 @@ def _coalesce_block_row(
             merged_values[idx] = _json_dumps(merged_json) if merged_json is not None else None
         else:
             merged_values[idx] = _coalesce_scalar(new_row[idx], old_row[idx])
+    _normalize_merged_tool_verdict(merged_values, b_idx)
     is_error_value = merged_values[b_idx["tool_result_is_error"]]
     merged_values[b_idx["content_hash"]] = _block_content_hash(
         block_type=cast(str, merged_values[b_idx["block_type"]]),
@@ -2821,6 +2846,24 @@ def _coalesce_block_row(
         outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
     )
     return tuple(merged_values)
+
+
+def _normalize_merged_tool_verdict(merged_values: list[object], b_idx: dict[str, int]) -> None:
+    """Keep canonical tool outcome and compatibility fields as one verdict."""
+    if merged_values[b_idx["block_type"]] != BlockType.TOOL_RESULT.value:
+        return
+    outcome = merged_values[b_idx["tool_outcome"]]
+    if outcome == ToolOutcome.OK.value:
+        merged_values[b_idx["tool_result_is_error"]] = 0
+        merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
+    elif outcome == ToolOutcome.ERROR.value:
+        merged_values[b_idx["tool_result_is_error"]] = 1
+        merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
+    elif outcome in {ToolOutcome.UNKNOWN.value, ToolOutcome.NO_RESULT.value}:
+        merged_values[b_idx["tool_result_is_error"]] = None
+        merged_values[b_idx["tool_result_exit_code"]] = None
+        if outcome == ToolOutcome.NO_RESULT.value:
+            merged_values[b_idx["tool_result_outcome_unknown_reason"]] = None
 
 
 def _message_content_hash_from_rows(
@@ -5900,6 +5943,10 @@ def _seed_session_model_usage_rows(
     for model_name in sorted(model_names):
         conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
     if session.reported_cost_usd is not None and len(model_names) == 1:
+        conn.execute(
+            "UPDATE session_model_usage SET provider_cost_usd = NULL WHERE session_id = ?",
+            (session_id,),
+        )
         _write_provider_cost(
             conn,
             session_id,

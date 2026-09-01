@@ -2676,7 +2676,9 @@ class ArchiveStore:
                        u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens
                    ), 0) AS total_tokens,
                    COALESCE(
-                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' END,
+                       CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                            WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
+                            WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END,
                        'unknown'
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
@@ -2688,7 +2690,10 @@ class ArchiveStore:
             WHERE {" AND ".join(where)}
             GROUP BY s.origin,
                      u.model_name,
-                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END
+                     CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                          WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
+                          WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported'
+                          ELSE 'unknown' END
             """,
             tuple(params),
         ).fetchall()

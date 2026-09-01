@@ -1613,6 +1613,7 @@ SELECT
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,
     (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
+                 WHEN COUNT(u.provider_cost_usd) > 0 THEN 0
                  WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,

@@ -264,8 +264,8 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
             """
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cost_credits, cost_provenance, cost_usd
-            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075)
+                cost_credits, provider_cost_usd
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 0.0075)
             """,
             (NID_PRICED_COST,),
         )
