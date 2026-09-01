@@ -67,6 +67,9 @@ Disposition table
 | 3893368155 | CONFIRMED, large | Filed as polylogue-qkd19. Manifest caching needs explicit identity and invalidation semantics. |
 | 3893368161 | CONFIRMED, large | Filed as polylogue-r9ttp. Manifest drift needs a typed schema-layout refusal. |
 | 3897719963 | CONFIRMED, small | Fixed in e6ab07362: origin-reported pricing lanes read `provider_cost_usd`. |
+| 3907860088 | CONFIRMED, small | Fixed in 20624a1be: session-reported cost fallback is labeled only when the session has one distinct usage model, with a multi-model regression test. |
+| 3907860100 | CONFIRMED, small | Fixed in 20624a1be: known merged tool outcomes clear contradictory legacy exit codes, with success and error regression tests. |
+| 3907860108 | CONFIRMED, small | Fixed in 20624a1be: hook-derived `SUBAGENT` classification is resolved for append writes, with a live source-spool regression test. |
 
 Residual risk
 
