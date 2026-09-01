@@ -14,7 +14,7 @@ Verification
 
 - `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_append_cursor_resynthesis.py tests/unit/sources/test_source_snapshot.py tests/unit/sources/parsers/test_codex_state.py tests/unit/storage/test_revision_replay.py`: 94 passed.
 - `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_watcher.py -k hermes_wal_revision_triggers_resnapshot`: 1 passed.
-- `agentctl job start polylogue verify_quick --workspace worktree-5d257574066ef583`: passed all 18 quick gates at `cec1b37537b3c749fdabc1adfc8a15b8c96e7f5b`.
+- `agentctl job start polylogue verify_quick --workspace worktree-5d257574066ef583`: passed all 18 quick gates.
 - `nix develop --accept-flake-config --command devtools verify`: refused because the compatible native testmon graph is absent.
 
 Residual risk
