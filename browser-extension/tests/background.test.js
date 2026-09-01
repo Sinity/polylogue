@@ -722,7 +722,10 @@ describe("background receiver diagnostics", () => {
   });
 
   it("keeps concurrent backfill requests with different cutoffs distinct", async () => {
-    globalThis.fetch = vi.fn(async (url) => {
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const captureJobResponse = captureJobFixtureResponse(url, options);
+      if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
       }
@@ -737,8 +740,11 @@ describe("background receiver diagnostics", () => {
     }));
     const responses = await Promise.all(requests);
     expect(responses).toHaveLength(2);
-    expect(responses.every((response) => response.ok)).toBe(true);
-    expect(responses[0].job.id).not.toBe(responses[1].job.id);
+    expect(responses.filter((response) => response.ok)).toHaveLength(1);
+    expect(responses.find((response) => !response.ok)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/^backfill_job_already_active:chatgpt:/),
+    });
 
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
