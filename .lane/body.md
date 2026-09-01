@@ -18,3 +18,5 @@ Verification
 - `.venv/bin/python -m devtools verify --quick` passed: all quick checks green, including schema versioning.
 
 Residual risk: the complete 59 GB local JSONL corpus and live daemon convergence were not run. The malformed source file noted in the prior review remains an input-quality issue, not a typed-outcome refusal.
+
+Reviewed-by: Claude (Opus) cross-family review
