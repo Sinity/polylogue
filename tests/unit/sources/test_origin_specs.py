@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -19,7 +20,9 @@ from polylogue.sources.origin_specs import (
     ORIGIN_SPEC_REGISTRY,
     ORIGIN_SPECS,
     DroppedValueVocabulary,
+    OriginSpec,
     OriginSpecRegistry,
+    TopologyCapability,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
     detector_registry,
@@ -195,6 +198,33 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude_ai["message_branch_state"]["state"] == "positive-derived"
     assert aistudio_drive["message_parent"]["state"] == "carried"
     assert aistudio_drive["message_branch_state"]["state"] == "positive-derived"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda: ORIGIN_SPECS[:-1],
+        lambda: tuple(
+            replace(
+                spec,
+                topology_capabilities=replace(
+                    spec.topology_capabilities,
+                    message_parent=TopologyCapability("unknown", ("mutation",)),
+                ),
+            )
+            if spec.origin is Origin.CODEX_SESSION
+            else spec
+            for spec in ORIGIN_SPECS
+        ),
+    ],
+    ids=["omitted-origin", "unknown-capability"],
+)
+def test_topology_capability_census_rejects_incomplete_declarations(
+    mutation: Callable[[], tuple[OriginSpec, ...]],
+) -> None:
+    """Removing a declared origin or capability cannot produce a green census."""
+    with pytest.raises(ValueError, match="topology capability census|capability state|remain unknown"):
+        topology_capability_census(mutation())
 
 
 def test_public_origin_projections_cover_declared_specs_coherently() -> None:
