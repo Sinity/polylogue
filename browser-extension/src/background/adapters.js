@@ -1,5 +1,6 @@
 /** Explicit browser seams used by the background composition root. */
 export function createBackgroundAdapters(browser = globalThis.chrome, network = null, clock = Date) {
+  const fetchImpl = network || globalThis.fetch;
   return Object.freeze({
     storage: browser.storage,
     alarms: browser.alarms,
@@ -7,9 +8,7 @@ export function createBackgroundAdapters(browser = globalThis.chrome, network = 
     scripting: browser.scripting,
     runtime: browser.runtime,
     action: browser.action,
-    // Resolve fetch at call time: test profiles and browser harnesses replace
-    // the network seam between service-worker starts.
-    network: (...args) => (network || globalThis.fetch)(...args),
+    network: (...args) => fetchImpl(...args),
     now: () => clock.now(),
     log: (...args) => console.debug("[polylogue-background]", ...args),
   });

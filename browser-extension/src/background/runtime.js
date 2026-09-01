@@ -381,7 +381,24 @@ async function backfillCoordinator() {
 
 async function startBackfill(request) {
   const provider = String(request.provider || "");
-  const inFlight = backfillStartPromises.get(provider);
+  const stableRequestKey = (value) => {
+    if (Array.isArray(value)) return value.map(stableRequestKey);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, child]) => [key, stableRequestKey(child)]),
+      );
+    }
+    return value;
+  };
+  const requestKey = JSON.stringify(stableRequestKey({
+    provider,
+    cutoff: request.cutoff ?? null,
+    policy: request.policy || {},
+    provider_options: request.provider_options || {},
+  }));
+  const inFlight = backfillStartPromises.get(requestKey);
   if (inFlight) return inFlight;
   const pending = (async () => {
     const coordinator = await backfillCoordinator();
@@ -394,11 +411,11 @@ async function startBackfill(request) {
     void coordinator.wake(job.id);
     return job;
   })();
-  backfillStartPromises.set(provider, pending);
+  backfillStartPromises.set(requestKey, pending);
   try {
     return await pending;
   } finally {
-    if (backfillStartPromises.get(provider) === pending) backfillStartPromises.delete(provider);
+    if (backfillStartPromises.get(requestKey) === pending) backfillStartPromises.delete(requestKey);
   }
 }
 

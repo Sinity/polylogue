@@ -715,7 +715,7 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
   });
 
-  it("shares an existing provider surface across concurrent backfill jobs", async () => {
+  it("keeps concurrent backfill requests with different cutoffs distinct", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
@@ -732,11 +732,58 @@ describe("background receiver diagnostics", () => {
     const responses = await Promise.all(requests);
     expect(responses).toHaveLength(2);
     expect(responses.every((response) => response.ok)).toBe(true);
-    expect(responses[0].job.id).toBe(responses[1].job.id);
+    expect(responses[0].job.id).not.toBe(responses[1].job.id);
 
     await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.scripting.executeScript.mock.calls.every(([details]) => details.target.tabId === 42)).toBe(true);
+  });
+
+  it("coalesces equivalent concurrent backfill requests", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const requests = [1, 2].map(() => sendRuntimeMessage({
+      type: "polylogue.backfill.start",
+      provider: "chatgpt",
+      cutoff: "2026-01-01T00:00:00Z",
+      policy: { baseCadenceMs: 1000 },
+    }));
+    const responses = await Promise.all(requests);
+
+    expect(responses[0].job.id).toBe(responses[1].job.id);
+  });
+
+  it("coalesces equivalent requests despite object insertion order", async () => {
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    const responses = await Promise.all([
+      sendRuntimeMessage({
+        type: "polylogue.backfill.start",
+        provider: "chatgpt",
+        cutoff: "2026-01-01T00:00:00Z",
+        policy: { baseCadenceMs: 1000, nested: { first: true, second: false } },
+        provider_options: { account: "fixture", region: "test" },
+      }),
+      sendRuntimeMessage({
+        type: "polylogue.backfill.start",
+        provider: "chatgpt",
+        cutoff: "2026-01-01T00:00:00Z",
+        policy: { nested: { second: false, first: true }, baseCadenceMs: 1000 },
+        provider_options: { region: "test", account: "fixture" },
+      }),
+    ]);
+
+    expect(responses[0].job.id).toBe(responses[1].job.id);
   });
 
   it("does not replace a provider transport tab once the operator activates it", async () => {
