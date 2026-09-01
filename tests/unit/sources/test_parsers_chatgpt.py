@@ -329,6 +329,15 @@ def test_chatgpt_shared_decode_lowering_preserves_conservation_mapping() -> None
     assert assistant_node["children"] == []
 
 
+def test_chatgpt_shared_decode_lowering_uses_parser_conversation_id_precedence() -> None:
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    payload = {**_shared_decode_payload(), "conversation_id": "native-conversation", "id": "native-id"}
+    [document] = lower_chatgpt_documents(payload, "fallback")
+
+    assert document.document_id == "native-id"
+
+
 def test_chatgpt_temporary_payload_sets_session_kind() -> None:
     session = chatgpt_parse(
         {

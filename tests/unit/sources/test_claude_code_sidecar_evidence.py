@@ -11,7 +11,7 @@ reproduces exactly that silent-loss bug.
 
 from __future__ import annotations
 
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import SessionKind, TitleSource
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import parse_code
 
@@ -27,6 +27,28 @@ _COVERAGE_EVENT_TYPE = "claude_parse_coverage"
 
 def _typed_events(session: ParsedSession) -> list[ParsedSessionEvent]:
     return [e for e in session.session_events if e.event_type != _COVERAGE_EVENT_TYPE]
+
+
+def test_prompt_suggestion_marker_produces_prompt_suggestion_session() -> None:
+    """Removing marker admission would store this real parser shape as primary."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "sessionId": "suggestion-session",
+                "uuid": "message-1",
+                "timestamp": "2026-08-31T00:00:00Z",
+                "message": {
+                    "role": "user",
+                    "content": "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.\nReview the failing test.",
+                },
+            }
+        ],
+        "suggestion-session",
+    )
+
+    assert parsed.session_kind is SessionKind.PROMPT_SUGGESTION
+    assert {event.event_type for event in parsed.session_events} >= {"claude_session_kind"}
 
 
 def test_ai_title_wins_session_title_over_uuid_fallback() -> None:

@@ -3848,6 +3848,7 @@ class LiveBatchProcessor:
             candidate.kind is RawRevisionKind.APPEND
             and candidate.authority is RawRevisionAuthority.BYTE_PROVEN
             and (candidate.append_start_offset is None or candidate.append_end_offset is None)
+            and candidate.baseline_raw_id == replay_plan.accepted_chain[0]
             for candidate in candidates
         ):
             return None
@@ -3861,7 +3862,15 @@ class LiveBatchProcessor:
         byte_offset = head.blob_size
         tail_hash = encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0)
         if (
-            frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            frontier_kind_for_origin(
+                origin_from_provider(
+                    Provider.from_string(
+                        canonical_acquisition_provider(
+                            self._source_name_for(path), source_name=self._source_name_for(path)
+                        )
+                    )
+                )
+            )
             == "claude-header-body"
         ):
             blob_path = source_db.parent / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]
@@ -4014,12 +4023,28 @@ class LiveBatchProcessor:
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
         claude_frontier = (
             decode_claude_semantic_frontier(cursor.tail_hash)
-            if frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            if frontier_kind_for_origin(
+                origin_from_provider(
+                    Provider.from_string(
+                        canonical_acquisition_provider(
+                            self._source_name_for(path), source_name=self._source_name_for(path)
+                        )
+                    )
+                )
+            )
             == "claude-header-body"
             else None
         )
         if (
-            frontier_kind_for_origin(origin_from_provider(Provider.from_string(self._source_name_for(path))))
+            frontier_kind_for_origin(
+                origin_from_provider(
+                    Provider.from_string(
+                        canonical_acquisition_provider(
+                            self._source_name_for(path), source_name=self._source_name_for(path)
+                        )
+                    )
+                )
+            )
             == "claude-header-body"
             and claude_frontier is None
         ):
@@ -4029,7 +4054,7 @@ class LiveBatchProcessor:
         try:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
-                if stat.st_size <= cursor.byte_offset:
+                if claude_frontier is None and stat.st_size <= cursor.byte_offset:
                     return None
                 if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
                     return None
@@ -4065,13 +4090,20 @@ class LiveBatchProcessor:
                         return None
                     start_offset = len(header_end) + claude_frontier.body_bytes
                     handle.seek(len(header_end))
-                    stable_body = handle.read(claude_frontier.body_bytes)
-                    if len(stable_body) != claude_frontier.body_bytes:
-                        return _DEFER_APPEND
-                    if sha256(stable_body).hexdigest() != claude_frontier.body_sha256:
+                    stable_hasher = sha256()
+                    remaining = claude_frontier.body_bytes
+                    while remaining > 0:
+                        chunk = handle.read(min(1 << 20, remaining))
+                        if not chunk:
+                            return _DEFER_APPEND
+                        stable_hasher.update(chunk)
+                        remaining -= len(chunk)
+                    if stable_hasher.hexdigest() != claude_frontier.body_sha256:
                         return None
                 else:
                     start_offset = max(cursor.byte_offset, 0)
+                if stat.st_size <= start_offset:
+                    return None
                 append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
                 handle.seek(start_offset)
                 payload = handle.read(append_window)

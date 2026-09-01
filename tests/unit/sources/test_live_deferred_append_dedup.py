@@ -29,7 +29,13 @@ from typing import Any, cast
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.batch_support import _DEFER_APPEND, _AppendPlan, encode_cursor_hash_authority
+from polylogue.sources.live.batch_support import (
+    _DEFER_APPEND,
+    _AppendPlan,
+    claude_semantic_frontier_for_prefix,
+    decode_claude_semantic_frontier,
+    encode_cursor_hash_authority,
+)
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -111,6 +117,46 @@ def _seed_quarantine_prone_append(tmp_path: Path, *, session_id: str) -> Path:
         mtime_ns=stat.st_mtime_ns,
     )
     return source
+
+
+def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> None:
+    """Replacing semantic authority with a tail hash would disable Claude append planning."""
+    source = tmp_path / "session.jsonl"
+    header = b'{"sessionId":"claude-session"}\n'
+    body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
+    source.write_bytes(header + body + b'{"partial":')
+    cursor = CursorStore(tmp_path / "ops.db")
+    stat = source.stat()
+    authority = claude_semantic_frontier_for_prefix(source, len(header) + len(body))
+    assert authority is not None
+    cursor.set(
+        source,
+        stat.st_size,
+        byte_offset=len(header) + len(body),
+        last_complete_newline=len(header) + len(body),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="f" * 64,
+        tail_hash=authority,
+        source_name="claude-code",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    record_deferred_append_cursor(
+        cursor,
+        source,
+        cursor=cursor.get_record(source),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        source_name="claude-code",
+        deferred_end_offset=None,
+    )
+
+    updated = cursor.get_record(source)
+    assert updated is not None
+    decoded = decode_claude_semantic_frontier(updated.tail_hash)
+    assert decoded is not None
+    assert decoded.body_bytes == len(body)
 
 
 def test_deferred_append_without_marker_replans_every_tick_forever(tmp_path: Path) -> None:

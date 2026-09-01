@@ -205,21 +205,30 @@ class FairAdmissionScheduler:
     def run(self) -> Iterable[tuple[str, object]]:
         buckets: dict[str, deque[AdmissionUnit]] = {}
         order: deque[str] = deque()
-        while self._queue:
-            unit = self._queue.popleft()
-            if unit.source_id not in buckets:
-                buckets[unit.source_id] = deque()
-                order.append(unit.source_id)
-            buckets[unit.source_id].append(unit)
+
+        def drain_queue() -> None:
+            while self._queue:
+                unit = self._queue.popleft()
+                if unit.source_id not in buckets:
+                    buckets[unit.source_id] = deque()
+                    order.append(unit.source_id)
+                buckets[unit.source_id].append(unit)
+
+        drain_queue()
 
         while order:
+            drain_queue()
             source_id = order.popleft()
             unit = buckets[source_id].popleft()
             try:
                 result = unit.work()
             except Exception as exc:  # one poison item cannot preempt siblings
-                result = AdmissionFailure(str(exc) or type(exc).__name__)
+                result = AdmissionFailure(
+                    str(exc) or type(exc).__name__,
+                    retryable=bool(getattr(exc, "retryable", getattr(exc, "is_transient", False))),
+                )
             yield source_id, result
+            drain_queue()
             if buckets[source_id]:
                 order.append(source_id)
             else:

@@ -46,6 +46,7 @@ from polylogue.sources.live.batch import (
 )
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
+    claude_semantic_frontier_for_prefix,
     cursor_ctime_ns,
     cursor_prefix_hash,
     cursor_tail_hash,
@@ -886,6 +887,11 @@ class LiveWatcher:
     def _enqueue(self, path: Path) -> None:
         """Enqueue a path for batched ingestion after debounce."""
         self._pending_paths.add(path)
+        if self._source_name_for(path).split(":", 1)[0] == "claude-code" and path.parent.name == "tool-results":
+            session_dir = path.parent.parent
+            root_transcript = session_dir.parent / f"{session_dir.name}.jsonl"
+            owners = [root_transcript, *sorted((session_dir / "subagents").glob("agent-*.jsonl"))]
+            self._pending_paths.update(owner for owner in owners if owner.is_file())
         self._last_enqueue_at = time.monotonic()
         self._ensure_pending_scheduled()
 
@@ -1611,6 +1617,17 @@ class LiveWatcher:
             post_read_stat.st_ctime_ns,
         ) != (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns):
             return _ArchivedCursorReconciliation.UNAVAILABLE
+        source_provider = provider_from_origin(Origin.from_string(str(origin))) if origin is not None else None
+        if source_provider is Provider.CLAUDE_CODE:
+            tail_hash = claude_semantic_frontier_for_prefix(path, archived_size)
+            if tail_hash is None:
+                return _ArchivedCursorReconciliation.INCOMPATIBLE
+        else:
+            tail_hash = encode_cursor_hash_authority(
+                content_fingerprint,
+                tail_hash,
+                ctime_ns=stat.st_ctime_ns,
+            )
         self._cursor.set(
             path,
             archived_size,
@@ -1618,11 +1635,7 @@ class LiveWatcher:
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
             content_fingerprint=content_fingerprint,
-            tail_hash=encode_cursor_hash_authority(
-                content_fingerprint,
-                tail_hash,
-                ctime_ns=stat.st_ctime_ns,
-            ),
+            tail_hash=tail_hash,
             source_name=provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
             else self._source_name_for(path),
