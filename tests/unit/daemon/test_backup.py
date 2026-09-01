@@ -754,6 +754,7 @@ def test_zip_replay_derives_member_and_split_from_empty_legacy_coordinates(tmp_p
         ("codex-session", "full"),
         ("claude-code-session", "full"),
         ("claude-code-session", "unknown"),
+        ("hermes-session", "unknown"),
     ],
 )
 def test_backup_replays_historical_full_snapshot_prefix(
@@ -788,6 +789,44 @@ def test_backup_replays_historical_full_snapshot_prefix(
 
     assert len(proofs) == 1
     assert proofs[0]["kind"] == "historical_snapshot_prefix_sha256"
+    assert unproven == []
+
+
+def test_backup_falls_back_to_current_decoder_after_prefix_mismatch(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed historical prefix can still be recovered by normal decoding."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "grown.jsonl"
+    historical = b'{"id":"stale"}\n'
+    decoded = b'{"id":"recoverable"}\n'
+    source_path.write_bytes(historical + decoded)
+    blob_hash = hashlib.sha256(decoded).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind
+            ) VALUES ('decoder-fallback', 'hermes-session', ?, 0, ?, ?, 1, 'passed', 'full')""",
+            (str(source_path), blob_hash, len(decoded)),
+        )
+
+    def decode_current_payload(*args: object, **kwargs: object) -> tuple[bytes, None]:
+        return decoded, None
+
+    monkeypatch.setattr(backup_mod, "_current_raw_payload_bytes", decode_current_payload)
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "direct_file_sha256"
     assert unproven == []
 
 

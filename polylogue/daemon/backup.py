@@ -901,6 +901,16 @@ def _source_recoverability_proofs(
                     historical_snapshot_candidate = prefix_candidate
                     if prefix_candidate:
                         payload, error = prefix_payload, prefix_error
+                        if error is not None:
+                            historical_snapshot_candidate = False
+                            payload, error = _current_raw_payload_bytes(
+                                resolved,
+                                source_index,
+                                raw_id=str(row.get("ref_id") or "") or None,
+                                blob_hash=blob_hash,
+                                source_bytes_cache=source_bytes_cache,
+                                decoded_payload_cache=decoded_payload_cache,
+                            )
                     else:
                         payload, error = _current_raw_payload_bytes(
                             resolved,
