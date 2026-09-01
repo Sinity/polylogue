@@ -344,6 +344,7 @@ def recognize_source_class(
     source_path: str | Path,
     *,
     payload: object | None = None,
+    source_only: bool = False,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
@@ -352,6 +353,8 @@ def recognize_source_class(
     that suffix alone.
     """
     if provider is Provider.UNKNOWN:
+        if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            return SourceClassRecognition("unsupported", "SQLite has no declared provider source class")
         return None
 
     from polylogue.sources.dispatch import detect_provider
@@ -376,6 +379,17 @@ def recognize_source_class(
             return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
 
     if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        if source_only:
+            if provider is Provider.CODEX:
+                declaration = codex_state.declared_codex_sqlite_classification(path)
+                if declaration is None:
+                    return SourceClassRecognition("unsupported", "Codex SQLite has no declared database identity")
+                if declaration.disposition == "out-of-scope":
+                    return SourceClassRecognition("unsupported", f"declared Codex {declaration.kind} database")
+                return SourceClassRecognition("session", f"declared Codex {declaration.kind} database")
+            if provider is Provider.HERMES and path.name in {"state.db", "verification_evidence.db"}:
+                return SourceClassRecognition("session", "declared Hermes SQLite source class")
+            return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
         if provider is Provider.HERMES:
             if hermes_state.looks_like_state_db_path(
                 path
@@ -387,6 +401,9 @@ def recognize_source_class(
                 return SourceClassRecognition("session", "Codex SQLite schema signature")
             return SourceClassRecognition("unsupported", "Codex SQLite lacks a declared state schema")
         return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+
+    if source_only:
+        return None
 
     if payload is None:
         try:

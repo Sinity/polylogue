@@ -1973,8 +1973,12 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
-            source_class = None if path.suffix.lower() == ".zip" else recognize_source_class(fallback_provider, path)
-            if source_class is not None and source_class.source_class == "unsupported" and not source_only:
+            source_class = (
+                None
+                if path.suffix.lower() == ".zip"
+                else recognize_source_class(fallback_provider, path, source_only=source_only)
+            )
+            if source_class is not None and source_class.source_class == "unsupported":
                 # Suffixes only make a candidate observable. The declaration
                 # owned recognizer admits provider sessions before parsing.
                 logger.info(
@@ -2032,13 +2036,15 @@ class LiveBatchProcessor:
                 raw_byte_sizes[path] = stat.st_size
                 continue
             if (
-                (
-                    source_only
-                    and fallback_provider is Provider.HERMES
-                    and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}
+                source_only
+                and fallback_provider is Provider.HERMES
+                and path.name in {"state.db", "verification_evidence.db"}
+            ) or (
+                not source_only
+                and (
+                    hermes_state.looks_like_state_db_path(path)
+                    or hermes_verification.looks_like_verification_evidence_db_path(path)
                 )
-                or hermes_state.looks_like_state_db_path(path)
-                or hermes_verification.looks_like_verification_evidence_db_path(path)
             ):
                 provider = Provider.HERMES
                 source_name = provider.value
@@ -2073,7 +2079,12 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif codex_state.is_in_scope_codex_sqlite_path(path):
+            elif (
+                source_only
+                and fallback_provider is Provider.CODEX
+                and source_class is not None
+                and source_class.source_class == "session"
+            ) or (not source_only and codex_state.is_in_scope_codex_sqlite_path(path)):
                 # polylogue-0jf4: acquire live Codex SQLite state the same
                 # way Hermes acquires its state.db -- a consistent
                 # backup/snapshot (never a raw read of a possibly-live-locked
