@@ -6,6 +6,8 @@ import json
 import subprocess
 from typing import TYPE_CHECKING
 
+from polylogue.core.localtime import format_local_datetime
+
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
     from polylogue.insights.session_commit import SessionCorrelationResult
@@ -187,9 +189,7 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
         try:
             ws = datetime.fromisoformat(result.window_start)
             we = datetime.fromisoformat(result.window_end)
-            env.ui.console.print(
-                f"[bold]Window:[/bold] {ws.strftime('%Y-%m-%d %H:%M')} -> {we.strftime('%Y-%m-%d %H:%M')}"
-            )
+            env.ui.console.print(f"[bold]Window:[/bold] {format_local_datetime(ws)} -> {format_local_datetime(we)}")
         except (ValueError, TypeError):
             env.ui.console.print(f"[bold]Window:[/bold] {result.window_start} -> {result.window_end}")
     if result.repo:

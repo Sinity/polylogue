@@ -19,6 +19,7 @@ import json
 from typing import TYPE_CHECKING
 
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
+from polylogue.core.localtime import format_local_datetime
 from polylogue.surfaces.payloads import (
     JSONDocument,
     model_json_document,
@@ -226,7 +227,7 @@ def _conv_to_org(conv: Session) -> str:
     """Convert session to Org-mode format."""
     lines = [
         f"#+TITLE: {conv.display_title or conv.id}",
-        f"#+DATE: {conv.display_date.strftime('%Y-%m-%d') if conv.display_date else 'unknown'}",
+        f"#+DATE: {format_local_datetime(conv.display_date, '%Y-%m-%d') or 'unknown'}",
         f"#+PROPERTY: origin {conv.origin.value}",
         "",
     ]

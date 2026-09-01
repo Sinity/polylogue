@@ -15,8 +15,11 @@ profile) was removed with the dead ``output_stats_by_sessions`` family
 
 from __future__ import annotations
 
+import csv
 import io
 import json
+import os
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -483,6 +486,66 @@ class TestListFormatting:
             assert "claude-ai" in rendered
             assert "(7 msgs)" in rendered
 
+    def test_text_summary_list_localizes_dates_without_changing_json_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        previous = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "America/Los_Angeles")
+        time.tzset()
+        try:
+            summary = SessionSummary(
+                id=SessionId("conv-summary-local-date"),
+                origin=Origin.CLAUDE_AI_EXPORT,
+                title="Summary Session",
+                created_at=datetime(2025, 6, 1, 1, tzinfo=timezone.utc),
+            )
+
+            text = format_summary_list([summary], "text", None)
+            payload = json.loads(format_summary_list([summary], "json", None))
+        finally:
+            if previous is None:
+                monkeypatch.delenv("TZ", raising=False)
+            else:
+                monkeypatch.setenv("TZ", previous)
+            time.tzset()
+
+        assert "2025-05-31" in text
+        assert payload["items"][0]["date"] == "2025-06-01"
+
+    def test_csv_dates_stay_canonical_when_text_is_localized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        previous = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "America/Los_Angeles")
+        time.tzset()
+        try:
+            timestamp = datetime(2025, 6, 1, 1, tzinfo=timezone.utc)
+            summary = SessionSummary(
+                id=SessionId("conv-csv-local-date"),
+                origin=Origin.CLAUDE_AI_EXPORT,
+                title="CSV Session",
+                created_at=timestamp,
+            )
+            hit = SessionSearchHit(
+                summary=summary,
+                rank=1,
+                retrieval_lane="dialogue",
+                match_surface="message",
+            )
+            session = _make_conv(created_at=timestamp)
+
+            summary_csv = format_summary_list([summary], "csv", None)
+            hit_csv = format_search_hit_list([hit], "csv", None)
+            session_csv = _format_list([session], "csv", None)
+        finally:
+            if previous is None:
+                monkeypatch.delenv("TZ", raising=False)
+            else:
+                monkeypatch.setenv("TZ", previous)
+            time.tzset()
+
+        assert next(csv.DictReader(io.StringIO(summary_csv)))["date"] == "2025-06-01"
+        assert next(csv.DictReader(io.StringIO(hit_csv)))["date"] == "2025-06-01"
+        assert next(csv.DictReader(io.StringIO(session_csv)))["date"] == "2025-06-01"
+
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_search_hit_list_contract(self, output_format: str) -> None:
         summary = SessionSummary(
@@ -761,7 +824,7 @@ class TestStreamingOutput:
                 (
                     "# Example Session",
                     "**Origin**: claude-ai-export",
-                    "**Date**: 2025-06-15 12:30",
+                    "**Date**: 2025-06-15",
                     "_Streamed 2 messages_",
                 ),
             ),

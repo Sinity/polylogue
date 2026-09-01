@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.query_feedback import emit_no_results
+from polylogue.core.localtime import format_local_datetime
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
@@ -147,11 +148,15 @@ async def output_stats_sql(
     else:
         stats = await repo.aggregate_message_stats()
 
-    date_range = ""
+    canonical_date_range = ""
+    local_date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
-        min_date = datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
-        max_date = datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
-        date_range = f"{min_date} to {max_date}"
+        min_datetime = datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc)
+        max_datetime = datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc)
+        canonical_date_range = f"{min_datetime:%Y-%m-%d} to {max_datetime:%Y-%m-%d}"
+        local_date_range = (
+            f"{format_local_datetime(min_datetime, '%Y-%m-%d')} to {format_local_datetime(max_datetime, '%Y-%m-%d')}"
+        )
 
     structured_summary: dict[str, object] = {
         "sessions": conv_count,
@@ -186,8 +191,8 @@ async def output_stats_sql(
             "retrieval_ready": getattr(archive_stats, "retrieval_ready", None),
         }
         structured_summary["embeddings"] = embeddings_payload
-    if date_range:
-        structured_summary["date_range"] = date_range
+    if canonical_date_range:
+        structured_summary["date_range"] = canonical_date_range
 
     if emit_structured_stats(
         output_format=output_format,
@@ -226,8 +231,8 @@ async def output_stats_sql(
         if stale_embedding_messages:
             embedding_line += f", stale {stale_embedding_messages:,}"
         out(embedding_line)
-    if date_range:
-        out(f"Date range: {date_range}")
+    if local_date_range:
+        out(f"Date range: {local_date_range}")
 
 
 __all__ = [

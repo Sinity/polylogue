@@ -10,7 +10,7 @@ import tempfile
 import webbrowser
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from html import escape as html_escape
 from typing import TYPE_CHECKING, TypeAlias
 from urllib.parse import quote
@@ -35,6 +35,7 @@ from polylogue.cli.query_stats import (
     output_stats_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.payloads import (
@@ -62,6 +63,10 @@ MACHINE_OUTPUT_FORMATS = frozenset({"json", "ndjson", "yaml", "csv"})
 
 
 def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
+    return format_local_datetime(value, date_format)
+
+
+def _canonical_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
     return value.strftime(date_format) if value else ""
 
 
@@ -155,7 +160,8 @@ def _session_list_line(conv: Session) -> str:
 
 def _summary_list_line(summary: SessionSummary, message_count: int) -> str:
     row = session_row(summary, message_count=message_count)
-    return f"{row.id[:24]:24s}  {(row.date or 'unknown'):10s}  {row.origin:20s}  {row.title} ({row.message_count} msgs) [{row.outcome}]"
+    date = _display_date(summary.display_date) or "unknown"
+    return f"{row.id[:24]:24s}  {date:10s}  {row.origin:20s}  {row.title} ({row.message_count} msgs) [{row.outcome}]"
 
 
 def _search_hit_list_line(hit: SessionSearchHit, message_count: int) -> str:
@@ -170,9 +176,9 @@ def _search_hit_list_line(hit: SessionSearchHit, message_count: int) -> str:
 
 def _stream_date_parts(display_date: object | None) -> tuple[str | None, str | None]:
     if isinstance(display_date, datetime):
-        return display_date.strftime("%Y-%m-%d %H:%M"), display_date.isoformat()
-    if hasattr(display_date, "strftime"):
-        text = display_date.strftime("%Y-%m-%d %H:%M")
+        return format_local_datetime(display_date), display_date.isoformat()
+    if isinstance(display_date, date):
+        text = format_local_datetime(display_date)
         value = display_date.isoformat() if hasattr(display_date, "isoformat") else str(display_date)
         return text, value
     if display_date:
@@ -234,7 +240,7 @@ def render_session_rich(env: AppEnv, conv: Session) -> None:
     header = Text()
     header.append(title, style="bold")
     if conv.display_date:
-        header.append(f"  {conv.display_date.strftime('%Y-%m-%d %H:%M')}", style="dim")
+        header.append(f"  {format_local_datetime(conv.display_date)}", style="dim")
     header.append(f"  [{pc.hex}]{str(conv.origin)}[/{pc.hex}]")
     console.print(header)
     console.print()
@@ -434,7 +440,7 @@ def format_summary_list(
         csv_rows=tuple(
             (
                 str(summary.id),
-                _display_date(summary.display_date),
+                _canonical_date(summary.display_date),
                 str(summary.origin),
                 session_row(summary, message_count=message_counts.get(str(summary.id), 0)).title,
                 message_counts.get(str(summary.id), 0),
@@ -499,7 +505,7 @@ def format_search_hit_list(
         csv_rows=tuple(
             (
                 str(hit.summary.id),
-                _display_date(hit.summary.display_date),
+                _canonical_date(hit.summary.display_date),
                 str(hit.summary.origin),
                 bound_display_title(hit.summary.display_title, str(hit.summary.id)),
                 message_counts.get(hit.session_id, hit.summary.message_count or 0),
@@ -764,7 +770,7 @@ def sessions_to_csv(results: list[Session]) -> str:
         writer.writerow(
             [
                 str(conv.id),
-                _display_date(conv.display_date),
+                _canonical_date(conv.display_date),
                 str(conv.origin),
                 _single_line(conv.display_title or ""),
                 len(conv.messages),
