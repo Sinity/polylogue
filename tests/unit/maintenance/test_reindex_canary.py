@@ -42,4 +42,6 @@ def test_comparison_is_forensic_and_reports_real_row_mutation(tmp_path: Path) ->
     report = compare_reindex_generations(current, candidate, session_ids=("codex:a",))
     assert len(report.differences) == 1
     assert report.differences[0].operation is DifferenceOperation.CHANGED
-    assert "classification" not in report.to_dict()["differences"][0]
+    differences = report.to_dict()["differences"]
+    assert isinstance(differences, list)
+    assert "classification" not in differences[0]

@@ -333,7 +333,7 @@ def test_real_inactive_rebuild_and_canary_preserve_active_and_reject_parser_as_d
         server.server_close()
         server_thread.join(timeout=2)
         shutil.rmtree(runtime_dir, ignore_errors=True)
-    assert canary.comparison.unexpected_count > 0
+    assert len(canary.comparison.differences) > 0
     assert set(canary.comparison.counts_by_table) == {"raw_revision_applications", "raw_revision_heads"}
     canary_generation = canary.rebuild_receipt["generation"]
     assert isinstance(canary_generation, dict) and canary_generation["state"] == "inactive"
