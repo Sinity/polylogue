@@ -133,6 +133,18 @@ export type AssertionStatus = "active" | "candidate" | "accepted" | "rejected" |
 
 export type AssertionVisibility = "private" | "team" | "public";
 
+export type AuthorityEnvelope = {
+  readonly archive_epoch: string;
+  readonly degraded?: ReadonlyArray<string>;
+  readonly elapsed_ms: number;
+  readonly generation_id: string;
+  readonly run_id: string;
+  readonly server_identity: "daemon" | "direct";
+  readonly tier_schema_versions: {
+  readonly [key: string]: number;
+};
+};
+
 export type BlockQueryRowPayload = {
   readonly block_id: string;
   readonly block_type: string;
@@ -417,6 +429,7 @@ export type QueryUnitCountStageAst = {
 };
 
 export type QueryUnitEnvelope = {
+  readonly authority?: AuthorityEnvelope | null;
   readonly continuation?: string | null;
   readonly items: ReadonlyArray<MessageQueryRowPayload | ActionQueryRowPayload | BlockQueryRowPayload | AssertionQueryRowPayload | FileQueryRowPayload | RunQueryRowPayload | ObservedEventQueryRowPayload | ContextSnapshotQueryRowPayload | DelegationQueryRowPayload>;
   readonly limit: number;
@@ -589,6 +602,7 @@ export type RunQueryRowPayload = {
 export type SearchEnvelope = {
   readonly action_affordances?: ReadonlyArray<ActionAffordancePayload>;
   readonly advisories?: ReadonlyArray<string>;
+  readonly authority?: AuthorityEnvelope | null;
   readonly diagnostics?: QueryMissDiagnosticsPayload | null;
   readonly exactness?: "exact" | "capped" | "sampled" | "estimate" | null;
   readonly executed_lanes?: ReadonlyArray<string>;
@@ -651,6 +665,7 @@ export type SessionListEnvelope = {
 };
 
 export type SessionListResponse = {
+  readonly authority?: AuthorityEnvelope | null;
   readonly diagnostics?: QueryMissDiagnosticsPayload | null;
   readonly items: ReadonlyArray<SessionListEnvelope>;
   readonly limit: number;

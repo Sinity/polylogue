@@ -1061,6 +1061,54 @@ components:
       - safety_level
       title: ActionSafetyPayload
       type: object
+    AuthorityEnvelope:
+      additionalProperties: false
+      description: 'Attribution for one operation result.
+
+
+        The operation boundary creates this value once. Adapters only serialize it;
+
+        they must not reconstruct archive or daemon facts independently.'
+      properties:
+        run_id:
+          title: Run Id
+          type: string
+        archive_epoch:
+          title: Archive Epoch
+          type: string
+        generation_id:
+          title: Generation Id
+          type: string
+        tier_schema_versions:
+          additionalProperties:
+            type: integer
+          title: Tier Schema Versions
+          type: object
+        server_identity:
+          enum:
+          - daemon
+          - direct
+          title: Server Identity
+          type: string
+        elapsed_ms:
+          minimum: 0
+          title: Elapsed Ms
+          type: integer
+        degraded:
+          default: []
+          items:
+            type: string
+          title: Degraded
+          type: array
+      required:
+      - run_id
+      - archive_epoch
+      - generation_id
+      - tier_schema_versions
+      - server_identity
+      - elapsed_ms
+      title: AuthorityEnvelope
+      type: object
     QueryMissDiagnosticsPayload:
       additionalProperties: false
       description: Shared diagnostics payload for zero-result queries.
@@ -1633,6 +1681,11 @@ components:
             type: string
           title: Advisories
           type: array
+        authority:
+          anyOf:
+          - $ref: '#/components/schemas/AuthorityEnvelope'
+          - type: 'null'
+          default: null
       required:
       - hits
       - total
@@ -1844,6 +1897,11 @@ components:
         route_state:
           anyOf:
           - $ref: '#/components/schemas/RouteReadinessPayload'
+          - type: 'null'
+          default: null
+        authority:
+          anyOf:
+          - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
       required:
@@ -2832,6 +2890,11 @@ components:
           - type: 'null'
           default: null
           title: Continuation
+        authority:
+          anyOf:
+          - $ref: '#/components/schemas/AuthorityEnvelope'
+          - type: 'null'
+          default: null
       required:
       - unit
       - query

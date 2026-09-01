@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING
 
+from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
@@ -47,6 +48,8 @@ async def build_search_envelope_for_spec(
     limit: int | None = None,
     offset: int | None = None,
     query: str | None = None,
+    serving_identity: str = "direct",
+    authority: AuthorityEnvelope | None = None,
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an already-normalized query spec.
 
@@ -129,6 +132,11 @@ async def build_search_envelope_for_spec(
         cursor=decoded_cursor,
         request_identity=request_identity,
         execution=execution,
+        authority=authority
+        or build_authority_envelope(
+            facade.config.archive_root,
+            server_identity="daemon" if serving_identity == "daemon" else "direct",
+        ),
     )
 
 

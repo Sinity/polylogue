@@ -65,6 +65,7 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "unavailable_lanes",
         "failed_lanes",
         "advisories",
+        "authority",
     }
 )
 

@@ -369,6 +369,62 @@
       "title": "AssertionVisibility",
       "type": "string"
     },
+    "AuthorityEnvelope": {
+      "additionalProperties": false,
+      "description": "Attribution for one operation result.\n\nThe operation boundary creates this value once. Adapters only serialize it;\nthey must not reconstruct archive or daemon facts independently.",
+      "properties": {
+        "archive_epoch": {
+          "title": "Archive Epoch",
+          "type": "string"
+        },
+        "degraded": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Degraded",
+          "type": "array"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "generation_id": {
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "server_identity": {
+          "enum": [
+            "daemon",
+            "direct"
+          ],
+          "title": "Server Identity",
+          "type": "string"
+        },
+        "tier_schema_versions": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Tier Schema Versions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "run_id",
+        "archive_epoch",
+        "generation_id",
+        "tier_schema_versions",
+        "server_identity",
+        "elapsed_ms"
+      ],
+      "title": "AuthorityEnvelope",
+      "type": "object"
+    },
     "BlockQueryRowPayload": {
       "additionalProperties": false,
       "description": "Shared terminal-query row for archive content blocks.",
@@ -1324,6 +1380,17 @@
   "additionalProperties": false,
   "description": "Terminal row envelope for explicit `messages/actions/blocks/assertions/files/runs/observed-events/context-snapshots/delegations where ...` query-unit expressions. Shared by CLI JSON output, Python API, MCP, and daemon HTTP.\n\nGenerated from `polylogue.surfaces.payloads.QueryUnitEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
+    "authority": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AuthorityEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "continuation": {
       "anyOf": [
         {
