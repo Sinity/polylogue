@@ -216,3 +216,12 @@ source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
 documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
+
+[operations.publication_sweep]
+description = "Converge open publication PRs: merge on clean hosted review, spool findings and conflicts"
+exec = ["sinnixd-publication-sweep", "--repo", "Sinity/polylogue", "--project", "polylogue", "--project-root", "/realm/project/polylogue"]
+schedule = "*:0/10"
+pool = "normal"
+result = "json"
+cache = "none"
+timeout_seconds = 300
