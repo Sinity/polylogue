@@ -66,6 +66,10 @@ def _display_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
     return format_local_datetime(value, date_format)
 
 
+def _canonical_date(value: datetime | None, date_format: str = "%Y-%m-%d") -> str:
+    return value.strftime(date_format) if value else ""
+
+
 def _ellipsize(value: str, max_width: int) -> str:
     if max_width <= 3:
         return value[:max_width]
@@ -436,7 +440,7 @@ def format_summary_list(
         csv_rows=tuple(
             (
                 str(summary.id),
-                _display_date(summary.display_date),
+                _canonical_date(summary.display_date),
                 str(summary.origin),
                 session_row(summary, message_count=message_counts.get(str(summary.id), 0)).title,
                 message_counts.get(str(summary.id), 0),
@@ -501,7 +505,7 @@ def format_search_hit_list(
         csv_rows=tuple(
             (
                 str(hit.summary.id),
-                _display_date(hit.summary.display_date),
+                _canonical_date(hit.summary.display_date),
                 str(hit.summary.origin),
                 bound_display_title(hit.summary.display_title, str(hit.summary.id)),
                 message_counts.get(hit.session_id, hit.summary.message_count or 0),
@@ -766,7 +770,7 @@ def sessions_to_csv(results: list[Session]) -> str:
         writer.writerow(
             [
                 str(conv.id),
-                _display_date(conv.display_date),
+                _canonical_date(conv.display_date),
                 str(conv.origin),
                 _single_line(conv.display_title or ""),
                 len(conv.messages),
