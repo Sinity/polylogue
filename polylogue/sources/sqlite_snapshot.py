@@ -246,14 +246,24 @@ def snapshot_sqlite_to_blob(
     *,
     heartbeat: Heartbeat | None = None,
 ) -> SQLiteBlobSnapshot:
-    """Back up *source*, then hash/store only those consistent snapshot bytes."""
-    source_revision = sqlite_source_revision(source)
+    """Back up *source* and return its logical revision.
+
+    The backup bytes remain available as immutable parser input, but source
+    continuity is based on schema and logical rows.  Re-reading the logical
+    revision after the backup prevents a concurrent commit from being
+    presented as a complete source observation.
+    """
+    source_revision = sqlite_logical_revision(source)
     temporary_path = blob_store.allocate_staging_path(
         prefix=".sqlite-snapshot.",
         suffix=source.suffix or ".db",
     )
     try:
         snapshot_sqlite_database(source, temporary_path)
+        if sqlite_logical_revision(source) != source_revision:
+            raise OSError("SQLite source changed during backup")
+        if sqlite_logical_revision(temporary_path) != source_revision:
+            raise OSError("SQLite backup does not match source logical revision")
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
         from polylogue.storage.blob_publication import publication_receipt_id
 
