@@ -41,10 +41,9 @@ every other runtime path uses (`polylogue/config.py`):
 
 There is no dedicated `polylogued run` flag for the Hermes root specifically
 (unlike, say, `--debounce-s`); use the environment variable or config file.
-`polylogued run --root <path>` is a different, more drastic override — it
-replaces the daemon's *entire* watched-source set with the roots you list,
-not just the Hermes one (see [Try it yourself](#try-it-yourself) for where
-that is actually useful: isolating a throwaway daemon for testing).
+`polylogued run --root <path>` adds an ordinary export root alongside the
+typed default sources; it does not change the Hermes root. Use the environment
+variable or config file when the Hermes state root itself must move.
 
 Source: `ConfigInventoryEntry("hermes_root", toml_path="sources.hermes.root",
 env_var="POLYLOGUE_HERMES_ROOT", ...)` in `polylogue/config.py:780-786`, resolved
@@ -524,23 +523,18 @@ export POLYLOGUE_ARCHIVE_ROOT=$(mktemp -d)/polylogue-hermes-smoke
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json --explain
 polylogue import tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl --explain
 
-# 2. Full ingest + query, watching only the throwaway archive's own inbox
-#    (never the real ~/.claude, ~/.codex, or ~/.hermes; the hook spool is
-#    scoped to $POLYLOGUE_ARCHIVE_ROOT/hooks automatically):
-polylogued run --no-browser-capture --no-source-catchup \
+# 2. Full ingest + query. A disposable HOME leaves every typed default source
+#    empty while the explicit inbox remains available to the daemon:
+smoke_home=$(mktemp -d)
+HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" \
+  polylogued run --no-browser-capture --no-source-catchup \
   --root "$POLYLOGUE_ARCHIVE_ROOT/inbox" &
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json
 polylogue --origin hermes-session find "hermes" then read --all --format json
 ```
 
-One safety note learned the hard way while writing this guide:
-
-- Never run `polylogued run` with source catch-up enabled (the default)
-  against a throwaway archive on a machine with a real `~/.claude`,
-  `~/.codex`, or `~/.hermes` — catch-up scans and ingests every configured
-  default root, real data included. Always pass `--no-source-catchup` for a
-  fixture-only smoke test, and prefer `--root` scoped to the throwaway
-  inbox as shown above.
+`--root` does not isolate a watcher. Use a disposable `HOME` for fixture-only
+daemon runs; `--no-source-catchup` only disables configured non-watch sources.
 
 ## Related docs
 
