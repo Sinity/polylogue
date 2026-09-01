@@ -3685,7 +3685,7 @@ async def test_claude_sidecar_owner_bypasses_unchanged_cursor_filter(tmp_path: P
         test_watcher._ingest_files = fake_ingest
         watcher._enqueue(sidecar)
         assert await watcher._flush_pending() is True
-        assert ingested == [sidecar, root_transcript] or ingested == [root_transcript, sidecar]
+        assert ingested == [root_transcript]
     finally:
         watcher.stop()
 
