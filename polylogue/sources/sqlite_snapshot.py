@@ -128,6 +128,10 @@ def sqlite_logical_revision(path: Path) -> str:
     """
     source_uri = f"{path.resolve().as_uri()}?mode=ro"
     with closing(sqlite3.connect(source_uri, uri=True)) as conn:
+        # Keep schema and every row in one SQLite read snapshot.  Without an
+        # explicit transaction a concurrent WAL commit can make the digest a
+        # combination of two source states.
+        conn.execute("BEGIN")
         tables = [
             str(row[0])
             for row in conn.execute(

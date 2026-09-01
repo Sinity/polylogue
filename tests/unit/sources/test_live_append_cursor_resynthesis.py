@@ -23,7 +23,12 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    append_source_revision,
+)
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -224,3 +229,55 @@ def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path
     plan = processor._append_plan(source)
 
     assert plan is None
+
+
+def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(tmp_path: Path) -> None:
+    """A legacy append window is admitted only when its retained bytes prove it."""
+    session_id = "legacy-offset-chain"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "rollout-legacy-offset-chain.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    delta = _codex_message("legacy append")
+    next_delta = _codex_message("next append")
+    source.write_bytes(baseline + delta + next_delta)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"codex:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+    # This is the pre-offset durable shape: the payload is retained, but the
+    # source revision row has no operational byte coordinates.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown',
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (f"codex:{session_id}", "legacy-append-1", append_id),
+        )
+        conn.commit()
+    _seed_native_session(tmp_path, session_id=session_id)
+    processor = _processor(tmp_path, CursorStore(tmp_path / "ops.db"))
+
+    plan = processor._append_plan(source)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == len(baseline) + len(delta)
+    assert plan.cursor_fingerprint == append_source_revision("full-0", hashlib.sha256(delta).hexdigest())
+    assert next_delta in plan.payload
+    assert baseline_id

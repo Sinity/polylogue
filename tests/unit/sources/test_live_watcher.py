@@ -46,7 +46,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.sqlite_snapshot import sqlite_source_revision
+from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1548,7 +1548,7 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
             root,
             sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
         )
-        initial_revision = sqlite_source_revision(state_db)
+        initial_revision = sqlite_logical_revision(state_db)
         stat = state_db.stat()
         watcher._cursor.set(
             state_db,

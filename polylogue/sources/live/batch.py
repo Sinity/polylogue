@@ -64,6 +64,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import get_logger
+from polylogue.operations.append_acquisition_replay import codex_legacy_header_size
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
@@ -3798,7 +3799,7 @@ class LiveBatchProcessor:
                 SELECT raw_id, revision_kind, source_revision, acquisition_generation,
                        revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
                        append_start_offset, append_end_offset, predecessor_source_revision,
-                       lower(hex(blob_hash)) AS blob_hash_hex
+                       lower(hex(blob_hash)) AS blob_hash_hex, source_path, source_index, acquired_at_ms
                 FROM raw_sessions
                 WHERE logical_source_key = ? AND source_revision IS NOT NULL
                 """,
@@ -3811,20 +3812,115 @@ class LiveBatchProcessor:
         if not rows:
             return None
         blob_hash_by_raw_id = {str(row[0]): row[11] for row in rows}
+        # Before offset recording was introduced, append observations were
+        # retained with ``source_index=-1`` and no byte window.  Reconstruct
+        # those windows only when the retained bytes, the source path, and a
+        # unique preceding full observation prove one disjoint prefix chain.
+        # This is source evidence, not an ops cursor or a size-only guess.
+        path_rows = [row for row in rows if str(row[12]) == str(path) and row[11]]
+        full_sizes = [
+            (int(row[14]), int(row[5]), str(row[0]))
+            for row in path_rows
+            if int(row[13]) == 0 and str(row[1]) == RawRevisionKind.FULL.value and str(row[0])
+        ]
+        full_sizes = sorted(full_sizes)
+        source_bytes: bytes | None = None
+        inferred: dict[str, tuple[int, int, str, str | None, str | None, str]] = {}
+        if full_sizes:
+            try:
+                source_bytes = path.read_bytes()
+            except OSError:
+                source_bytes = None
+        if source_bytes is not None:
+            previous_end: int | None = None
+            previous_raw_id: str | None = None
+            previous_revision: str | None = None
+            for row in sorted(path_rows, key=lambda item: (int(item[14]), str(item[0]))):
+                raw_id = str(row[0])
+                if str(row[1]) == RawRevisionKind.FULL.value:
+                    previous_end = int(row[5])
+                    previous_raw_id = raw_id
+                    previous_revision = str(row[2])
+                    continue
+                if row[13] != -1 or row[8] is not None or row[9] is not None:
+                    continue
+                if previous_end is None or previous_raw_id is None or previous_revision is None:
+                    continue
+                blob_hash = blob_hash_by_raw_id.get(raw_id)
+                if not blob_hash:
+                    continue
+                try:
+                    blob = (source_db.parent / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes()
+                except OSError:
+                    continue
+                delta = blob
+                if (
+                    str(row[1]) == RawRevisionKind.UNKNOWN.value
+                    and Provider.from_string(
+                        canonical_acquisition_provider(
+                            self._source_name_for(path), source_name=self._source_name_for(path)
+                        )
+                    )
+                    is Provider.CODEX
+                ):
+                    header_size = codex_legacy_header_size(str(path))
+                    if (
+                        header_size is not None
+                        and blob.startswith(b'{"type":"session_meta"')
+                        and len(blob) > header_size
+                    ):
+                        delta = blob[header_size:]
+                end = previous_end + len(delta)
+                if end > len(source_bytes) or source_bytes[previous_end:end] != delta:
+                    # Replacement, truncation, or an old incompatible payload
+                    # shape invalidates the whole reconstruction.
+                    inferred.clear()
+                    break
+                inferred[raw_id] = (
+                    previous_end,
+                    end,
+                    previous_raw_id,
+                    previous_revision,
+                    raw_id,
+                    append_source_revision(previous_revision, sha256(delta).hexdigest()),
+                )
+                previous_end = end
+                previous_raw_id = raw_id
+                previous_revision = str(row[2])
         candidates = [
             RevisionCandidate(
                 raw_id=str(row[0]),
                 logical_source_key=logical_source_key,
-                kind=RawRevisionKind(str(row[1])),
-                source_revision=str(row[2]),
+                kind=(RawRevisionKind.APPEND if str(row[0]) in inferred else RawRevisionKind(str(row[1]))),
+                source_revision=(inferred[str(row[0])][5] if str(row[0]) in inferred else str(row[2])),
                 acquisition_generation=int(row[3]),
-                authority=RawRevisionAuthority(str(row[4])),
+                authority=(
+                    RawRevisionAuthority.BYTE_PROVEN if str(row[0]) in inferred else RawRevisionAuthority(str(row[4]))
+                ),
                 blob_size=int(row[5]),
-                predecessor_source_revision=str(row[10]) if row[10] is not None else None,
-                predecessor_raw_id=str(row[6]) if row[6] is not None else None,
-                baseline_raw_id=str(row[7]) if row[7] is not None else None,
-                append_start_offset=int(row[8]) if row[8] is not None else None,
-                append_end_offset=int(row[9]) if row[9] is not None else None,
+                predecessor_source_revision=(
+                    inferred[str(row[0])][3]
+                    if str(row[0]) in inferred
+                    else (str(row[10]) if row[10] is not None else None)
+                ),
+                predecessor_raw_id=(
+                    inferred[str(row[0])][2]
+                    if str(row[0]) in inferred
+                    else (str(row[6]) if row[6] is not None else None)
+                ),
+                baseline_raw_id=(
+                    full_sizes[0][2] if str(row[0]) in inferred else (str(row[7]) if row[7] is not None else None)
+                ),
+                append_start_offset=(
+                    inferred[str(row[0])][0]
+                    if str(row[0]) in inferred
+                    else (int(row[8]) if row[8] is not None else None)
+                ),
+                append_end_offset=(
+                    inferred[str(row[0])][1]
+                    if str(row[0]) in inferred
+                    else (int(row[9]) if row[9] is not None else None)
+                ),
             )
             for row in rows
         ]
@@ -3854,13 +3950,24 @@ class LiveBatchProcessor:
             return None
         head_raw_id = replay_plan.accepted_chain[-1]
         head = next(candidate for candidate in candidates if candidate.raw_id == head_raw_id)
-        if head.kind is not RawRevisionKind.FULL:
+        reconstructed_head = head_raw_id in inferred
+        if head.kind is not RawRevisionKind.FULL and not reconstructed_head:
             return None
         blob_hash_hex = blob_hash_by_raw_id.get(head_raw_id)
         if blob_hash_hex is None or len(blob_hash_hex) != 64:
             return None
-        byte_offset = head.blob_size
-        tail_hash = encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0)
+        if reconstructed_head:
+            if head.append_end_offset is None:
+                return None
+            byte_offset = head.append_end_offset
+            try:
+                prefix_hash, _ = sha256_range_from_path(path, start_offset=0, end_offset=byte_offset)
+            except (EOFError, OSError, ValueError):
+                return None
+            tail_hash = encode_cursor_hash_authority(prefix_hash, prefix_hash, ctime_ns=0)
+        else:
+            byte_offset = head.blob_size
+            tail_hash = encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0)
         if (
             frontier_kind_for_origin(
                 origin_from_provider(

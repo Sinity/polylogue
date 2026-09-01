@@ -60,7 +60,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
+from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_logical_revision
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 if TYPE_CHECKING:
@@ -1185,7 +1185,7 @@ class LiveWatcher:
         if not parser_matches:
             return True
         if self._is_hermes_database(path):
-            return cursor.tail_hash != sqlite_source_revision(path)
+            return cursor.tail_hash != sqlite_logical_revision(path)
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Only an exact recorded observation authorizes the hot skip.
             # A bounded tail cannot prove that an earlier same-size prefix was
