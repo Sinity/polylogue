@@ -45,6 +45,7 @@ from polylogue.core.enums import (
     PasteBoundary,
     Provider,
     SessionKind,
+    ToolOutcome,
     admitted_session_kind,
 )
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -139,9 +140,11 @@ class ArchiveBlockRow:
     tool_input: str | None = None
     metadata: str | None = None
     language: str | None = None
-    # Keystone structured tool-result outcome (schema v16). NULL = unknown.
+    # Legacy structural fields retained for compatibility. tool_outcome is the
+    # canonical closed outcome vocabulary for admitted tool blocks.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
+    tool_outcome: ToolOutcome | None = None
     # Why the keystone outcome above is unresolved (schema v46). NULL when the
     # outcome IS known, never "unknown of unknown" (polylogue-cuxz.8).
     tool_result_outcome_unknown_reason: str | None = None
@@ -402,7 +405,7 @@ def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
 
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
-    messages = _normalized_messages(session.messages)
+    messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
     message_rows = _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
     block_rows = _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
@@ -516,7 +519,7 @@ def write_parsed_session_to_archive(
     # own-signatures so the batch cache never serves pre-write rows for it.
     if signature_cache is not None:
         signature_cache.pop(session_id, None)
-    messages = _normalized_messages(session.messages)
+    messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
     # polylogue-m3p9: providers that carry no session-level created_at/updated_at
     # (Codex, many Claude Code sessions, ...) previously left
     # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
@@ -1512,7 +1515,7 @@ def read_archive_session_envelope(
             """
             SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
                    tool_input, language, tool_result_is_error, tool_result_exit_code,
-                   tool_result_outcome_unknown_reason
+                   tool_outcome, tool_result_outcome_unknown_reason
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -1541,6 +1544,9 @@ def read_archive_session_envelope(
                         language=block["language"],
                         tool_result_is_error=block["tool_result_is_error"],
                         tool_result_exit_code=block["tool_result_exit_code"],
+                        tool_outcome=(
+                            ToolOutcome(block["tool_outcome"]) if block["tool_outcome"] is not None else None
+                        ),
                         tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
                     )
                     for block in block_rows
@@ -1726,7 +1732,7 @@ def _fetch_message_window(
         f"""
         SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
                tool_input, language, tool_result_is_error, tool_result_exit_code,
-               tool_result_outcome_unknown_reason
+               tool_outcome, tool_result_outcome_unknown_reason
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position
@@ -1748,6 +1754,7 @@ def _fetch_message_window(
                 language=block["language"],
                 tool_result_is_error=block["tool_result_is_error"],
                 tool_result_exit_code=block["tool_result_exit_code"],
+                tool_outcome=(ToolOutcome(block["tool_outcome"]) if block["tool_outcome"] is not None else None),
                 tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
             )
         )
@@ -2121,6 +2128,7 @@ def _message_content_hash(
                 _sqlite_text(_block_language(block)) or "",
                 "" if block.is_error is None else str(int(block.is_error)),
                 "" if block.exit_code is None else str(block.exit_code),
+                _enum_value(block.tool_outcome) or "",
             )
         )
     return _hash_bytes(
@@ -2162,6 +2170,7 @@ def _message_content_address(message: ParsedMessage) -> bytes:
                 _content_address_text(_block_language(block)),
                 "" if block.is_error is None else str(int(block.is_error)),
                 "" if block.exit_code is None else str(block.exit_code),
+                _enum_value(block.tool_outcome) or "",
             )
         )
     return _hash_bytes("message-content-address", *parts)
@@ -2186,6 +2195,7 @@ def _block_content_hash(
     language: str | None,
     is_error: bool | None,
     exit_code: int | None,
+    tool_outcome: ToolOutcome | str | None = None,
     outcome_unknown_reason: str | None = None,
 ) -> bytes:
     """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
@@ -2209,6 +2219,7 @@ def _block_content_hash(
         _sqlite_text(language) or "",
         "" if is_error is None else str(int(is_error)),
         "" if exit_code is None else str(exit_code),
+        _enum_value(tool_outcome) or "",
         outcome_unknown_reason or "",
     )
 
@@ -2242,6 +2253,7 @@ def _build_block_rows(
             language = _block_language(block)
             is_error = getattr(block, "is_error", None)
             exit_code = getattr(block, "exit_code", None)
+            tool_outcome = getattr(block, "tool_outcome", None)
             outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             signature = getattr(block, "signature", None)
             values: dict[str, object] = {
@@ -2258,6 +2270,7 @@ def _build_block_rows(
                 "language": _sqlite_text(language),
                 "tool_result_is_error": _sqlite_bool(is_error),
                 "tool_result_exit_code": exit_code,
+                "tool_outcome": getattr(block, "tool_outcome", None),
                 "tool_result_outcome_unknown_reason": outcome_unknown_reason,
                 "signature": _sqlite_text(signature),
                 "content_hash": _block_content_hash(
@@ -2270,11 +2283,161 @@ def _build_block_rows(
                     language=language,
                     is_error=is_error,
                     exit_code=exit_code,
+                    tool_outcome=tool_outcome,
                     outcome_unknown_reason=outcome_unknown_reason,
                 ),
             }
             rows.append(archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values))
     return rows
+
+
+def _derive_tool_outcomes(
+    messages: list[ParsedMessage], events: Sequence[ParsedSessionEvent], *, origin: Origin
+) -> list[ParsedMessage]:
+    """Resolve tool outcomes from each origin's structured parser evidence.
+
+    ``is_error`` and exit codes are parser-normalized evidence. Claude Code
+    additionally carries outcome fields in its record-level execution event.
+    A result without any such evidence is a parser defect and refuses the
+    write. A tool-use without a paired result is a recorded interruption and
+    receives the distinct, known ``no_result`` outcome.
+    """
+    sidecar: dict[str, ToolOutcome] = {}
+    sidecar_exit_codes: dict[str, int] = {}
+    for event in events:
+        if origin is not Origin.CLAUDE_CODE_SESSION or event.event_type != "claude_tool_execution_result":
+            continue
+        tool_id = event.payload.get("tool_use_id")
+        if not isinstance(tool_id, str):
+            continue
+        payload = event.payload
+        raw_error = payload.get("is_error", payload.get("isError"))
+        raw_exit = payload.get("exit_code", payload.get("exitCode"))
+        event_candidates: list[ToolOutcome] = []
+        if isinstance(raw_error, bool):
+            event_candidates.append(ToolOutcome.ERROR if raw_error else ToolOutcome.OK)
+        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+            event_candidates.append(ToolOutcome.ERROR if raw_exit else ToolOutcome.OK)
+            sidecar_exit_codes[tool_id] = raw_exit
+        if not event_candidates:
+            continue
+        if len(set(event_candidates)) > 1:
+            raise ValueError(
+                f"tool outcome derivation refused for origin {origin.value!r}: "
+                f"conflicting execution evidence for tool_id={tool_id!r}"
+            )
+        candidate = event_candidates[0]
+        previous = sidecar.get(tool_id)
+        if previous is not None and previous is not candidate:
+            raise ValueError(
+                f"tool outcome derivation refused for origin {origin.value!r}: "
+                f"conflicting execution evidence for tool_id={tool_id!r}"
+            )
+        sidecar[tool_id] = candidate
+
+    result_outcomes: dict[str, list[ToolOutcome]] = defaultdict(list)
+    for message in messages:
+        for block in message.blocks:
+            if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
+                continue
+            result_candidates: list[ToolOutcome] = []
+            if block.tool_outcome is not None:
+                result_candidates.append(block.tool_outcome)
+            if isinstance(block.is_error, bool):
+                result_candidates.append(ToolOutcome.ERROR if block.is_error else ToolOutcome.OK)
+            if isinstance(block.exit_code, int) and not isinstance(block.exit_code, bool):
+                result_candidates.append(ToolOutcome.ERROR if block.exit_code else ToolOutcome.OK)
+            if block.tool_id in sidecar:
+                result_candidates.append(sidecar[block.tool_id])
+            sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
+            if sidecar_exit is not None and not isinstance(block.exit_code, int):
+                result_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
+            if block.outcome_unknown_reason is not None and not any(
+                candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in result_candidates
+            ):
+                result_candidates.append(ToolOutcome.UNKNOWN)
+            distinct = set(result_candidates)
+            if any(candidate is ToolOutcome.NO_RESULT for candidate in distinct) or len(distinct) > 1:
+                raise ValueError(
+                    f"tool outcome derivation refused for origin {origin.value!r}: "
+                    f"conflicting result evidence for tool_id={block.tool_id!r}"
+                )
+            outcome = next(iter(distinct), None)
+            if outcome is None:
+                raise ValueError(
+                    f"tool outcome derivation refused for origin {origin.value!r}: "
+                    f"unsupported tool_result block shape tool_id={block.tool_id!r}"
+                )
+            result_outcomes[block.tool_id].append(outcome)
+
+    use_ranks: dict[str, int] = defaultdict(int)
+    updated: list[ParsedMessage] = []
+    for message in messages:
+        blocks: list[ParsedContentBlock] = []
+        for block in message.blocks:
+            if block.type is BlockType.TOOL_RESULT:
+                resolved_candidates: list[ToolOutcome] = []
+                if block.tool_outcome is not None:
+                    resolved_candidates.append(block.tool_outcome)
+                if isinstance(block.is_error, bool):
+                    resolved_candidates.append(ToolOutcome.ERROR if block.is_error else ToolOutcome.OK)
+                if isinstance(block.exit_code, int) and not isinstance(block.exit_code, bool):
+                    resolved_candidates.append(ToolOutcome.ERROR if block.exit_code else ToolOutcome.OK)
+                if block.tool_id in sidecar:
+                    resolved_candidates.append(sidecar[block.tool_id])
+                sidecar_exit = sidecar_exit_codes.get(block.tool_id or "")
+                if sidecar_exit is not None and not isinstance(block.exit_code, int):
+                    resolved_candidates.append(ToolOutcome.ERROR if sidecar_exit else ToolOutcome.OK)
+                if block.outcome_unknown_reason is not None and not any(
+                    candidate in (ToolOutcome.OK, ToolOutcome.ERROR) for candidate in resolved_candidates
+                ):
+                    resolved_candidates.append(ToolOutcome.UNKNOWN)
+                if any(candidate is ToolOutcome.NO_RESULT for candidate in resolved_candidates):
+                    raise ValueError(
+                        f"tool outcome derivation refused for origin {origin.value!r}: "
+                        f"tool_result cannot be no_result for tool_id={block.tool_id!r}"
+                    )
+                distinct = set(resolved_candidates)
+                if len(distinct) > 1:
+                    raise ValueError(
+                        f"tool outcome derivation refused for origin {origin.value!r}: "
+                        f"conflicting result evidence for tool_id={block.tool_id!r}"
+                    )
+                outcome = next(iter(distinct), None)
+                if outcome is None:
+                    raise ValueError(
+                        f"tool outcome derivation refused for origin {origin.value!r}: "
+                        f"unsupported tool_result block shape tool_id={block.tool_id!r}"
+                    )
+                exit_code = block.exit_code
+                if exit_code is None and block.tool_id in sidecar_exit_codes:
+                    exit_code = sidecar_exit_codes[block.tool_id]
+                is_error = None if outcome is ToolOutcome.UNKNOWN else outcome is ToolOutcome.ERROR
+                blocks.append(
+                    block.model_copy(
+                        update={
+                            "tool_outcome": outcome,
+                            "is_error": is_error,
+                            "exit_code": exit_code,
+                            "outcome_unknown_reason": (
+                                block.outcome_unknown_reason if outcome is ToolOutcome.UNKNOWN else None
+                            ),
+                        }
+                    )
+                )
+            elif block.type is BlockType.TOOL_USE:
+                if block.tool_id and use_ranks[block.tool_id] < len(result_outcomes.get(block.tool_id, ())):
+                    outcome = result_outcomes[block.tool_id][use_ranks[block.tool_id]]
+                    use_ranks[block.tool_id] += 1
+                elif block.tool_id and block.tool_id in sidecar:
+                    outcome = sidecar[block.tool_id]
+                else:
+                    outcome = ToolOutcome.NO_RESULT
+                blocks.append(block.model_copy(update={"tool_outcome": outcome}))
+            else:
+                blocks.append(block)
+        updated.append(message.model_copy(update={"blocks": blocks}))
+    return updated
 
 
 def _blocks_insert_sql() -> str:
@@ -2654,6 +2817,7 @@ def _coalesce_block_row(
         language=cast("str | None", merged_values[b_idx["language"]]),
         is_error=None if is_error_value is None else bool(is_error_value),
         exit_code=cast("int | None", merged_values[b_idx["tool_result_exit_code"]]),
+        tool_outcome=cast("str | None", merged_values[b_idx["tool_outcome"]]),
         outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
     )
     return tuple(merged_values)
@@ -2693,6 +2857,7 @@ def _message_content_hash_from_rows(
     for row in block_rows:
         is_error = row[b_idx["tool_result_is_error"]]
         exit_code = row[b_idx["tool_result_exit_code"]]
+        tool_outcome = row[b_idx["tool_outcome"]]
         block_parts.extend(
             (
                 cast(str, row[b_idx["block_type"]]),
@@ -2705,6 +2870,7 @@ def _message_content_hash_from_rows(
                 cast("str | None", row[b_idx["language"]]) or "",
                 "" if is_error is None else str(int(cast(int, is_error))),
                 "" if exit_code is None else str(cast(int, exit_code)),
+                cast("str | None", tool_outcome) or "",
             )
         )
     return _hash_bytes(

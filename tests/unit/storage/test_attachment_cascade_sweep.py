@@ -169,7 +169,7 @@ def test_an_archive_at_the_previous_version_ends_up_with_the_index(tmp_path: Pat
     conn = sqlite3.connect(index_db)
     try:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 77
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
         assert (
             conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_attachment_refs_attachment'"

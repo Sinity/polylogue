@@ -4918,7 +4918,7 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
                     provider_message_id="m2-tool",
                     role=Role.TOOL,
                     text="tool output",
-                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="tool output")],
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="tool output", is_error=False)],
                 ),
             ],
         )
@@ -5075,7 +5075,7 @@ def test_reingest_interior_message_omission_preserves_transcript_order(tmp_path:
                 ParsedMessage(
                     provider_message_id="m2-tool",
                     role=Role.TOOL,
-                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="42 passed")],
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="42 passed", is_error=False)],
                 ),
                 ParsedMessage(
                     provider_message_id="m3-assistant",
@@ -5196,7 +5196,7 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
                 ParsedMessage(
                     provider_message_id="m1-tool",
                     role=Role.TOOL,
-                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="generated a file")],
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="generated a file", is_error=False)],
                 ),
                 ParsedMessage(
                     provider_message_id="m2",

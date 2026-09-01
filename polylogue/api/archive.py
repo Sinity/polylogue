@@ -2374,6 +2374,7 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) ->
                 "metadata": _maybe_parse_json_object(block.metadata),
                 "tool_result_is_error": block.tool_result_is_error,
                 "tool_result_exit_code": block.tool_result_exit_code,
+                "tool_outcome": str(block.tool_outcome) if block.tool_outcome is not None else None,
             }.items()
             if value is not None
         }

@@ -27,7 +27,7 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import ActionResultState
+from polylogue.core.enums import ActionResultState, ToolOutcome
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
@@ -826,6 +826,7 @@ _ARCHIVE_BLOCK_QUERY_ROW_FIELDS: frozenset[str] = frozenset(
         "language",
         "tool_result_is_error",
         "tool_result_exit_code",
+        "tool_outcome",
     }
 )
 _ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = tuple(
@@ -850,6 +851,7 @@ def _hydrate_archive_block_row(row: sqlite3.Row) -> ArchiveBlockRow:
         language=str(row["language"]) if row["language"] is not None else None,
         tool_result_is_error=(int(row["tool_result_is_error"]) if row["tool_result_is_error"] is not None else None),
         tool_result_exit_code=(int(row["tool_result_exit_code"]) if row["tool_result_exit_code"] is not None else None),
+        tool_outcome=ToolOutcome(row["tool_outcome"]) if row["tool_outcome"] is not None else None,
     )
 
 

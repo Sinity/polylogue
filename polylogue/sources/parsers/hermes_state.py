@@ -18,7 +18,7 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, ToolResultUnknownReason
 from polylogue.core.json import JSONDocument, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
@@ -747,6 +747,9 @@ def _parse_message_row(
                 text=text,
                 is_error=is_error,
                 exit_code=exit_code,
+                outcome_unknown_reason=(
+                    ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
+                ),
             )
         )
     token_count = _non_negative_int(_row_value(row, "token_count")) or 0

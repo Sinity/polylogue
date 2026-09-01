@@ -1204,7 +1204,7 @@ def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path)
                         provider_message_id="m-tool",
                         role=Role.TOOL,
                         text=tool_text,
-                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text=tool_text)],
+                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text=tool_text, is_error=False)],
                         message_type=MessageType.TOOL_RESULT,
                         material_origin=MaterialOrigin.TOOL_RESULT,
                     ),

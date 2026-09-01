@@ -128,6 +128,8 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
             if field == "status":
                 status_expr = (
                     "CASE "
+                    "WHEN r.tool_outcome = 'ok' THEN 'ok' "
+                    "WHEN r.tool_outcome = 'error' THEN 'failed' "
                     "WHEN r.tool_result_exit_code IS NOT NULL "
                     "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
                     "WHEN r.tool_result_is_error = 1 THEN 'failed' "
@@ -278,6 +280,8 @@ tool_finished_base AS (
             ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
         END AS handler_kind,
         CASE
+            WHEN r.tool_outcome = 'ok' THEN 'ok'
+            WHEN r.tool_outcome = 'error' THEN 'failed'
             WHEN r.tool_result_exit_code IS NOT NULL
                 THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END
             WHEN r.tool_result_is_error = 1 THEN 'failed'

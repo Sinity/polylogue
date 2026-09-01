@@ -16,6 +16,7 @@ from polylogue.core.enums import (
     Provider,
     SessionKind,
     TitleSource,
+    ToolOutcome,
     WebConstructType,
 )
 from polylogue.core.message_owner import MessageOwnerCoordinate
@@ -190,11 +191,11 @@ class ParsedContentBlock(BaseModel):
     # citation-anchor and fork-prefix matching for otherwise-identical
     # replayed content.
     signature: str | None = None
-    # Structured tool-result outcome (keystone): captured from the source's
-    # own outcome fields (Claude toolUseResult.is_error, command exit codes)
-    # so in-session outcomes are readable instead of regex-guessed from text.
+    # Canonical tool-result outcome, resolved from source structure by the
+    # archive writer. It is never inferred from output text.
     is_error: bool | None = None
     exit_code: int | None = None
+    tool_outcome: ToolOutcome | None = None
     # polylogue-2qx.4 / polylogue-cuxz.8: why `is_error` is None for a
     # tool_result block -- see ``core.enums.ToolResultUnknownReason``. Set
     # this whenever `is_error` is left None on a tool_result block so the

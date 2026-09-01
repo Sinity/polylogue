@@ -21,7 +21,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from polylogue.core.enums import BlockType, LinkType, MaterialOrigin, MessageType, Origin, Role, SessionKind
+from polylogue.core.enums import (
+    BlockType,
+    LinkType,
+    MaterialOrigin,
+    MessageType,
+    Origin,
+    Role,
+    SessionKind,
+    ToolOutcome,
+)
 from polylogue.core.json import JSONValue
 
 
@@ -35,6 +44,7 @@ class BlockInput:
     tool_input: dict[str, JSONValue] | None = None
     tool_result_is_error: bool | None = None
     tool_result_exit_code: int | None = None
+    tool_outcome: ToolOutcome | None = None
     semantic_type: str | None = None
     media_type: str | None = None
     language: str | None = None

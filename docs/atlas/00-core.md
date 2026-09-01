@@ -55,7 +55,8 @@ duplicated in caller metadata:
 - `block_id = message_id:position`.
 
 `material_origin` is independent from role and expresses authoredness. Tool
-outcomes come from structured result fields; `NULL` means unknown. Lineage
+outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
+outcomes preserve `tool_result_outcome_unknown_reason`. Lineage
 children physically store only their divergent tail and reads recompose the
 parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:505-563`).
 

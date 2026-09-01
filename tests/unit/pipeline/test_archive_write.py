@@ -719,7 +719,7 @@ async def test_persists_structured_blocks_in_order(async_backend: SQLiteBackend)
                         text="print('ok')",
                         metadata={"language": "python"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, text="ok"),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, text="ok", is_error=False),
                 ],
             ),
             ParsedMessage(

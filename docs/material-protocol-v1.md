@@ -99,10 +99,11 @@ current because it is always re-encoded. Mutable revision summaries never
 sit inside bytes whose contract is reuse.
 
 Tool call/result correlation is carried structurally: a `tool_use` block and
-its `tool_result` block share `tool_id`; `tool_result_is_error` /
-`tool_result_exit_code` on the result block are provider-reported outcomes
-(`NULL`/`None` = unknown), matching `blocks.tool_result_is_error` /
-`tool_result_exit_code` in `index.db`. Pairing multiple same-`tool_id` uses
+its `tool_result` block share `tool_id`; `tool_outcome` on the result block is
+the canonical outcome derived from provider structure. Deliberate unknown
+outcomes carry `tool_result_outcome_unknown_reason`; the legacy
+`tool_result_is_error`/`tool_result_exit_code` fields remain nullable
+compatibility projections. Pairing multiple same-`tool_id` uses
 (the `actions` view's rank-based pairing) is a downstream read-model concern,
 not part of this protocol.
 

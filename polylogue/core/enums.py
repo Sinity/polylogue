@@ -502,8 +502,19 @@ class ToolResultUnknownReason(PolylogueStrEnum):
     # reason not to trust it for this record shape (e.g. a known-unreliable
     # sentinel value for this origin).
     DISTRUSTED = "distrusted"
-    # This origin's parser does not yet read the field the provider carries.
-    NOT_READ = "not_read"
+
+
+class ToolOutcome(PolylogueStrEnum):
+    """Outcome vocabulary for a recorded tool invocation.
+
+    ``UNKNOWN`` is deliberate when the provider records why its result cannot
+    be trusted or does not report a pass/fail signal.
+    """
+
+    OK = "ok"
+    ERROR = "error"
+    NO_RESULT = "no_result"
+    UNKNOWN = "unknown"
 
 
 class ActionResultState(PolylogueStrEnum):
@@ -874,6 +885,7 @@ __all__ = [
     "StopReason",
     "TitleSource",
     "ToolResultUnknownReason",
+    "ToolOutcome",
     "TopologyEdgeStatus",
     "ValidationMode",
     "ValidationStatus",

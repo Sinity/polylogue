@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -31,6 +32,11 @@ from polylogue.schemas.synthetic import (
     PROVIDER_WIRE_FORMATS,
     SyntheticCorpus,
     WireFormat,
+)
+from polylogue.schemas.synthetic.build_batch import _tool_use_blocks
+from polylogue.schemas.synthetic.build_wire_formats import (
+    _claude_code_content_fallback,
+    _codex_content_fallback,
 )
 from polylogue.schemas.synthetic.demo_themes import _DEMO_THEMES
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
@@ -565,6 +571,28 @@ class TestWireFormatShape:
         assert wf.tree is not None
         assert wf.tree.container_path is None
         assert wf.tree.session_field == "sessionId"
+
+    @pytest.mark.parametrize("fallback", [_claude_code_content_fallback, _codex_content_fallback])
+    def test_provider_fallback_can_emit_unknown_tool_result_shape(self, fallback: Callable[..., object]) -> None:
+        """Fallbacks retain the no-verdict shape so the writer covers it."""
+        for seed in range(100):
+            result = fallback(random.Random(seed), "assistant", 0, None)
+            if (
+                isinstance(result, list)
+                and result
+                and isinstance(result[0], dict)
+                and result[0].get("type") == "tool_result"
+            ):
+                assert "is_error" not in result[0]
+                return
+        pytest.fail("fallback did not produce a tool_result witness")
+
+    def test_tool_heavy_batch_can_emit_unknown_tool_result_shape(self) -> None:
+        """Tool-heavy batches retain at least one result without a verdict."""
+        results = [block for block in _tool_use_blocks("codex", 0) if isinstance(block, dict)]
+        result_blocks = [block for block in results if block.get("type") == "tool_result"]
+        assert result_blocks
+        assert any("is_error" not in block for block in result_blocks)
 
 
 class TestCorpusSeedDeterminism:

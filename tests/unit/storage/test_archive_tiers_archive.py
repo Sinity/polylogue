@@ -13,7 +13,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
+from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider, ToolResultUnknownReason
 from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
@@ -368,7 +368,12 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-unknown",
                         tool_input={"command": "unknown"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-unknown",
+                        text="no status",
+                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+                    ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
                         tool_name="Bash",
@@ -407,7 +412,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="",
                         tool_input={"command": "empty"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair"),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair", is_error=False),
                 ],
             )
         ],
@@ -468,6 +473,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         text=None,
                         is_error=None,
                         exit_code=None,
+                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -481,6 +487,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         text="provider omitted outcome",
                         is_error=None,
                         exit_code=None,
+                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -545,12 +552,26 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
             ParsedMessage(
                 provider_message_id="m-result-1",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="repeated",
+                        text="result-one",
+                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+                    )
+                ],
             ),
             ParsedMessage(
                 provider_message_id="m-result-2",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="repeated",
+                        text="result-two",
+                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
+                    )
+                ],
             ),
         ],
     )

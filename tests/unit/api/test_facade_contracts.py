@@ -1938,7 +1938,14 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
                     ParsedMessage(
                         provider_message_id="m-result-1",
                         role=Role.ASSISTANT,
-                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeat", text=None)],
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="repeat",
+                                text=None,
+                                outcome_unknown_reason="not_reported",
+                            )
+                        ],
                     ),
                     ParsedMessage(
                         provider_message_id="m-result-2",
@@ -3944,6 +3951,7 @@ async def test_query_units_returns_run_rows(tmp_path: Path) -> None:
                         "type": "tool_result",
                         "tool_id": "tool-run",
                         "text": "Subagent done: facade run query wired.\n4 passed in 0.31s",
+                        "tool_result_is_error": 0,
                     },
                 ],
             )
@@ -4015,6 +4023,7 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
                         "type": "tool_result",
                         "tool_id": "tool-run",
                         "text": "Subagent done: facade OTel projection wired.\n4 passed in 0.31s",
+                        "tool_result_is_error": 0,
                     },
                 ],
             )
@@ -4794,6 +4803,7 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
                         type=BlockType.TOOL_RESULT,
                         text="read output",
                         tool_id="tool-1",
+                        is_error=False,
                     ),
                 ],
             )

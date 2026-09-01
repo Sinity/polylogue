@@ -21,7 +21,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, ToolResultUnknownReason
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
@@ -1820,6 +1820,11 @@ def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedC
                 metadata=metadata,
                 is_error=result.is_error,
                 exit_code=result.exit_code,
+                outcome_unknown_reason=(
+                    ToolResultUnknownReason.NOT_REPORTED.value
+                    if result.is_error is None and result.exit_code is None
+                    else None
+                ),
             )
         )
     return blocks
@@ -1948,6 +1953,9 @@ def _codex_tool_message(
                 text=output_text,
                 is_error=is_error,
                 exit_code=exit_code,
+                outcome_unknown_reason=(
+                    ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
+                ),
             )
         ]
         if exec_envelope is not None:
@@ -2137,6 +2145,7 @@ def _codex_mcp_tool_call_messages(
                 tool_id=tool_id,
                 text=result_text,
                 is_error=is_error,
+                outcome_unknown_reason=(ToolResultUnknownReason.NOT_REPORTED.value if is_error is None else None),
             )
         ],
     )

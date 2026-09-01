@@ -454,7 +454,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-oyiux: v82 changes session insight cost reconciliation to prefer
 # fresh catalog repricing over persisted cost observations. Existing derived
 # rows must be reprocessed so current catalog prices are served.
-INDEX_SCHEMA_VERSION = 82
+# polylogue-xd0ha: v83 admits the deliberate unknown tool-outcome state and
+# exposes it through the actions view. Existing normalized rows need fresh
+# parser replay to preserve their unknown-outcome reasons.
+INDEX_SCHEMA_VERSION = 83
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -620,7 +623,7 @@ ON blocks(block_type);
 -- view over paired tool_use/tool_result blocks; starting from failed result
 -- rows avoids scanning every tool invocation in large archives.
 CREATE INDEX IF NOT EXISTS idx_blocks_tool_result_outcome
-ON blocks(block_type, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
+ON blocks(block_type, tool_outcome, tool_result_is_error, tool_result_exit_code, session_id, tool_id, message_id)
 WHERE block_type = 'tool_result';
 
 CREATE INDEX IF NOT EXISTS idx_blocks_type_tool
@@ -863,10 +866,13 @@ SELECT
     ap.is_error, ap.exit_code, ap.tool_result_block_id,
     CASE
         WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
-        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
+        WHEN tr.tool_outcome = 'error' THEN 'outcome_error'
+        WHEN tr.tool_outcome = 'ok' THEN 'outcome_success'
+        WHEN tr.tool_outcome = 'unknown' THEN 'outcome_unknown'
         WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
         WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
-        ELSE 'outcome_success'
+        WHEN ap.is_error = 0 OR ap.exit_code = 0 THEN 'outcome_success'
+        ELSE 'outcome_unknown'
     END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
