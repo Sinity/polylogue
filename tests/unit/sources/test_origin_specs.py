@@ -182,6 +182,8 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     claude = census[Origin.CLAUDE_CODE_SESSION.value]
     chatgpt = census[Origin.CHATGPT_EXPORT.value]
     hermes = census[Origin.HERMES_SESSION.value]
+    claude_ai = census[Origin.CLAUDE_AI_EXPORT.value]
+    aistudio_drive = census[Origin.AISTUDIO_DRIVE.value]
     assert codex["session_parent_target"]["state"] == "carried"
     assert claude["message_parent"]["state"] == "carried"
     assert claude["session_parent_target"]["state"] == "positive-derived"
@@ -189,6 +191,10 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert chatgpt["message_parent"]["state"] == "carried"
     assert chatgpt["message_branch_state"]["state"] == "carried"
     assert hermes["session_parent_target"]["state"] == "carried"
+    assert claude_ai["message_parent"]["state"] == "carried"
+    assert claude_ai["message_branch_state"]["state"] == "positive-derived"
+    assert aistudio_drive["message_parent"]["state"] == "carried"
+    assert aistudio_drive["message_branch_state"]["state"] == "positive-derived"
 
 
 def test_public_origin_projections_cover_declared_specs_coherently() -> None:

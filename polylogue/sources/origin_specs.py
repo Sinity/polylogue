@@ -1413,7 +1413,7 @@ def _beads_spec() -> OriginSpec:
 
 
 def _claude_ai_spec() -> OriginSpec:
-    return _executable_spec(
+    spec = _executable_spec(
         Origin.CLAUDE_AI_EXPORT,
         provider=Provider.CLAUDE_AI,
         tightness=80,
@@ -1425,6 +1425,21 @@ def _claude_ai_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_AI_EXPORT),
+    )
+    return replace(
+        spec,
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability(
+                "carried", ("claude.common._message_parent_id -> ParsedMessage.parent_message_provider_id",)
+            ),
+            message_branch_state=TopologyCapability(
+                "positive-derived",
+                ("claude.common.normalize_chat_messages branch_index/variant_index/is_active_path/is_active_leaf",),
+            ),
+            session_parent_target=_absent_topology("Claude AI export has no session-parent target"),
+            inheritance_branch_point=_absent_topology("Claude AI export has no inheritance boundary"),
+            parent_dispatch=_absent_topology("Claude AI export has no parent dispatch identity"),
+        ),
     )
 
 
@@ -1505,7 +1520,21 @@ def _aistudio_drive_spec() -> OriginSpec:
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
         display_description="Google AI Studio / Drive exports (lab: Google)",
-        topology_capabilities=_no_topology_capabilities(Origin.AISTUDIO_DRIVE),
+        topology_capabilities=TopologyCapabilities(
+            message_parent=TopologyCapability(
+                "carried",
+                (
+                    "drive._branch_parent_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id",
+                ),
+            ),
+            message_branch_state=TopologyCapability(
+                "positive-derived",
+                ("drive.parse_chunked_prompt active path and fill_linear_parent_chain",),
+            ),
+            session_parent_target=_absent_topology("AI Studio and Drive exports have no session-parent target"),
+            inheritance_branch_point=_absent_topology("AI Studio and Drive exports have no inheritance boundary"),
+            parent_dispatch=_absent_topology("AI Studio and Drive exports have no parent dispatch identity"),
+        ),
     )
 
 

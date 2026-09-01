@@ -159,19 +159,21 @@ def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> N
     assert decoded.body_bytes == len(body)
 
 
-def test_deferred_legacy_claude_cursor_is_upgraded_to_semantic_frontier(tmp_path: Path) -> None:
-    """A legacy tail hash must not leave a proven Claude prefix on the full-ingest path."""
+def test_deferred_legacy_claude_cursor_keeps_unverified_prefix_nonsemantic(tmp_path: Path) -> None:
+    """A legacy cursor cannot prove that current Claude bytes match its old prefix."""
     source = tmp_path / "session.jsonl"
     header = b'{"sessionId":"claude-session"}\n'
-    body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
-    source.write_bytes(header + body + b'{"partial":')
+    old_body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
+    rewritten_body = b'{"type":"assistant","message":{"role":"assistant","content":"mutate"}}\n'
+    assert len(rewritten_body) == len(old_body)
+    source.write_bytes(header + old_body)
     cursor = CursorStore(tmp_path / "ops.db")
     stat = source.stat()
     cursor.set(
         source,
         stat.st_size,
-        byte_offset=len(header) + len(body),
-        last_complete_newline=len(header) + len(body),
+        byte_offset=len(header) + len(old_body),
+        last_complete_newline=len(header) + len(old_body),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="f" * 64,
         tail_hash="legacy-tail-hash",
@@ -180,6 +182,7 @@ def test_deferred_legacy_claude_cursor_is_upgraded_to_semantic_frontier(tmp_path
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    source.write_bytes(header + rewritten_body + b'{"partial":')
 
     record_deferred_append_cursor(
         cursor,
@@ -192,9 +195,7 @@ def test_deferred_legacy_claude_cursor_is_upgraded_to_semantic_frontier(tmp_path
 
     updated = cursor.get_record(source)
     assert updated is not None
-    decoded = decode_claude_semantic_frontier(updated.tail_hash)
-    assert decoded is not None
-    assert decoded.body_bytes == len(body)
+    assert decode_claude_semantic_frontier(updated.tail_hash) is None
 
 
 def test_deferred_claude_cursor_rebases_frontier_after_header_rewrite(tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.tool_outcomes import derive_tool_outcomes
 
 _PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 
@@ -431,7 +432,7 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
     if native_id is None:
         raise ValueError(f"session_id {session_id!r} is not a well-formed 'origin:native_id' session id")
     origin = _origin_for_session_id(session_id)
-    raw_messages = parsed_session.messages
+    raw_messages = derive_tool_outcomes(parsed_session.messages, parsed_session.session_events, origin=origin)
     attachments_by_message: dict[str, list[ParsedAttachment]] = defaultdict(list)
     unanchored_attachments: list[ParsedAttachment] = []
     for attachment in parsed_session.attachments:
