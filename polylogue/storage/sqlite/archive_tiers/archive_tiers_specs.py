@@ -694,6 +694,57 @@ SESSIONS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(origin, native_id)""",),
 )
 
+# Stored session columns and the public record projection share one
+# declaration. The expressions are read-only views; typed models still own
+# enum, JSON, and other semantic validation.
+_SESSION_RECORD_NAMES = {
+    "session_id": "session_id",
+    "native_id": "native_id",
+    "origin": "origin",
+    "parent_session_id": "parent_session_id",
+    "branch_type": "branch_type",
+    "raw_id": "raw_id",
+    "title": "title",
+    "session_kind": "session_kind",
+    "display_name": "display_name",
+    "run_settings_json": "run_settings_json",
+    "pending_drafts_json": "pending_drafts_json",
+    "git_branch": "git_branch",
+    "git_repository_url": "git_repository_url",
+    "provider_project_ref": "provider_project_ref",
+    "reported_cost_usd": "reported_cost_usd",
+    "created_at_ms": "created_at",
+    "updated_at_ms": "updated_at",
+    "sort_key_ms": "sort_key",
+    "content_hash": "content_hash",
+}
+_SESSION_RECORD_EXPRESSIONS = {
+    "created_at_ms": "datetime({alias}.created_at_ms / 1000, 'unixepoch')",
+    "updated_at_ms": "datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
+    "sort_key_ms": "{alias}.sort_key_ms / 1000.0",
+    "content_hash": "lower(hex({alias}.content_hash))",
+}
+SESSIONS_SPEC = replace(
+    SESSIONS_SPEC,
+    all_columns=tuple(
+        replace(
+            column,
+            record_name=_SESSION_RECORD_NAMES.get(column.name),
+            select_expression=_SESSION_RECORD_EXPRESSIONS.get(column.name),
+        )
+        for column in SESSIONS_SPEC.all_columns
+    ),
+    record_only_columns=(
+        ColumnSpec("metadata", record_name="metadata", select_expression="'{{}}'"),
+        ColumnSpec("version", record_name="version", select_expression="1"),
+        ColumnSpec(
+            "working_directories_json",
+            record_name="working_directories_json",
+            select_expression="(SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = {alias}.session_id ORDER BY position)",
+        ),
+    ),
+)
+
 WEB_CONTENT_CONSTRUCTS_SPEC = _make_table_spec(
     "web_content_constructs",
     (

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import sqlite3
+import urllib.error
+from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from polylogue.storage.blob_liveness import inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.materials import admit_material, link_material, read_material
+from polylogue.storage.materials import (
+    acquire_material,
+    admit_material,
+    admit_material_file,
+    link_material,
+    read_material,
+)
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 
 
@@ -121,3 +130,66 @@ def test_text_manifest_does_not_copy_raw_content(tmp_path: Path) -> None:
     )
     assert "text_prefix" not in observation.extraction_manifest
     assert observation.extraction_manifest["text"] == {"available": True, "encoding": "text/plain"}
+
+
+def test_url_acquisition_keeps_redirect_provenance_and_bytes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class Response:
+        headers = SimpleNamespace(get_content_type=lambda: "text/markdown", get_content_charset=lambda: "utf-8")
+
+        def __init__(self) -> None:
+            self.done = False
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://cdn.example/result.md"
+
+        def read(self, size: int) -> bytes:
+            if self.done:
+                return b""
+            self.done = True
+            return b"# retained"
+
+    monkeypatch.setattr("polylogue.storage.materials.urllib.request.urlopen", lambda *args, **kwargs: Response())
+    conn = _source_db()
+    observation = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/result.md",
+        referrer_ref="message:codex:1",
+        observed_at_ms=10,
+    )
+    assert observation.acquisition_state == "acquired"
+    assert observation.diagnostic == "redirected to https://cdn.example/result.md"
+    assert read_material(conn, observation.material_id, blob_store=BlobStore(tmp_path / "blobs")) == b"# retained"
+
+
+def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    conn = _source_db()
+    monkeypatch.setattr(
+        "polylogue.storage.materials.urllib.request.urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.HTTPError("url", 410, "Gone", Message(), None)),
+    )
+    expired = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/old",
+        referrer_ref="agent:a",
+        observed_at_ms=1,
+    )
+    missing = admit_material_file(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        path=tmp_path / "missing.patch",
+        referrer_ref="agent:a",
+        observed_at_ms=2,
+    )
+    assert expired.acquisition_state == "expired"
+    assert missing.acquisition_state == "unavailable"
+    material_ids = [row[0] for row in conn.execute("SELECT material_id FROM material_observations")]
+    assert len(material_ids) == 2
+    assert all(material_ids)
