@@ -22,17 +22,31 @@ def _index(path: Path, text: str) -> None:
         db.execute("INSERT INTO blocks VALUES ('codex:a', ?)", (text,))
 
 
-def test_selector_is_deterministic_and_requires_a_sealed_cohort(tmp_path: Path) -> None:
+def test_selector_is_deterministic_and_records_the_sealed_cohort(tmp_path: Path) -> None:
     path = tmp_path / "index.db"
     _index(path, "stable")
-    first = select_canary_sessions(path, sessions_per_origin=1)
-    second = select_canary_sessions(path, sessions_per_origin=1)
+    seal = "a" * 64
+    first = select_canary_sessions(path, sessions_per_origin=1, source_manifest_digest=seal)
+    second = select_canary_sessions(path, sessions_per_origin=1, source_manifest_digest=seal)
     assert first.to_dict() == second.to_dict()
+    assert first.source_manifest_digest == seal
     empty = tmp_path / "empty.db"
     with sqlite3.connect(empty) as db:
         db.execute("CREATE TABLE sessions(session_id TEXT, origin TEXT, raw_id TEXT, sort_key_ms INTEGER)")
     with pytest.raises(CanarySelectionError, match="empty"):
         select_canary_sessions(empty)
+
+
+def test_selector_rejects_missing_origins_and_duplicate_raw_members(tmp_path: Path) -> None:
+    path = tmp_path / "index.db"
+    _index(path, "stable")
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO sessions VALUES ('codex:b', 'codex', 'raw-a', 2)")
+
+    with pytest.raises(CanarySelectionError, match="gemini"):
+        select_canary_sessions(path, required_origins=("codex", "gemini"))
+    with pytest.raises(CanarySelectionError, match="duplicate"):
+        select_canary_sessions(path, sessions_per_origin=2)
 
 
 def test_comparison_is_forensic_and_reports_real_row_mutation(tmp_path: Path) -> None:
