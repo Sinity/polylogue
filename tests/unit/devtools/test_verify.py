@@ -251,20 +251,17 @@ def test_full_corpus_traces_without_selecting_and_without_partitioning() -> None
         assert not any(item.startswith("--polylogue-file-batch") for item in command)
 
 
-def test_full_corpus_forces_the_fullest_hypothesis_profile() -> None:
-    """The graph producer never traces under a reduced example budget.
+def test_every_managed_pytest_run_traces_under_the_full_hypothesis_profile() -> None:
+    """Graph writers share one profile; affected runs write edges too.
 
-    Anti-vacuity: without the override a shell exporting HYPOTHESIS_PROFILE=ci
-    publishes a graph missing edges only the default budget reaches, and every
-    lane's affected selection inherits the blind spot.
+    Anti-vacuity: leaving a shell's HYPOTHESIS_PROFILE=ci in place lets an
+    affected run replace a property test's edges with the reduced budget's,
+    and a later change reachable only beyond that budget is never selected.
     """
     env = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
-    verify._normalize_managed_pytest_environment(env, full_corpus=True)
+    verify._normalize_managed_pytest_environment(env)
     assert env["HYPOTHESIS_PROFILE"] == "default"
     assert "POLYLOGUE_CI" not in env
-    affected = {"HYPOTHESIS_PROFILE": "ci"}
-    verify._normalize_managed_pytest_environment(affected)
-    assert affected["HYPOTHESIS_PROFILE"] == "ci"
 
 
 def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
@@ -417,7 +414,6 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         command: list[str],
         *,
         run: VerifyRun,
-        **_kwargs: object,
     ) -> tuple[int, float, dict[str, object]]:
         run.start_step(label=label, cmd=command)
         raise verify.VerificationInterrupted(signal.SIGTERM)

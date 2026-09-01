@@ -299,16 +299,17 @@ def build_verify_steps(
     return steps
 
 
-def _normalize_managed_pytest_environment(env: dict[str, str], *, full_corpus: bool = False) -> None:
+def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    if full_corpus:
-        # The complete corpus is the only graph producer. A graph traced under
-        # a reduced Hypothesis budget lacks edges for paths only the fuller
-        # profile reaches, and every consumer would inherit those blind spots.
-        env["HYPOTHESIS_PROFILE"] = "default"
-        env.pop("POLYLOGUE_CI", None)
+    # Every managed pytest run writes the shared dependency graph: testmon
+    # replaces the edges of each test it executes. A run under a reduced
+    # Hypothesis budget records fewer edges for its property tests, and every
+    # later affected selection inherits the blind spot, so all graph writers
+    # trace under one full profile.
+    env["HYPOTHESIS_PROFILE"] = "default"
+    env.pop("POLYLOGUE_CI", None)
 
 
 def _clear_pytest_report(command: Sequence[str]) -> None:
@@ -358,9 +359,7 @@ def _subprocess_env() -> dict[str, str]:
     return {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
 
 
-def _run(
-    label: str, command: list[str], *, run: VerifyRun, full_corpus: bool = False
-) -> tuple[int, float, dict[str, Any]]:
+def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float, dict[str, Any]]:
     started = time.monotonic()
     sys.stderr.write(f"  {label} ... ")
     sys.stderr.flush()
@@ -382,7 +381,7 @@ def _run(
         return 127, time.monotonic() - started, early_metadata
     if pytest_step:
         _clear_pytest_report(command)
-        _normalize_managed_pytest_environment(env, full_corpus=full_corpus)
+        _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
     else:
@@ -765,7 +764,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         results: list[dict[str, Any]] = []
         exit_code = 0
         for label, command in steps:
-            rc, elapsed, metadata = _run(label, command, run=run, full_corpus=args.all_tests)
+            rc, elapsed, metadata = _run(label, command, run=run)
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
             if rc:
                 exit_code = exit_code or rc
