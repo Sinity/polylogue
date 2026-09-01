@@ -54,6 +54,7 @@ from devtools.verify_runs import (
     canonical_verification_receipt,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    git_dirty,
     git_head,
     prune_successful_verify_runs,
 )
@@ -502,6 +503,26 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
     return VerificationScope.AFFECTED
 
 
+def _corpus_already_verified(*, head: str, environment: str) -> str | None:
+    """The run id of a successful complete-corpus run at this head and environment, if any."""
+    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
+        if row.get("tier") != "all" or row.get("status") != "success":
+            continue
+        receipt = row.get("semantic_receipt")
+        selection = row.get("testmon_selection")
+        aggregate = row.get("pytest_aggregate")
+        if not (isinstance(receipt, Mapping) and isinstance(selection, Mapping) and isinstance(aggregate, Mapping)):
+            continue
+        if (
+            receipt.get("source_revision") == head
+            and selection.get("environment_digest") == environment
+            and aggregate.get("complete_corpus_covered") is True
+        ):
+            run_id = row.get("run_id")
+            return run_id if isinstance(run_id, str) else None
+    return None
+
+
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
     if operation:
@@ -681,6 +702,11 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--all", "--full", dest="all_tests", action="store_true")
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="run the complete corpus even when this head and environment already have a successful complete run",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     _anchor_verification_paths()
@@ -743,6 +769,31 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 runtime_data_paths=impact.runtime_data_paths,
                 environment_digest=preparation.environment_name,
             )
+            if args.all_tests and not args.recompute:
+                covered = _corpus_already_verified(head=head, environment=preparation.environment_name)
+                if covered is not None and not git_dirty(ROOT):
+                    # The corpus at this head under this environment is already
+                    # a recorded fact; rerunning it changes nothing but the
+                    # electricity bill. A different head, a moved dependency
+                    # set, or a dirty tree runs in full.
+                    payload = _finish_and_record_verification(
+                        run=run,
+                        exit_code=0,
+                        duration_s=time.monotonic() - started,
+                        diagnosis="corpus_already_verified",
+                        verification_scope=scope.value,
+                        final_git_head=head,
+                        pytest_aggregate={
+                            "selection_mode": "all",
+                            "outcomes": {},
+                            "terminal_green": True,
+                            "complete_corpus_covered": False,
+                            "covered_by_run": covered,
+                        },
+                    )
+                    sys.stderr.write(f"verify: complete corpus already verified at {head[:12]} by run {covered}\n")
+                    _emit(payload, use_json=args.json, operation=agentctl_operation)
+                    return 0
             if preparation.selection_mode == "bootstrap" and not args.all_tests:
                 payload = _finish_and_record_verification(
                     run=run,

@@ -557,3 +557,54 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
             "unavailable": list(verify._UNMEASURED_WORKLOAD_DIMENSIONS),
         }
     ]
+
+
+def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: without the check the nightly reran the whole corpus on an
+    unchanged master every night."""
+    history: dict[str, Any] = {}
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    monkeypatch.setattr(
+        verify,
+        "prepare_native_testmon_environment",
+        lambda *_a, **_k: SimpleNamespace(
+            selection_mode="affected",
+            environment_name="env-1",
+            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=()),
+        ),
+    )
+    monkeypatch.setattr(
+        verify,
+        "read_verify_history",
+        lambda _path: [
+            {
+                "tier": "all",
+                "status": "success",
+                "run_id": "run-prior",
+                "semantic_receipt": {"source_revision": "head"},
+                "testmon_selection": {"environment_digest": "env-1"},
+                "pytest_aggregate": {"complete_corpus_covered": True},
+            }
+        ],
+    )
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+
+    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
+        raise AssertionError("steps were built for an already-verified corpus")
+
+    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
+
+    assert verify._main(["--all"]) == 0
+    assert history["diagnosis"] == "corpus_already_verified"
+    assert history["pytest_aggregate"]["covered_by_run"] == "run-prior"
