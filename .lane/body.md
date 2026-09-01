@@ -1,29 +1,22 @@
 Summary
 
-SQLite source snapshots now bind source continuity to deterministic schema and logical-row identity. The immutable backup remains the parser input, while source drift during backup is rejected. Existing durable append-frontier resynthesis and ambiguous-frontier fallback remain on the rebased master base.
+Reconstructs legacy append frontiers from retained source bytes after ops.db loss and uses transactionally consistent logical SQLite revisions.
 
 Problem
 
-Filesystem metadata and SQLite page layout change during ordinary commits, checkpoints, and vacuuming. Using those observations as source continuity evidence can create needless revisions or accept a snapshot that does not represent one logical source state.
+Pre-offset append rows retained durable payloads without usable byte windows, so deleting disposable cursor state forced full capture. SQLite filesystem and page fingerprints changed for logically unchanged databases, and the logical digest could observe mixed WAL commits.
 
 Solution
 
-Compute the logical revision before and after the online backup, and compare it with the staged backup before publication. Add coverage for equivalent SQLite databases with different insertion order.
+The planner admits legacy append windows only when the current source bytes and retained blobs prove a contiguous chain from a unique full predecessor. It recomputes offsets and revisions, including multi-append chains, and rejects replacement, truncation, and ambiguity. SQLite logical revisions run in one read transaction, and the watcher uses that identity.
 
 Verification
 
-`nix develop --accept-flake-config --command devtools test tests/unit/sources/test_source_snapshot.py tests/unit/sources/parsers/test_codex_state.py -k 'sqlite or snapshot or logical'` passed: 23 tests.
-
-`nix develop --accept-flake-config --command devtools test tests/unit/sources/test_source_snapshot.py::test_sqlite_cut_manifest_hashes_the_published_backup_bytes` passed: 1 test.
-
-`nix develop --accept-flake-config --command devtools test tests/unit/pipeline -k 'sqlite or acquire'` passed: 14 tests.
-
-`nix develop --accept-flake-config --command devtools test tests/property -k 'append or source'` passed: 4 tests.
-
-`nix develop --accept-flake-config --command devtools verify --quick` passed all checks.
-
-`nix develop --accept-flake-config --command devtools verify` refused because the compatible native testmon graph is absent.
+- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_append_cursor_resynthesis.py tests/unit/sources/test_source_snapshot.py tests/unit/sources/parsers/test_codex_state.py tests/unit/storage/test_revision_replay.py`: 94 passed.
+- `nix develop --accept-flake-config --command devtools test tests/unit/sources/test_live_watcher.py -k hermes_wal_revision_triggers_resnapshot`: 1 passed.
+- `agentctl job start polylogue verify_quick --workspace worktree-5d257574066ef583`: passed all 18 quick gates at `cec1b37537b3c749fdabc1adfc8a15b8c96e7f5b`.
+- `nix develop --accept-flake-config --command devtools verify`: refused because the compatible native testmon graph is absent.
 
 Residual risk
 
-The full affected verification corpus was not run because the required native testmon graph is unavailable. The broader append selection had three inherited failures caused by stale derived schema identity before append processing.
+Plain affected verification remains unmeasured until a compatible native testmon graph exists. The full corpus and live archive were not run.
