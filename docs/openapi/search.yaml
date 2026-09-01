@@ -118,7 +118,7 @@ paths:
     get:
       summary: Report daemon status and archive readiness
       description: Returns the daemon status payload and readiness state.
-      operationId: status
+      operationId: getStatus
       security:
       - machineBearer: []
       - webCredentialCookie: []
@@ -174,7 +174,7 @@ paths:
       description: When ``query`` is supplied, returns a ranked search envelope (``SearchEnvelope``) with per-hit match evidence
         and pagination handles. When ``query`` is omitted, returns ``SessionListResponse``. Ranked search exposes the opaque
         ``next_cursor`` handle; the current list mode remains offset-based.
-      operationId: find
+      operationId: searchSessions
       security:
       - machineBearer: []
       - webCredentialCookie: []
@@ -589,7 +589,7 @@ paths:
         Supported profiles currently include ``messages``, ``raw``, ``context``, ``context-image``, ``neighbors``, ``correlation``,
         ``effective_context``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected
         read profile.
-      operationId: readSession
+      operationId: readSessionView
       security:
       - machineBearer: []
       - webCredentialCookie: []
