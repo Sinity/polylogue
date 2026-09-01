@@ -32,5 +32,5 @@ Disposition
 | 3908242286 | AI Studio/Drive topology declares carried parents and derived branch state. |
 
 LANE-BRANCH: fix/codex-triage-rest
-LANE-COMMIT: pending rebase
+LANE-COMMIT: 033c8b8f5
 LANE-QUICK: green
