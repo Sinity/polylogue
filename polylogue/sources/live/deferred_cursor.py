@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.core.enums import Provider
+from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.sources.live.batch_support import (
     claude_semantic_frontier_for_prefix,
     cursor_prefix_hash,
@@ -53,9 +55,12 @@ def record_deferred_append_cursor(
         return 0
     prefix_hash = cursor_prefix_hash(cursor.tail_hash)
     has_semantic_authority = decode_claude_semantic_frontier(cursor.tail_hash) is not None
+    provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
     semantic_authority = (
         claude_semantic_frontier_for_prefix(path, cursor.byte_offset) if has_semantic_authority else None
     )
+    if provider is Provider.CLAUDE_CODE and semantic_authority is None:
+        semantic_authority = claude_semantic_frontier_for_prefix(path, cursor.byte_offset)
     cursor_store.set(
         path,
         stat.st_size,
@@ -67,7 +72,7 @@ def record_deferred_append_cursor(
         content_fingerprint=cursor.content_fingerprint,
         tail_hash=(
             (semantic_authority or cursor.tail_hash)
-            if has_semantic_authority
+            if semantic_authority is not None
             else (
                 encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
                 if prefix_hash is not None

@@ -159,6 +159,44 @@ def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> N
     assert decoded.body_bytes == len(body)
 
 
+def test_deferred_legacy_claude_cursor_is_upgraded_to_semantic_frontier(tmp_path: Path) -> None:
+    """A legacy tail hash must not leave a proven Claude prefix on the full-ingest path."""
+    source = tmp_path / "session.jsonl"
+    header = b'{"sessionId":"claude-session"}\n'
+    body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
+    source.write_bytes(header + body + b'{"partial":')
+    cursor = CursorStore(tmp_path / "ops.db")
+    stat = source.stat()
+    cursor.set(
+        source,
+        stat.st_size,
+        byte_offset=len(header) + len(body),
+        last_complete_newline=len(header) + len(body),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="f" * 64,
+        tail_hash="legacy-tail-hash",
+        source_name="claude-code",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    record_deferred_append_cursor(
+        cursor,
+        source,
+        cursor=cursor.get_record(source),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        source_name="claude-code",
+        deferred_end_offset=None,
+    )
+
+    updated = cursor.get_record(source)
+    assert updated is not None
+    decoded = decode_claude_semantic_frontier(updated.tail_hash)
+    assert decoded is not None
+    assert decoded.body_bytes == len(body)
+
+
 def test_deferred_append_without_marker_replans_every_tick_forever(tmp_path: Path) -> None:
     """Confirms the mechanism precisely, without the fix's cursor marker.
 
