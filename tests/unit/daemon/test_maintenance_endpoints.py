@@ -116,18 +116,6 @@ class TestMaintenanceAPIRoutes:
             handler.do_POST()
             mock.assert_called_once()
 
-    def test_seal_canary_comparison_route_dispatched(self) -> None:
-        handler = _make_handler("/api/maintenance/seal-canary-comparison", body={})
-        with patch.object(handler, "_handle_seal_canary_comparison") as mock:
-            handler.do_POST()
-            mock.assert_called_once()
-
-    def test_consume_canary_report_route_dispatched(self) -> None:
-        handler = _make_handler("/api/maintenance/consume-canary-report", body={})
-        with patch.object(handler, "_handle_consume_canary_report") as mock:
-            handler.do_POST()
-            mock.assert_called_once()
-
     def test_unknown_maintenance_post_route_404(self) -> None:
         """POST /api/maintenance/status returns 404 — status is GET-only."""
         handler = _make_handler("/api/maintenance/status/x")
@@ -257,39 +245,6 @@ class TestMaintenanceAPIRoutes:
                 handler._handle_rebuild_index()
         rebuild.assert_not_called()
         send_error.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-
-    def test_retired_canary_report_route_is_gone(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/consume-canary-report",
-            body={"report_path": str(tmp_path / "report.json")},
-        )
-        with patch.object(handler, "_send_json") as send:
-            handler._handle_consume_canary_report()
-        send.assert_called_once_with(HTTPStatus.GONE, {"error": "canary reports are not approval authority"})
-
-    def test_retired_canary_comparison_route_is_gone(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """The only route that creates a comparison seal is daemon-owned."""
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/seal-canary-comparison",
-            body={"generation_id": "gen-canary", "generation_owner_id": "owner-canary"},
-        )
-        with patch.object(handler, "_send_json") as send:
-            handler._handle_seal_canary_comparison()
-        send.assert_called_once_with(HTTPStatus.GONE, {"error": "historical canary comparison is diagnostic only"})
-
-    def test_retired_canary_report_route_does_not_validate_reviews(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """The production route makes invalid report evidence an actionable 422."""
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/consume-canary-report",
-            body={"report_path": str(tmp_path / "report.json")},
-        )
-
-        with patch.object(handler, "_send_json") as send:
-            handler._handle_consume_canary_report()
-        send.assert_called_once_with(HTTPStatus.GONE, {"error": "canary reports are not approval authority"})
 
     def test_rebuild_index_canary_rejects_client_selected_acceptance_checks(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """Canary mode selects its profile in the daemon, never from request JSON."""

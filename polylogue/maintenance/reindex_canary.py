@@ -302,6 +302,24 @@ def _columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...]:
     )
 
 
+def _row_key_columns(connection: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
+    """Return a stable row identity without collapsing child rows by session."""
+    if table == "actions" and "tool_use_block_id" in columns:
+        return ("tool_use_block_id",)
+    quoted = table.replace('"', '""')
+    primary_key = sorted(
+        (int(row[5]), str(row[1]))
+        for row in connection.execute(f'PRAGMA table_xinfo("{quoted}")')
+        if int(row[5]) > 0 and int(row[6]) not in (1, 2)
+    )
+    if primary_key:
+        return tuple(column for _position, column in primary_key)
+    for preferred in ("block_id", "message_id", "event_id", "policy_id", "session_id"):
+        if preferred in columns:
+            return (preferred,)
+    return columns
+
+
 def compare_reindex_generations(
     current_index: Path, candidate_index: Path, *, session_ids: Iterable[str] = ()
 ) -> CanaryDiffReport:
@@ -323,7 +341,7 @@ def compare_reindex_generations(
                 marks = ",".join("?" for _ in requested)
                 query += " WHERE " + " OR ".join(f'"{column}" IN ({marks})' for column in scope)
                 args = requested * len(scope)
-            key_columns = ("session_id",) if "session_id" in columns else (columns[0],)
+            key_columns = _row_key_columns(current, table, columns)
             key_indexes = tuple(columns.index(column) for column in key_columns)
             left = {tuple(row[index] for index in key_indexes): row for row in current.execute(query, args)}
             right = {tuple(row[index] for index in key_indexes): row for row in candidate.execute(query, args)}

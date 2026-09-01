@@ -6123,14 +6123,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"discarded": True, "generation_id": generation_id})
 
     @daemon_safe_handler
-    def _handle_seal_canary_comparison(self) -> None:
-        self._send_json(HTTPStatus.GONE, {"error": "historical canary comparison is diagnostic only"})
-
-    @daemon_safe_handler
-    def _handle_consume_canary_report(self) -> None:
-        self._send_json(HTTPStatus.GONE, {"error": "canary reports are not approval authority"})
-
-    @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:
         """GET /api/maintenance/status/<op_id> — delegate to maintenance_registry_http."""
         from polylogue.daemon.maintenance_registry_http import handle_status
