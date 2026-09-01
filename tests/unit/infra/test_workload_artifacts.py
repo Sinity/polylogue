@@ -37,6 +37,7 @@ from tests.infra.workload_artifacts import (
     WorkloadProfile,
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
+    _manifest_file_entries,
     _open_no_follow,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
@@ -149,7 +150,7 @@ def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
 
 
 def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> None:
-    """Operational identity cannot become a hidden expected-result catalogue."""
+    """Removing either identity or manifest-field validation must make this red."""
     import dataclasses
 
     with pytest.raises(ValueError, match="semantic metadata"):
@@ -163,11 +164,44 @@ def test_workload_identity_rejects_semantic_oracle_metadata(tmp_path: Path) -> N
             tags=("synthetic",),
         )
 
+    with pytest.raises(ValueError, match="semantic metadata"):
+        WorkloadProfile(
+            name="invalid-family",
+            purpose="fixture-shape",
+            seed=1,
+            family_ids=("expected_sessions",),
+            profile_tokens=("fixture-shape",),
+            origin="generated.test-invalid",
+            tags=("synthetic",),
+        )
+
+    with pytest.raises(ValueError, match="semantic metadata"):
+        WorkloadProfile(
+            name="invalid-family",
+            purpose="fixture-shape",
+            seed=1,
+            family_ids=("expected_sessions",),
+            profile_tokens=("provider-native",),
+            origin="generated.test-invalid",
+            tags=("synthetic",),
+        )
+
     artifact = build_seeded_archive(cache_root=tmp_path / "cache")
     with pytest.raises(ValueError, match="semantic metadata"):
         dataclasses.replace(
             artifact.manifest,
             receipt={**artifact.manifest.receipt, "expected_sessions": 64},
+        )
+
+    file_entry = dict(artifact.manifest.files[0])
+    file_entry["expected_sessions"] = 64
+    with pytest.raises(ValueError, match="semantic metadata"):
+        _manifest_file_entries((file_entry,))
+
+    with pytest.raises(ValueError, match="semantic metadata"):
+        dataclasses.replace(
+            artifact.manifest,
+            files=({"path": "index.db", "size": 0, "sha256": "0" * 64, "expected_sessions": 64},),
         )
 
 

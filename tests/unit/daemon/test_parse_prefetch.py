@@ -687,7 +687,7 @@ def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
     assert len(stage.cache) == 0
     # warm() returned close to its own timeout, not after the hung worker's
     # 5s sleep -- proving the wait is genuinely bounded, not merely reordered.
-    assert elapsed < 1.0
+    assert elapsed < 0.02 * 10
 
 
 def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
