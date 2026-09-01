@@ -3886,7 +3886,7 @@ class LiveBatchProcessor:
                 )
                 previous_end = end
                 previous_raw_id = raw_id
-                previous_revision = str(row[2])
+                previous_revision = inferred[raw_id][5]
         candidates = [
             RevisionCandidate(
                 raw_id=str(row[0]),

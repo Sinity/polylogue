@@ -239,7 +239,8 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(tmp_pa
     baseline = _session_meta(session_id) + _codex_message("baseline")
     delta = _codex_message("legacy append")
     next_delta = _codex_message("next append")
-    source.write_bytes(baseline + delta + next_delta)
+    future_delta = _codex_message("future append")
+    source.write_bytes(baseline + delta + next_delta + future_delta)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -261,14 +262,24 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(tmp_pa
             source_index=-1,
             acquired_at_ms=2,
         )
+        next_append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=next_delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=3,
+        )
     # This is the pre-offset durable shape: the payload is retained, but the
     # source revision row has no operational byte coordinates.
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.execute(
+        conn.executemany(
             """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown',
                source_revision = ?, acquisition_generation = 1,
                revision_authority = 'quarantined' WHERE raw_id = ?""",
-            (f"codex:{session_id}", "legacy-append-1", append_id),
+            (
+                (f"codex:{session_id}", "legacy-append-1", append_id),
+                (f"codex:{session_id}", "legacy-append-2", next_append_id),
+            ),
         )
         conn.commit()
     _seed_native_session(tmp_path, session_id=session_id)
@@ -277,7 +288,10 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(tmp_pa
     plan = processor._append_plan(source)
 
     assert isinstance(plan, _AppendPlan)
-    assert plan.start_offset == len(baseline) + len(delta)
-    assert plan.cursor_fingerprint == append_source_revision("full-0", hashlib.sha256(delta).hexdigest())
-    assert next_delta in plan.payload
+    assert plan.start_offset == len(baseline) + len(delta) + len(next_delta)
+    assert plan.cursor_fingerprint == append_source_revision(
+        append_source_revision("full-0", hashlib.sha256(delta).hexdigest()),
+        hashlib.sha256(next_delta).hexdigest(),
+    )
+    assert future_delta in plan.payload
     assert baseline_id
