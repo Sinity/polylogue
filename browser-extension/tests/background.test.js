@@ -36,6 +36,12 @@ function installChromeMock(storagePatch = {}) {
   sessionStored = {};
   tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
   globalThis.chrome = {
+    // The worker captures this per-instance seam. A stale instance must not
+    // forward a request into the next test's fetch stub.
+    __polylogueNetwork: (...args) => {
+      if (!live()) return Promise.reject(new Error("stale_background_network"));
+      return globalThis.fetch(...args);
+    },
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
       setBadgeText: vi.fn(async () => undefined),
