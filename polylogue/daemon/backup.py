@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.cli import checkpoint_connection
 from polylogue.daemon.status import open_readonly_connection
@@ -209,8 +210,29 @@ def _canonical_json_sha256(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _open_backup_readonly_connection(
+    path: Path,
+    *,
+    immutable: bool,
+    timeout_class: str,
+) -> sqlite3.Connection:
+    """Open backup evidence while retaining support for older source tiers."""
+    try:
+        return open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class)
+    except SchemaSkew as exc:
+        if (
+            path.name != "source.db"
+            or not isinstance(exc.found, int)
+            or not isinstance(exc.expected, int)
+            or not (0 < exc.found < exc.expected)
+        ):
+            raise
+        suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
+        return sqlite3.connect(f"file:{path}{suffix}", uri=True, timeout=30.0)
+
+
 def _sqlite_user_version(path: Path) -> int:
-    with closing(open_readonly_connection(path, immutable=True, timeout_class="offline-bulk")) as conn:
+    with closing(_open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -371,7 +393,7 @@ def _archive_layout_present(root: Path) -> bool:
 
 def _readable_sqlite(path: Path) -> str | None:
     try:
-        conn = open_readonly_connection(path, timeout_class="background-read")
+        conn = _open_backup_readonly_connection(path, immutable=False, timeout_class="background-read")
         try:
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1")
         finally:
@@ -483,7 +505,7 @@ def _source_blob_liveness_projection(
 
 def _latest_sealed_source_generation(source_db: Path) -> str | None:
     """Return the newest complete source generation, if this tier has them."""
-    with closing(open_readonly_connection(source_db, immutable=True, timeout_class="offline-bulk")) as conn:
+    with closing(_open_backup_readonly_connection(source_db, immutable=True, timeout_class="offline-bulk")) as conn:
         if not _source_generation_tables_exist(conn):
             return None
         row = conn.execute(
@@ -514,7 +536,7 @@ def _source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set
     """Read pending publication receipts independently of committed liveness."""
 
     with closing(
-        open_readonly_connection(
+        _open_backup_readonly_connection(
             source_db,
             immutable=immutable,
             timeout_class="offline-bulk" if immutable else "background-read",
@@ -610,7 +632,9 @@ def _index_attachment_hashes(index_db: Path | None) -> set[str]:
     if index_db is None:
         return set()
     try:
-        with closing(open_readonly_connection(index_db, immutable=True, timeout_class="offline-bulk")) as index_conn:
+        with closing(
+            _open_backup_readonly_connection(index_db, immutable=True, timeout_class="offline-bulk")
+        ) as index_conn:
             columns = {str(row[1]) for row in index_conn.execute("PRAGMA table_info(attachments)")}
             if "blob_hash" not in columns:
                 raise RuntimeError("index.attachments is missing columns: blob_hash")
@@ -839,7 +863,7 @@ def _source_recoverability_proofs(
     by_hash: dict[str, list[dict[str, object]]] = {}
     prior_full_sizes: dict[str, list[tuple[int, int]]] = {}
     with closing(
-        open_readonly_connection(
+        _open_backup_readonly_connection(
             source_db,
             immutable=immutable,
             timeout_class="offline-bulk" if immutable else "background-read",
@@ -1391,7 +1415,7 @@ def _backup_archive(*, output_dir: Path, started: float, profile: BackupProfile)
 
 
 def _sqlite_integrity_ok(path: Path) -> bool:
-    conn = open_readonly_connection(path, immutable=True, timeout_class="offline-bulk")
+    conn = _open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")
     try:
         row = conn.execute("PRAGMA integrity_check").fetchone()
         return row is not None and row[0] == "ok"
@@ -1661,7 +1685,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             if source_generation_id is not None and not isinstance(source_generation_id, str):
                 raise RuntimeError("backup blob reference evidence has invalid source generation identity")
             with closing(
-                open_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
+                _open_backup_readonly_connection(restored / "source.db", immutable=True, timeout_class="offline-bulk")
             ) as source_conn:
                 source_generation_tables_exist = _source_generation_tables_exist(source_conn)
             restored_source_hashes = _source_blob_hashes_from_restored_source(

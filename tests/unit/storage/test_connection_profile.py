@@ -113,6 +113,24 @@ def test_open_profiled_connection_applies_the_selected_profile(
     finally:
         connection.close()
 
+def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT NOT NULL)")
+
+    with connection_profile.open_readonly_connection(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence").fetchone() == (0,)
+
+    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {stale_version}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        connection_profile.open_readonly_connection(db_path)
+
+    assert excinfo.value.tier == ArchiveTier.INDEX.value
+    assert excinfo.value.found == stale_version
+
 
 @pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
 def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_connection(

@@ -583,6 +583,7 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
     """Reject a known archive tier before any caller can issue SQL against it."""
     from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     resolved_tier = tier if tier is not None else _archive_tier_for_path(path)
     if resolved_tier is None:
@@ -592,6 +593,8 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
     except KeyError as exc:
         raise ValueError(f"unknown archive tier: {resolved_tier!r}") from exc
     found = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if resolved_tier is ArchiveTier.INDEX and found == 0:
+        return
     if found != expected:
         raise SchemaSkew(
             tier=resolved_tier.value,
