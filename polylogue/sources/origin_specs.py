@@ -1290,6 +1290,7 @@ def _hermes_spec() -> OriginSpec:
         ),
         acquisition_modes=("state-db", "atif-spans", "atof-jsonl", "verification-evidence-db", "session-snapshot"),
         parser_paths=(
+            "polylogue/sources/parsers/local_agent.py",
             "polylogue/sources/parsers/hermes_state.py",
             "polylogue/sources/parsers/hermes_spans.py",
             "polylogue/sources/parsers/hermes_verification.py",

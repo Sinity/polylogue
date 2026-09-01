@@ -391,6 +391,8 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.messages[3].role == "tool"
     assert session.messages[3].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "call-1"
+    assert [message.parent_message_provider_id for message in session.messages] == [None, None, None, None]
+    assert [message.parent_message_position for message in session.messages] == [None, None, None, None]
     assert any(block.type is BlockType.TOOL_RESULT for block in session.messages[3].blocks)
 
     # polylogue-5o05: base_url/platform/message_count/tools were parsed by
@@ -487,6 +489,8 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     assert root.active_leaf_message_provider_id == root.messages[4].provider_message_id
     assert root.messages[4].is_active_leaf is True
     assert root.messages[6].is_active_leaf is False
+    assert all(message.parent_message_provider_id is None for message in root.messages)
+    assert all(message.parent_message_position is None for message in root.messages)
     usage_events = [event for event in root.session_events if event.event_type == "token_count"]
     assert usage_events
     assert usage_events[0].payload["total_token_usage"] == {
