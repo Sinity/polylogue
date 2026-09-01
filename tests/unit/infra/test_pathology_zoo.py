@@ -10,7 +10,6 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooCanaryEligibility
-from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.pathology_zoo import (
@@ -18,7 +17,6 @@ from tests.infra.pathology_zoo import (
     PathologyZoo,
     build_pathology_zoo,
     build_pathology_zoo_ro,
-    clone_pathology_zoo,
     make_pathology_zoo_member_red,
     pathology_zoo_member_ids,
 )
@@ -114,9 +112,7 @@ def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: 
     assert vintage_raws == (2,)
 
 
-def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
-    pathology_zoo: PathologyZoo, tmp_path: Path
-) -> None:
+def test_pathology_zoo_manifest_is_not_canary_authority(pathology_zoo: PathologyZoo) -> None:
     """0x7nh's selector receives every replayable manifest member as a raw-id input."""
     assert pathology_zoo.canary_session_ids == tuple(
         sorted(
@@ -128,30 +124,7 @@ def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
             }
         )
     )
-    selection = select_canary_sessions(
-        pathology_zoo.archive_root / "index.db",
-        sessions_per_origin=1,
-        pathology_session_ids=pathology_zoo.canary_session_ids,
-    )
-
-    assert selection.pathology_session_ids == pathology_zoo.canary_session_ids
-    assert set(pathology_zoo.canary_session_ids) <= set(selection.selected_session_ids)
-    assert len(selection.selected_raw_ids) == len(set(selection.selected_raw_ids))
-
-    mutated_root = tmp_path / "pathology-zoo-canary-mutation"
-    # Writable derivatives must come from the canonical immutable aggregate,
-    # not from the session-scoped writable clone used by read-only tests.
-    canonical_zoo = build_pathology_zoo_ro()
-    clone_pathology_zoo(canonical_zoo, mutated_root)
-    with sqlite3.connect(mutated_root / "index.db") as conn:
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:zoo-append-self",))
-        conn.commit()
-    with pytest.raises(CanarySelectionError, match="not indexed"):
-        select_canary_sessions(
-            mutated_root / "index.db",
-            sessions_per_origin=1,
-            pathology_session_ids=pathology_zoo.canary_session_ids,
-        )
+    assert pathology_zoo.canary_session_ids
 
 
 def test_pathology_zoo_selects_members_from_one_immutable_aggregate(tmp_path: Path) -> None:

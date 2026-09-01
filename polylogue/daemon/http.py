@@ -496,16 +496,6 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             "_handle_rebuild_index",
         ),
         _StaticPostRoute(
-            "/api/maintenance/seal-canary-comparison",
-            ("api", "maintenance", "seal-canary-comparison"),
-            "_handle_seal_canary_comparison",
-        ),
-        _StaticPostRoute(
-            "/api/maintenance/consume-canary-report",
-            ("api", "maintenance", "consume-canary-report"),
-            "_handle_consume_canary_report",
-        ),
-        _StaticPostRoute(
             "/api/maintenance/discard-index-candidate",
             ("api", "maintenance", "discard-index-candidate"),
             "_handle_discard_index_candidate",
@@ -6134,86 +6124,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_seal_canary_comparison(self) -> None:
-        """POST /api/maintenance/seal-canary-comparison through the daemon writer."""
-
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        try:
-            body = json.loads(body_raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        generation_id = body.get("generation_id") if isinstance(body, dict) else None
-        generation_owner_id = body.get("generation_owner_id") if isinstance(body, dict) else None
-        if (
-            not isinstance(generation_id, str)
-            or not generation_id
-            or not isinstance(generation_owner_id, str)
-            or not generation_owner_id
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        from polylogue.maintenance.reindex_canary import (
-            UnclassifiedCanaryDiffError,
-            seal_canary_comparison_under_daemon_ownership,
-        )
-        from polylogue.paths import archive_root
-
-        bridge = getattr(self.server, "write_bridge", None)
-        if bridge is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-            return
-        try:
-            attestation = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-                "http.maintenance.seal-canary-comparison",
-                None,
-                seal_canary_comparison_under_daemon_ownership,
-                archive_root=archive_root(),
-                generation_id=generation_id,
-                generation_owner_id=generation_owner_id,
-            )
-        except UnclassifiedCanaryDiffError as exc:
-            self._send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "canary_comparison_invalid", str(exc))
-            return
-        self._send_json(HTTPStatus.OK, attestation.to_dict())
+        self._send_json(HTTPStatus.GONE, {"error": "historical canary comparison is diagnostic only"})
 
     @daemon_safe_handler
     def _handle_consume_canary_report(self) -> None:
-        """POST /api/maintenance/consume-canary-report through the daemon writer."""
-
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        try:
-            body = json.loads(body_raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        report_path = body.get("report_path") if isinstance(body, dict) else None
-        if not isinstance(report_path, str) or not report_path:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        from polylogue.maintenance.reindex_canary import (
-            UnclassifiedCanaryDiffError,
-            approve_canary_report_under_daemon_ownership,
-        )
-        from polylogue.paths import archive_root
-
-        bridge = getattr(self.server, "write_bridge", None)
-        if bridge is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-            return
-        try:
-            payload = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-                "http.maintenance.consume-canary-report",
-                None,
-                approve_canary_report_under_daemon_ownership,
-                Path(report_path),
-                archive_root=archive_root(),
-            )
-        except UnclassifiedCanaryDiffError as exc:
-            self._send_error(HTTPStatus.UNPROCESSABLE_ENTITY, "canary_report_invalid", str(exc))
-            return
-        self._send_json(HTTPStatus.OK, payload)
+        self._send_json(HTTPStatus.GONE, {"error": "canary reports are not approval authority"})
 
     @daemon_safe_handler
     def _handle_maintenance_status(self, operation_id: str) -> None:
