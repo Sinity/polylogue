@@ -307,6 +307,7 @@ class LiveWatcher:
         self._owns_parse_stage = parse_stage is None
         self._parse_stage: LiveParseStage | None = parse_stage if parse_stage is not None else LiveParseStage()
         self._pending_paths: set[Path] = set()
+        self._forced_reparse_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
         self._failed_retry_task: asyncio.Task[None] | None = None
@@ -891,7 +892,9 @@ class LiveWatcher:
             session_dir = path.parent.parent
             root_transcript = session_dir.parent / f"{session_dir.name}.jsonl"
             owners = [root_transcript, *sorted((session_dir / "subagents").glob("agent-*.jsonl"))]
-            self._pending_paths.update(owner for owner in owners if owner.is_file())
+            owner_paths = {owner for owner in owners if owner.is_file()}
+            self._pending_paths.update(owner_paths)
+            self._forced_reparse_paths.update(owner_paths)
         self._last_enqueue_at = time.monotonic()
         self._ensure_pending_scheduled()
 
@@ -995,6 +998,8 @@ class LiveWatcher:
                 return False
             paths = list(self._pending_paths)
             self._pending_paths.clear()
+            forced_paths = self._forced_reparse_paths.intersection(paths)
+            self._forced_reparse_paths.difference_update(paths)
 
         async def flush_batch() -> None:
             # Filtering a changed-file batch invokes cursor reconciliation and
@@ -1012,7 +1017,9 @@ class LiveWatcher:
                         stat = path.stat()
                     except FileNotFoundError:
                         continue
-                    if self._needs_work_from_state(path, stat=stat, cursor=cursor_records.get(path)):
+                    if path in forced_paths or self._needs_work_from_state(
+                        path, stat=stat, cursor=cursor_records.get(path)
+                    ):
                         needed.append(path)
             if not needed:
                 self._defer_unaccounted_failed_retries(paths)
@@ -1044,6 +1051,7 @@ class LiveWatcher:
             # authorized debounce flush.
             async with self._batch_lock:
                 self._pending_paths.update(paths)
+                self._forced_reparse_paths.update(forced_paths)
             return True
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
@@ -1051,6 +1059,7 @@ class LiveWatcher:
             logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(paths))
             async with self._batch_lock:
                 self._pending_paths.update(paths)
+                self._forced_reparse_paths.update(forced_paths)
             await asyncio.sleep(self._debounce_s)
         return True
 

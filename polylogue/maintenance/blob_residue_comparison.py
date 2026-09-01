@@ -579,7 +579,9 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
         if _route_status(comparison, "stored_route") == "error" or _route_status(comparison, "current_route") == "error"
     )
     outcome_counts = Counter(
-        str(record["authority_outcome"]) for record in extended_records if "authority_outcome" in record
+        str(record["authority_outcome"])
+        for record in extended_records
+        if isinstance(record, dict) and record.get("cohort") != "source_missing" and "authority_outcome" in record
     )
     allowed_outcomes = {outcome.value for outcome in AuthorityOutcome}
     invalid_outcomes = sorted(set(outcome_counts) - allowed_outcomes)
@@ -593,11 +595,7 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     distinct_bytes = 0
     seen_hashes: set[str] = set()
     for record in records:
-        if (
-            not isinstance(record, dict)
-            or record.get("cohort") == "source_missing"
-            or not isinstance(record.get("blob_hash"), str)
-        ):
+        if not isinstance(record, dict) or not isinstance(record.get("blob_hash"), str):
             continue
         blob_hash = str(record["blob_hash"])
         if blob_hash in seen_hashes:

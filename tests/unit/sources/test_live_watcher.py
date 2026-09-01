@@ -3659,6 +3659,36 @@ async def test_claude_sidecar_enqueue_also_reparses_owning_transcripts(tmp_path:
         watcher.stop()
 
 
+@pytest.mark.asyncio
+async def test_claude_sidecar_owner_bypasses_unchanged_cursor_filter(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session-1"
+    sidecar_dir = session_dir / "tool-results"
+    sidecar_dir.mkdir(parents=True)
+    root_transcript = tmp_path / "session-1.jsonl"
+    root_transcript.write_text("{}\n", encoding="utf-8")
+    sidecar = sidecar_dir / "toolu.txt"
+    sidecar.write_text("complete result", encoding="utf-8")
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",)),),
+        cursor=CursorStore(tmp_path / "cursor.db"),
+    )
+    ingested: list[Path] = []
+
+    async def fake_ingest(paths: list[Path], **_kwargs: object) -> None:
+        ingested.extend(paths)
+
+    try:
+        watcher._batch_processor.require_cursor_authority = lambda: None  # type: ignore[method-assign]
+        watcher._needs_work_from_state = lambda *args, **kwargs: False  # type: ignore[method-assign]
+        watcher._ingest_files = fake_ingest  # type: ignore[method-assign]
+        watcher._enqueue(sidecar)
+        assert await watcher._flush_pending() is True
+        assert ingested == [sidecar, root_transcript] or ingested == [root_transcript, sidecar]
+    finally:
+        watcher.stop()
+
+
 def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
     """A nested explicit root owns its files regardless of source order."""
     root = tmp_path / "codex"

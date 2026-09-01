@@ -54,11 +54,18 @@ def record_deferred_append_cursor(
     except FileNotFoundError:
         return 0
     prefix_hash = cursor_prefix_hash(cursor.tail_hash)
-    has_semantic_authority = decode_claude_semantic_frontier(cursor.tail_hash) is not None
+    claude_frontier = decode_claude_semantic_frontier(cursor.tail_hash)
     provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-    semantic_authority = (
-        claude_semantic_frontier_for_prefix(path, cursor.byte_offset) if has_semantic_authority else None
-    )
+    if claude_frontier is not None:
+        try:
+            with path.open("rb") as handle:
+                header_length = len(handle.readline())
+        except OSError:
+            header_length = 0
+        semantic_end_offset = header_length + claude_frontier.body_bytes
+        semantic_authority = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
+    else:
+        semantic_authority = None
     if provider is Provider.CLAUDE_CODE and semantic_authority is None:
         semantic_authority = claude_semantic_frontier_for_prefix(path, cursor.byte_offset)
     cursor_store.set(
