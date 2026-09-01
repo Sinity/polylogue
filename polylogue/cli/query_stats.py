@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.query_feedback import emit_no_results
+from polylogue.core.localtime import format_local_datetime
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
@@ -149,8 +150,8 @@ async def output_stats_sql(
 
     date_range = ""
     if stats["min_sort_key"] and stats["max_sort_key"]:
-        min_date = datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
-        max_date = datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc).strftime("%Y-%m-%d")
+        min_date = format_local_datetime(datetime.fromtimestamp(stats["min_sort_key"], tz=timezone.utc), "%Y-%m-%d")
+        max_date = format_local_datetime(datetime.fromtimestamp(stats["max_sort_key"], tz=timezone.utc), "%Y-%m-%d")
         date_range = f"{min_date} to {max_date}"
 
     structured_summary: dict[str, object] = {
