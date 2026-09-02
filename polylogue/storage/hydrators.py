@@ -78,6 +78,8 @@ def attachment_from_record(record: AttachmentRecord) -> Attachment:
         source_url=record.source_url,
         caption=record.caption,
         upload_origin=record.upload_origin,
+        direction=record.direction,
+        producer_ref=record.producer_ref,
         availability=availability,
     )
 

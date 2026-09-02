@@ -380,7 +380,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             timestamp=message_timestamp,
         ):
             session_events.append(usage_event)
-        chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
+        chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id, role=role)
         # Attachment identifiers describe the attachment, not the message
         # that owns it.  Using them as the message's stable owner key makes a
         # metadata-only move between same-timestamp idless chunks look like

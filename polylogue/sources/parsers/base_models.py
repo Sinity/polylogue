@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
@@ -390,6 +391,8 @@ class ParsedAttachment(BaseModel):
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
     upload_origin: str | None = None
+    direction: Literal["user_input", "model_output"] | None = None
+    producer_ref: str | None = None
     attachment_kind: str | None = None
     source_url: str | None = None
     caption: str | None = None

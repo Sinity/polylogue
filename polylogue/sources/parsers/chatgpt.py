@@ -670,7 +670,7 @@ def extract_messages_from_mapping(
             msg_attachments = msg_metadata.get("attachments") or []
             if isinstance(msg_attachments, list):
                 for attach in msg_attachments:
-                    attachment = attachment_from_meta(attach, str(msg_id))
+                    attachment = attachment_from_meta(attach, str(msg_id), role=role)
                     if attachment is not None:
                         attachments.append(attachment)
 
@@ -691,6 +691,8 @@ def extract_messages_from_mapping(
                         name=sandbox_path.rsplit("/", 1)[-1] or None,
                         attachment_kind="sandbox_file",
                         source_url=f"sandbox:{sandbox_path}",
+                        direction="model_output",
+                        producer_ref=f"message:{msg_id}",
                     )
                 )
 

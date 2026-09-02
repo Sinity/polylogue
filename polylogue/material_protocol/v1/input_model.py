@@ -61,6 +61,8 @@ class AttachmentInput:
     blob_sha256: str | None = None
     acquisition_status: str = "unfetched"
     upload_origin: str | None = None
+    direction: str | None = None
+    producer_ref: str | None = None
     source_url: str | None = None
     caption: str | None = None
 

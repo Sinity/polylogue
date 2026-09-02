@@ -81,6 +81,8 @@ class RelinkableAttachment:
     message_id: str
     position: int
     upload_origin: str | None
+    direction: str | None
+    producer_ref: str | None
     source_url: str | None
     caption: str | None
     raw_id: str
@@ -398,6 +400,8 @@ def _match_session_payload(
             message_id=message_id,
             position=attachment_positions[id(attachment)],
             upload_origin=attachment.upload_origin,
+            direction=attachment.direction,
+            producer_ref=attachment.producer_ref,
             source_url=_attachment_source_url(attachment),
             caption=_attachment_caption(attachment),
             raw_id=raw_id,
@@ -455,8 +459,8 @@ def relink_orphaned_attachments(
             index_conn.execute(
                 """
                 INSERT INTO attachment_refs (
-                    attachment_id, session_id, message_id, position, upload_origin, source_url, caption
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.attachment_id,
@@ -464,6 +468,8 @@ def relink_orphaned_attachments(
                     item.message_id,
                     item.position,
                     item.upload_origin,
+                    item.direction,
+                    item.producer_ref,
                     item.source_url,
                     item.caption,
                 ),

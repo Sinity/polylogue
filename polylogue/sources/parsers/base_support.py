@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolResultUnknownReason, WebConstructType
@@ -26,6 +26,7 @@ from .base_models import (
 )
 
 _SessionParser = TypeVar("_SessionParser", bound=Callable[..., ParsedSession])
+AttachmentDirection = Literal["user_input", "model_output"]
 
 
 class AdmissionLedger:
@@ -619,7 +620,28 @@ def _make_attachment_id(seed: str) -> str:
     return f"att-{hash_text(seed)[:12]}"
 
 
-def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachment | None:
+def derive_attachment_provenance(
+    role: Role | str | None,
+    message_id: str | None,
+) -> tuple[AttachmentDirection | None, str | None]:
+    """Derive attachment direction and producer from the owning turn role."""
+    if role is None:
+        return None, None
+    normalized_role = role if isinstance(role, Role) else Role.normalize(role)
+    if normalized_role is Role.USER:
+        return "user_input", None
+    if normalized_role in {Role.ASSISTANT, Role.TOOL}:
+        producer_ref = f"message:{message_id}" if message_id else None
+        return "model_output", producer_ref
+    return None, None
+
+
+def attachment_from_meta(
+    meta: object,
+    message_id: str | None,
+    *,
+    role: Role | str | None = None,
+) -> ParsedAttachment | None:
     if not isinstance(meta, dict):
         return None
     attachment_id = (
@@ -665,6 +687,7 @@ def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachme
     # attachments arrive via OAuth-authenticated session/export.
     file_id_raw = meta.get("file_id") or meta.get("fileId") or meta.get("file_uuid")
     drive_id_raw = meta.get("drive_id") or meta.get("driveId")
+    direction, producer_ref = derive_attachment_provenance(role, message_id)
     return ParsedAttachment(
         provider_attachment_id=str(attachment_id),
         message_provider_id=message_id,
@@ -675,6 +698,8 @@ def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachme
         provider_file_id=str(file_id_raw) if isinstance(file_id_raw, str) and file_id_raw else None,
         provider_drive_id=str(drive_id_raw) if isinstance(drive_id_raw, str) and drive_id_raw else None,
         upload_origin="oauth",
+        direction=direction,
+        producer_ref=producer_ref,
         inline_bytes=inline_bytes,
     )
 

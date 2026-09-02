@@ -299,6 +299,8 @@ def _plan_digest(plan: BlobReferenceClosurePlan) -> str:
                 "message_id": attachment.message_id,
                 "position": attachment.position,
                 "upload_origin": attachment.upload_origin,
+                "direction": attachment.direction,
+                "producer_ref": attachment.producer_ref,
                 "source_url": attachment.source_url,
                 "caption": attachment.caption,
                 "raw_id": attachment.raw_id,
@@ -460,8 +462,8 @@ def reconcile_blob_reference_closure(
                 source_conn.execute(
                     """
                     INSERT INTO index_tier.attachment_refs (
-                        attachment_id, session_id, message_id, position, upload_origin, source_url, caption
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         attachment_candidate.attachment_id,
@@ -469,6 +471,8 @@ def reconcile_blob_reference_closure(
                         attachment_candidate.message_id,
                         attachment_candidate.position,
                         attachment_candidate.upload_origin,
+                        attachment_candidate.direction,
+                        attachment_candidate.producer_ref,
                         attachment_candidate.source_url,
                         attachment_candidate.caption,
                     ),

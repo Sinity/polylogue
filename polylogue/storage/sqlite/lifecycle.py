@@ -1140,10 +1140,17 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
     IndexDeltaDeclaration(
-        version=84,
         # Delegation cost estimation now treats provider-reported dollars as
         # exact even when catalog pricing is unavailable. Existing derived
         # rows need the updated view definition.
+        version=84,
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=85,
+        # Attachment direction and producer provenance depend on each origin's
+        # structured parser evidence. A shape-only copy-forward would mint
+        # unsupported values, so existing rows require semantic reparse.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
 )
