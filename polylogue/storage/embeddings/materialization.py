@@ -1725,6 +1725,8 @@ def _embed_archive_session_sync(
                 title=None if session["title"] is None else str(session["title"]),
                 error="embedding attempt was superseded before publication; retry queued",
             )
+        if lifecycle_store is not None and lifecycle_binding is not None:
+            lifecycle_store.refresh_binding_contract(lifecycle_binding)
     except Exception as exc:
         from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
 

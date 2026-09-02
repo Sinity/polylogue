@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin
+from polylogue.storage.embeddings.identity import vector_derivation_hash
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -100,3 +101,83 @@ def test_query_by_session_raises_typed_when_seed_has_no_embeddings(embeddings_db
 
     with pytest.raises(SqliteVecError):
         provider.query_by_session("sess-unembedded", limit=10)
+
+
+def test_managed_connection_retains_current_index_embeddings(tmp_path: Path) -> None:
+    """The managed current-message projection must register its hash function.
+
+    Anti-vacuity: removing ``register_embedding_identity_sql`` from the managed
+    connection path makes this fail with SQLite's ``no such function`` error.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    session_id = "codex-session:managed"
+    message_id = f"{session_id}:n:m1"
+    text = "A managed archive message long enough for retention projection."
+
+    conn = sqlite3.connect(index_db)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, title, content_hash)
+            VALUES ('managed', 'codex-session', 'Managed', ?)
+            """,
+            (b"s" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, material_origin,
+                word_count, content_hash
+            ) VALUES (?, 'm1', 0, 'user', 'human_authored', ?, ?)
+            """,
+            (session_id, len(text.split()), b"m" * 32),
+        )
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                session_id, message_id, position, block_type, text, content_hash
+            ) VALUES (?, ?, 0, 'text', ?, ?)
+            """,
+            (session_id, message_id, text, b"b" * 32),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        try:
+            initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+        except sqlite3.OperationalError as exc:
+            if "vec0" in str(exc) or "sqlite-vec" in str(exc):
+                pytest.skip("sqlite-vec extension is unavailable")
+            raise
+        from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
+
+        upsert_message_embedding(
+            conn,
+            message_id=message_id,
+            session_id=session_id,
+            origin=Origin.CODEX_SESSION,
+            embedding=[1.0] + [0.0] * (EMBEDDING_DIMENSION - 1),
+            model="voyage-4",
+            embedded_at_ms=1_767_225_700_000,
+            vector_derivation_hash=vector_derivation_hash(model="voyage-4", input_text=text),
+        )
+    finally:
+        conn.close()
+
+    provider = SqliteVecProvider(
+        voyage_key="test-key",
+        db_path=embeddings_db,
+        model="voyage-4",
+        archive_root=archive_root,
+    )
+    provider.dimension = EMBEDDING_DIMENSION
+    provider._vec_available = None
+
+    assert provider.count_session_embeddings(session_id) == 1

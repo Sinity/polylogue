@@ -465,6 +465,21 @@ class EmbeddingGenerationStore:
         if self._identity(Path(binding.database_path), label="embedding database") != binding.database_identity:
             raise EmbeddingGenerationError("embedding generation database was replaced during materialization")
 
+    def refresh_binding_contract(self, binding: EmbeddingGenerationBinding) -> None:
+        """Publish the current sealed membership after an admitted SQLite commit."""
+        if self._link_identity(self.active_path, label="embedding active pointer") != binding.active_path_identity:
+            raise EmbeddingGenerationError("embedding active pointer was replaced during materialization")
+        database = Path(binding.database_path)
+        if self._identity(database, label="embedding database") != binding.database_identity:
+            raise EmbeddingGenerationError("embedding generation database was replaced during materialization")
+        metadata_path = self._metadata_path(binding.generation_id)
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        generation = EmbeddingGeneration(**payload)
+        if generation.generation_id != binding.generation_id or generation.owner_id != binding.owner_id:
+            raise EmbeddingGenerationError("embedding generation binding changed during materialization")
+        contract = self._database_contract(database, physical_root=database.parent)
+        self._write_generation(EmbeddingGeneration(**{**asdict(generation), **contract}))
+
     def _validate_receipt(
         self, path: Path, generations: list[EmbeddingGeneration] | None = None
     ) -> EmbeddingPromotionReceipt:

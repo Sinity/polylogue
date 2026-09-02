@@ -11,7 +11,6 @@ unfiltered listing.
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -22,8 +21,9 @@ from polylogue.archive.query.expression import ExpressionCompileError, compile_e
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, search_hits_for_plan
 from polylogue.config import Config, Source
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+from polylogue.storage.embeddings.identity import vector_derivation_hash
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
@@ -41,17 +41,17 @@ def _unit_vector(*, axis0: float, axis1: float) -> list[float]:
 
 def _build_index(db_path: Path) -> None:
     for session_key, text in (
-        ("conv-seed", "alpha seed session"),
-        ("conv-near", "alpha near neighbor"),
-        ("conv-far", "zeta unrelated topic"),
-        ("conv-unembedded", "no vectors here"),
+        ("conv-seed", "alpha seed session with enough prose"),
+        ("conv-near", "alpha near neighbor with enough prose"),
+        ("conv-far", "zeta unrelated topic with enough prose"),
+        ("conv-unembedded", "no vectors here but enough prose"),
     ):
         (
             SessionBuilder(db_path, session_key)
             .provider(Provider.CODEX.value)
             .title(session_key)
             .updated_at("2026-04-22T12:00:00+00:00")
-            .add_message("m1", role="user", text=text)
+            .add_message("m1", role="user", text=text, material_origin=MaterialOrigin.HUMAN_AUTHORED)
             .save()
         )
 
@@ -99,6 +99,11 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
         "near": _unit_vector(axis0=0.99, axis1=0.141),
         "far": _unit_vector(axis0=0.0, axis1=1.0),
     }
+    text_by_suffix = {
+        "seed": "alpha seed session with enough prose",
+        "near": "alpha near neighbor with enough prose",
+        "far": "zeta unrelated topic with enough prose",
+    }
     for suffix, vector in vectors.items():
         session_id, message_id = mapping[suffix]
         # Content-addressed (polylogue-q88p): distinguish each geometrically
@@ -112,7 +117,7 @@ def seeded_archive(tmp_path: Path) -> tuple[Path, Config, dict[str, tuple[str, s
             embedding=vector,
             model="voyage-4",
             embedded_at_ms=1_767_225_700_000,
-            vector_derivation_hash=hashlib.sha256(message_id.encode()).digest(),
+            vector_derivation_hash=vector_derivation_hash(model="voyage-4", input_text=text_by_suffix[suffix]),
         )
     conn.close()
 
@@ -130,6 +135,7 @@ def _provider(archive_root: Path) -> SqliteVecProvider:
         voyage_key="test-key",
         db_path=archive_root / "embeddings.db",
         model="voyage-4",
+        archive_root=archive_root,
     )
     provider.dimension = EMBEDDING_DIMENSION
     provider._vec_available = None
