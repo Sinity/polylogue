@@ -97,3 +97,15 @@ def test_schema_skew_explicit_tier_checks_noncanonical_generation_path(tmp_path:
         connection_profile.open_readonly_connection(db_path, tier=ArchiveTier.SOURCE)
 
     assert excinfo.value.tier == ArchiveTier.SOURCE.value
+
+
+def test_scratch_synchronous_override_only_honours_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: production profiles keep NORMAL unless the harness asks for OFF."""
+    profile = connection_profile.WRITE_CONNECTION_PROFILE
+    monkeypatch.delenv(connection_profile.SCRATCH_SYNCHRONOUS_ENV, raising=False)
+    assert "PRAGMA synchronous = NORMAL" in profile.pragma_statements
+    monkeypatch.setenv(connection_profile.SCRATCH_SYNCHRONOUS_ENV, "FULL")
+    assert "PRAGMA synchronous = NORMAL" in profile.pragma_statements
+    monkeypatch.setenv(connection_profile.SCRATCH_SYNCHRONOUS_ENV, "off")
+    assert "PRAGMA synchronous = OFF" in profile.pragma_statements
+    assert "PRAGMA synchronous = NORMAL" not in profile.pragma_statements
