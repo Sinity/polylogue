@@ -18,6 +18,10 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _WS = re.compile(r"\s+")
+_FTS_BULK_GUARD = re.compile(
+    r"\s+(?:and|when) not exists \(select 1 from derived_refresh_guard "
+    r"where guard_name = '[^']+'\)"
+)
 
 
 def _sql(value: str | None) -> str:
@@ -75,10 +79,21 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
     actual_by_name = {(kind, name): sql for kind, name, sql in actual.objects}
     missing = sorted(set(expected_by_name) - set(actual_by_name))
     extra = sorted(set(actual_by_name) - set(expected_by_name))
+    variant_objects: dict[tuple[str, str], set[str]] = {}
+    if expected.tier == ArchiveTier.INDEX.value and expected.version == actual.version:
+        from polylogue.storage.sqlite.lifecycle import same_version_schema_variants
+
+        for variant in same_version_schema_variants(expected.version):
+            for object_name in variant.object_names:
+                canonical = expected_by_name.get(object_name)
+                if canonical is not None and variant.transformation == "remove_fts_bulk_guard":
+                    variant_objects.setdefault(object_name, set()).add(_FTS_BULK_GUARD.sub("", canonical))
+
     wrong = sorted(
         (kind, name, expected_by_name[(kind, name)], actual_by_name[(kind, name)])
         for kind, name in set(expected_by_name) & set(actual_by_name)
         if expected_by_name[(kind, name)] != actual_by_name[(kind, name)]
+        and actual_by_name[(kind, name)] not in variant_objects.get((kind, name), set())
     )
     return {"missing": missing, "extra": extra, "wrong_definition": wrong}
 

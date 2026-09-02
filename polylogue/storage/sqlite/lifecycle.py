@@ -39,6 +39,37 @@ class DerivedDeltaClass(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SameVersionSchemaVariant:
+    """A declared object-definition variant retained by a derived tier."""
+
+    introduced_version: int
+    object_names: tuple[tuple[str, str], ...]
+    transformation: Literal["remove_fts_bulk_guard"]
+
+    def __post_init__(self) -> None:
+        if self.introduced_version < 1 or not self.object_names:
+            raise ValueError("SameVersionSchemaVariant requires a version and objects")
+
+
+INDEX_SAME_VERSION_SCHEMA_VARIANTS: tuple[SameVersionSchemaVariant, ...] = (
+    SameVersionSchemaVariant(
+        introduced_version=63,
+        object_names=(
+            ("trigger", "blocks_command_trigram_ai"),
+            ("trigger", "blocks_command_trigram_ad"),
+            ("trigger", "blocks_command_trigram_au"),
+        ),
+        transformation="remove_fts_bulk_guard",
+    ),
+)
+
+
+def same_version_schema_variants(version: int) -> tuple[SameVersionSchemaVariant, ...]:
+    """Return compatibility variants retained by a generation version."""
+    return tuple(variant for variant in INDEX_SAME_VERSION_SCHEMA_VARIANTS if version >= variant.introduced_version)
+
+
+@dataclass(frozen=True, slots=True)
 class TargetedReprocessScope:
     """A bounded reprocess scope over already-persisted sessions, as data.
 
@@ -1349,6 +1380,8 @@ __all__ = [
     "IndexDeltaDeclaration",
     "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
+    "INDEX_SAME_VERSION_SCHEMA_VARIANTS",
+    "SameVersionSchemaVariant",
     "TargetedReprocessScope",
     "get_latest_sql_fast_forwardable_version",
     "get_semantic_reparse_blocking_version_pair",
@@ -1357,5 +1390,6 @@ __all__ = [
     "invalid_canary_change_declarations",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",
+    "same_version_schema_variants",
     "undeclared_index_delta_versions",
 ]
