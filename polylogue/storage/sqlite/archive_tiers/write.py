@@ -879,6 +879,7 @@ def write_parsed_session_to_archive(
                 ),
             )
             add_timing("index.session_upsert", t0)
+            _write_session_identity_claims(conn, session_id, origin.value, session)
             position_offset = 0
             stale_attachment_ids: set[str] = set()
             projection_carry_forward: _ProjectionCarryForward | None = None
@@ -4436,7 +4437,7 @@ def _write_session_link(
 
 
 def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
-    """Resolve ``parentToolUseID`` (a provider tool_id) to its block_id.
+    """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
 
     polylogue-2qx.4: ``tool_id`` values are provider-generated and globally
     unique across a session tree, so this is a plain lookup against whatever
@@ -4445,11 +4446,44 @@ def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedS
     NULL, never a guess.
     """
     tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
+    parent_id = getattr(session, "parent_session_provider_id", None)
+    if not tool_use_provider_id and parent_id:
+        # The child no longer needs to manufacture a parent-side field: use
+        # the parent's normalized event and exact child identity claim.
+        parent_session_id = _existing_parent_session_id(conn, session, origin_from_provider(session.source_name).value)
+        if parent_session_id:
+            rows = conn.execute(
+                """SELECT source_message_provider_id, payload_json
+                   FROM session_events
+                   WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
+                (parent_session_id,),
+            ).fetchall()
+            child_ids = {str(session.provider_session_id)}
+            child_ids.update(str(value) for value in session.provider_session_aliases)
+            for source_id, payload_json in rows:
+                try:
+                    payload = json.loads(str(payload_json))
+                except (TypeError, ValueError):
+                    continue
+                observed = payload.get("child_provider_id") if isinstance(payload, dict) else None
+                if observed is not None and str(observed) in child_ids:
+                    tool_use_provider_id = str(source_id) if source_id else None
+                    break
     if not tool_use_provider_id:
         return None
     row = conn.execute(
-        "SELECT block_id FROM blocks WHERE tool_id = ? AND block_type = 'tool_use' LIMIT 1",
-        (tool_use_provider_id,),
+        """SELECT b.block_id FROM blocks b
+           JOIN messages m ON m.message_id = b.message_id
+           WHERE b.tool_id = ? AND b.block_type = 'tool_use'
+             AND (? IS NULL OR m.session_id = ?)
+           ORDER BY b.block_id LIMIT 1""",
+        (
+            tool_use_provider_id,
+            parent_id,
+            archive_session_id(origin_from_provider(session.source_name).value, parent_id.strip())
+            if parent_id
+            else None,
+        ),
     ).fetchone()
     return str(row[0]) if row is not None else None
 
@@ -7200,12 +7234,35 @@ def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
         return None
-    parent_session_id = archive_session_id(origin_value, parent_provider_id)
+    parent_session_id = archive_session_id(origin_value, parent_provider_id.strip())
     row = conn.execute(
         "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
         (parent_session_id,),
     ).fetchone()
-    return parent_session_id if row is not None else None
+    if row is not None:
+        return parent_session_id
+    row = conn.execute(
+        """SELECT claimant_session_id FROM session_identity_claims
+           WHERE origin = ? AND identity_namespace = 'provider-session'
+             AND provider_value = ? ORDER BY claimant_session_id""",
+        (origin_value, parent_provider_id.strip()),
+    ).fetchall()
+    return str(row[0][0]) if len(row) == 1 else None
+
+
+def _write_session_identity_claims(
+    conn: sqlite3.Connection, session_id: str, origin: str, session: ParsedSession
+) -> None:
+    """Persist exact parser-emitted names that can address this session."""
+    conn.execute("DELETE FROM session_identity_claims WHERE claimant_session_id = ?", (session_id,))
+    values = [session.provider_session_id, *session.provider_session_aliases]
+    for value in dict.fromkeys(str(value).strip() for value in values if str(value).strip()):
+        conn.execute(
+            """INSERT OR REPLACE INTO session_identity_claims
+               (origin, identity_namespace, provider_value, claimant_session_id, claim_kind, evidence_json)
+               VALUES (?, 'provider-session', ?, ?, ?, '{}')""",
+            (origin, value, session_id, "canonical" if value == session.provider_session_id else "alias"),
+        )
 
 
 def _message_content_address_for_id(conn: sqlite3.Connection, message_id: str) -> bytes | None:

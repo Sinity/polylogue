@@ -1465,6 +1465,20 @@ CREATE TABLE IF NOT EXISTS derived_refresh_guard (
     {TABLE_SPECS["derived_refresh_guard"].ddl_body}
 ) STRICT;
 
+-- Exact provider identities that name an emitted session.  Rebuildable: every
+-- row is derived from the current parsed source cohort.
+CREATE TABLE IF NOT EXISTS session_identity_claims (
+    origin TEXT NOT NULL,
+    identity_namespace TEXT NOT NULL,
+    provider_value TEXT NOT NULL,
+    claimant_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    claim_kind TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{{}}',
+    PRIMARY KEY (origin, identity_namespace, provider_value, claimant_session_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_session_identity_claims_lookup
+ON session_identity_claims(origin, identity_namespace, provider_value);
+
 -- Provider-neutral topology and claims. This remains a derived tier: adapters
 -- materialize admitted source facts here, while this slice deliberately does
 -- not model repository effects or evaluated satisfaction.
