@@ -135,6 +135,7 @@ def test_ddl_rendering_ignores_a_foreign_sysconfig_identity(monkeypatch: pytest.
     gate reports every archive tier as an undeclared lifecycle change."""
     monkeypatch.setenv("_PYTHON_SYSCONFIGDATA_NAME", "_sysconfigdata_bogus_build")
 
-    rendered = verify_schema_upgrade_lane._render_archive_ddl(None)
+    # A real ref takes the subprocess path; None returns the imported DDL.
+    rendered = verify_schema_upgrade_lane._render_archive_ddl("HEAD")
 
-    assert rendered
+    assert rendered == ARCHIVE_DDL_BY_TIER
