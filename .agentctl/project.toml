@@ -182,6 +182,11 @@ flag = "--receipt-ref"
 max_length = 128
 grammar = "safe-token"
 
+[operations.harvest.parameters.affected_job]
+type = "string"
+flag = "--affected-job"
+max_length = 64
+
 [operations.harvest.parameters.lane_job_id]
 type = "string"
 flag = "--lane-job-id"
