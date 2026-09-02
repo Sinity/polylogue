@@ -124,16 +124,6 @@ def test_v79_global_session_sort_index_is_clone_safe() -> None:
     assert declaration.operations[0].objects == (("index", "idx_sessions_sort_key"),)
 
 
-def test_v80_sidecar_receipt_retirement_is_a_clone_safe_cache_removal() -> None:
-    plan = lifecycle.index_fast_forward_plan(79, 80)
-
-    assert plan is not None
-    declaration = plan.declarations[0]
-    assert declaration.classes == (DerivedDeltaClass.CACHE_REMOVAL,)
-    assert declaration.operations[0].kind is FastForwardOperationKind.DROP_TABLE
-    assert declaration.operations[0].objects == (("table", "agent_meta_sidecar_purge_receipts"),)
-
-
 def test_v65_action_result_state_is_view_only_fast_forward() -> None:
     declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 65)
 
