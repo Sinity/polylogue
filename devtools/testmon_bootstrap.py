@@ -981,26 +981,50 @@ def prepare_native_testmon_environment(
     # environment or to the run that was interrupted.
     removed: tuple[Path, ...] = ()
     if local.status == "invalid":
+        invalid = local
         removed = remove_invalid_native_testmon_state(root)
         # What remains after the repair is an empty slot, and an empty slot
-        # seeds: orphan sidecars must not cost a lane its selection.
-        local = inspect_native_testmon_environment(
+        # seeds: orphan sidecars must not cost a lane its selection. The
+        # original diagnosis survives unless a replacement graph arrives.
+        repaired = inspect_native_testmon_environment(
             local_data,
             environment_name=environment_name,
             required_executable_paths=required_executable_paths,
             deadline_monotonic=deadline_monotonic,
         )
-        if local.status == "absent":
-            seeded = seed_native_testmon_from_main_checkout(
+        seeded = (
+            seed_native_testmon_from_main_checkout(
                 root,
                 environment_name=environment_name,
                 required_executable_paths=required_executable_paths,
                 deadline_monotonic=deadline_monotonic,
             )
-            if seeded is not None:
-                local = seeded
-                if local.valid and not missing_checkout_paths:
-                    return NativeTestmonPreparation(environment_name, "affected", local, removed)
+            if repaired.status == "absent"
+            else None
+        )
+        if seeded is not None and seeded.environment is not None:
+            local = seeded
+        else:
+            local = NativeTestmonState(
+                "invalid",
+                invalid.reason + ("; " + seeded.reason if seeded is not None else "; removed"),
+            )
+        if local.valid and not missing_checkout_paths:
+            return NativeTestmonPreparation(environment_name, "affected", local, removed)
+    if missing_checkout_paths and local.environment is not None:
+        # A seeded or resumable graph is still no graph for a module that
+        # left the checkout underneath preparation.
+        return NativeTestmonPreparation(
+            environment_name,
+            "bootstrap",
+            NativeTestmonState(
+                "invalid",
+                "changed executable modules are absent from the current checkout",
+                local.environment,
+                missing_checkout_paths,
+            ),
+            removed,
+        )
     _ensure_deadline(deadline_monotonic)
 
     if local.resumable:
