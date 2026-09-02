@@ -176,6 +176,9 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
         reason = selection.get("graph_reason")
         if reason:
             print(f"  graph: {reason}", file=stream)
+        cause = selection.get("full_rerun_cause")
+        if cause:
+            print(f"  full rerun: {cause} since the graph was written", file=stream)
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):
