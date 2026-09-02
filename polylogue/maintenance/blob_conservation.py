@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from polylogue.daemon.backup import _source_recoverability_proofs
+from polylogue.daemon.backup import _source_blob_reservations, _source_recoverability_proofs
 from polylogue.storage.blob_integrity import project_source_blob_liveness
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
 
@@ -24,6 +24,7 @@ class BlobConservationReport:
     orphan_blobs: int
     dangling_references: int
     recoverable_references: int
+    reserved_blobs: int
     invalid_namespace_entries: int
     staged_in_flight: int
     orphan_sample: tuple[str, ...] = ()
@@ -44,6 +45,7 @@ class BlobConservationReport:
             "orphan_blobs": self.orphan_blobs,
             "dangling_references": self.dangling_references,
             "recoverable_references": self.recoverable_references,
+            "reserved_blobs": self.reserved_blobs,
             "invalid_namespace_entries": self.invalid_namespace_entries,
             "staged_in_flight": self.staged_in_flight,
             "orphan_sample": list(self.orphan_sample),
@@ -71,7 +73,9 @@ def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> Blo
     entries = tuple(store.iter_namespace())
     present = {entry.hash_hex for entry in entries if entry.kind is BlobNamespaceEntryKind.BLOB and entry.hash_hex}
     referenced = set(projection.live_hashes)
-    missing = referenced - present
+    reservations = _source_blob_reservations(source_db)
+    protected = referenced | reservations
+    missing = protected - present
     source_hashes = set().union(
         *(set(hashes) for owner, hashes in projection.owner_hashes if owner.startswith("source.db."))
     )
@@ -94,12 +98,13 @@ def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> Blo
         archive_root=str(root),
         referenced_blobs=len(referenced),
         present_blobs=len(present),
-        orphan_blobs=len(present - referenced),
+        orphan_blobs=len(present - protected),
         dangling_references=len(missing - recoverable),
         recoverable_references=len(recoverable),
+        reserved_blobs=len(reservations),
         invalid_namespace_entries=len(invalid),
         staged_in_flight=len(staged),
-        orphan_sample=tuple(sorted(present - referenced)[:limit]),
+        orphan_sample=tuple(sorted(present - protected)[:limit]),
         dangling_sample=tuple(sorted(missing - recoverable)[:limit]),
         recoverable_sample=tuple(sorted(recoverable)[:limit]),
         invalid_sample=tuple(sorted(invalid)[:limit]),
@@ -119,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Blob conservation: {'PASS' if report.ok else 'FAIL'}")
         print(f"Referenced: {report.referenced_blobs:,}; present: {report.present_blobs:,}")
         print(
-            f"Orphans: {report.orphan_blobs:,}; dangling: {report.dangling_references:,}; recoverable: {report.recoverable_references:,}"
+            f"Orphans: {report.orphan_blobs:,}; dangling: {report.dangling_references:,}; recoverable: {report.recoverable_references:,}; reserved: {report.reserved_blobs:,}"
         )
         print(f"Invalid namespace: {report.invalid_namespace_entries:,}; staged in-flight: {report.staged_in_flight:,}")
     return 0 if report.ok else 1

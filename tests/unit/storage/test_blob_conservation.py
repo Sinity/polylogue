@@ -54,6 +54,24 @@ def test_conservation_excludes_staged_work_from_blob_population(
     assert report.ok
 
 
+def test_conservation_treats_pending_publication_reservation_as_live(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _empty_archive(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    reserved, _ = store.write_from_bytes(b"pending-publication")
+    monkeypatch.setattr(
+        blob_conservation, "project_source_blob_liveness", lambda *args, **kwargs: BlobLivenessProjection(frozenset())
+    )
+    monkeypatch.setattr(blob_conservation, "_source_blob_reservations", lambda *args, **kwargs: {reserved})
+
+    report = blob_conservation.check_blob_conservation(tmp_path)
+
+    assert report.reserved_blobs == 1
+    assert report.orphan_blobs == 0
+    assert report.ok
+
+
 def test_conservation_excludes_backup_prover_confirmed_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
