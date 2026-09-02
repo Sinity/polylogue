@@ -2167,8 +2167,6 @@ def _message_content_hash(
         _sqlite_text(message.delivery_status) or "",
         "" if message.end_turn is None else str(int(message.end_turn)),
         "" if message.occurred_at_ms is None else str(message.occurred_at_ms),
-        "" if message.position is None else str(message.position),
-        "" if message.variant_index is None else str(message.variant_index),
         *block_parts,
     )
 

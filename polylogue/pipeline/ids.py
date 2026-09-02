@@ -44,6 +44,7 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "metadata",
             "is_error",
             "exit_code",
+            "tool_outcome",
             "outcome_unknown_reason",
             "file_edit",
             "web_constructs",
@@ -60,11 +61,6 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "message_type",
             "material_origin",
             "parent_message_provider_id",
-            "position",
-            "branch_index",
-            "variant_index",
-            "is_active_path",
-            "is_active_leaf",
             "model_name",
             "model_effort",
             "sender_name",
@@ -115,6 +111,11 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedMessage": {
         "parent_message_position": "parser-only linkage resolved to the stored parent identity",
         "owner_coordinate": "parser-only ownership evidence resolved before storage",
+        "position": "parser-only occurrence coordinate used for ordering and owner resolution",
+        "branch_index": "parser-only branch ordering coordinate resolved into lineage",
+        "variant_index": "parser-only duplicate occurrence coordinate resolved by owner evidence",
+        "is_active_path": "parser-derived path marker owned by lineage materialization",
+        "is_active_leaf": "parser-derived leaf marker owned by lineage materialization",
         "input_tokens": "provider usage measurement is owned by usage/cost derivation",
         "output_tokens": "provider usage measurement is owned by usage/cost derivation",
         "cache_read_tokens": "provider usage measurement is owned by usage/cost derivation",
@@ -356,7 +357,6 @@ def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     """Build the declared semantic payload for a single content block."""
-    validate_semantic_hash_partition()
     return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"])
 
 
@@ -394,7 +394,6 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 
 def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str, JSONValue]:
     """Build a message payload with the requested semantic field boundary."""
-    validate_semantic_hash_partition()
     payload = _model_hash_payload(message, fields - {"blocks", "provider_message_id"})
     if message.blocks and not _is_redundant_text_only_block(message):
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]

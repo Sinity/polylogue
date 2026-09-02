@@ -63,11 +63,11 @@ surface through `tags_m2m`.
 
 The normalized parser hash has an explicit complete field partition in
 `polylogue/pipeline/ids.py`. Session, message, and content-block semantic
-fields—including authoredness, model/stop/context fields, structural tool
-outcomes, instructions, parent, and branch fields—are hashed. Parser-only
-coordinates, provider signatures, admission accounting, and independently
-derived usage/timing/cost measurements are excluded with an owner and reason;
-adding a parsed field without classifying it is rejected.
+fields, including authoredness, model/stop/context fields, structural tool
+outcomes, instructions, parent, and branch fields, are hashed. Source identity,
+parser-only coordinates, provider signatures, admission accounting, and
+independently derived usage/timing/cost measurements are excluded with an owner
+and reason; adding a parsed field without classifying it is rejected.
 
 Convenience properties resolve these:
 
