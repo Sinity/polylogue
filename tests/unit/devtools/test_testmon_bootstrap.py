@@ -849,3 +849,16 @@ def test_orphan_sidecars_are_removed_and_the_graph_seeded(tmp_path: Path) -> Non
     assert preparation.local_state.valid
     assert {path.name for path in preparation.removed_paths} == {"testmondata-wal", "testmondata-shm"}
     assert lane_data.is_file()
+
+
+def test_a_seeded_graph_still_refuses_a_path_missing_from_the_checkout(tmp_path: Path) -> None:
+    """Anti-vacuity: the seed path returned affected selection without the
+    checkout-path check the local path applies."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (lane / "polylogue" / "module.py").unlink()
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "bootstrap"

@@ -965,7 +965,7 @@ def prepare_native_testmon_environment(
         )
         if seeded is not None:
             local = seeded
-            if local.valid:
+            if local.valid and not missing_checkout_paths:
                 return NativeTestmonPreparation(environment_name, "affected", local, ())
 
     # Retain a merely incomplete graph. An interrupted bootstrap leaves a
@@ -999,7 +999,7 @@ def prepare_native_testmon_environment(
             )
             if seeded is not None:
                 local = seeded
-                if local.valid:
+                if local.valid and not missing_checkout_paths:
                     return NativeTestmonPreparation(environment_name, "affected", local, removed)
     _ensure_deadline(deadline_monotonic)
 
