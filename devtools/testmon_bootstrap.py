@@ -1008,6 +1008,8 @@ def prepare_native_testmon_environment(
             local = NativeTestmonState(
                 "invalid",
                 invalid.reason + ("; " + seeded.reason if seeded is not None else "; removed"),
+                invalid.environment,
+                invalid.missing_executable_paths,
             )
         if local.valid and not missing_checkout_paths:
             return NativeTestmonPreparation(environment_name, "affected", local, removed)

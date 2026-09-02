@@ -895,3 +895,19 @@ def test_a_failed_reseed_keeps_the_invalid_diagnosis(tmp_path: Path) -> None:
     assert preparation.local_state.reason.startswith("SQLite sidecars exist without the owned database")
     assert "main checkout" in preparation.local_state.reason
     assert preparation.removed_paths
+
+
+def test_a_failed_reseed_keeps_the_missing_paths(tmp_path: Path) -> None:
+    """The receipt and `devtools why` name the files whose absence forced the repair."""
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "polylogue" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    environment_name = _testmon_environment_digest(tmp_path)
+    _seed_partial_native_graph(tmp_path, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (tmp_path / "polylogue" / "module.py").unlink()
+
+    preparation = prepare_native_testmon_environment(tmp_path, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.local_state.status == "invalid"
+    assert preparation.local_state.missing_executable_paths == ("polylogue/module.py",)
+    assert preparation.local_state.reason.startswith("changed executable modules are absent from the current checkout")
