@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from polylogue.storage.archive_identity import ArchiveIdentity
+from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
 
 class AuthorityEnvelope(BaseModel):
@@ -48,7 +48,7 @@ def build_authority_envelope(
 ) -> AuthorityEnvelope:
     """Build one immutable snapshot from the current archive binding."""
 
-    identity = ArchiveIdentity.resolve(Path(archive_root))
+    identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(Path(archive_root)))
     # Keep the surface contract import-light. Bootstrap imports the complete
     # tier graph and is only needed when an authority snapshot is built.
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
