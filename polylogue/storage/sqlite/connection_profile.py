@@ -633,6 +633,7 @@ def open_connection(
     timeout: float = DB_TIMEOUT,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = WRITE_CONNECTION_PROFILE,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -644,11 +645,13 @@ def open_connection(
     For the thread-local cached archive connection used by the async runtime,
     use ``connection_context`` from ``connection.py`` instead.
     """
+    if profile.role != "write":
+        raise ValueError("open_connection requires a write profile")
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        for stmt in profile.pragma_statements:
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
     except BaseException:
@@ -722,6 +725,7 @@ def open_readonly_connection(
     opened_main_fd: int | None = None,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -748,6 +752,8 @@ def open_readonly_connection(
     inspect a tier before reporting its schema mismatch. It does not change the
     read-only connection profile or grant write access.
     """
+    if profile.role != "read" or not profile.query_only:
+        raise ValueError("open_readonly_connection requires a query-only read profile")
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
@@ -763,7 +769,7 @@ def open_readonly_connection(
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
+        for stmt in profile.pragma_statements:
             conn.execute(stmt)
     except BaseException:
         conn.close()
@@ -795,10 +801,16 @@ def open_profiled_connection(
             immutable=immutable,
             opened_main_fd=opened_main_fd,
             tier=tier,
+            profile=profile,
         )
     if immutable or opened_main_fd is not None:
         raise ValueError("writer profiles cannot use immutable or descriptor-bound reads")
-    return open_connection(path, timeout=profile.timeout_seconds if timeout is None else timeout, tier=tier)
+    return open_connection(
+        path,
+        timeout=profile.timeout_seconds if timeout is None else timeout,
+        tier=tier,
+        profile=profile,
+    )
 
 
 @contextmanager

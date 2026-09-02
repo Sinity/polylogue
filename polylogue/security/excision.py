@@ -76,25 +76,21 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     record_excised_blob_hash,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, READ_DB_TIMEOUT, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, TIMEOUT_PROFILES, open_profiled_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # One-shot excision connections open each tier directly (not via
-# open_connection/open_readonly_connection) because they must NOT attach
+# open_connection/open_profiled_connection) because they must NOT attach
 # sibling tiers -- excision deliberately opens and commits one tier at a
 # time so a mid-apply failure leaves at most one tier mutated, never a
-# half-written cross-tier transaction. They still need the same
-# busy_timeout every other write chokepoint in this codebase sets (see
-# storage/blob_publication.py's identical one-shot pattern), so every
-# connect() below is immediately followed by an explicit PRAGMA using these
-# shared timeout constants.
-_READ_BUSY_TIMEOUT_MS = READ_DB_TIMEOUT * 1000
+# half-written cross-tier transaction. Reads use the named background
+# profile; writes retain the local busy timeout.
 _WRITE_BUSY_TIMEOUT_MS = DB_TIMEOUT * 1000
 
 
 def _connect_ro(path: Path) -> sqlite3.Connection:
-    """Open a one-shot read-only tier connection with the shared busy_timeout."""
-    return open_readonly_connection(path)
+    """Open a one-shot read-only tier connection with the background profile."""
+    return open_profiled_connection(path, profile=TIMEOUT_PROFILES["background-read"])
 
 
 def _connect_rw(path: Path) -> sqlite3.Connection:

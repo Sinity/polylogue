@@ -21,35 +21,6 @@ from polylogue.daemon.web_auth import WebCredentialRegistry
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 
-class DaemonOperationHandler(BaseHTTPRequestHandler):
-    """Archive-scoped machine endpoint with no browser route surface.
-
-    The operation implementation is attached by the daemon composition root;
-    this handler accepts only the one typed POST endpoint. Browser HTTP keeps
-    its own handler and route registry.
-    """
-
-    daemon_handler_class: type[BaseHTTPRequestHandler] | None = None
-
-    def do_GET(self) -> None:
-        self.send_error(404)
-
-    def do_POST(self) -> None:
-        if self.path.split("?", 1)[0] != "/api/operation":
-            self.send_error(404)
-            return
-        handler_class = getattr(self.server, "daemon_handler_class", None)
-        if handler_class is None:
-            self.send_error(500)
-            return
-        # The browser implementation is used as a semantic operation
-        # executor only. Its route dispatcher is never entered on this socket.
-        handler_class(self.request, self.client_address, self.server)
-
-    def log_message(self, format: str, *args: object) -> None:
-        return
-
-
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     """AF_UNIX peer for :class:`DaemonAPIHTTPServer`; routing stays identical."""
 
@@ -68,20 +39,13 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         # reads before crossing that boundary so the original OSError remains
         # authoritative.
         self.socket_path = socket_path
-        self.daemon_handler_class = handler_class
         self.execution_kernel: BoundedComputeAdapter | None = None
         self.archive_query_executor = None
         self._owned_write_runtime: _StandaloneWriteRuntime | None = None
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with __import__("contextlib").suppress(FileNotFoundError):
             socket_path.unlink()
-        # The socket itself is served by the machine-only handler. The
-        # supplied class is retained solely as the semantic executor for the
-        # typed operation, so browser routes cannot be reached over AF_UNIX.
-        # Keep test-specific handler subclasses usable while the production
-        # browser handler gets the machine-only wrapper.
-        request_handler = DaemonOperationHandler if handler_class.__name__ == "DaemonAPIHandler" else handler_class
-        super().__init__(str(socket_path), request_handler)
+        super().__init__(str(socket_path), handler_class)
         self.auth_token = auth_token
         self.api_host = "127.0.0.1"
         self.started_at = datetime.now(UTC).isoformat()
@@ -120,4 +84,4 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             self.socket_path.unlink()
 
 
-__all__ = ["DaemonAPIUnixHTTPServer", "DaemonOperationHandler", "daemon_socket_path"]
+__all__ = ["DaemonAPIUnixHTTPServer", "daemon_socket_path"]

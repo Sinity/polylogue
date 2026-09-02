@@ -144,7 +144,9 @@ class DaemonOperationRequest:
             raise ValueError("daemon_version must be a string")
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a non-empty string")
-        if deadline_ms is not None and (not isinstance(deadline_ms, int) or deadline_ms <= 0):
+        if deadline_ms is not None and (
+            not isinstance(deadline_ms, int) or isinstance(deadline_ms, bool) or deadline_ms <= 0
+        ):
             raise ValueError("deadline_ms must be a positive integer")
         return cls(operation.strip(), dict(payload), archive_root, schema, version, request_id, deadline_ms)
 

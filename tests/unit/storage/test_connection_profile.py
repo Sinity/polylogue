@@ -65,6 +65,39 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
         descriptor_handle.close()
 
 
+@pytest.mark.parametrize(
+    ("profile_name", "expected_busy_timeout_ms", "expected_query_only"),
+    [
+        ("background-read", connection_profile.DB_TIMEOUT * 1000, 1),
+        ("offline-bulk", connection_profile.DB_TIMEOUT * 1000, 0),
+    ],
+)
+def test_open_profiled_connection_applies_the_selected_profile(
+    tmp_path: Path,
+    profile_name: str,
+    expected_busy_timeout_ms: int,
+    expected_query_only: int,
+) -> None:
+    db_path = tmp_path / "generation.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+
+    connection = connection_profile.open_profiled_connection(
+        db_path,
+        profile=connection_profile.TIMEOUT_PROFILES[profile_name],
+    )
+    try:
+        assert connection.execute("PRAGMA busy_timeout").fetchone() == (expected_busy_timeout_ms,)
+        assert connection.execute("PRAGMA query_only").fetchone() == (expected_query_only,)
+        if profile_name == "offline-bulk":
+            assert connection.execute("PRAGMA journal_mode").fetchone() == ("memory",)
+        else:
+            with pytest.raises(sqlite3.OperationalError, match="attempt to write a readonly database"):
+                connection.execute("INSERT INTO evidence VALUES ('blocked')")
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
 def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_connection(
     tmp_path: Path, factory: Callable[..., sqlite3.Connection]
