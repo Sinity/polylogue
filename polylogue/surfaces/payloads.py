@@ -899,6 +899,7 @@ _MessageRowEnvelopeBase = _create_projection_model(
     default_overrides=_MESSAGE_DEFAULT_OVERRIDES,
     field_order=(
         "id",
+        "identity_source",
         "role",
         "text",
         "target_ref",
