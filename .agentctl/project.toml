@@ -43,7 +43,9 @@ verification-graph = ["devtools/verify.py", "pyproject.toml"]
 
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
-exec = ["devtools", "verify"]
+# Eight of these run beside agent lanes; four workers each keeps the host
+# at its thread count instead of three times over it.
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "devtools", "verify"]
 pool = "normal"
 result = "pytest"
 cache = "tree+environment"
@@ -144,7 +146,7 @@ range = [49120, 49183]
 
 [operations.harvest]
 description = "Review a finished lane, then publish it under an authorized receipt"
-exec = ["sinnixd-harvest"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "sinnixd-harvest"]
 pool = "normal"
 result = "json"
 cache = "none"
