@@ -793,6 +793,9 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
     assert covered([row("moved", start_head="older")]) is None
     # Pruned evidence is history, not coverage.
     assert covered([row("pruned", evidence=False)]) is None
+    # A traced affected run since, at another head, rewrote the graph.
+    affected = {**row("later-affected"), "tier": "affected"}
+    assert covered([row("green"), affected]) is None
 
 
 def test_execution_plan_digest_sees_the_js_worker_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -936,3 +939,29 @@ def test_reuse_inputs_are_recomputed_at_the_decision(monkeypatch: pytest.MonkeyP
 
     assert built == ["built"]
     assert history.get("diagnosis") != "corpus_already_verified"
+
+
+def test_unreadable_reuse_inputs_run_the_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools.testmon_bootstrap import NativeTestmonRepairError
+
+    def broken() -> str:
+        raise NativeTestmonRepairError("metadata malformed")
+
+    monkeypatch.setattr(verify, "installed_packages_digest", broken)
+    assert verify._reuse_inputs_still_hold("pkgs-1", "plan-1") is False
+
+
+def test_git_dirty_sees_untracked_files_regardless_of_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from devtools import verify_runs
+
+    seen: list[list[str]] = []
+
+    def record(command: list[str], **_k: Any) -> SimpleNamespace:
+        seen.append(command)
+        return SimpleNamespace(returncode=0, stdout="?? tests/new_test.py\n")
+
+    monkeypatch.setattr(subprocess, "run", record)
+    assert verify_runs.git_dirty() is True
+    assert "--untracked-files=all" in seen[0]

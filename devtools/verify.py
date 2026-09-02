@@ -575,6 +575,14 @@ def _execution_plan_digest() -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def _reuse_inputs_still_hold(packages: str, plan: str) -> bool:
+    """Recompute the reuse inputs at the decision; anything unreadable means run."""
+    try:
+        return installed_packages_digest() == packages and _execution_plan_digest() == plan
+    except (NativeTestmonRepairError, OSError):
+        return False
+
+
 def _merge_base_with_master() -> str:
     try:
         result = subprocess.run(
@@ -643,8 +651,6 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
     """The run id of the newest complete-corpus attempt at this head, environment,
     package set, and execution plan, if that attempt was a clean-tree success."""
     for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
-        if row.get("tier") != "all":
-            continue
         receipt = row.get("semantic_receipt")
         selection = row.get("testmon_selection")
         aggregate = row.get("pytest_aggregate")
@@ -653,6 +659,11 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
         if aggregate.get("covered_by_run"):
             # A skip is not an attempt; the attempt it reused is older.
             continue
+        if row.get("tier") != "all":
+            # Any traced run since, at any head, rewrote the shared graph's
+            # edges; the complete run on record no longer describes the
+            # graph on disk.
+            return None
         # The newest complete attempt anywhere is the graph on disk. If it
         # ran at another head, environment, package set or plan, this
         # invocation's corpus is not what is recorded, so it runs.
@@ -947,8 +958,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     and git_head(ROOT) == head
                     # The inputs are recomputed at the decision: an
                     # environment sync between capture and here is a new plan.
-                    and installed_packages_digest() == packages
-                    and _execution_plan_digest() == plan
+                    and _reuse_inputs_still_hold(packages, plan)
                 ):
                     # The corpus at this head under this environment is already
                     # a recorded fact; rerunning it changes nothing but the

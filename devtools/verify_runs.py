@@ -175,7 +175,12 @@ def _read_only_git_env() -> dict[str, str]:
 def git_dirty(cwd: Path | None = None) -> bool:
     try:
         result = subprocess.run(
-            ["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd, env=_read_only_git_env()
+            ["git", "status", "--short", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+            env=_read_only_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
