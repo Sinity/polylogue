@@ -38,15 +38,15 @@ dependencies = [
   "tenacity>=8.0.0",
   "dateparser>=1.4.2",
   "structlog>=26.1.0",
-  "pydantic>=2.13.4,<3.0",
+  "pydantic>=2.13.5,<3.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
   "mcp>=1.28.1",  # Model Context Protocol SDK
   "pyyaml>=6.0",  # YAML output format
   "typing-extensions>=4.16.0",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
-  "nh3>=0.3.6",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
+  "nh3>=0.3.7",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
-  "cryptography>=50.0.0",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
+  "cryptography>=50.0.1",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.32",  # CVE-2026-40347 (transitive via mcp)
 ]
 
@@ -83,7 +83,7 @@ dev-common = [
   "mypy>=2.3.1,<2.4",
   "types-dateparser>=1.4.2.20260813",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.16.4",
+  "ruff>=0.16.5",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 dev = [
@@ -121,7 +121,7 @@ tree-sitter = [
 # group, not a shipped product dependency; the devshell supplies the
 # complementary native tools (scc and CodeQL).
 audit = [
-  "ast-grep-cli>=0.45.0",
+  "ast-grep-cli>=0.45.2",
 ]
 
 [project.urls]
