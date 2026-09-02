@@ -516,6 +516,22 @@ def _archive_tier_for_path(path: str | Path) -> ArchiveTier | None:
     return next((tier for tier in ArchiveTier if Path(path).name == f"{tier.value}.db"), None)
 
 
+def _schema_skew_remedy(tier: ArchiveTier) -> str:
+    """Describe the safe recovery route for a mismatched archive tier."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
+
+    spec = archive_tier_spec(tier)
+    if spec.durability in {"rebuildable", "expensive_rebuild", "disposable"}:
+        return (
+            f"{tier.value}.db is {spec.durability} derived state; rebuild or recreate this tier "
+            "from durable evidence with the current runtime before retrying"
+        )
+    return (
+        f"{tier.value}.db is durable state; do not rebuild it. Run `polylogue ops maintenance migrate-tier "
+        f"{tier.value}` with a verified backup manifest before retrying"
+    )
+
+
 def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: ArchiveTier | None) -> None:
     """Reject a known archive tier before any caller can issue SQL against it."""
     from polylogue.core.errors import SchemaSkew
@@ -534,7 +550,7 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
             tier=resolved_tier.value,
             expected=expected,
             found=found,
-            remedy="rebuild or migrate the tier with the current runtime before retrying",
+            remedy=_schema_skew_remedy(resolved_tier),
         )
 
 

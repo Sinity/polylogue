@@ -78,7 +78,26 @@ def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_c
     assert excinfo.value.tier == ArchiveTier.USER.value
     assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
     assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-    assert "rebuild or migrate" in excinfo.value.remedy
+    assert "durable state" in excinfo.value.remedy
+    assert "do not rebuild" in excinfo.value.remedy
+    assert "migrate-tier user" in excinfo.value.remedy
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected_terms"),
+    [
+        (ArchiveTier.SOURCE, ("durable state", "do not rebuild", "migrate-tier source")),
+        (ArchiveTier.AUDIT, ("durable state", "do not rebuild", "migrate-tier audit")),
+        (ArchiveTier.INDEX, ("rebuildable derived state", "rebuild or recreate")),
+        (ArchiveTier.EMBEDDINGS, ("expensive_rebuild derived state", "rebuild or recreate")),
+        (ArchiveTier.OPS, ("disposable derived state", "rebuild or recreate")),
+    ],
+)
+def test_schema_skew_remedy_matches_tier_durability(tier: ArchiveTier, expected_terms: tuple[str, ...]) -> None:
+    remedy = connection_profile._schema_skew_remedy(tier)
+
+    for term in expected_terms:
+        assert term in remedy
 
 
 def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> None:
