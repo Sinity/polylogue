@@ -161,11 +161,10 @@ class SqliteVecQueryMixin:
         """Find semantically similar messages.
 
         ``message_embeddings`` is keyed by ``vector_derivation_hash`` (content-
-        addressed, deduped), not ``message_id``: a MATCH hit is resolved back
-        to every message currently referencing that hash via
-        ``message_embedding_refs``, so identical content shared across
-        sessions surfaces every one of its messages, not just one arbitrary
-        representative.
+        addressed, deduped), not ``message_id``: a MATCH hit is resolved through
+        the connection's current-index projection, so identical content shared
+        across sessions surfaces every eligible message rather than an
+        arbitrary predecessor mapping.
         """
         self._ensure_vec_available()
         self._ensure_tables()
@@ -187,7 +186,7 @@ class SqliteVecQueryMixin:
                     WHERE embedding MATCH ?
                       AND k = ?
                 ) AS hits
-                JOIN message_embedding_refs AS r
+                JOIN current_embedding_messages AS r
                   ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                 ORDER BY hits.distance
                 """,
@@ -224,7 +223,7 @@ class SqliteVecQueryMixin:
                 seed_rows = conn.execute(
                     """
                     SELECT DISTINCT me.vector_derivation_hash AS vector_derivation_hash, me.embedding AS embedding
-                    FROM message_embedding_refs AS r
+                    FROM current_embedding_messages AS r
                     JOIN message_embeddings AS me
                       ON lower(hex(r.vector_derivation_hash)) = me.vector_derivation_hash
                     WHERE r.session_id = ?
@@ -251,7 +250,7 @@ class SqliteVecQueryMixin:
                         WHERE embedding MATCH ?
                           AND k = ?
                     ) AS hits
-                    JOIN message_embedding_refs AS r
+                    JOIN current_embedding_messages AS r
                       ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                     ORDER BY hits.distance
                     """,
@@ -284,7 +283,7 @@ class SqliteVecQueryMixin:
                 row = conn.execute(
                     """
                     SELECT COUNT(DISTINCT vector_derivation_hash) AS count
-                    FROM message_embedding_refs
+                    FROM current_embedding_messages
                     WHERE session_id = ?
                     """,
                     (session_id,),
@@ -315,7 +314,7 @@ class SqliteVecQueryMixin:
 
         ``message_embeddings`` no longer carries a per-vector origin column
         (it is content-addressed and shared across origins); the filter is
-        applied post-join against ``message_embedding_refs.origin`` instead.
+        applied post-join against the current-index projection instead.
         Over-fetches the KNN candidate pool so a narrow origin filter still
         has enough candidates to fill ``limit`` after filtering.
         """
@@ -339,7 +338,7 @@ class SqliteVecQueryMixin:
                     WHERE embedding MATCH ?
                       AND k = ?
                 ) AS hits
-                JOIN message_embedding_refs AS r
+                JOIN current_embedding_messages AS r
                   ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
                 WHERE r.origin = ?
                 ORDER BY hits.distance

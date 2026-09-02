@@ -19,7 +19,6 @@ states.
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -43,6 +42,7 @@ from polylogue.daemon.similarity import (
 )
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.embeddings.identity import vector_derivation_hash
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
@@ -150,6 +150,11 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
     """
     root = archive_root()
     index_db = root / "index.db"
+    text_by_native_id = {
+        "seed": "Alpha seed session with durable authored prose.",
+        "near": "Alpha near neighbor session with durable authored prose.",
+        "far": "Zeta unrelated topic with durable authored prose.",
+    }
     with sqlite3.connect(index_db) as conn:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         for native_id, title in (("seed", "Seed"), ("near", "Near"), ("far", "Far")):
@@ -162,10 +167,24 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO messages (
-                    session_id, native_id, position, role, content_hash
-                ) VALUES (?, ?, 0, 'user', ?)
+                    session_id, native_id, position, role, material_origin,
+                    word_count, content_hash
+                ) VALUES (?, ?, 0, 'user', 'human_authored', ?, ?)
                 """,
-                (session_id, "m1", b"x" * 32),
+                (session_id, "m1", len(text_by_native_id[native_id].split()), b"x" * 32),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO blocks (
+                    session_id, message_id, position, block_type, text, content_hash
+                ) VALUES (?, ?, 0, 'text', ?, ?)
+                """,
+                (
+                    session_id,
+                    f"{session_id}:n:m1",
+                    text_by_native_id[native_id],
+                    b"x" * 32,
+                ),
             )
         message_id_by_session = {
             str(row[1]): str(row[0]) for row in conn.execute("SELECT message_id, session_id FROM messages")
@@ -191,9 +210,11 @@ def _seed_ready_similarity_archive() -> tuple[str, Path, dict[str, str]]:
                     session_id=session_id,
                     origin=Origin.CODEX_SESSION,
                     embedding=vector,
-                    model="voyage-4",
+                    model="voyage-4-lite",
                     embedded_at_ms=1_767_225_700_000,
-                    vector_derivation_hash=hashlib.sha256(message_id.encode()).digest(),
+                    vector_derivation_hash=vector_derivation_hash(
+                        model="voyage-4-lite", input_text=text_by_native_id[session_id.rsplit(":", 1)[-1]]
+                    ),
                 )
     except RuntimeError as exc:
         if "sqlite-vec" in str(exc) or "vec0" in str(exc):
@@ -474,6 +495,18 @@ class TestSimilarEndpoint:
         _enable_embeddings(monkeypatch)
         seed_session_id, _embeddings_db, _mapping = _seed_ready_similarity_archive()
 
+        # This assertion covers the pre-split compatibility projection: unlike the
+        # managed active-index projection, it can retain a stale reference after
+        # the corresponding index row is deleted.
+        from polylogue.storage import search_providers
+
+        legacy_provider = SqliteVecProvider(
+            voyage_key="test-key",
+            db_path=_embeddings_db,
+            model="voyage-4-lite",
+        )
+        monkeypatch.setattr(search_providers, "create_vector_provider", lambda *args, **kwargs: legacy_provider)
+
         # Break the join the way a reindex would: keep the vectors, drop the rows
         # they point at.
         with sqlite3.connect(archive_root() / "index.db") as conn:
@@ -495,7 +528,12 @@ class TestSimilarEndpoint:
         """The live route projects the provider's session-seeded KNN order."""
         _enable_embeddings(monkeypatch)
         seed_session_id, embeddings_db, session_by_message_id = _seed_ready_similarity_archive()
-        provider = SqliteVecProvider(voyage_key="test-key", db_path=embeddings_db, model="voyage-4")
+        provider = SqliteVecProvider(
+            voyage_key="test-key",
+            db_path=embeddings_db,
+            model="voyage-4-lite",
+            archive_root=archive_root(),
+        )
         expected_message_hits = provider.query_by_session(seed_session_id, limit=3)
         # Resolve message -> session through the index's own mapping. Splitting the
         # id on ':' assumes a positional shape and mangles the `n:<native_id>` form.

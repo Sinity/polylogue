@@ -9,6 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.embeddings.identity import (
+    VECTOR_DERIVATION_HASH_SQL_FUNCTION,
+    register_embedding_identity_sql,
+)
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -67,6 +72,74 @@ class SqliteVecRuntimeMixin:
         self._assert_lifecycle_binding()
         conn = open_connection(self.db_path.resolve(strict=False))
         conn.row_factory = sqlite3.Row
+
+        if getattr(self, "_legacy_compatibility", False):
+            try:
+                conn.executescript(
+                    """
+                    CREATE TEMP TABLE current_embedding_messages (
+                        message_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        origin TEXT NOT NULL,
+                        vector_derivation_hash BLOB NOT NULL
+                    );
+                    INSERT INTO current_embedding_messages
+                    SELECT message_id, session_id, origin, vector_derivation_hash
+                    FROM message_embedding_refs;
+                    """
+                )
+            except sqlite3.Error:
+                conn.execute("DROP TABLE IF EXISTS temp.current_embedding_messages")
+        elif self.archive_root is not None:
+            register_embedding_identity_sql(conn)
+            index_path = resolve_active_index_path(self.archive_root).resolve(strict=False)
+            if index_path != self.db_path.resolve(strict=False):
+                try:
+                    conn.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
+                    conn.executescript(
+                        """
+                        CREATE TEMP TABLE current_embedding_messages (
+                            message_id TEXT PRIMARY KEY,
+                            session_id TEXT NOT NULL,
+                            origin TEXT NOT NULL,
+                            vector_derivation_hash BLOB NOT NULL
+                        );
+                        """
+                    )
+                    conn.execute(
+                        f"""
+                        INSERT INTO current_embedding_messages (
+                            message_id, session_id, origin, vector_derivation_hash
+                        )
+                        SELECT eligible.message_id, eligible.session_id, eligible.origin,
+                               {VECTOR_DERIVATION_HASH_SQL_FUNCTION}(?, eligible.text)
+                        FROM (
+                            SELECT m.message_id, m.session_id, s.origin,
+                                   (
+                                       SELECT GROUP_CONCAT(prose.text, char(10) || char(10))
+                                       FROM (
+                                           SELECT b.text
+                                           FROM archive_index.blocks b
+                                           WHERE b.message_id = m.message_id
+                                             AND b.block_type = 'text'
+                                             AND b.text IS NOT NULL
+                                           ORDER BY b.position
+                                       ) AS prose
+                                   ) AS text
+                            FROM archive_index.messages m
+                            JOIN archive_index.sessions s ON s.session_id = m.session_id
+                            WHERE m.message_type = 'message'
+                              AND m.role IN ('user', 'assistant')
+                              AND m.material_origin IN ('human_authored', 'assistant_authored')
+                              AND m.word_count > 0
+                        ) AS eligible
+                        WHERE LENGTH(TRIM(COALESCE(eligible.text, ''))) >= 20
+                        """,
+                        (self.model,),
+                    )
+                except sqlite3.Error as exc:
+                    conn.close()
+                    raise SqliteVecError("managed embedding projection could not bind the active index") from exc
 
         if self._vec_available is None:
             loaded, error = try_load_sqlite_vec(conn)
