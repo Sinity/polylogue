@@ -14,7 +14,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.storage.fts import fts_lifecycle
+from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.insights.session import rebuild as insight_rebuild
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -36,11 +36,23 @@ from tests.infra.convergence_laws import (
 )
 
 
+def _strip_message_fts_shadow_rows(root: Path) -> None:
+    """Leave the archive owing FTS convergence.
+
+    Write-time triggers keep messages_fts current, so a freshly ingested
+    archive owes nothing and a mutated publish has no work to skip. Dropping
+    the shadow docsize rows is the state `FtsDerivationAdapter.inspect` reads,
+    so every session partition is stale and convergence must republish it.
+    """
+    with closing(open_connection(root / "index.db")) as conn:
+        conn.execute("DELETE FROM messages_fts_docsize")
+        conn.commit()
+
+
 def test_convergence_property_fts_repair_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A bypassed production FTS repair cannot report a converged archive."""
     pathology = rich_convergence_pathology()
     initialize_active_archive(tmp_path / "mutated")
-    monkeypatch.setattr(fts_lifecycle, "repair_message_fts_index_sync", lambda *_args, **_kwargs: None)
 
     archive = ingest_convergence_pathology(
         tmp_path / "mutated",
@@ -48,6 +60,8 @@ def test_convergence_property_fts_repair_mutation_red_twin(tmp_path: Path, monke
         session_indexes=tuple(range(len(pathology.sessions))),
         converge_after_each=False,
     )
+    _strip_message_fts_shadow_rows(archive.root)
+    monkeypatch.setattr(FtsDerivationAdapter, "publish", lambda *_args, **_kwargs: True)
     with pytest.raises(AssertionError, match="production convergence left pending work"):
         converge_convergence_archive(archive)
 
@@ -189,13 +203,20 @@ def test_omitted_fts_batch_member_has_pending_work_control(
         session_indexes=tuple(range(len(workload.pathology.sessions))),
         converge_after_each=False,
     )
-    repair = fts_lifecycle.repair_message_fts_index_sync
+    _strip_message_fts_shadow_rows(archive.root)
+    publish = FtsDerivationAdapter.publish
+    published: set[str] = set()
 
-    def omit_tail(conn: sqlite3.Connection, session_ids: object, **kwargs: object) -> None:
-        repair(conn, tuple(session_ids)[:1], **kwargs)  # type: ignore[arg-type]
+    def omit_tail(self: FtsDerivationAdapter, conn: sqlite3.Connection, computed: object) -> bool:
+        # Publish the first stale partition and silently claim the rest.
+        key = str(getattr(computed, "key", ""))
+        if published:
+            return True
+        published.add(key)
+        return bool(publish(self, conn, computed))  # type: ignore[arg-type]
 
     if mutated:
-        monkeypatch.setattr(fts_lifecycle, "repair_message_fts_index_sync", omit_tail)
+        monkeypatch.setattr(FtsDerivationAdapter, "publish", omit_tail)
         with pytest.raises(AssertionError, match="production convergence left pending work"):
             converge_convergence_archive(archive)
     else:
