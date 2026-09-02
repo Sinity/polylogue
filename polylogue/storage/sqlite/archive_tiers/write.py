@@ -3714,6 +3714,10 @@ def _write_attachments(
         attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
+        attachment_id = _attachment_id(session_id, attachment)
+        message_id = resolved_message_ids.get(id(attachment))
+        if message_id is None:
+            continue
         if attachment.direction not in {"user_input", "model_output"}:
             raise ValueError(f"attachment direction is not supported: {attachment.direction!r}")
         if attachment.direction == "model_output" and not attachment.producer_ref:
@@ -3721,10 +3725,6 @@ def _write_attachments(
                 "model_output attachment requires producer provenance: "
                 f"attachment_id={attachment.provider_attachment_id!r}"
             )
-        attachment_id = _attachment_id(session_id, attachment)
-        message_id = resolved_message_ids.get(id(attachment))
-        if message_id is None:
-            continue
         touched_attachment_ids.add(attachment_id)
         acquired_blob = (preacquired_blobs or {}).get(id(attachment))
         blob_hash, byte_count, acquisition_status = (

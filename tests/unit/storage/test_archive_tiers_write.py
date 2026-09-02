@@ -3750,6 +3750,34 @@ def test_writer_refuses_attachment_without_derived_direction(tmp_path: Path) -> 
         conn.close()
 
 
+def test_writer_skips_orphan_attachment_before_direction_validation(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="orphan-attachment-direction",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="read this")],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="orphan",
+                    message_provider_id="missing-message",
+                )
+            ],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # ITEM 1: sessions.instructions_text round-trip
 # ---------------------------------------------------------------------------
