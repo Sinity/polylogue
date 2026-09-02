@@ -228,8 +228,8 @@ def test_same_version_trigram_trigger_variants_are_accepted() -> None:
     assert schema_manifest_diff(expected, unrelated)["wrong_definition"]
 
 
-def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
-    """Read surfaces must not mutate an existing index to gain runtime indexes."""
+def test_read_only_archive_open_rejects_runtime_index_drift(tmp_path: Path) -> None:
+    """Read surfaces reject an existing index with missing runtime indexes."""
     initialize_active_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     conn = sqlite3.connect(index_db)
@@ -240,8 +240,8 @@ def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) 
     finally:
         conn.close()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
-        assert archive._read_only is True
+    with pytest.raises(SchemaVersionMismatchError):
+        ArchiveStore.open_existing(tmp_path).close()
 
     conn = sqlite3.connect(index_db)
     try:
@@ -254,7 +254,7 @@ def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) 
         conn.close()
 
 
-def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_promotion(
+def test_pinned_read_only_archive_open_rejects_drifted_physical_index_after_promotion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A promoted active pointer cannot make a pinned read repair old evidence.
@@ -292,9 +292,8 @@ def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_prom
         "polylogue.storage.sqlite.archive_tiers.archive.ensure_runtime_indexes_sync",
         fail_if_write_time_indexes_run,
     )
-    with ArchiveStore.open_existing(archive_root, index_path=pinned_index) as archive:
-        assert archive._read_only is True
-        assert tuple(archive._conn.execute("SELECT value FROM pinned_evidence").fetchone()) == ("old physical index",)
+    with pytest.raises(SchemaVersionMismatchError):
+        ArchiveStore.open_existing(archive_root, index_path=pinned_index).close()
 
     with sqlite3.connect(old_index) as conn:
         assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
@@ -429,6 +428,27 @@ def test_readable_layout_rejects_shape_drift_with_typed_refusal(tmp_path: Path) 
         assert error.generation_id == "gen-old"
         assert error.lifecycle_action == "rebuild_index"
         assert "gen-old" in str(error)
+        assert "rebuild" in str(error).lower()
+    finally:
+        conn.close()
+
+
+def test_readable_layout_rejects_extra_object_with_typed_refusal(tmp_path: Path) -> None:
+    """A matching user_version does not authorize undeclared schema objects."""
+    db_path = tmp_path / "extra-object.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    conn.execute("CREATE TABLE undeclared_read_only_drift (value TEXT)")
+    conn.commit()
+    try:
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn, generation_id="gen-extra")
+        error = caught.value
+        assert error.current_version == SCHEMA_VERSION
+        assert error.expected_version == SCHEMA_VERSION
+        assert error.generation_id == "gen-extra"
+        assert error.lifecycle_action == "rebuild_index"
+        assert "undeclared_read_only_drift" in str(error)
         assert "rebuild" in str(error).lower()
     finally:
         conn.close()
