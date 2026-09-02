@@ -1383,9 +1383,16 @@ def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     assert not selector_called
 
 
-def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_validator(
+def test_run_reindex_canary_accepts_symlink_farm_active_pointer_through_real_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """An external active index is valid when every archive tier follows it.
+
+    An external index with real durable tiers at ``root`` is the copied-archive
+    shape and is refused by ``ArchiveLocation``. This fixture keeps the
+    accepted external-index shape explicit: the configured root is a complete
+    symlink farm.
+    """
     root = tmp_path / "archive"
     _prepare_candidate_ready_archive(root)
     external_index_root = tmp_path / "external-index-root"
