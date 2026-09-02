@@ -15,6 +15,7 @@ from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 
 JsonObject: TypeAlias = dict[str, object]
 JsonObjectList: TypeAlias = list[JsonObject]
+PROVIDER_SOURCE_CLASS = "provider-shaped"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,11 @@ class ProviderSourcePackage:
     schema_inputs: tuple[str, ...] = ()
     attachment_hashes: tuple[str, ...] = ()
     schedule_digest: str | None = None
+
+    @property
+    def source_class(self) -> str:
+        """The admission shape represented by this package."""
+        return PROVIDER_SOURCE_CLASS
 
     @classmethod
     def from_files(

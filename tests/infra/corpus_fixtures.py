@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.integration_profile import build_integration_archive, default_integration_selection
 from tests.infra.pathology_zoo import (
     PathologyZoo,
     build_pathology_zoo,
@@ -30,6 +31,12 @@ from tests.infra.workload_artifacts import (
 def seeded_archive() -> SeededArchiveArtifact:
     """Shared immutable named schema-coverage archive for read-only consumers."""
     return build_seeded_archive(schema_coverage_corpus_specs())
+
+
+@pytest.fixture(scope="session")
+def integration_archive() -> SeededArchiveArtifact:
+    """Shared disposable heterogeneous archive for interaction-only tests."""
+    return build_integration_archive(default_integration_selection())
 
 
 @pytest.fixture(scope="session")
