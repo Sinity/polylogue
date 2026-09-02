@@ -4348,12 +4348,8 @@ def _write_session_link(
                 observed_at_ms=observed_at_ms,
             )
         return
-    # polylogue-lyr2: normalize the same way ``_stored_session_native_id``
-    # normalizes ``sessions.native_id`` -- the resolver below matches this
-    # column against ``sessions.native_id`` by exact string equality
-    # (``_resolve_outbound_session_links``), so a raw (unstripped) parent
-    # reference here would silently stop matching a parent whose own
-    # ``native_id`` was written through the stripping helper.
+    # Match exact stored provider identities and parser-emitted aliases after
+    # the same normalization used for session native ids.
     dst_native_id = _sqlite_text(session.parent_session_provider_id.strip())
     if not dst_native_id:
         return
@@ -4439,37 +4435,40 @@ def _write_session_link(
 def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
     """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
 
-    polylogue-2qx.4: ``tool_id`` values are provider-generated and globally
-    unique across a session tree, so this is a plain lookup against whatever
-    session already wrote that TOOL_USE block -- no cross-session identity
-    resolution needed. ``None`` (not found / not supplied) leaves the column
-    NULL, never a guess.
+    A supplied parent identity scopes the lookup to that exact resolved
+    session. ``None`` (not found / not supplied) leaves the column NULL,
+    never a guess.
     """
     tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
     parent_id = getattr(session, "parent_session_provider_id", None)
-    if not tool_use_provider_id and parent_id:
+    parent_session_id = (
+        _existing_parent_session_id(conn, session, origin_from_provider(session.source_name).value)
+        if parent_id
+        else None
+    )
+    if not tool_use_provider_id and parent_id and parent_session_id:
         # The child no longer needs to manufacture a parent-side field: use
         # the parent's normalized event and exact child identity claim.
-        parent_session_id = _existing_parent_session_id(conn, session, origin_from_provider(session.source_name).value)
-        if parent_session_id:
-            rows = conn.execute(
-                """SELECT source_message_provider_id, payload_json
-                   FROM session_events
-                   WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
-                (parent_session_id,),
-            ).fetchall()
-            child_ids = {str(session.provider_session_id)}
-            child_ids.update(str(value) for value in session.provider_session_aliases)
-            for source_id, payload_json in rows:
-                try:
-                    payload = json.loads(str(payload_json))
-                except (TypeError, ValueError):
-                    continue
-                observed = payload.get("child_provider_id") if isinstance(payload, dict) else None
-                if observed is not None and str(observed) in child_ids:
-                    tool_use_provider_id = str(source_id) if source_id else None
-                    break
+        rows = conn.execute(
+            """SELECT source_message_provider_id, payload_json
+               FROM session_events
+               WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
+            (parent_session_id,),
+        ).fetchall()
+        child_ids = {str(session.provider_session_id)}
+        child_ids.update(str(value) for value in session.provider_session_aliases)
+        for source_id, payload_json in rows:
+            try:
+                payload = json.loads(str(payload_json))
+            except (TypeError, ValueError):
+                continue
+            observed = payload.get("child_provider_id") if isinstance(payload, dict) else None
+            if observed is not None and str(observed) in child_ids:
+                tool_use_provider_id = str(source_id) if source_id else None
+                break
     if not tool_use_provider_id:
+        return None
+    if parent_id and parent_session_id is None:
         return None
     row = conn.execute(
         """SELECT b.block_id FROM blocks b
@@ -4479,10 +4478,8 @@ def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedS
            ORDER BY b.block_id LIMIT 1""",
         (
             tool_use_provider_id,
-            parent_id,
-            archive_session_id(origin_from_provider(session.source_name).value, parent_id.strip())
-            if parent_id
-            else None,
+            parent_session_id,
+            parent_session_id,
         ),
     ).fetchone()
     return str(row[0]) if row is not None else None
@@ -4604,7 +4601,7 @@ def _quarantine_session_link(
 def _resolve_session_graph(
     conn: sqlite3.Connection,
     session_id: str,
-    native_id: str,
+    _native_id: str,
     origin: str,
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
@@ -4636,14 +4633,25 @@ def _resolve_session_graph(
     )
     inbound_rows = conn.execute(
         """
-        SELECT links.src_session_id, links.link_type
+        SELECT links.src_session_id, links.link_type, links.dst_native_id
         FROM session_links links
-        WHERE links.dst_native_id = ?
+        JOIN session_identity_claims claims
+          ON claims.origin = links.dst_origin
+         AND claims.identity_namespace = 'provider-session'
+         AND claims.provider_value = links.dst_native_id
+         AND claims.claimant_session_id = ?
+        WHERE NOT EXISTS (
+                SELECT 1 FROM session_identity_claims conflicts
+                WHERE conflicts.origin = claims.origin
+                  AND conflicts.identity_namespace = claims.identity_namespace
+                  AND conflicts.provider_value = claims.provider_value
+                  AND conflicts.claimant_session_id != claims.claimant_session_id
+              )
           AND links.resolved_dst_session_id IS NULL
           AND links.status IS NULL
           AND links.dst_origin = ?
         """,
-        (native_id, origin),
+        (session_id, origin),
     ).fetchall()
     record_substage("inbound_lookup", t0)
     t0 = time.perf_counter()
@@ -4655,7 +4663,7 @@ def _resolve_session_graph(
     t0 = time.perf_counter()
     resolved_child_ids: list[str] = []
     for row in inbound_rows:
-        child_id, link_type = str(row[0]), str(row[1])
+        child_id, link_type, dst_native_id = str(row[0]), str(row[1]), str(row[2])
         # polylogue-4ts.10: session_id is about to become child_id's parent --
         # refuse (quarantine, with evidence) rather than silently resolve if
         # that would close a cycle or cannot be decided within the walk budget.
@@ -4665,7 +4673,7 @@ def _resolve_session_graph(
                 conn,
                 src_session_id=child_id,
                 dst_origin=origin,
-                dst_native_id=native_id,
+                dst_native_id=dst_native_id,
                 link_type=link_type,
                 cycle_walk=cycle_walk,
                 observed_at_ms=int(time.time() * 1000),
@@ -4682,7 +4690,7 @@ def _resolve_session_graph(
               AND resolved_dst_session_id IS NULL
               AND status IS NULL
             """,
-            (session_id, child_id, native_id, link_type),
+            (session_id, child_id, dst_native_id, link_type),
         )
         resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
@@ -4754,14 +4762,23 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     """
     candidates = conn.execute(
         """
-        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type, dst.session_id
+        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type,
+               claims.claimant_session_id
         FROM session_links
-        JOIN sessions dst
-          ON dst.native_id = session_links.dst_native_id
-         AND dst.origin = session_links.dst_origin
+        JOIN session_identity_claims claims
+          ON claims.origin = session_links.dst_origin
+         AND claims.identity_namespace = 'provider-session'
+         AND claims.provider_value = session_links.dst_native_id
         WHERE session_links.src_session_id = ?
           AND session_links.resolved_dst_session_id IS NULL
           AND session_links.status IS NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM session_identity_claims conflicts
+                WHERE conflicts.origin = claims.origin
+                  AND conflicts.identity_namespace = claims.identity_namespace
+                  AND conflicts.provider_value = claims.provider_value
+                  AND conflicts.claimant_session_id != claims.claimant_session_id
+              )
         """,
         (session_id,),
     ).fetchall()
