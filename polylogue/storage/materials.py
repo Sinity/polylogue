@@ -233,6 +233,10 @@ def acquire_material(
     """
     if not source_uri.strip() or not referrer_ref.strip():
         raise ValueError("source_uri and referrer_ref are required")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
     parsed = urllib.parse.urlparse(source_uri)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return admit_material(
@@ -391,8 +395,12 @@ def link_material(
     observed_at_ms: int,
     source_diagnostic: str = "",
 ) -> None:
+    if not material_id.strip() or not evidence_ref.strip():
+        raise ValueError("material_id and evidence_ref are required")
     if not 0.0 <= confidence <= 1.0:
         raise ValueError("confidence must be between 0 and 1")
+    if conn.execute("SELECT 1 FROM material_observations WHERE material_id = ?", (material_id,)).fetchone() is None:
+        raise KeyError(material_id)
     conn.execute(
         """INSERT INTO material_evidence_links
       (material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic)
@@ -454,10 +462,35 @@ def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None)
         ).fetchall()
     observations: list[MaterialObservation] = []
     for row in rows:
-        observation = get_material(conn, row["material_id"])
+        # The source-tier query API accepts both the default tuple row factory
+        # and sqlite3.Row connections used by the archive runtime.
+        material_id = row[0] if not isinstance(row, sqlite3.Row) else row["material_id"]
+        observation = get_material(conn, material_id)
         if observation is not None:
             observations.append(observation)
     return observations
+
+
+def list_material_links(conn: sqlite3.Connection, material_id: str) -> list[MaterialEvidenceLink]:
+    """Return direct provenance/effect edges for one retained or claimed material."""
+    rows = conn.execute(
+        """SELECT evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic
+           FROM material_evidence_links
+           WHERE material_id = ?
+           ORDER BY observed_at_ms, evidence_ref, relation""",
+        (material_id,),
+    ).fetchall()
+    return [
+        MaterialEvidenceLink(
+            evidence_ref=row[0],
+            relation=row[1],
+            authority=row[2],
+            confidence=float(row[3]),
+            observed_at_ms=int(row[4]),
+            source_diagnostic=row[5],
+        )
+        for row in rows
+    ]
 
 
 __all__ = [
@@ -468,6 +501,7 @@ __all__ = [
     "extraction_manifest",
     "get_material",
     "link_material",
+    "list_material_links",
     "list_materials",
     "read_material",
     "MaterialEvidenceLink",

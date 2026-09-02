@@ -15,6 +15,8 @@ from polylogue.storage.materials import (
     admit_material,
     admit_material_file,
     link_material,
+    list_material_links,
+    list_materials,
     read_material,
 )
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
@@ -51,6 +53,10 @@ def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> Non
     assert row[:3] == ("malformed", "retained", len(b"not a session export"))
     assert len(row[3]) == 32
     assert conn.execute("SELECT COUNT(*) FROM material_evidence_links").fetchone()[0] == 1
+    assert [link.evidence_ref for link in list_material_links(conn, observation.material_id)] == [
+        "work-attempt:attempt-1"
+    ]
+    assert list_materials(conn, evidence_ref="work-attempt:attempt-1")[0].material_id == observation.material_id
 
 
 def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path: Path) -> None:
@@ -193,3 +199,17 @@ def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tm
     material_ids = [row[0] for row in conn.execute("SELECT material_id FROM material_observations")]
     assert len(material_ids) == 2
     assert all(material_ids)
+
+
+def test_material_boundaries_validate_link_targets_and_acquisition_limits(tmp_path: Path) -> None:
+    conn = _source_db()
+    with pytest.raises(KeyError, match="missing"):
+        link_material(conn, "missing", "message:1", relation="refers_to", observed_at_ms=1)
+    with pytest.raises(ValueError, match="max_bytes"):
+        acquire_material(
+            conn,
+            source_uri="https://example.test/file",
+            referrer_ref="message:1",
+            observed_at_ms=1,
+            max_bytes=0,
+        )
