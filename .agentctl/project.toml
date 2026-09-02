@@ -76,7 +76,9 @@ flag = "--apply"
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
-estimate_memory_bytes = 16000000000
+# Admission claim only; the bulk unit's own ceiling is 20 GiB. The 2026-09-02
+# run peaked at 6 GB, and a 16 GB claim never fits beside six agent lanes.
+estimate_memory_bytes = 8000000000
 # The corpus graph is published from the main checkout; a lane worktree
 # cannot start it.
 checkout = "default"
