@@ -19,7 +19,6 @@ from polylogue.storage.sqlite.queries.mappers_insight_aggregates import (
 )
 from polylogue.storage.sqlite.queries.mappers_insight_profiles import (
     _row_to_session_profile_record,
-    session_profile_usage_lanes_sql,
 )
 from polylogue.storage.sqlite.queries.mappers_insight_timelines import (
     _row_to_session_phase_record,
@@ -58,7 +57,6 @@ __all__ = [
     "_row_to_raw_session",
     "_row_to_session_phase_record",
     "_row_to_session_profile_record",
-    "session_profile_usage_lanes_sql",
     "_row_to_session_tag_rollup_record",
     "_row_to_session_work_event_record",
     "_row_to_thread_record",

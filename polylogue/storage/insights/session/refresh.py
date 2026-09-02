@@ -15,6 +15,10 @@ from polylogue.storage.insights.session.aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
 )
+from polylogue.storage.insights.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_async,
+)
 from polylogue.storage.insights.session.rebuild import (
     SessionInsightRecordBundle,
     build_session_insight_records,
@@ -37,10 +41,7 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
     SessionWorkEventRecord,
 )
-from polylogue.storage.sqlite.queries.mappers import (
-    _row_to_session_profile_record,
-    session_profile_usage_lanes_sql,
-)
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
 # Hydrating 100 sessions at once inflates RSS badly on pathological archives.
@@ -172,7 +173,7 @@ async def delete_session_insights_for_session_async(
     )
 
     cursor = await conn.execute(
-        f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
+        "SELECT * FROM session_profiles WHERE session_id = ?",
         (session_id,),
     )
     row = await cursor.fetchone()
@@ -245,7 +246,7 @@ async def _apply_session_insight_session_update_async(
 
     old_profile_record = await (
         await conn.execute(
-            f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
+            "SELECT * FROM session_profiles WHERE session_id = ?",
             (session_id,),
         )
     ).fetchone()
@@ -366,12 +367,14 @@ async def _load_existing_session_profile_records_async(
     placeholders = ", ".join("?" for _ in session_ids)
     rows = await (
         await conn.execute(
-            f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
-            f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
+            f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
             tuple(session_ids),
         )
     ).fetchall()
-    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return {
+        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows
+    }
 
 
 async def _load_message_counts_async(

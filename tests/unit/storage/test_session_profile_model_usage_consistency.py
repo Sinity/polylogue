@@ -38,6 +38,7 @@ from pathlib import Path
 import aiosqlite
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.semantic.cost_compute import compute_session_cost
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.core.enums import BlockType, Provider
@@ -158,6 +159,27 @@ def _model_usage_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int,
     return (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
 
 
+def _model_usage_rows(conn: sqlite3.Connection, session_id: str) -> list[ModelUsageTotals]:
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchall()
+    return [
+        ModelUsageTotals(
+            model_name=str(row[0]),
+            input_tokens=int(row[1]),
+            output_tokens=int(row[2]),
+            cache_read_tokens=int(row[3]),
+            cache_write_tokens=int(row[4]),
+        )
+        for row in rows
+    ]
+
+
 def _derived_profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int, int, int]:
     """Token lanes as the profile read model derives them.
 
@@ -238,25 +260,30 @@ def test_claude_code_per_message_tokens_reach_the_profile_unchanged(tmp_path: Pa
     conn.close()
 
 
-async def test_profile_read_route_reports_token_lanes_from_session_model_usage(tmp_path: Path) -> None:
-    """The repository profile read route carries the token lanes.
+async def test_profile_read_route_recomputes_cost_lanes_from_session_model_usage(tmp_path: Path) -> None:
+    """The repository profile read route recomputes cost from usage evidence.
 
-    ``session_profiles`` no longer stores token columns (#4225), so a reader
-    that selects only that table's own columns reports zero and every consumer
-    of the record -- portfolio and postmortem token lanes among them -- silently
-    reads a known-zero it has no evidence for.
+    #4225 left ``session_profiles`` with no cost or token columns at all, so a
+    reader that selects only that table's own columns reports zero tokens and a
+    fabricated $0.00 -- and every consumer of the record, portfolio and
+    postmortem token and cost lanes among them, inherits it.
 
-    Anti-vacuity: dropping the ``session_model_usage`` projection from
-    ``session_profile_usage_lanes_sql`` (or from the SELECT that applies it)
-    makes ``_row_int(row, "total_input_tokens", 0)`` fall back to its default
-    and every lane below reads 0 instead of the fixture's totals.
+    Anti-vacuity: removing the ``apply_profile_cost_lanes`` overlay drops both
+    routes below back to the mapper's ``_row_int(row, ..., 0)`` defaults, so the
+    token lanes read 0 and ``cost_provenance`` reads the record default rather
+    than the value ``compute_session_cost`` derives from the same rows.
     """
     conn = _make_archive_conn(tmp_path)
     session_id = "codex-session:model-usage-read-route"
     write_parsed_session_to_archive(conn, _codex_session("model-usage-read-route"))
     rebuild_session_insights_sync(conn, session_ids=[session_id])
     conn.commit()
+    usage_rows = _model_usage_rows(conn, session_id)
     conn.close()
+
+    # The one implementation of the vocabulary, fed the same rows the route reads.
+    expected = compute_session_cost(None, model_usage=usage_rows, estimate_if_missing=False)
+    assert expected.total_input_tokens == _CODEX_EXPECTED_INPUT
 
     async with aiosqlite.connect(tmp_path / "index.db") as read_conn:
         read_conn.row_factory = aiosqlite.Row
@@ -276,3 +303,35 @@ async def test_profile_read_route_reports_token_lanes_from_session_model_usage(t
             _CODEX_EXPECTED_CACHE_READ,
             _CODEX_EXPECTED_CACHE_WRITE,
         )
+        assert source.total_cost_usd == expected.total_api_cost_usd
+        assert source.total_credit_cost == expected.total_credit_cost
+        assert source.cost_provenance == expected.cost_provenance
+        assert source.cost_is_estimated is (expected.cost_provenance != "provider_reported")
+
+
+async def test_profile_read_route_reports_unknown_cost_without_usage_evidence(tmp_path: Path) -> None:
+    """A session with no usage rows reports absent evidence, not a $0.00 bill.
+
+    Anti-vacuity: a recompute that treated an empty usage set as a priced zero
+    would report ``cost_provenance`` as a pricing token and
+    ``cost_is_estimated`` False, claiming the archive knows this session cost
+    nothing.
+    """
+    conn = _make_archive_conn(tmp_path)
+    session_id = "claude-code-session:no-usage-evidence"
+    write_parsed_session_to_archive(conn, _claude_code_session("no-usage-evidence"))
+    rebuild_session_insights_sync(conn, session_ids=[session_id])
+    conn.commit()
+    conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+    async with aiosqlite.connect(tmp_path / "index.db") as read_conn:
+        read_conn.row_factory = aiosqlite.Row
+        record = await get_session_profile(read_conn, session_id)
+
+    assert record is not None
+    assert record.cost_provenance == "unknown"
+    assert record.total_cost_usd == 0.0
+    assert record.cost_is_estimated is True
+    assert record.total_input_tokens == 0

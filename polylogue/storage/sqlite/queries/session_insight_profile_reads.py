@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.storage.insights.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_async,
+)
 from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionProfileRecord
-from polylogue.storage.sqlite.queries.mappers import (
-    _row_to_session_profile_record,
-    session_profile_usage_lanes_sql,
-)
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 __all__ = [
     "get_session_profile",
@@ -33,11 +34,15 @@ async def get_session_profile(
     session_id: str,
 ) -> SessionProfileRecord | None:
     cursor = await conn.execute(
-        f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
+        "SELECT * FROM session_profiles WHERE session_id = ?",
         (session_id,),
     )
     row = await cursor.fetchone()
-    return _row_to_session_profile_record(row) if row else None
+    if row is None:
+        return None
+    record = _row_to_session_profile_record(row)
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"])])
+    return apply_profile_cost_lanes(record, usage)
 
 
 async def get_session_profiles_batch(
@@ -48,12 +53,14 @@ async def get_session_profiles_batch(
         return {}
     placeholders = ", ".join("?" for _ in session_ids)
     cursor = await conn.execute(
-        f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
-        f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
+        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
         tuple(session_ids),
     )
     rows = await cursor.fetchall()
-    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return {
+        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows
+    }
 
 
 async def list_session_profiles(
@@ -110,7 +117,7 @@ async def list_session_profiles(
     if query.terminal_state:
         where.append("sp.terminal_state = ?")
         params.append(query.terminal_state)
-    sql = f"SELECT sp.*, {session_profile_usage_lanes_sql()} " + from_clause
+    sql = "SELECT sp.* " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" {order_by}"
@@ -119,4 +126,5 @@ async def list_session_profiles(
         params.extend([query.limit, query.offset])
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_session_profile_record(row) for row in rows]
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows]

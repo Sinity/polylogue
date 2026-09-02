@@ -28,29 +28,6 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 
 
-def session_profile_usage_lanes_sql(alias: str = "sp") -> str:
-    """Projected token lanes for a ``session_profiles`` row, keyed to ``alias``.
-
-    ``session_model_usage`` is the sole authority for a session's token lanes:
-    #4225 removed the duplicated ``total_*_tokens`` columns from
-    ``session_profiles``, so a profile read that selects only that table's own
-    columns reports zero. Every SELECT feeding
-    :func:`_row_to_session_profile_record` must project these four aliases, or
-    the record's lanes silently degrade to a known-zero that absent evidence
-    does not justify.
-    """
-    return ", ".join(
-        f"(SELECT COALESCE(SUM(u.{column}), 0) FROM session_model_usage u "
-        f"WHERE u.session_id = {alias}.session_id) AS total_{lane}_tokens"
-        for column, lane in (
-            ("input_tokens", "input"),
-            ("output_tokens", "output"),
-            ("cache_read_tokens", "cache_read"),
-            ("cache_write_tokens", "cache_write"),
-        )
-    )
-
-
 def _cost_is_estimated(row: sqlite3.Row) -> bool:
     """Whether this profile's cost is an estimate rather than a stated figure.
 
