@@ -204,6 +204,11 @@ def _render_archive_ddl(ref: str | None) -> dict[ArchiveTier, str]:
         )
         environment = os.environ.copy()
         environment["PYTHONPATH"] = checkout
+        # The rendering interpreter is this checkout's own; a shell that
+        # exports another interpreter's sysconfig identity (a free-threaded
+        # devshell, a relocated venv) must not steer it.
+        for name in ("_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONHOME"):
+            environment.pop(name, None)
         result = subprocess.run(
             [sys.executable, "-c", script],
             check=True,
