@@ -121,6 +121,57 @@ def test_workload_receipt_distinguishes_zero_from_unavailable_and_is_stable() ->
     assert receipt.to_payload()["receipt_id"] == receipt.receipt_id
 
 
+def test_cgroup_receipt_keeps_peak_quiescent_and_memory_components_distinct() -> None:
+    spec = WorkloadEnvelopeSpec(
+        workload_id="query:cgroup-memory",
+        family_id="query",
+        version=1,
+        inputs=(WorkloadInputRef(input_id="archive:test"),),
+        phases=("query", "quiescent"),
+        measurement_scope=MeasurementScope.CGROUP,
+        budgets=(WorkloadBudget(BudgetMeasure.ANON_BYTES, maximum=200),),
+    )
+    receipt = WorkloadReceipt.from_observations(
+        spec=spec,
+        status=WorkloadRunStatus.SUCCEEDED,
+        build_id="git:test",
+        runtime_id="python:test",
+        archive_id="archive:test",
+        generation_id=None,
+        frame_id=None,
+        phases=(
+            WorkloadPhaseObservation(
+                name="query",
+                measurement_scope=MeasurementScope.CGROUP,
+                peak_rss_bytes=500,
+                peak_pss_bytes=450,
+                anon_bytes=180,
+                file_cache_bytes=320,
+                quiescent=False,
+            ),
+            WorkloadPhaseObservation(
+                name="quiescent",
+                measurement_scope=MeasurementScope.CGROUP,
+                current_rss_bytes=210,
+                current_pss_bytes=190,
+                anon_bytes=90,
+                file_cache_bytes=120,
+                cleanup_complete=True,
+                quiescent=True,
+            ),
+        ),
+        cleanup_complete=True,
+    )
+
+    query, quiescent = receipt.phases
+    assert query.peak_rss_bytes == 500
+    assert query.anon_bytes == 180
+    assert query.file_cache_bytes == 320
+    assert quiescent.current_rss_bytes == 210
+    assert quiescent.anon_bytes == 90
+    assert receipt.budget_results[0].verdict is BudgetVerdict.PASS
+
+
 def test_physical_budget_cannot_be_expressed_as_a_semantic_result_cap() -> None:
     with pytest.raises(ValueError, match="cannot narrow logical result"):
         WorkloadEnvelopeSpec(
