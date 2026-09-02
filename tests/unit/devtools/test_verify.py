@@ -826,3 +826,16 @@ def test_execution_plan_digest_sees_run_time_tools_and_installed_js_binaries(
     without_vitest = verify._execution_plan_digest()
 
     assert len({baseline, without_ast_grep, without_vitest}) == 3
+
+
+def test_execution_plan_digest_sees_consumer_reachability_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+    monkeypatch.delenv("CONSUMER_REACHABILITY_BASE", raising=False)
+    plain = verify._execution_plan_digest()
+    monkeypatch.setenv("CONSUMER_REACHABILITY_BASE", "HEAD")
+    overridden = verify._execution_plan_digest()
+
+    assert plain != overridden

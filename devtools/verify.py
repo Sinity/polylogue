@@ -534,6 +534,11 @@ def _execution_plan_digest() -> str:
         "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
         "js_workers": os.environ.get("POLYLOGUE_EXTENSION_TEST_WORKERS")
         or str(extension_test_workers(available_cpus())),
+        # Gates that read an authority override from the environment run a
+        # different plan under it.
+        "consumer_reachability": {
+            name: os.environ.get(name, "") for name in ("CONSUMER_REACHABILITY_BASE", "CONSUMER_REACHABILITY_HEAD")
+        },
         "node": node_version,
         "npm": npm_version,
         # The Python gate executables the plan requires: a missing or
