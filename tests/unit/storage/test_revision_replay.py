@@ -1571,6 +1571,68 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         assert archive.raw_revision_head_raw_id("codex-session:session") == folded
 
 
+def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_payload, tail = _codex_fold_payloads()
+        baseline_session = _with_fold_attachment(_parse_codex_jsonl(baseline_payload))
+        append_session = _parse_codex_jsonl(tail)
+        folded_payload = baseline_payload + tail
+        folded_session = _parse_codex_jsonl(folded_payload)
+        baseline = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "codex-session:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        legacy_append_payload = b'{"type":"session_meta","payload":{"id":"fold-codex"}}\n' + tail
+        append = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=legacy_append_payload,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append,
+            RawRevisionEnvelope(
+                "codex-session:session",
+                RawRevisionKind.APPEND,
+                append_source_revision("base", hashlib.sha256(tail).hexdigest()),
+                1,
+                predecessor_source_revision="base",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=len(baseline_payload),
+                append_end_offset=len(folded_payload),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("codex-session:session"),
+            {baseline: baseline_session, append: append_session},
+            acquired_at_ms=0,
+        )
+        folded = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+        )
+        archive.bind_raw_revision(
+            folded,
+            RawRevisionEnvelope(
+                "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("codex-session:session"), {folded: folded_session}, acquired_at_ms=0
+        )
+
+        assert archive.raw_revision_head_raw_id("codex-session:session") == folded
+
+
 @pytest.mark.parametrize("mutation", ["tail", "gap", "overlap", "predecessor", "baseline", "missing", "divergent"])
 def test_real_append_fold_proof_mutations_roll_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str

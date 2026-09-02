@@ -33,21 +33,14 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from json import dumps as json_dumps
-from json import loads as json_loads
 from pathlib import Path
 from typing import Final
 
 from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.core.codex_append import strip_codex_legacy_append_header
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore
-
-#: The exact single-line synthetic header shape
-#: ``sources/live/batch.py::_append_payload_for_provider`` used to prepend
-#: ahead of every Codex append-mode capture before hashing/storing it (retired
-#: for NEW writes by polylogue-u19l; historical rows still carry it).
-_CODEX_SYNTHETIC_HEADER_RECORD_TYPE: Final = "session_meta"
 
 
 class LiveSourceVerdict:
@@ -101,42 +94,6 @@ class LiveSourceComparison:
     detail: str | None = None
 
 
-def _strip_codex_synthetic_header(payload: bytes) -> bytes | None:
-    """Remove a leading synthetic ``session_meta`` line, if present.
-
-    Only strips a header matching the *exact* deterministic shape
-    ``_append_payload_for_provider`` used to emit
-    (``json.dumps({"type": "session_meta", "payload": {"id": <id>}},
-    separators=(",", ":"))``) -- not any arbitrary first-line JSON object, so
-    a live file whose own real first line legitimately happens to be a
-    ``session_meta`` record is never mistaken for the synthetic artifact.
-    Returns ``None`` when there is nothing matching that exact shape to
-    strip.
-    """
-    newline_at = payload.find(b"\n")
-    if newline_at < 0:
-        return None
-    first_line = payload[:newline_at]
-    try:
-        record = json_loads(first_line.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if not isinstance(record, dict) or record.get("type") != _CODEX_SYNTHETIC_HEADER_RECORD_TYPE:
-        return None
-    inner = record.get("payload")
-    if not isinstance(inner, dict) or "id" not in inner or set(inner.keys()) != {"id"}:
-        return None
-    if set(record.keys()) != {"type", "payload"}:
-        return None
-    reencoded = json_dumps(
-        {"type": "session_meta", "payload": {"id": inner["id"]}},
-        separators=(",", ":"),
-    ).encode()
-    if first_line != reencoded:
-        return None
-    return payload[newline_at + 1 :]
-
-
 def compare_raw_against_live_source(
     *,
     raw_payload: bytes,
@@ -160,7 +117,7 @@ def compare_raw_against_live_source(
 
     For a Codex append row, a second candidate is tried after stripping the
     historical synthetic ``session_meta`` header (see
-    :func:`_strip_codex_synthetic_header`) -- this is the one provider/kind
+    :func:`strip_codex_legacy_append_header`) -- this is the one provider/kind
     combination the investigation found permanently defeats a naive
     byte-identity check for reasons unrelated to real data loss.
 
@@ -170,7 +127,7 @@ def compare_raw_against_live_source(
     """
     candidates: list[tuple[bytes, bool]] = [(raw_payload, False)]
     if provider is Provider.CODEX and revision_kind is RawRevisionKind.APPEND:
-        stripped = _strip_codex_synthetic_header(raw_payload)
+        stripped = strip_codex_legacy_append_header(raw_payload)
         if stripped is not None:
             candidates.append((stripped, True))
 

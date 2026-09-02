@@ -209,8 +209,10 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     membership_decisions_for_classification,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
+    promote_reconstructed_legacy_append_revisions,
     raw_append_revision_parent,
     raw_full_revision_generation,
+    raw_legacy_append_resynthesis_receipt,
     raw_membership_authority_complete,
     raw_membership_census_rows,
     raw_membership_decision_pending,
@@ -1591,6 +1593,27 @@ class ArchiveStore:
         self._require_writable("bind source.db revision")
         return bind_raw_revision(self, raw_id, revision, manage_transaction=manage_transaction)
 
+    def promote_reconstructed_legacy_append_revisions(
+        self,
+        revisions: Sequence[tuple[str, RawRevisionEnvelope]],
+        *,
+        source_prefix_sha256: str,
+        source_size: int,
+        source_mtime_ns: int,
+        source_ctime_ns: int,
+        observed_at_ms: int,
+    ) -> None:
+        self._require_writable("promote reconstructed source.db revisions")
+        return promote_reconstructed_legacy_append_revisions(
+            self,
+            revisions,
+            source_prefix_sha256=source_prefix_sha256,
+            source_size=source_size,
+            source_mtime_ns=source_mtime_ns,
+            source_ctime_ns=source_ctime_ns,
+            observed_at_ms=observed_at_ms,
+        )
+
     def release_provisional_full_revisions(self, raw_ids: Sequence[str]) -> None:
         self._require_writable("release source.db revisions")
         return release_provisional_full_revisions(self, raw_ids)
@@ -1605,6 +1628,9 @@ class ArchiveStore:
         predecessor_revision: str | None,
     ) -> tuple[str, str, int] | None:
         return raw_append_revision_parent(self, logical_source_key, start_offset, predecessor_revision)
+
+    def raw_legacy_append_resynthesis_receipt(self, raw_id: str) -> tuple[str, int] | None:
+        return raw_legacy_append_resynthesis_receipt(self, raw_id)
 
     def raw_membership_retired_full_revision_siblings(self, logical_source_key: str) -> tuple[str, ...]:
         return raw_membership_retired_full_revision_siblings(self, logical_source_key)

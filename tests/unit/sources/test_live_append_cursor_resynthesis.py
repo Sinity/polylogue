@@ -23,14 +23,25 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    append_source_revision,
+)
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
+from polylogue.sources.live.batch_support import (
+    _AppendPlan,
+    claude_semantic_frontier_for_prefix,
+    encode_cursor_hash_authority,
+)
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
 
 
 def _session_meta(session_id: str) -> bytes:
@@ -58,10 +69,10 @@ def _seed_native_session(tmp_path: Path, *, session_id: str) -> None:
         conn.commit()
 
 
-def _processor(tmp_path: Path, cursor: CursorStore) -> LiveBatchProcessor:
+def _processor(tmp_path: Path, cursor: CursorStore, *, source_name: str = Provider.CODEX.value) -> LiveBatchProcessor:
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="codex", root=tmp_path),),
+        (WatchSource(name=source_name, root=tmp_path),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -222,5 +233,314 @@ def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path
     processor = _processor(tmp_path, cursor)
 
     plan = processor._append_plan(source)
+
+    assert plan is None
+
+
+def test_source_migration_adds_legacy_append_resynthesis_receipts(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DROP TABLE raw_legacy_append_resynthesis_receipts")
+        conn.execute("PRAGMA user_version = 39")
+        conn.commit()
+
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+
+        assert result.applied_versions == (40,)
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_legacy_append_resynthesis_receipts'"
+        ).fetchone() == (1,)
+
+
+def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy append window is admitted only when its retained bytes prove it."""
+    session_id = "legacy-offset-chain"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "rollout-legacy-offset-chain.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    delta = _codex_message("legacy append")
+    next_delta = _codex_message("next append")
+    future_delta = _codex_message("future append")
+    source.write_bytes(baseline + delta + next_delta + future_delta)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"codex:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        next_append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=next_delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=3,
+        )
+    # This is the pre-offset durable shape: the payload is retained, but the
+    # source revision row has no operational byte coordinates.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.executemany(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown', parsed_at_ms = 1,
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (
+                (f"codex:{session_id}", "legacy-append-1", append_id),
+                (f"codex:{session_id}", "legacy-append-2", next_append_id),
+            ),
+        )
+        conn.commit()
+    _seed_native_session(tmp_path, session_id=session_id)
+    processor = _processor(tmp_path, CursorStore(tmp_path / "ops.db"))
+
+    def fail_full_file_read(_path: Path) -> bytes:
+        raise AssertionError("cursor resynthesis must compare retained windows incrementally")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_full_file_read)
+
+    plan = processor._append_plan(source)
+
+    assert isinstance(plan, _AppendPlan)
+    assert plan.start_offset == len(baseline) + len(delta) + len(next_delta)
+    assert plan.cursor_fingerprint == append_source_revision(
+        append_source_revision("full-0", hashlib.sha256(delta).hexdigest()),
+        hashlib.sha256(next_delta).hexdigest(),
+    )
+    assert future_delta in plan.payload
+    assert baseline_id
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive.raw_append_revision_parent(
+            f"codex:{session_id}", plan.start_offset, plan.cursor_fingerprint
+        ) == (next_append_id, baseline_id, 2)
+        receipt = archive.raw_legacy_append_resynthesis_receipt(next_append_id)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        promoted = conn.execute(
+            "SELECT revision_authority_evidence FROM raw_sessions WHERE raw_id = ?", (next_append_id,)
+        ).fetchone()
+    assert promoted == ("live_source_verification_v1",)
+    assert receipt == (hashlib.sha256(baseline + delta + next_delta).hexdigest(), 0)
+
+
+def test_resynthesis_composes_claude_frontier_from_legacy_append_chain(tmp_path: Path) -> None:
+    session_id = "legacy-claude-chain"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "legacy-claude-chain.jsonl"
+    header = b'{"sessionId":"legacy-claude-chain","type":"user"}\n'
+    baseline_body = b'{"sessionId":"legacy-claude-chain","type":"assistant"}\n'
+    delta = b'{"sessionId":"legacy-claude-chain","type":"user"}\n'
+    source.write_bytes(header + baseline_body + delta + b'{"sessionId":"legacy-claude-chain","type":"assistant"}\n')
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=header + baseline_body,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"claude-code:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown', parsed_at_ms = 1,
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (f"claude-code:{session_id}", "legacy-append-1", append_id),
+        )
+        conn.execute(
+            """INSERT INTO raw_authority_parser_census(
+                   raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+               ) VALUES (?, 'current', 'complete', '[]', 'parser-observed: legacy', 0)""",
+            (append_id,),
+        )
+        conn.commit()
+
+    cursor = _processor(
+        tmp_path,
+        CursorStore(tmp_path / "ops.db"),
+        source_name=Provider.CLAUDE_CODE.value,
+    )._resynthesize_cursor_from_source(source)
+
+    expected_end = len(header + baseline_body + delta)
+    assert cursor is not None
+    assert cursor.byte_offset == expected_end
+    assert cursor.tail_hash == claude_semantic_frontier_for_prefix(source, expected_end)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert (
+            conn.execute("SELECT 1 FROM raw_authority_parser_census WHERE raw_id = ?", (append_id,)).fetchone() is None
+        )
+
+
+def test_append_plan_declines_legacy_reconstruction_when_final_prefix_proof_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: a rewrite between preliminary windows and promotion cannot become cursor authority."""
+    session_id = "legacy-final-prefix-proof"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "rollout-legacy-final-prefix-proof.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    rewritten_baseline = _session_meta(session_id) + _codex_message("mutated!")
+    delta = _codex_message("legacy append")
+    future_delta = _codex_message("future append")
+    source.write_bytes(baseline + delta + future_delta)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"codex:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown', parsed_at_ms = 1,
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (f"codex:{session_id}", "legacy-append-1", append_id),
+        )
+        conn.commit()
+    _seed_native_session(tmp_path, session_id=session_id)
+    original_open: Any = Path.open
+    source_reads = 0
+
+    def rewrite_before_final_proof(path: Path, *args: object, **kwargs: object) -> object:
+        nonlocal source_reads
+        if path == source and args and args[0] == "rb":
+            source_reads += 1
+            if source_reads == 3:
+                source.write_bytes(rewritten_baseline + delta + future_delta)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", rewrite_before_final_proof)
+
+    plan = _processor(tmp_path, CursorStore(tmp_path / "ops.db"))._append_plan(source)
+
+    assert plan is None
+
+
+def test_append_plan_declines_legacy_reconstruction_when_append_never_materialized(tmp_path: Path) -> None:
+    """Mutation: retaining an unparsed legacy delta must not skip its parser/index work."""
+    session_id = "legacy-unmaterialized"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "rollout-legacy-unmaterialized.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    delta = _codex_message("unmaterialized append")
+    source.write_bytes(baseline + delta + _codex_message("future append"))
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"codex:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown',
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (f"codex:{session_id}", "legacy-append-1", append_id),
+        )
+        conn.commit()
+    _seed_native_session(tmp_path, session_id=session_id)
+
+    plan = _processor(tmp_path, CursorStore(tmp_path / "ops.db"))._append_plan(source)
+
+    assert plan is None
+
+
+def test_append_plan_declines_legacy_reconstruction_after_prefix_rewrite(tmp_path: Path) -> None:
+    """A matching legacy delta cannot prove a rewritten full prefix."""
+    session_id = "legacy-prefix-rewrite"
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "rollout-legacy-prefix-rewrite.jsonl"
+    baseline = _session_meta(session_id) + _codex_message("baseline")
+    rewritten_baseline = _session_meta(session_id) + _codex_message("mutated!")
+    delta = _codex_message("legacy append")
+    future_delta = _codex_message("future append")
+    source.write_bytes(rewritten_baseline + delta + future_delta)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=baseline,
+            source_path=str(source),
+            acquired_at_ms=1,
+            revision=RawRevisionEnvelope(
+                f"codex:{session_id}",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=delta,
+            source_path=str(source),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """UPDATE raw_sessions SET logical_source_key = ?, revision_kind = 'unknown',
+               source_revision = ?, acquisition_generation = 1,
+               revision_authority = 'quarantined' WHERE raw_id = ?""",
+            (f"codex:{session_id}", "legacy-append-1", append_id),
+        )
+        conn.commit()
+    _seed_native_session(tmp_path, session_id=session_id)
+
+    plan = _processor(tmp_path, CursorStore(tmp_path / "ops.db"))._append_plan(source)
 
     assert plan is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -22,7 +23,7 @@ from polylogue.sources.source_snapshot import (
     preflight_source_cut,
     reacquire_candidate,
 )
-from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_database, sqlite_logical_revision
 
 
 def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,6 +304,123 @@ def test_sqlite_cut_refuses_a_commit_during_online_backup(tmp_path: Path, monkey
             preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
             tmp_path / "cut",
         )
+
+
+def test_sqlite_cut_refuses_a_backup_with_a_different_logical_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: publishing a backup from another logical state must fail."""
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('source')")
+        conn.commit()
+
+    original_backup = snapshot_sqlite_database
+
+    def backup_with_different_content(source: Path, destination: Path) -> None:
+        original_backup(source, destination)
+        with sqlite3.connect(destination) as conn:
+            conn.execute("INSERT INTO state VALUES ('not-source')")
+            conn.commit()
+
+    monkeypatch.setattr("polylogue.sources.source_snapshot.snapshot_sqlite_database", backup_with_different_content)
+    with pytest.raises(SourceMutationError, match="backup does not match source logical revision"):
+        execute_source_cut(
+            preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
+            tmp_path / "cut",
+        )
+
+
+def test_sqlite_cut_manifest_hashes_the_published_backup_bytes(tmp_path: Path) -> None:
+    """Mutation: a logical revision cannot replace the retained-byte hash."""
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE state (value TEXT)")
+        conn.execute("INSERT INTO state VALUES ('source')")
+        conn.commit()
+
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("state", SourceRole.MUTABLE_SQLITE, database, True)]),
+        tmp_path / "cut",
+    )
+
+    candidate = result.candidate_manifest.items[0]
+    retained = reacquire_candidate(result)[0]
+    assert candidate.content_sha256 == hashlib.sha256(retained.path.read_bytes()).hexdigest()
+
+
+def test_sqlite_continuity_uses_logical_rows_not_page_layout(tmp_path: Path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    for path, rows in ((first, ((2, "b"), (1, "a"))), (second, ((1, "a"), (2, "b")))):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE values_table (id INTEGER PRIMARY KEY, value TEXT)")
+            conn.executemany("INSERT INTO values_table VALUES (?, ?)", rows)
+    assert sqlite_logical_revision(first) == sqlite_logical_revision(second)
+
+
+def test_sqlite_logical_revision_ignores_declared_nocase_collation_in_row_order(tmp_path: Path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    for path, rows in ((first, ((1, "a"), (2, "A"))), (second, ((2, "A"), (1, "a")))):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE values_table (id INTEGER PRIMARY KEY, value TEXT COLLATE NOCASE)")
+            conn.executemany("INSERT INTO values_table VALUES (?, ?)", rows)
+    assert sqlite_logical_revision(first) == sqlite_logical_revision(second)
+
+
+def test_sqlite_logical_revision_orders_rows_by_storage_class(tmp_path: Path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    for path, rows in ((first, ((1, 1), (2, 1.0))), (second, ((2, 1.0), (1, 1)))):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE values_table (id INTEGER PRIMARY KEY, value)")
+            conn.executemany("INSERT INTO values_table VALUES (?, ?)", rows)
+    assert sqlite_logical_revision(first) == sqlite_logical_revision(second)
+
+
+def test_sqlite_logical_revision_includes_implicit_rowids(tmp_path: Path) -> None:
+    database = tmp_path / "rowid.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE values_table (value TEXT)")
+        conn.executemany("INSERT INTO values_table VALUES (?)", (("first",), ("second",)))
+    before = sqlite_logical_revision(database)
+    with sqlite3.connect(database) as conn:
+        conn.execute("DELETE FROM values_table WHERE rowid = 1")
+        conn.execute("INSERT INTO values_table VALUES ('first')")
+    assert sqlite_logical_revision(database) != before
+
+
+def test_sqlite_logical_revision_excludes_without_rowid_tables(tmp_path: Path) -> None:
+    database = tmp_path / "without-rowid.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE values_table (id TEXT PRIMARY KEY, value TEXT) WITHOUT ROWID")
+        conn.execute("INSERT INTO values_table VALUES ('one', 'value')")
+    assert sqlite_logical_revision(database)
+
+
+def test_sqlite_logical_revision_skips_unavailable_virtual_table_modules(tmp_path: Path) -> None:
+    database = tmp_path / "virtual.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE values_table (value TEXT)")
+        conn.execute("INSERT INTO values_table VALUES ('retained')")
+        conn.execute("PRAGMA writable_schema = ON")
+        conn.execute(
+            "INSERT INTO sqlite_master(type, name, tbl_name, rootpage, sql) "
+            "VALUES ('table', 'extension_table', 'extension_table', 0, "
+            "'CREATE VIRTUAL TABLE extension_table USING unavailable_module')"
+        )
+        conn.execute("PRAGMA writable_schema = OFF")
+    assert sqlite_logical_revision(database)
+
+
+def test_sqlite_logical_revision_preserves_invalid_utf8_text(tmp_path: Path) -> None:
+    database = tmp_path / "invalid-text.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE values_table (value TEXT)")
+        conn.execute("INSERT INTO values_table VALUES (CAST(X'80' AS TEXT))")
+    assert sqlite_logical_revision(database)
 
 
 @pytest.mark.parametrize("role", [SourceRole.SPOOL, SourceRole.QUEUE])

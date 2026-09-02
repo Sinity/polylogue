@@ -28,7 +28,13 @@ from polylogue.sources.parsers.codex_state import (
     parse_codex_state_db,
     spawn_edges_as_session_events,
 )
-from polylogue.sources.sqlite_snapshot import codex_state_raw_id, snapshot_sqlite_database, snapshot_sqlite_to_blob
+from polylogue.sources.sqlite_snapshot import (
+    codex_state_raw_id,
+    snapshot_sqlite_database,
+    snapshot_sqlite_to_blob,
+    sqlite_logical_revision,
+    sqlite_source_revision,
+)
 from polylogue.storage.blob_store import BlobStore
 
 
@@ -438,6 +444,36 @@ def test_snapshot_to_blob_is_idempotent_by_content(tmp_path: Path) -> None:
         conn.commit()
     third = snapshot_sqlite_to_blob(source, blob_store)
     assert third.blob_hash != first.blob_hash
+
+
+def test_snapshot_to_blob_source_revision_is_logical_and_layout_independent(tmp_path: Path) -> None:
+    first = tmp_path / "first.sqlite"
+    second = tmp_path / "second.sqlite"
+    for path, rows in ((first, ((2, "b"), (1, "a"))), (second, ((1, "a"), (2, "b")))):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE threads (id INTEGER PRIMARY KEY, title TEXT)")
+            conn.executemany("INSERT INTO threads VALUES (?, ?)", rows)
+
+    blob_store = BlobStore(tmp_path / "blobs")
+    first_snapshot = snapshot_sqlite_to_blob(first, blob_store)
+    second_snapshot = snapshot_sqlite_to_blob(second, blob_store)
+
+    assert first_snapshot.source_revision == sqlite_logical_revision(first)
+    assert second_snapshot.source_revision == first_snapshot.source_revision
+    assert first_snapshot.source_fingerprint == sqlite_source_revision(first)
+
+
+def test_sqlite_logical_revision_tracks_non_table_schema(tmp_path: Path) -> None:
+    database = tmp_path / "state.sqlite"
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE threads (id INTEGER PRIMARY KEY, title TEXT)")
+        conn.execute("INSERT INTO threads VALUES (1, 'first')")
+    before = sqlite_logical_revision(database)
+
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE INDEX threads_title ON threads(title)")
+
+    assert sqlite_logical_revision(database) != before
 
 
 def test_codex_state_raw_id_is_stable_and_path_scoped(tmp_path: Path) -> None:
