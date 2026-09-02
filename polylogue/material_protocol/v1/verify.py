@@ -38,7 +38,12 @@ from polylogue.material_protocol.v1.errors import (
     SemanticClosureError,
     SequenceOrderError,
 )
-from polylogue.material_protocol.v1.manifest import AnchorEntry, RevisionManifest, SegmentDescriptor
+from polylogue.material_protocol.v1.manifest import (
+    AnchorEntry,
+    RevisionManifest,
+    SegmentDescriptor,
+    require_current_semantics,
+)
 from polylogue.material_protocol.v1.origin_vocab import check_origin_vocabulary
 
 
@@ -183,6 +188,7 @@ def _check_semantic_closure(
 
 def verify_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> None:
     """Full compatibility + semantic-closure pass. Raises a MaterialProtocolError subclass on any mismatch."""
+    require_current_semantics(manifest)
     check_origin_vocabulary(manifest.origin_vocabulary_version, manifest.origin_vocabulary_digest)
 
     if manifest.head_segment.index != HEAD_SEGMENT_INDEX:

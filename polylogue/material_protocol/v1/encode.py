@@ -2,7 +2,7 @@
 immutable transcript NDJSON segments, tied together by a revision manifest.
 
 The revision is split into two record spaces with different mutability
-contracts (semantics v2):
+contracts (semantics v3):
 
 **Head** (``head.ndjson``, reserved segment index ``-1``) — the
 revision-mutable summary records, re-encoded fresh on EVERY revision:

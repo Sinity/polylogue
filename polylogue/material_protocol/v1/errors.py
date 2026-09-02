@@ -18,6 +18,10 @@ class UnknownOriginVocabularyError(MaterialProtocolError):
     """The manifest declares an Origin vocabulary version/digest we don't recognize."""
 
 
+class UnsupportedSemanticsVersionError(MaterialProtocolError):
+    """The manifest declares domain semantics this reader does not implement."""
+
+
 class SegmentMissingError(MaterialProtocolError):
     """A segment the manifest requires was not supplied to the reader."""
 
@@ -65,4 +69,5 @@ __all__ = [
     "SemanticClosureError",
     "SequenceOrderError",
     "UnknownOriginVocabularyError",
+    "UnsupportedSemanticsVersionError",
 ]
