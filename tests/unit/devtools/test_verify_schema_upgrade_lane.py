@@ -127,3 +127,18 @@ def test_policy_check_rejects_non_idempotent_benign_ddl_entries(entry: BenignDDL
     violations = verify_schema_upgrade_lane._invalid_benign_ddl_entries(entries=(entry,))
     assert len(violations) == 1
     assert violations[0].entry_name == entry.name
+
+
+def test_ddl_rendering_ignores_a_foreign_sysconfig_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: with the variable inherited, the rendering interpreter
+    fails at startup looking for another build's sysconfig module, and the
+    gate reports every archive tier as an undeclared lifecycle change."""
+    monkeypatch.setenv("_PYTHON_SYSCONFIGDATA_NAME", "_sysconfigdata_bogus_build")
+
+    # A real ref takes the subprocess path; None returns the imported DDL.
+    rendered = verify_schema_upgrade_lane._render_archive_ddl("HEAD")
+
+    # Tier coverage, not DDL equality: an uncommitted archive-tier edit must
+    # not make an environment test red.
+    assert set(rendered) == set(ARCHIVE_DDL_BY_TIER)
+    assert all(rendered.values())
