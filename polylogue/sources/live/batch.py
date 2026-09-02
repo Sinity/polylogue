@@ -2085,16 +2085,10 @@ class LiveBatchProcessor:
                 and source_class is not None
                 and source_class.source_class == "session"
             ) or (not source_only and codex_state.is_in_scope_codex_sqlite_path(path)):
-                # polylogue-0jf4: acquire live Codex SQLite state the same
-                # way Hermes acquires its state.db -- a consistent
-                # backup/snapshot (never a raw read of a possibly-live-locked
-                # file) into the content-addressed blob store. The filename
-                # gate keeps this cheap for the vast majority of ~/.codex
-                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
-                # then re-confirms the table shape before trusting the name.
-                # Source-only acquisition intentionally skips that structural
-                # decode: a mid-write or future-schema state snapshot is still
-                # durable authority to replay once the derived tier returns.
+                # Snapshot live Codex SQLite state before hashing or storing it.
+                # Normal ingest requires the declared SQLite schema; source-only
+                # ingest accepts a declared filename so a future or mid-write
+                # snapshot remains durable authority for later replay.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:

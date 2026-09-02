@@ -1132,17 +1132,19 @@ def test_zip_duplicate_member_coordinates_match_normal_and_source_only_routes(tm
     assert [record.source_index for _raw_id, record in source_only_records] == [1, 3]
 
 
-def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shape_probe(
+@pytest.mark.parametrize("state_name", ["state_5.sqlite", "goals_1.sqlite", "memories_1.sqlite"])
+def test_source_only_full_ingest_snapshots_declared_codex_state_without_shape_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    state_name: str,
 ) -> None:
-    """A degraded source tier retains a valid but future-shaped Codex state DB."""
+    """A degraded source tier retains each declared future-shaped Codex state DB."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     initialize_active_archive_root(tmp_path)
     root = tmp_path / "codex"
     root.mkdir()
-    state_db = root / "state_5.sqlite"
+    state_db = root / state_name
     _write_plain_sqlite_db(state_db)
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
