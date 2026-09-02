@@ -6,6 +6,8 @@ Factories
 ``open_daemon_connection(path)`` returns a read-write connection with a smaller
 daemon/ops cache profile.
 ``open_readonly_connection(path)`` returns a uri=ro connection with read pragmas applied.
+Pass ``validate_schema=False`` only for diagnostic readers that must inspect a
+stale tier and report its version.
 ``connection_context(path)`` is a context manager for a single-use read-write connection.
 
 These are lightweight one-shot wrappers around ``sqlite3.connect()``.  For the
@@ -626,6 +628,7 @@ def open_readonly_connection(
     immutable: bool = False,
     opened_main_fd: int | None = None,
     tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -647,6 +650,10 @@ def open_readonly_connection(
     When ``opened_main_fd`` is supplied, the reader is bound to that opened
     inode through a validated ``/dev/fd`` or ``/proc/self/fd`` alias. A caller
     that needs descriptor binding fails closed when neither alias is available.
+
+    ``validate_schema=False`` is reserved for diagnostic readers that need to
+    inspect a tier before reporting its schema mismatch. It does not change the
+    read-only connection profile or grant write access.
     """
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
@@ -661,7 +668,8 @@ def open_readonly_connection(
         database_uri = descriptor_uri
     conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
     try:
-        _assert_schema_supported(conn, path, tier)
+        if validate_schema:
+            _assert_schema_supported(conn, path, tier)
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
     except BaseException:
