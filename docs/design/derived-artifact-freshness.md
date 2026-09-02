@@ -92,6 +92,17 @@ classification. A metadata-only addition is insufficient when old rows
 cannot be proven fresh; those rows remain stale until the owning rebuild
 route regenerates them.
 
+The initial artifact inventory is: index tables and FTS postings, embedding
+rows and generation state, materialized insight rows, convergence counters and
+debt, cache entries, seeded test fixtures, and reindex or maintenance receipts
+when they are consumed as derived state. Their digest owners are respectively
+the index source snapshot, embedding derivation input, insight materializer
+input, the source projection for the counted work, the cache producer input,
+the fixture manifest, and the reindex source snapshot. The shared pattern is
+SHA-256 over a deterministic typed source projection plus the recipe or
+materializer fingerprint. Readers must use the same verify-or-refuse
+dispositions above and must report the artifact family and refusal reason.
+
 This decision does not authorize a broad schema migration or a manual cache
 repair command. Follow-up implementation slices own each artifact family,
 with the reindex boundary providing the shared source-binding contract.

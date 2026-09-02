@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.models import Session
 from polylogue.archive.query.expression import (
     QueryExpressionAST,
@@ -40,6 +41,15 @@ from polylogue.archive.semantic.pricing import harmonize_session_cost
 
 def _text(session: Session) -> str:
     return "\n".join((message.text or "") for message in session.messages)
+
+
+def _recomposed_session(archive: ReferenceArchive, session: Session) -> Session:
+    """Return the session view with its inherited prefix physically composed."""
+    lineage = archive.lineage(str(session.id))
+    if len(lineage) == 1:
+        return session
+    messages = [message for ancestor in lineage for message in ancestor.messages]
+    return session.model_copy(update={"messages": MessageCollection(messages=messages)})
 
 
 def _value(session: Session, field_name: str) -> object:
@@ -194,12 +204,13 @@ class ReferenceArchive:
         selected: list[Session] = []
         for session in self.sessions.values():
             lineage = {str(item.id) for item in self.lineage(str(session.id))}
+            effective = _recomposed_session(self, session)
             if ast.boolean_predicate is not None:
-                matches = evaluate_predicate(session, ast.boolean_predicate, lineage=lineage)
+                matches = evaluate_predicate(effective, ast.boolean_predicate, lineage=lineage)
             else:
-                matches = all(_compact_matches(session, token) for token in ast.clauses)
+                matches = all(_compact_matches(effective, token) for token in ast.clauses)
             if matches:
-                selected.append(session)
+                selected.append(effective)
         selected.sort(key=lambda item: str(item.id))
         origins = sorted(str(session.origin) for session in selected)
         facets = tuple((origin, origins.count(origin)) for origin in sorted(set(origins)))

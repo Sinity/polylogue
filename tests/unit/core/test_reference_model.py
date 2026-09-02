@@ -25,3 +25,12 @@ def test_reference_model_lineage_and_text_queries() -> None:
 
     assert archive.lineage("child")[0].id == "parent"
     assert archive.query("text:tail").session_ids == ("child",)
+
+
+def test_reference_model_recomposes_parent_prefix_for_child_queries() -> None:
+    archive = ReferenceArchive()
+    archive.add(make_conv(id="parent", messages=[make_msg(text="inherited context")]))
+    archive.add(make_conv(id="child", messages=[make_msg(text="divergent tail")]), parent_id="parent")
+
+    assert archive.query("text:inherited").session_ids == ("child", "parent")
+    assert archive.query("messages:>=2").session_ids == ("child",)
