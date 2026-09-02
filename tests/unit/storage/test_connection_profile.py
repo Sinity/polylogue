@@ -9,11 +9,13 @@ import pytest
 from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
         connection.execute("INSERT INTO evidence VALUES ('selected')")
@@ -32,7 +34,7 @@ def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path)
 def test_open_readonly_connection_refuses_without_descriptor_bound_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
@@ -46,7 +48,7 @@ def test_open_readonly_connection_refuses_without_descriptor_bound_path(
 
 
 def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
@@ -97,3 +99,32 @@ def test_schema_skew_explicit_tier_checks_noncanonical_generation_path(tmp_path:
         connection_profile.open_readonly_connection(db_path, tier=ArchiveTier.SOURCE)
 
     assert excinfo.value.tier == ArchiveTier.SOURCE.value
+
+
+@pytest.mark.parametrize("tier", [ArchiveTier.INDEX, ArchiveTier.OPS])
+def test_derived_schema_identity_is_checked_at_profile_seam(tmp_path: Path, tier: ArchiveTier) -> None:
+    db_path = tmp_path / f"{tier.value}.db"
+    initialize_archive_database(db_path, tier)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = ?", (tier.value,))
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        connection_profile.open_readonly_connection(db_path)
+
+    assert excinfo.value.tier == tier.value
+    assert excinfo.value.found == "wrong"
+    assert excinfo.value.expected != "wrong"
+    assert "rebuild the derived tier" in excinfo.value.remedy
+
+
+def test_derived_schema_identity_missing_is_refused_at_profile_seam(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    initialize_archive_database(db_path, ArchiveTier.INDEX)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE schema_identity")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        connection_profile.open_readonly_connection(db_path, tier=ArchiveTier.INDEX)
+
+    assert excinfo.value.tier == DerivedTier.INDEX.value
+    assert excinfo.value.found is None
