@@ -34,7 +34,7 @@ def test_selection_derives_constraints_from_witness_recipes() -> None:
 
 def test_selection_digest_and_generated_shape_follow_recipe() -> None:
     selection = default_integration_selection()
-    changed_profile = replace(selection.profile, scale="archive-shaped")
+    changed_profile = replace(selection.profile, scale="smoke")
     changed_recipe = replace(selection.witnesses[0].recipe, seed=71)
     changed_witness = replace(selection.witnesses[0], recipe=changed_recipe)
 
@@ -88,6 +88,37 @@ def test_selection_rejects_unrealizable_constraints_and_semantic_metadata() -> N
             ),
             (IntegrationWitness(recipe, interactions=(IntegrationInteraction.REGISTRY_MIX,)),),
         )
+    with pytest.raises(ValueError, match="supported provider-wire token"):
+        IntegrationWitness(CorpusSpec.for_provider("chatgpt-export", seed=42))
+
+
+def test_selection_enforces_scale_against_guaranteed_message_population() -> None:
+    selection = default_integration_selection()
+
+    with pytest.raises(ValueError, match="archive-shaped.*16 messages"):
+        IntegrationSelection(replace(selection.profile, scale="archive-shaped"), selection.witnesses)
+
+    archive_shaped = IntegrationSelection(
+        replace(selection.profile, scale="archive-shaped"),
+        tuple(IntegrationWitness(replace(witness.recipe, count=4)) for witness in selection.witnesses),
+    )
+
+    assert sum(spec.count * spec.messages_min for spec in archive_shaped.corpus_specs()) == 16
+
+
+def test_selection_preserves_law_owned_session_native_ids() -> None:
+    recipe = CorpusSpec.for_provider(
+        "chatgpt",
+        count=1,
+        messages_min=2,
+        messages_max=2,
+        seed=42,
+        session_native_ids=("law-owned-native-id",),
+    )
+    profile = IntegrationProfile(name="pinned", required_origins=("chatgpt-export",), scale="smoke")
+    witness = IntegrationWitness(recipe)
+
+    assert witness.corpus_spec(profile).session_native_ids == ("law-owned-native-id",)
 
 
 def test_same_provider_witnesses_receive_distinct_session_identities(tmp_path: Path) -> None:

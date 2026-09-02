@@ -10,10 +10,17 @@ from pathlib import Path
 
 from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusProfile, CorpusSpec
+from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.infra.source_builders import PROVIDER_SOURCE_CLASS
 from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive
 
 _SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "case_", "pathology_")
+_SCALE_MINIMUM_MESSAGES = {
+    "smoke": 1,
+    "representative": 4,
+    "archive-shaped": 16,
+    "stress": 64,
+}
 
 
 def _reject_semantic_metadata(value: object) -> None:
@@ -57,7 +64,7 @@ class IntegrationProfile:
         )
         if not self.required_origins:
             raise ValueError("integration profile requires a name and at least one origin")
-        if self.scale not in {"smoke", "representative", "archive-shaped", "stress"}:
+        if self.scale not in _SCALE_MINIMUM_MESSAGES:
             raise ValueError("integration profile scale must be an operational profile")
         if any(not isinstance(interaction, IntegrationInteraction) for interaction in self.interactions):
             raise ValueError("integration profile interactions must use declared interaction values")
@@ -88,6 +95,8 @@ class IntegrationWitness:
 
     def __post_init__(self) -> None:
         _reject_semantic_metadata((self.recipe.to_payload(), self.temporal_operations))
+        if self.recipe.provider not in SyntheticCorpus.available_providers():
+            raise ValueError("integration witness recipe requires a supported provider-wire token")
         if self.recipe.seed is None:
             raise ValueError("integration witness recipe requires a deterministic seed")
         if any(not isinstance(interaction, IntegrationInteraction) for interaction in self.interactions):
@@ -109,6 +118,8 @@ class IntegrationWitness:
 
     @property
     def session_native_ids(self) -> tuple[str, ...]:
+        if self.recipe.session_native_ids:
+            return self.recipe.session_native_ids
         return tuple(f"integration-{self.recipe_digest[:16]}-{index:03d}" for index in range(self.recipe.count))
 
     def corpus_spec(self, profile: IntegrationProfile) -> CorpusSpec:
@@ -173,6 +184,12 @@ class IntegrationSelection:
             raise ValueError(f"integration selection lacks temporal operation support: {sorted(missing_operations)}")
         if self.profile.temporal_operations and IntegrationInteraction.LIFECYCLE_SCHEDULE not in available:
             raise ValueError("temporal operations require lifecycle schedule support")
+        minimum_messages = sum(witness.recipe.count * witness.recipe.messages_min for witness in self.witnesses)
+        required_messages = _SCALE_MINIMUM_MESSAGES[self.profile.scale]
+        if minimum_messages < required_messages:
+            raise ValueError(
+                f"integration selection scale {self.profile.scale!r} requires at least {required_messages} messages"
+            )
 
     @property
     def digest(self) -> str:
