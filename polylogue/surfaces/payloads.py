@@ -3446,6 +3446,7 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     result_ref: str | None = None
     continuation: str | None = None
     _transaction_request: object | None = PrivateAttr(default=None)
+    authority: AuthorityEnvelope | None = None
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope

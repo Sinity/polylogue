@@ -873,6 +873,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
             if view == "messages":
+                from polylogue.surfaces.authority import build_authority_envelope
                 from polylogue.surfaces.payloads import (
                     SessionMessagesResponsePayload,
                     message_row_envelope_from_domain,
@@ -895,6 +896,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         offset=0,
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
+                        authority=build_authority_envelope(
+                            hooks.get_polylogue().config.archive_root,
+                            server_identity="direct",
+                        ),
                     )
                 )
             if view not in (None, "summary"):

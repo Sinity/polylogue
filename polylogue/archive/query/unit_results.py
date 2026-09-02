@@ -38,6 +38,7 @@ from polylogue.archive.query.transaction import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
+from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
 from polylogue.surfaces.payloads import (
     QueryUnitAggregateRowPayload,
     QueryUnitProjectedRowPayload,
@@ -669,6 +670,8 @@ def query_unit_envelope(
     *,
     execution_context: QueryExecutionContext | None = None,
     transaction_request: QueryTransactionRequest | None = None,
+    authority: AuthorityEnvelope | None = None,
+    serving_identity: str = "direct",
 ) -> QueryUnitResultEnvelope:
     """Execute a compiled terminal query-unit request.
 
@@ -719,6 +722,11 @@ def query_unit_envelope(
             "query_ref": canonical_request.query_ref,
             "result_ref": result_ref,
             "continuation": continuation,
+            "authority": authority
+            or build_authority_envelope(
+                archive.archive_root,
+                server_identity="daemon" if serving_identity == "daemon" else "direct",
+            ),
         }
     )
     # MCP may clip one physical storage page to its smaller byte budget. Keep

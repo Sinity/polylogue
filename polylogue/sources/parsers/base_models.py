@@ -212,6 +212,8 @@ class ParsedContentBlock(BaseModel):
         """Keep known outcomes and unknown reasons mutually exclusive."""
         if self.type is not BlockType.TOOL_RESULT:
             return self
+        if self.is_error is None and self.exit_code is not None:
+            self.is_error = self.exit_code != 0
         if self.outcome_unknown_reason is not None:
             try:
                 self.outcome_unknown_reason = ToolResultUnknownReason(self.outcome_unknown_reason).value
@@ -221,7 +223,7 @@ class ParsedContentBlock(BaseModel):
             # A provider result with no structural outcome is an honest
             # not-reported result. Parsers with stronger evidence assign a
             # more specific reason before construction.
-            self.outcome_unknown_reason = ToolResultUnknownReason.NOT_REPORTED
+            self.outcome_unknown_reason = ToolResultUnknownReason.NOT_REPORTED.value
         elif self.is_error is not None and self.outcome_unknown_reason is not None:
             raise ValueError("known tool-result outcomes cannot carry an unknown reason")
         return self

@@ -4387,6 +4387,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     request,
                     execution_context=transaction.context,
                     transaction_request=transaction.request,
+                    serving_identity="daemon",
                 )
             )
         except QueryTimeoutError:

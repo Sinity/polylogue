@@ -18,6 +18,7 @@ from polylogue.rendering.semantic_cards import (
     lineage_descriptor_from_session,
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
+from polylogue.surfaces.authority import build_authority_envelope
 from polylogue.surfaces.payloads import (
     SessionMessagesResponsePayload,
     message_row_envelope_from_domain,
@@ -83,6 +84,7 @@ def run_messages(
                         offset=offset,
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
+                        authority=build_authority_envelope(api.config.archive_root, server_identity="direct"),
                     ),
                     exclude_none=True,
                 )

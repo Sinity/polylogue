@@ -152,6 +152,8 @@ async def build_archive_search_envelope(
     retrieval_lane: str = "auto",
     sort: str | None = None,
     cursor: str | None = None,
+    serving_identity: str = "direct",
+    authority: AuthorityEnvelope | None = None,
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an archive operations + repo pair.
 
@@ -188,6 +190,8 @@ async def build_archive_search_envelope(
         limit=limit,
         offset=offset,
         query=query,
+        serving_identity=serving_identity,
+        authority=authority,
     )
 
 

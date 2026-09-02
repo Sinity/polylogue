@@ -3060,6 +3060,11 @@ components:
           - type: 'null'
           default: null
           title: Continuation
+        authority:
+          anyOf:
+          - $ref: '#/components/schemas/AuthorityEnvelope'
+          - type: 'null'
+          default: null
       required:
       - unit
       - query

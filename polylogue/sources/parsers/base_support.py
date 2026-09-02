@@ -492,6 +492,10 @@ def content_blocks_from_segments(
                     )
             raw_is_error = seg.get("is_error")
             is_error = raw_is_error if isinstance(raw_is_error, bool) else None
+            raw_exit_code = seg.get("exit_code")
+            exit_code = (
+                raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
+            )
             # polylogue-2qx.4 / polylogue-cuxz.8: this is the shared
             # Anthropic-protocol tool_result segment shape (Claude Code,
             # Claude common, Codex). When the segment itself carries no
@@ -499,13 +503,16 @@ def content_blocks_from_segments(
             # for this record -- NOT_REPORTED, not a bare unknown. Origin-
             # specific overlays (e.g. Claude Code's own toolUseResult
             # verdicts) may resolve or override this afterward.
-            outcome_unknown_reason = None if is_error is not None else ToolResultUnknownReason.NOT_REPORTED.value
+            outcome_unknown_reason = (
+                None if is_error is not None or exit_code is not None else ToolResultUnknownReason.NOT_REPORTED.value
+            )
             blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     tool_id=seg.get("tool_use_id"),
                     text=result_text,
                     is_error=is_error,
+                    exit_code=exit_code,
                     outcome_unknown_reason=outcome_unknown_reason,
                     web_constructs=knowledge_constructs,
                 )
