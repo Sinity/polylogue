@@ -153,9 +153,13 @@ class GitCommitEffectAdapter:
             raise EffectAdapterUnavailableError(
                 f"{self.repo_path} is not a readable git repository (or {self.ref!r} does not resolve)"
             )
+        repository_root = _run_git(self.repo_path, ["rev-parse", "--show-toplevel"])
+        if repository_root is None:
+            raise EffectAdapterUnavailableError(f"git could not resolve the repository root for {self.repo_path}")
+        repository_path = Path(repository_root)
         snapshot_ref = ObjectRef(
             kind="context-snapshot",
-            object_id=f"git:{_repo_identity(self.repo_path)}@{head_sha}",
+            object_id=f"git:{_repo_identity(repository_path)}@{head_sha}",
         )
         args = ["log", self.ref, "--date=iso-strict", "--format=%H%x1f%ad%x1f%s%x1f%b%x1e"]
         if since_ms is not None:
@@ -166,7 +170,7 @@ class GitCommitEffectAdapter:
         if output is None:
             raise EffectAdapterUnavailableError(f"git log failed against {self.repo_path}")
 
-        repo_id = _repo_identity(self.repo_path)
+        repo_id = _repo_identity(repository_path)
         effects: list[ObservedRepositoryEffect] = []
         for record in output.split("\x1e"):
             record = record.strip("\n")

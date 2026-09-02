@@ -109,8 +109,11 @@ def test_git_commit_adapter_accepts_repository_subdirectory(tmp_path: Path) -> N
     subdirectory.mkdir()
 
     effects = GitCommitEffectAdapter(repo_path=subdirectory).collect()
+    root_effects = GitCommitEffectAdapter(repo_path=repo).collect()
 
     assert [effect.ref.object_id for effect in effects] == [sha]
+    assert effects[0].evidence_ref == root_effects[0].evidence_ref
+    assert effects[0].repository_snapshot_ref == root_effects[0].repository_snapshot_ref
 
 
 def test_git_commit_adapter_time_bounds_exclude_out_of_window_commits(tmp_path: Path) -> None:
