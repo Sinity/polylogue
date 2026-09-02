@@ -147,7 +147,7 @@ def test_lab_run_writes_rebuild_report_without_json(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(verification_scenario, "run_rebuild_differential", lambda: result)
     report_dir = tmp_path / "report"
 
-    assert devtools_main.main(["verify", "scenario", "run", "rebuild-safety", "--report-dir", str(report_dir)]) == 0
+    assert devtools_main.main(["scenario", "run", "rebuild-safety", "--report-dir", str(report_dir)]) == 0
     assert (report_dir / "rebuild-safety.txt").read_text(encoding="utf-8")
 
 

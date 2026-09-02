@@ -70,15 +70,15 @@ def test_nested_render_command_dispatches_to_catalog_entry(monkeypatch: pytest.M
 
     monkeypatch.setitem(
         COMMANDS,
-        "render all",
-        CommandSpec("render all", "generated surfaces", "fake render all", fake_module.__name__),
+        "render",
+        CommandSpec("render", "generated surfaces", "fake render", fake_module.__name__),
     )
 
     assert devtools_main.main(["render", "all", "--check"]) == 0
-    assert captured == [["--check"]]
+    assert captured == [["all", "--check"]]
 
 
-def test_default_command_group_dispatches_bare_verify(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bare_verify_dispatches_without_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str] | None] = []
 
     def fake_main(argv: list[str] | None) -> int:
@@ -99,7 +99,7 @@ def test_default_command_group_dispatches_bare_verify(monkeypatch: pytest.Monkey
     assert captured == [[]]
 
 
-def test_default_command_group_forwards_verify_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_flags_reach_the_wrapped_command(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str] | None] = []
 
     def fake_main(argv: list[str] | None) -> int:
@@ -242,24 +242,24 @@ def test_why_unreadable_receipt_fails_through_dispatch(
     assert f"why: cannot read {run_json}" in captured.err
 
 
-def test_nested_workspace_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_nested_archive_command_dispatches_to_catalog_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str] | None] = []
 
     def fake_main(argv: list[str] | None) -> int:
         captured.append(argv)
         return 0
 
-    fake_module = ModuleType("_polylogue_devtools_test_workspace_fake")
+    fake_module = ModuleType("_polylogue_devtools_test_archive_fake")
     fake_module.__dict__["main"] = fake_main
     monkeypatch.setitem(__import__("sys").modules, fake_module.__name__, fake_module)
 
     monkeypatch.setitem(
         COMMANDS,
-        "workspace lineage-validation",
-        CommandSpec("workspace lineage-validation", "workspace", "fake workspace command", fake_module.__name__),
+        "archive lineage-validation",
+        CommandSpec("archive lineage-validation", "archive", "fake archive command", fake_module.__name__),
     )
 
-    assert devtools_main.main(["workspace", "lineage-validation", "node-id", "--json"]) == 0
+    assert devtools_main.main(["archive", "lineage-validation", "node-id", "--json"]) == 0
     assert captured == [["node-id", "--json"]]
 
 

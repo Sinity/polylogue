@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from devtools import repo_root, verify_js_tests
-from devtools.command_catalog import COMMANDS
+from devtools.gate import GATES_BY_NAME
 
 
 def _package(root: Path, name: str, *, with_lock: bool = True, with_modules: bool = True) -> Path:
@@ -223,7 +223,7 @@ def test_an_explicit_worker_budget_wins_over_detection(monkeypatch: pytest.Monke
 
 
 def test_gate_is_registered_in_the_command_catalog() -> None:
-    assert "verify js-tests" in COMMANDS
+    assert GATES_BY_NAME["js"].args == ("devtools.verify_js_tests",)
 
 
 def test_ci_is_detected_from_the_conventional_variables(monkeypatch: pytest.MonkeyPatch) -> None:

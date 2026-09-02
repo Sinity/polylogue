@@ -12,7 +12,6 @@ from __future__ import annotations
 import json as json_mod
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -30,11 +29,11 @@ from devtools.command_catalog import (
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 GROUP_HELP: dict[str, str] = {
-    "bench": "Run benchmark, mutation, SLO, and resource-budget commands.",
-    "render": "Render and check generated repository surfaces.",
-    "release": "Build, smoke, and validate release/distribution readiness.",
-    "verify": "Run the local verification baseline or focused checks. Use --inner-help for baseline flags.",
-    "workspace": "Run retained Polylogue schema and evidence workbench commands.",
+    "archive": "Run archive-facing evidence and generation actuators.",
+    "bench": "Run benchmark, SLO, and resource-budget profiles.",
+    "cache": "Maintain the shared fixture caches.",
+    "schema": "Inspect, generate, and commit provider schema packages.",
+    "smoke": "Probe deployed binaries, routes, and live service shapes.",
 }
 
 
@@ -72,38 +71,6 @@ class _PreservedEpilogCommand(click.Command):
             formatter.write(line + "\n")
 
 
-class _DefaultCommandGroup(click.Group):
-    """Group that falls back to a default command when no subcommand matches."""
-
-    def __init__(
-        self,
-        name: str,
-        *,
-        default_command: click.Command,
-        help: str | None = None,
-        context_settings: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(name=name, help=help, context_settings=context_settings)
-        self.no_args_is_help = False
-        default_command.hidden = True
-        self.default_command = default_command
-        self.add_command(default_command, "_default")
-
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        if not args:
-            args = ["_default"]
-        return super().parse_args(ctx, args)
-
-    def resolve_command(
-        self,
-        ctx: click.Context,
-        args: list[str],
-    ) -> tuple[str | None, click.Command | None, list[str]]:
-        if not args or args[0] not in self.commands:
-            return self.default_command.name, self.default_command, args
-        return super().resolve_command(ctx, args)
-
-
 def _build_epilog(spec: CommandSpec) -> str | None:
     """Render ``use_when`` and ``examples`` from a CommandSpec into a help epilog.
 
@@ -121,25 +88,26 @@ def _build_epilog(spec: CommandSpec) -> str | None:
     return "\n\n".join(sections)
 
 
+def _declared_flag_dests(spec: CommandSpec) -> list[tuple[str, str]]:
+    """Click destinations for the flags a spec surfaces in its own help."""
+    return [(flag, flag.lstrip("-").replace("-", "_")) for flag, _help in spec.flags]
+
+
 def _make_command(spec: CommandSpec) -> click.Command:
     """Create a Click command from a CommandSpec.
 
     Args after the command name are forwarded as-is to the spec's
     resolve_main() entrypoint.  The ``--json`` flag is accepted both at
     the root group level (propagated via ctx.obj) and locally on each
-    command.  ``--inner-help`` proxies ``--help`` to the wrapped
-    argparse entrypoint so callers can discover sub-flags the catalog
-    does not declare.
+    command that declares ``json_flag``.
     """
     from devtools.command_catalog import COMMANDS
 
-    def callback(args: tuple[str, ...], json_flag: bool = False, inner_help: bool = False) -> None:
+    def callback(args: tuple[str, ...], json_flag: bool = False, **declared: bool) -> None:
         ctx = click.get_current_context()
         root_json = ctx.obj.get("json", False) if ctx.obj else False
-        argv = list(args)
-        if inner_help:
-            argv = [*argv, "--help"]
-        if json_flag or root_json:
+        argv = [*args, *(flag for flag, dest in _declared_flag_dests(spec) if declared.get(dest))]
+        if spec.json_flag and (json_flag or root_json):
             argv = [*argv, "--json"]
         # Resolve at call time so monkeypatching COMMANDS works (used in tests)
         cmd_spec = COMMANDS.get(spec.name, spec)
@@ -152,19 +120,18 @@ def _make_command(spec: CommandSpec) -> click.Command:
             nargs=-1,
             required=False,
         ),
-        click.Option(
-            ["--json", "json_flag"],
-            is_flag=True,
-            help="Emit machine-readable JSON for this command.",
-            expose_value=True,
-        ),
-        click.Option(
-            ["--inner-help", "inner_help"],
-            is_flag=True,
-            help="Forward --help to the wrapped command for its native flag list.",
-            expose_value=True,
-        ),
     ]
+    for flag, dest in _declared_flag_dests(spec):
+        params.append(click.Option([flag, dest], is_flag=True, help=dict(spec.flags)[flag], expose_value=True))
+    if spec.json_flag:
+        params.append(
+            click.Option(
+                ["--json", "json_flag"],
+                is_flag=True,
+                help="Emit machine-readable JSON for this command.",
+                expose_value=True,
+            )
+        )
 
     cmd = _PreservedEpilogCommand(
         name=spec.command_path[-1],
@@ -180,29 +147,13 @@ def _make_command(spec: CommandSpec) -> click.Command:
     return cmd
 
 
-def _ensure_group(
-    parent: click.Group,
-    name: str,
-    *,
-    default_command: click.Command | None = None,
-) -> click.Group:
+def _ensure_group(parent: click.Group, name: str) -> click.Group:
     existing = parent.commands.get(name)
     if existing is not None:
         if not isinstance(existing, click.Group):
             raise ValueError(f"cannot register devtools group {name!r}: command already exists")
         return existing
-    if default_command is None:
-        group = click.Group(name=name, help=GROUP_HELP.get(name))
-    else:
-        group = _DefaultCommandGroup(
-            name=name,
-            help=GROUP_HELP.get(name),
-            default_command=default_command,
-            context_settings={
-                "ignore_unknown_options": True,
-                "allow_extra_args": True,
-            },
-        )
+    group = click.Group(name=name, help=GROUP_HELP.get(name))
     parent.add_command(group)
     return group
 
@@ -229,18 +180,9 @@ def _make_cli() -> click.Group:
             click.echo(cli.get_help(ctx))
             ctx.exit(0)
 
-    nested_group_roots = {
-        spec.command_path[0]
-        for spec in COMMAND_SPECS
-        if len(spec.command_path) > 1 and any(other.command_path == spec.command_path[:1] for other in COMMAND_SPECS)
-    }
-
     for spec in COMMAND_SPECS:
         cmd = _make_command(spec)
         parent = cli
-        if len(spec.command_path) == 1 and spec.command_path[0] in nested_group_roots:
-            _ensure_group(parent, spec.command_path[0], default_command=cmd)
-            continue
         for group_name in spec.command_path[:-1]:
             parent = _ensure_group(parent, group_name)
         parent.add_command(cmd)

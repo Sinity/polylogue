@@ -307,6 +307,20 @@ def _click_invocation_errors(
     return errors
 
 
+def _declared_argument_names() -> dict[str, frozenset[str]]:
+    from devtools.gate import GATE_NAMES
+    from devtools.render_all import SURFACE_NAMES
+
+    return {
+        "gate": frozenset(GATE_NAMES),
+        "render": frozenset({"all", *SURFACE_NAMES}),
+        "scenario": frozenset({"list", "run"}),
+    }
+
+
+_DECLARED_ARGUMENT_NAMES = _declared_argument_names()
+
+
 def _surface_subcommand(surface: str, rest: str) -> str | None:
     tokens = _real_tokens(rest)
     if not tokens:
@@ -315,6 +329,12 @@ def _surface_subcommand(surface: str, rest: str) -> str | None:
         return tokens[0]
     known = command_name_from_tokens(tokens)
     if known is not None:
+        # A command whose first argument is a declared name (a gate, a
+        # generated surface) hides that name from the catalog, so the lint
+        # would pass over a stale one. Check it against the declaring table.
+        declared = _DECLARED_ARGUMENT_NAMES.get(known)
+        if declared is not None and len(tokens) > 1 and tokens[1] not in declared:
+            return f"{known} {tokens[1]}"
         return known
     max_len = max((len(spec.command_path) for spec in COMMANDS.values()), default=1)
     return " ".join(tokens[: min(len(tokens), max_len)])

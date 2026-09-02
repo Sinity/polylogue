@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.command_catalog import COMMANDS
+from devtools.gate import GATES_BY_NAME
 from devtools.verify_webui import main
 
 
@@ -24,7 +24,7 @@ def test_webui_generate_check_script_resolves_from_ci_working_directory() -> Non
 
 
 def test_webui_verification_is_catalogued() -> None:
-    assert COMMANDS["verify webui"].module == "devtools.verify_webui"
+    assert GATES_BY_NAME["webui"].args == ("devtools.verify_webui",)
 
 
 def test_webui_verification_propagates_package_failure(

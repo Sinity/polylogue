@@ -121,4 +121,4 @@ def test_policy_json_names_every_duplicate_owner(
 def test_schema_versioning_policy_runs_exactly_once_in_every_gate_tier() -> None:
     for quick in (True, False):
         labels = [label for label, _command in verify.build_verify_steps(quick=quick)]
-        assert labels.count("verify schema-versioning") == 1
+        assert labels.count("gate schema-versioning") == 1

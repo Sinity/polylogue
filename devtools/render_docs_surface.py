@@ -198,11 +198,9 @@ def render_outputs(*, readme_path: Path, docs_readme_path: Path) -> tuple[str, s
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render README docs surfaces from the shared docs registry.")
-    parser.add_argument("--readme", default="README.md", help="README path (default: README.md)")
-    parser.add_argument("--docs-readme", default="docs/README.md", help="Docs map path (default: docs/README.md)")
     parser.add_argument("--check", action="store_true", help="Exit non-zero when README targets are out of sync.")
     args = parser.parse_args(argv)
-    readme_path, docs_readme_path = Path(args.readme), Path(args.docs_readme)
+    readme_path, docs_readme_path = Path("README.md"), Path("docs/README.md")
     try:
         readme_content, docs_readme_content = render_outputs(readme_path=readme_path, docs_readme_path=docs_readme_path)
     except ValueError as exc:

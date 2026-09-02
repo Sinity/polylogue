@@ -326,11 +326,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base")
     parser.add_argument("--head")
-    parser.add_argument("--pr-body", type=Path)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        report = check(repo_root(), base=args.base, head=args.head, waiver_body=args.pr_body)
+        report = check(repo_root(), base=args.base, head=args.head, waiver_body=None)
     except (ConsumerReachabilityError, OSError, subprocess.CalledProcessError) as exc:
         payload = {"ok": False, "diagnostic": {"type": type(exc).__name__, "message": str(exc)}}
         if args.json:
