@@ -134,6 +134,7 @@ from polylogue.archive.revision_replay import (
     plan_revision_replay,
 )
 from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
+from polylogue.core.codex_append import strip_codex_legacy_append_header
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import (
@@ -178,6 +179,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     PENDING_RAW_LOGICAL_SOURCE_PREFIX,
     ArchiveSourceBlobRef,
+    _revision_values,
     apply_source_raw_state_update,
     bind_source_raw_revision,
     write_source_blob_refs,
@@ -953,6 +955,87 @@ def bind_raw_revision(
     bind_source_raw_revision(store._ensure_source_conn(), raw_id, revision, manage_transaction=manage_transaction)
 
 
+def promote_reconstructed_legacy_append_revisions(
+    store: RawRevisionGovernanceHost,
+    revisions: Sequence[tuple[str, RawRevisionEnvelope]],
+    *,
+    source_prefix_sha256: str,
+    source_size: int,
+    source_mtime_ns: int,
+    source_ctime_ns: int,
+    observed_at_ms: int,
+) -> None:
+    """Promote a byte-proven legacy append chain reconstructed from retained bytes."""
+    if not revisions:
+        return
+    conn = store._ensure_source_conn()
+    with conn:
+        for raw_id, revision in revisions:
+            if (
+                revision.kind is not RawRevisionKind.APPEND
+                or revision.authority is not RawRevisionAuthority.BYTE_PROVEN
+            ):
+                raise ValueError("legacy reconstruction can only promote byte-proven append revisions")
+            cursor = conn.execute(
+                """
+                UPDATE raw_sessions
+                SET logical_source_key = ?, revision_kind = ?, source_revision = ?,
+                    predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
+                    append_end_offset = ?, acquisition_generation = ?, revision_authority = ?,
+                    revision_authority_evidence = 'live_source_verification_v1'
+                WHERE raw_id = ?
+                  AND logical_source_key = ?
+                  AND revision_kind = 'unknown'
+                  AND revision_authority = 'quarantined'
+                  AND source_revision IS NOT NULL
+                  AND predecessor_source_revision IS NULL
+                  AND predecessor_raw_id IS NULL
+                  AND baseline_raw_id IS NULL
+                  AND append_start_offset IS NULL
+                  AND append_end_offset IS NULL
+                """,
+                (*_revision_values(revision), raw_id, revision.logical_source_key),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"legacy append revision is no longer eligible for promotion: {raw_id}")
+            conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,))
+            row = conn.execute(
+                """
+                SELECT source_path, blob_hash, blob_size
+                FROM raw_sessions
+                WHERE raw_id = ?
+                """,
+                (raw_id,),
+            ).fetchone()
+            if row is None or revision.append_start_offset is None or revision.append_end_offset is None:
+                raise ValueError(f"legacy append revision receipt is unavailable: {raw_id}")
+            conn.execute(
+                """
+                INSERT INTO raw_legacy_append_resynthesis_receipts (
+                    raw_id, logical_source_key, source_path, blob_hash, blob_size,
+                    append_start_offset, append_end_offset, matched_after_codex_header_strip,
+                    previous_revision_authority, source_prefix_sha256, source_size,
+                    source_mtime_ns, source_ctime_ns, observed_at_ms, detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'quarantined', ?, ?, ?, ?, ?, '')
+                """,
+                (
+                    raw_id,
+                    revision.logical_source_key,
+                    row[0],
+                    row[1],
+                    row[2],
+                    revision.append_start_offset,
+                    revision.append_end_offset,
+                    int(row[2]) != revision.append_end_offset - revision.append_start_offset,
+                    source_prefix_sha256,
+                    source_size,
+                    source_mtime_ns,
+                    source_ctime_ns,
+                    observed_at_ms,
+                ),
+            )
+
+
 def release_provisional_full_revisions(store: RawRevisionGovernanceHost, raw_ids: Sequence[str]) -> None:
     """Undo census-time bindings when index authority rejects adoption.
 
@@ -1032,6 +1115,23 @@ def raw_append_revision_parent(
         return None
     row = rows[0]
     return str(row[0]), str(row[1]), int(row[2]) + 1
+
+
+def raw_legacy_append_resynthesis_receipt(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[str, int] | None:
+    """Return the live-source proof recorded when one legacy append was promoted."""
+    row = (
+        store._ensure_source_conn()
+        .execute(
+            """
+            SELECT source_prefix_sha256, matched_after_codex_header_strip
+            FROM raw_legacy_append_resynthesis_receipts
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        .fetchone()
+    )
+    return (str(row[0]), int(row[1])) if row is not None else None
 
 
 def raw_membership_retired_full_revision_siblings(
@@ -1625,9 +1725,16 @@ def _authorize_full_snapshot_fold(
         ):
             return None
         visited.add(current.raw_id)
-        tail_digest, tail_size = _raw_revision_payload_digest_and_size(store, current.raw_id)
         assert current.append_end_offset is not None
         assert current.append_start_offset is not None
+        tail_start = _append_payload_start_offset(store, current)
+        if tail_start is None:
+            return None
+        tail_digest, tail_size = _raw_revision_payload_digest_and_size(
+            store,
+            current.raw_id,
+            start_offset=tail_start,
+        )
         if tail_size != current.append_end_offset - current.append_start_offset:
             return None
         predecessor = candidates.get(current.predecessor_raw_id)
@@ -1656,7 +1763,7 @@ def _authorize_full_snapshot_fold(
     if baseline_size != current.blob_size or not _raw_revision_matches_segments(
         store,
         full_candidate.raw_id,
-        [current.raw_id, *reversed(tail_raw_ids)],
+        [current, *(candidates[raw_id] for raw_id in reversed(tail_raw_ids))],
     ):
         return None
     return FullSnapshotFoldAuthorization(
@@ -1760,23 +1867,60 @@ def blob_path_for_hash(store: RawRevisionGovernanceHost, blob_hash: str) -> Path
     return path if path.exists() else None
 
 
-def _raw_revision_payload_digest_and_size(store: RawRevisionGovernanceHost, raw_id: str) -> tuple[str, int]:
+def _raw_revision_payload_digest_and_size(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    start_offset: int = 0,
+) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
     with open_raw_revision_material(store, raw_id) as (_provider, payload, _source_path, _kind):
+        payload.seek(start_offset)
         while chunk := payload.read(1024 * 1024):
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
 
 
+def _append_payload_start_offset(store: RawRevisionGovernanceHost, candidate: RevisionCandidate) -> int | None:
+    """Return the retained-payload offset for one byte-governed append."""
+    if candidate.append_start_offset is None or candidate.append_end_offset is None:
+        return None
+    expected_size = candidate.append_end_offset - candidate.append_start_offset
+    if candidate.blob_size == expected_size:
+        return 0
+    if candidate.blob_size < expected_size:
+        return None
+    with open_raw_revision_material(store, candidate.raw_id) as (provider, payload, _source_path, _kind):
+        if provider is not Provider.CODEX:
+            return None
+        header_size = candidate.blob_size - expected_size
+        header = payload.read(header_size)
+    if len(header) != header_size or strip_codex_legacy_append_header(header + b"\0") != b"\0":
+        return None
+    return header_size
+
+
 def _raw_revision_matches_segments(
-    store: RawRevisionGovernanceHost, full_raw_id: str, segment_raw_ids: Sequence[str]
+    store: RawRevisionGovernanceHost, full_raw_id: str, segments: Sequence[RevisionCandidate | str]
 ) -> bool:
     with open_raw_revision_material(store, full_raw_id) as (_provider, full, _source_path, _kind):
-        for raw_id in segment_raw_ids:
-            with open_raw_revision_material(store, raw_id) as (_provider, segment, _source_path, _kind):
-                while chunk := segment.read(1024 * 1024):
+        for segment in segments:
+            start_offset: int | None
+            if isinstance(segment, str):
+                raw_id = segment
+                start_offset = 0
+            else:
+                raw_id = segment.raw_id
+                start_offset = (
+                    _append_payload_start_offset(store, segment) if segment.kind is RawRevisionKind.APPEND else 0
+                )
+            if start_offset is None:
+                return False
+            with open_raw_revision_material(store, raw_id) as (_provider, payload, _source_path, _kind):
+                payload.seek(start_offset)
+                while chunk := payload.read(1024 * 1024):
                     if full.read(len(chunk)) != chunk:
                         return False
         return full.read(1) == b""

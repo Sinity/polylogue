@@ -10,6 +10,7 @@ import tempfile
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
@@ -34,6 +35,7 @@ class SQLiteBlobSnapshot:
     blob_hash: str
     blob_size: int
     source_revision: str
+    source_fingerprint: str
     blob_publication_receipt_id: str | None = None
 
 
@@ -117,6 +119,110 @@ def sqlite_source_revision(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def sqlite_logical_revision(path: Path) -> str:
+    """Digest SQLite schema and logical rows, independent of page layout.
+
+    Filesystem metadata and SQLite page images change for ordinary commits,
+    checkpoints, and vacuuming. Source continuity therefore needs a digest of
+    the declared database contents. Values are encoded with their SQLite type
+    so text, integers, blobs, and NULL remain distinct.
+    """
+    source_uri = f"{path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(source_uri, uri=True)) as conn:
+        # SQLite permits arbitrary bytes in a TEXT value.  Preserve those
+        # bytes so a table outside the parser's scope cannot prevent snapshot
+        # acquisition or collapse distinct logical values.
+        conn.text_factory = bytes
+        # Keep schema and every row in one SQLite read snapshot.  Without an
+        # explicit transaction a concurrent WAL commit can make the digest a
+        # combination of two source states.
+        conn.execute("BEGIN")
+        schema_objects = conn.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+
+        def schema_text(value: object) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8")
+            return str(value)
+
+        table_sql = {
+            schema_text(row[1]): schema_text(row[3]) for row in schema_objects if schema_text(row[0]) == "table"
+        }
+        digest = hashlib.sha256()
+        for schema_object in schema_objects:
+            digest.update(
+                json.dumps(
+                    [schema_text(value) if value is not None else None for value in schema_object],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            digest.update(b"\0")
+        for table, table_sql_text in table_sql.items():
+            if table_sql_text.lstrip().upper().startswith("CREATE VIRTUAL TABLE"):
+                continue
+            quoted = '"' + table.replace('"', '""') + '"'
+            columns = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+            column_names = [schema_text(row[1]) for row in columns]
+            has_integer_primary_key = any(
+                schema_text(row[2]).upper() == "INTEGER" and int(row[5]) == 1 for row in columns
+            )
+            is_without_rowid = "WITHOUT ROWID" in table_sql_text.upper()
+            selected_column_names = (
+                ["rowid"] if not is_without_rowid and not has_integer_primary_key else []
+            ) + column_names
+            ordered_column_names = [
+                name
+                for _primary_key_position, name in sorted(
+                    ((int(row[5]) if row[5] else 10**9, schema_text(row[1])) for row in columns),
+                )
+            ]
+            if "rowid" in selected_column_names:
+                ordered_column_names.append("rowid")
+            order_terms: list[str] = []
+            for name in ordered_column_names:
+                quoted_column = '"' + name.replace('"', '""') + '"'
+                order_terms.extend((f"typeof({quoted_column}) COLLATE BINARY", f"{quoted_column} COLLATE BINARY"))
+            order = ", ".join(order_terms)
+            digest.update(
+                json.dumps(
+                    [table, selected_column_names],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            digest.update(b"\0")
+            selected_columns = ", ".join(
+                f"typeof({quoted_name}), {quoted_name}"
+                for name in selected_column_names
+                for quoted_name in ('"' + name.replace('"', '""') + '"',)
+            )
+            rows = conn.execute(f"SELECT {selected_columns} FROM {quoted}" + (f" ORDER BY {order}" if order else ""))
+            for row in rows:
+                encoded: list[list[Any]] = []
+                for storage_class, value in zip(row[::2], row[1::2], strict=True):
+                    kind = schema_text(storage_class)
+                    if kind == "blob":
+                        assert isinstance(value, bytes)
+                        encoded.append(["blob", value.hex()])
+                    elif kind == "null":
+                        encoded.append(["null", None])
+                    elif kind == "text":
+                        assert isinstance(value, bytes)
+                        encoded.append(["text", value.hex()])
+                    else:
+                        encoded.append([kind, value])
+                digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode())
+                digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
     """Create a consistent standalone backup without writing to the source."""
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -189,14 +295,27 @@ def snapshot_sqlite_to_blob(
     *,
     heartbeat: Heartbeat | None = None,
 ) -> SQLiteBlobSnapshot:
-    """Back up *source*, then hash/store only those consistent snapshot bytes."""
-    source_revision = sqlite_source_revision(source)
+    """Back up *source* and return its logical revision.
+
+    The backup bytes remain available as immutable parser input, but source
+    continuity is based on schema and logical rows.  Re-reading the logical
+    revision after the backup prevents a concurrent commit from being
+    presented as a complete source observation.
+    """
+    source_revision = sqlite_logical_revision(source)
     temporary_path = blob_store.allocate_staging_path(
         prefix=".sqlite-snapshot.",
         suffix=source.suffix or ".db",
     )
     try:
         snapshot_sqlite_database(source, temporary_path)
+        if sqlite_logical_revision(source) != source_revision:
+            raise OSError("SQLite source changed during backup")
+        if sqlite_logical_revision(temporary_path) != source_revision:
+            raise OSError("SQLite backup does not match source logical revision")
+        source_fingerprint = sqlite_source_revision(source)
+        if sqlite_logical_revision(source) != source_revision:
+            raise OSError("SQLite source changed during backup")
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
         from polylogue.storage.blob_publication import publication_receipt_id
 
@@ -204,6 +323,7 @@ def snapshot_sqlite_to_blob(
             blob_hash=blob_hash,
             blob_size=blob_size,
             source_revision=source_revision,
+            source_fingerprint=source_fingerprint,
             blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         )
     finally:
@@ -224,5 +344,6 @@ __all__ = [
     "sqlite_staging_metadata_path",
     "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
+    "sqlite_logical_revision",
     "sqlite_source_revision",
 ]

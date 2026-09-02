@@ -1680,7 +1680,32 @@ def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path
     assert record is not None
     assert record.byte_size == state_db.stat().st_size
     assert record.content_fingerprint == "acquisition-revision"
-    assert record.tail_hash == "acquisition-revision"
+    assert record.tail_hash == sqlite_source_revision(state_db)
+
+
+def test_hermes_cursor_keeps_snapshot_time_fingerprint(tmp_path: Path) -> None:
+    root = tmp_path / "hermes"
+    root.mkdir()
+    state_db = root / "state.db"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE turns(id INTEGER PRIMARY KEY)")
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        root,
+        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+    )
+
+    watcher._batch_processor._record_full_cursor(
+        state_db,
+        raw_fingerprint="snapshot-hash",
+        source_revision="acquisition-revision",
+        source_fingerprint="snapshot-time-fingerprint",
+    )
+
+    record = watcher._cursor.get_record(state_db)
+
+    assert record is not None
+    assert record.tail_hash == "snapshot-time-fingerprint"
 
 
 def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
