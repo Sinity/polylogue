@@ -6,7 +6,7 @@ const daemonUrl = process.env.POLYLOGUE_DAEMON_URL ?? 'http://127.0.0.1:8787';
 
 export default defineConfig({
   plugins: [preact()],
-  base: '/app/assets/',
+  base: '/assets/',
   build: {
     outDir: '../polylogue/daemon/static/dist',
     emptyOutDir: true,

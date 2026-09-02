@@ -185,7 +185,7 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
     """(Re)ingest the ``reader-c1`` session, optionally with the six
     MK3-state attachments linked to its first message."""
     from polylogue.core.enums import BlockType
-    from polylogue.daemon.web_shell_attachments import PREVIEW_SIZE_BUDGET
+    from polylogue.daemon.webui_data import PREVIEW_SIZE_BUDGET
     from tests.infra.storage_records import SessionBuilder
 
     builder = (

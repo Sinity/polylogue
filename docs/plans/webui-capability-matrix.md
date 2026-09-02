@@ -17,19 +17,18 @@ capabilities. `typed` means the canonical typed surface serves the capability;
 | Attachments | `/a`, typed semantic metadata projection, API | shell attachment panel/API | typed |
 | Pastes | `/p`, typed semantic evidence projection, API | shell paste panel/API | typed |
 | Costs and unknown values | `/cost` | shell cost panel | typed |
-| Assertions | no typed route | shell notes and assertion API | legacy |
-| Session selection | no typed route | shell selection toolbar/API | legacy |
-| Saved views | no typed route | shell saved-view controls/API | legacy |
+| Assertions | `/api/assertions` typed envelope | notes and assertion API | typed envelope |
+| Session selection | `/api/user/marks` typed operation | selection toolbar/API | typed operation |
+| Saved views | `/api/user/saved-views` typed operation | saved-view controls/API | typed operation |
 | Workspace and stack views | `/w/:mode`, typed semantic projection, API | shell workspace panel | typed |
 | Compare | `/w/compare`, typed semantic projection, API | shell compare panel | typed |
-| Similar-session exploration | no typed route | shell similar panel/API | legacy |
+| Similar-session exploration | `/api/similar` typed envelope | similar panel/API | typed envelope |
 | Observability | `/observability` | shell status panels | typed |
 | Realtime convergence updates | no typed route | shell realtime client | legacy |
 | Generated contracts and asset manifest | `webui/src/api`, daemon bundle | inline script assembly | typed |
 | Authentication and CSP boundary | daemon web-auth/asset routes | shell bootstrap | typed |
 | Keyboard, responsive, and design-system states | component/browser suites | shell interaction tests | typed |
 
-The root, `/app`, `/w/*`, `/p`, and `/a` routes enter typed SSR handlers and
-share the daemon's asset-manifest and authentication boundary. The legacy
-shell modules remain internal compatibility code until the remaining reader
-tests and route helpers are retired in the final deletion slice.
+All browser routes enter typed SSR handlers and share the daemon's
+asset-manifest and authentication boundary. Mutations remain typed API
+operations and are not embedded in browser rendering.

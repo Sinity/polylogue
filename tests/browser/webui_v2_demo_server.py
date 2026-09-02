@@ -3,8 +3,8 @@
 Unlike ``web_auth_server.py`` (which exercises the legacy shell's credential
 flows against a bearer token), this script boots the daemon with NO auth
 token — the "local dev default" per ``DaemonAPIHandler._check_auth`` — so
-``/app/*`` SSR pages and their ``/api/*`` island fetches are open, matching
-how a developer runs the daemon locally against `/app`.
+``//*`` SSR pages and their ``/api/*`` island fetches are open, matching
+how a developer runs the daemon locally against `/`.
 
 The demo archive alone has no session large enough to exercise the
 session-read pagination/deep-link machinery (polylogue-07g6), so this script

@@ -6,7 +6,7 @@ registry: the daemon session-detail routes (``daemon/http.py``) attach
 from the exact ``SemanticTranscript`` registry the CLI renders to Markdown
 (``rendering/semantic_cards.py``, exercised by
 ``tests/unit/rendering/test_semantic_cards.py``), and the web reader
-(``daemon/web_shell_semantic_cards.py``) renders that same ordered entry JSON
+(``daemon/webui.py``) renders that same ordered entry JSON
 to DOM without reclassifying raw roles or prose.
 
 Structure parity is proven directly against both public schemas on the actual

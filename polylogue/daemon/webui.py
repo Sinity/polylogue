@@ -233,7 +233,7 @@ def render_archive_overview_page(
         }
     )
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     if rows:
         rendered_rows = "\n".join(_render_message_row(row) for row in rows)
@@ -258,7 +258,7 @@ def render_archive_overview_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to archive overview</a>
-    {_render_site_header("/app")}
+    {_render_site_header("/")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-served semantic HTML</p>
       <h1>Archive overview</h1>
@@ -279,7 +279,7 @@ def render_archive_overview_page(
       </section>
     </main>
     <script id="archive-overview-bootstrap" type="application/json">{bootstrap}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -300,7 +300,7 @@ def render_session_list_page(
 
     entry = bundle.entrypoint_for("session-list")
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     items = page.get("items") if page is not None else None
     rows = items if isinstance(items, list) else []
@@ -338,7 +338,7 @@ def render_session_list_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to session list</a>
-    {_render_site_header("/app/sessions")}
+    {_render_site_header("/sessions")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-served semantic HTML</p>
       <h1>Sessions</h1>
@@ -360,7 +360,7 @@ def render_session_list_page(
       </section>
     </main>
     <script id="session-list-bootstrap" type="application/json">{bootstrap}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -370,7 +370,7 @@ def _render_session_facet_form(filters: Mapping[str, str]) -> str:
     origin = html.escape(str(filters.get("origin") or ""), quote=True)
     since = html.escape(str(filters.get("since") or ""), quote=True)
     repo = html.escape(str(filters.get("repo") or ""), quote=True)
-    return f"""      <form class="session-facets" method="get" action="/app/sessions" role="search" aria-label="Session filters">
+    return f"""      <form class="session-facets" method="get" action="/sessions" role="search" aria-label="Session filters">
         <div class="session-facets__field">
           <label for="facet-origin">Origin</label>
           <input id="facet-origin" name="origin" type="text" value="{origin}" placeholder="e.g. codex-session" autocomplete="off">
@@ -412,7 +412,7 @@ def _render_session_card(raw: object) -> str:
         detail_bits.append("repo unknown")
     return f"""          <li class="activity-row" data-session-id="{html.escape(session_id, quote=True)}">
             <div class="activity-row__meta"><span class="activity-row__origin">{html.escape(origin)}</span>{time_markup}</div>
-            <h3><a href="/app/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a></h3>
+            <h3><a href="/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a></h3>
             <p class="activity-row__detail">{" · ".join(detail_bits)}</p>
           </li>"""
 
@@ -428,7 +428,7 @@ def render_session_read_page(
 
     entry = bundle.entrypoint_for("session-read")
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     if session is None:
         body = f"<p>{html.escape(notice or 'This session could not be found or the archive is unavailable.')}</p>"
@@ -443,14 +443,14 @@ def render_session_read_page(
 {stylesheet_links}
   </head>
   <body>
-    {_render_site_header("/app/sessions")}
+    {_render_site_header("/sessions")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-served semantic HTML</p>
       <h1>Session unavailable</h1>
       {body}
     </main>
     <script id="session-read-bootstrap" type="application/json">{bootstrap}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -501,7 +501,7 @@ def render_session_read_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to session transcript</a>
-    {_render_site_header("/app/sessions")}
+    {_render_site_header("/sessions")}
     <main id="main" class="page-shell">
       <p class="eyebrow">{html.escape(origin)}</p>
       <h1>{html.escape(str(title))}</h1>
@@ -523,7 +523,7 @@ def render_session_read_page(
       </section>
     </main>
     <script id="session-read-bootstrap" type="application/json">{bootstrap}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -549,7 +549,7 @@ def _render_lineage_banner(session: Mapping[str, object]) -> str:
     if not parent_id:
         return ""
     branch_type = str(session.get("branch_type") or "unknown")
-    parent_href = f"/app/sessions/{quote(str(parent_id), safe='')}"
+    parent_href = f"/sessions/{quote(str(parent_id), safe='')}"
     return (
         '      <p class="lineage-banner" data-branch-type="'
         + html.escape(branch_type, quote=True)
@@ -564,7 +564,7 @@ def _render_lineage_banner(session: Mapping[str, object]) -> str:
 
 
 #: Display label per SemanticCardKind, matching the legacy web shell's SEM_CARD_LABEL
-#: (polylogue/daemon/web_shell_semantic_cards.py) so both surfaces read the same vocabulary.
+#: so both surfaces read the same vocabulary.
 SEMANTIC_CARD_LABELS: Mapping[str, str] = {
     "shell": "shell",
     "file_read": "read",
@@ -657,7 +657,7 @@ def _render_card_field_value(value: str) -> str:
 
     if value.startswith("session:") and len(value) > len("session:"):
         session_ref = value[len("session:") :]
-        return f'<a class="card__field-value" href="/app/sessions/{quote(session_ref, safe="")}"><code>{html.escape(value)}</code></a>'
+        return f'<a class="card__field-value" href="/sessions/{quote(session_ref, safe="")}"><code>{html.escape(value)}</code></a>'
     if value.startswith("message:") and len(value) > len("message:"):
         message_ref = value[len("message:") :]
         return f'<a class="card__field-value" href="#msg-{quote(message_ref, safe="")}"><code>{html.escape(value)}</code></a>'
@@ -839,11 +839,11 @@ def _render_site_header(current_path: str) -> str:
 
     return (
         '<header class="site-header"><p class="eyebrow">Polylogue</p><nav aria-label="WebUI views">'
-        + link("/app", "Archive overview")
-        + link("/app/sessions", "Sessions")
-        + link("/app/search", "Search")
-        + link("/app/cost", "Cost & usage")
-        + link("/app/observability", "Observability")
+        + link("/", "Archive overview")
+        + link("/sessions", "Sessions")
+        + link("/search", "Search")
+        + link("/cost", "Cost & usage")
+        + link("/observability", "Observability")
         + link("/", "Legacy reader")
         + "</nav></header>"
     )
@@ -934,7 +934,7 @@ def render_cost_page(
 
     entry = bundle.entrypoint_for("cost")
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     if payload is None:
         body = (
@@ -961,7 +961,7 @@ def render_cost_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to cost and usage</a>
-    {_render_site_header("/app/cost")}
+    {_render_site_header("/cost")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Non-authoritative estimate</p>
       <h1>Cost &amp; usage</h1>
@@ -969,7 +969,7 @@ def render_cost_page(
       <div id="cost-lane-toggle" data-island="cost-lane-toggle"></div>
 {body}
     </main>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -1155,7 +1155,7 @@ def _render_session_cost_row(session: Mapping[str, object]) -> str:
     return (
         f'<li class="cost-session-row" data-cost-status="{html.escape(status, quote=True)}">'
         f'<span class="cost-session-origin">{html.escape(origin)}</span>'
-        f'<a href="/app/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a>'
+        f'<a href="/sessions/{quote(session_id, safe="")}">{html.escape(str(title))}</a>'
         f"<span>{cost_text}</span></li>"
     )
 
@@ -1183,7 +1183,7 @@ def render_search_page(
 
     entry = bundle.entrypoint_for("search")
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     examples_markup = " or ".join(f"<code>{html.escape(example)}</code>" for example in SEARCH_EXAMPLE_QUERIES)
     examples_plain = " or ".join(SEARCH_EXAMPLE_QUERIES)
@@ -1258,12 +1258,12 @@ def render_search_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to search</a>
-    {_render_site_header("/app/search")}
+    {_render_site_header("/search")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-ranked archive search</p>
       <h1>Search</h1>
       <p class="lede">The real query DSL — fielded predicates (<code>origin:</code>, <code>repo:</code>, <code>since:</code>), booleans, and <code>near:"…"</code> semantic phrases. Try {examples_markup}.</p>
-      <form class="search-form" method="get" action="/app/search" role="search" aria-label="Archive search">
+      <form class="search-form" method="get" action="/search" role="search" aria-label="Archive search">
         <label for="search-q">Query</label>
         <input id="search-q" name="q" type="text" value="{html.escape(query, quote=True)}" placeholder="{html.escape(SEARCH_EXAMPLE_QUERIES[0], quote=True)}" autocomplete="off">
         <button type="submit">Search</button>
@@ -1284,7 +1284,7 @@ def render_search_page(
       </section>
     </main>
     <script id="search-bootstrap" type="application/json">{bootstrap}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -1308,7 +1308,7 @@ def _render_search_hit(raw: object) -> str:
     title = session.get("title") or session.get("display_title") or session_id or "[untitled session]"
     origin = str(session.get("origin") or "unknown-export")
     message_id = match.get("message_id")
-    href = f"/app/sessions/{quote(session_id, safe='')}"
+    href = f"/sessions/{quote(session_id, safe='')}"
     if message_id:
         href += f"#msg-{quote(str(message_id), safe='')}"
     snippet = match.get("snippet")
@@ -1468,7 +1468,7 @@ def render_observability_page(
     """Render observability semantics before the Preact island starts."""
     entry = bundle.entrypoint_for("observability")
     stylesheet_links = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     status = payload.get("status")
     status_payload = status if isinstance(status, Mapping) else {}
@@ -1493,7 +1493,7 @@ def render_observability_page(
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to observability</a>
-    {_render_site_header("/app/observability")}
+    {_render_site_header("/observability")}
     <main id="main" class="page-shell">
       <p class="eyebrow">Daemon-projected evidence</p><h1>Archive observability</h1><p class="lede">{html.escape(summary)}</p>
       <div id="observability-island" data-island="observability">
@@ -1503,7 +1503,7 @@ def render_observability_page(
       </div>
     </main>
     <script id="observability-bootstrap" type="application/json">{_json_script(payload)}</script>
-    <script type="module" src="/app/assets/{html.escape(entry.script, quote=True)}"></script>
+    <script type="module" src="/assets/{html.escape(entry.script, quote=True)}"></script>
   </body>
 </html>
 """
@@ -1573,7 +1573,7 @@ def render_typed_data_page(
     """
     entry = bundle.entrypoint()
     styles = "\n".join(
-        f'    <link rel="stylesheet" href="/app/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     rows: list[str] = []
     scalar_rows: list[str] = []
@@ -1603,7 +1603,7 @@ def render_typed_data_page(
                             session_id = item.get("session_id")
                             if session_id:
                                 href = (
-                                    f' href="/app/sessions/{quote(str(session_id), safe="")}'
+                                    f' href="/sessions/{quote(str(session_id), safe="")}'
                                     f'{html.escape(anchor, quote=True)}"'
                                 )
                         label_html = html.escape(str(label))
@@ -1629,7 +1629,7 @@ def render_typed_data_page(
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>{html.escape(title)} · Polylogue</title>{styles}</head>
 <body><a class="skip-link" href="#main">Skip to {html.escape(heading.lower())}</a>
-{_render_site_header("/app")}
+{_render_site_header("/")}
 <main id="main" class="page-shell"><h1>{html.escape(heading)}</h1><p class="lede">{html.escape(description)}</p>
 <section class="activity-panel" aria-labelledby="typed-data-title"><h2 id="typed-data-title">{html.escape(heading)}</h2>
 {content}</section></main></body></html>"""
@@ -1659,7 +1659,7 @@ def _render_message_row(row: MessageQueryRowPayload) -> str:
     )
     return f"""          <li class="activity-row" data-message-id="{html.escape(str(row.message_id), quote=True)}">
             <div class="activity-row__meta"><span class="activity-row__origin">{html.escape(row.origin)}</span>{time_markup}</div>
-            <h3><a href="/app/sessions/{quote(session_id, safe="")}#msg-{quote(str(row.message_id), safe="")}">{html.escape(title)}</a></h3>
+            <h3><a href="/sessions/{quote(session_id, safe="")}#msg-{quote(str(row.message_id), safe="")}">{html.escape(title)}</a></h3>
             <p class="activity-row__preview">{html.escape(preview)}</p>
             <p class="activity-row__detail">{html.escape(row.role)} · {row.word_count:,} words</p>
           </li>"""

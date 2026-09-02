@@ -295,7 +295,7 @@ def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
     reached via ``Polylogue.get_session()``) and the archive-backed route
     (``daemon/http.py:_archive_message_payload``) both read the same
     ``ArchiveMessageRow.blocks`` and must produce byte-identical text for
-    the same message, since ``daemon/web_shell_reader.py``'s client-side
+    the same message, since the browser reader's client-side
     rendering heuristic (``renderMessageBlocks``) dispatches off this single
     flattened field. Joins every non-empty block's text in block order,
     blank-line separated -- this intentionally includes

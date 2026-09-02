@@ -28,7 +28,7 @@ test.afterAll(async () => {
 const LARGE_SESSION_TITLE = 'webui-v2 e2e pagination fixture';
 
 test('list renders real demo sessions served by the daemon', async ({ page }) => {
-  await page.goto(`${server.baseUrl}/app/sessions`, { waitUntil: 'networkidle' });
+  await page.goto(`${server.baseUrl}/sessions`, { waitUntil: 'networkidle' });
   await expect(page.getByRole('heading', { name: 'Sessions', level: 1 })).toBeVisible();
   await expect(page.getByRole('link', { name: LARGE_SESSION_TITLE })).toBeVisible();
   const sessionLinks = page.locator('.activity-row h3 a');
@@ -36,7 +36,7 @@ test('list renders real demo sessions served by the daemon', async ({ page }) =>
 });
 
 test('opening a large session composes only the first bounded page (polylogue-07g6)', async ({ page }) => {
-  await page.goto(`${server.baseUrl}/app/sessions`, { waitUntil: 'networkidle' });
+  await page.goto(`${server.baseUrl}/sessions`, { waitUntil: 'networkidle' });
   await page.getByRole('link', { name: LARGE_SESSION_TITLE }).click();
 
   await expect(page.getByRole('heading', { name: LARGE_SESSION_TITLE, level: 1 })).toBeVisible();
@@ -47,7 +47,7 @@ test('opening a large session composes only the first bounded page (polylogue-07
 });
 
 test('load more pages through the full bounded transcript', async ({ page }) => {
-  await page.goto(`${server.baseUrl}/app/sessions`, { waitUntil: 'networkidle' });
+  await page.goto(`${server.baseUrl}/sessions`, { waitUntil: 'networkidle' });
   await page.getByRole('link', { name: LARGE_SESSION_TITLE }).click();
   await expect(page.locator(`[id$="webui-v2-e2e-large-session:m29"]`)).toBeVisible();
 
@@ -64,20 +64,20 @@ test('load more pages through the full bounded transcript', async ({ page }) => 
 
 test('a deep link beyond the first page auto-pages to the target message', async ({ page }) => {
   const targetId = `${server.largeSessionId}:m75`;
-  await page.goto(`${server.baseUrl}/app/sessions/${encodeURIComponent(server.largeSessionId)}#msg-${targetId}`, {
+  await page.goto(`${server.baseUrl}/sessions/${encodeURIComponent(server.largeSessionId)}#msg-${targetId}`, {
     waitUntil: 'domcontentloaded',
   });
   await expect(page.locator(`[id="msg-${targetId}"]`)).toBeVisible();
 });
 
 test('search finds the large session and deep-links into a specific message', async ({ page }) => {
-  await page.goto(`${server.baseUrl}/app/search?q=webui-v2`, { waitUntil: 'networkidle' });
+  await page.goto(`${server.baseUrl}/search?q=webui-v2`, { waitUntil: 'networkidle' });
   await expect(page.locator('.search-panel')).toHaveAttribute('data-search-state', 'ok');
 
   const hit = page.locator(`.search-hit[data-session-id="${server.largeSessionId}"]`).first();
   await expect(hit).toBeVisible();
   const href = await hit.locator('h3 a').getAttribute('href');
-  expect(href).toContain(`/app/sessions/${encodeURIComponent(server.largeSessionId)}`);
+  expect(href).toContain(`/sessions/${encodeURIComponent(server.largeSessionId)}`);
   expect(href).toContain('#msg-');
 
   await hit.locator('h3 a').click();
@@ -94,7 +94,7 @@ for (const viewport of [
   test(`visual: session list at ${viewport.label}px`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
-    await page.goto(`${server.baseUrl}/app/sessions`, { waitUntil: 'networkidle' });
+    await page.goto(`${server.baseUrl}/sessions`, { waitUntil: 'networkidle' });
     await expect(page).toHaveScreenshot(`session-list-${viewport.label}.png`, {
       animations: 'disabled',
       caret: 'hide',
@@ -105,7 +105,7 @@ for (const viewport of [
   test(`visual: session read at ${viewport.label}px`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
-    await page.goto(`${server.baseUrl}/app/sessions/${encodeURIComponent(server.largeSessionId)}`, {
+    await page.goto(`${server.baseUrl}/sessions/${encodeURIComponent(server.largeSessionId)}`, {
       waitUntil: 'networkidle',
     });
     await expect(page).toHaveScreenshot(`session-read-${viewport.label}.png`, {
@@ -118,7 +118,7 @@ for (const viewport of [
   test(`visual: search at ${viewport.label}px`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
-    await page.goto(`${server.baseUrl}/app/search?q=webui-v2`, { waitUntil: 'networkidle' });
+    await page.goto(`${server.baseUrl}/search?q=webui-v2`, { waitUntil: 'networkidle' });
     await expect(page).toHaveScreenshot(`search-${viewport.label}.png`, {
       animations: 'disabled',
       caret: 'hide',

@@ -22,7 +22,7 @@ describe('SessionListIsland', () => {
 
     expect(await screen.findByRole('link', { name: 'Continuation contract wiring' })).toHaveAttribute(
       'href',
-      '/app/sessions/codex-session%3Asession%2F2',
+      '/sessions/codex-session%3Asession%2F2',
     );
     expect(loadPage).toHaveBeenCalledTimes(1);
     expect(loadPage).toHaveBeenCalledWith({ origin: 'codex-session' }, 20);

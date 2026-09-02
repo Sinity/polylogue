@@ -24,7 +24,7 @@ cd webui
 POLYLOGUE_DAEMON_URL=http://127.0.0.1:8787 npm run dev
 ```
 
-Open the Vite URL printed by the command. Vite serves the island source with hot reload and proxies `/api/*` to `POLYLOGUE_DAEMON_URL`. The production route remains `http://127.0.0.1:8787/app`; it reads the packaged manifest and serves the same island under `/app/assets/<content-hash>`.
+Open the Vite URL printed by the command. Vite serves the island source with hot reload and proxies `/api/*` to `POLYLOGUE_DAEMON_URL`. The production route is `http://127.0.0.1:8787/`; it reads the packaged manifest and serves content-hashed assets under `/assets/<content-hash>`.
 
 ## Contract boundary
 
@@ -52,5 +52,3 @@ npx playwright test tests/webui-v2-demo.spec.ts -g "visual:" --update-snapshots
 ```
 
 Review the diff like a syrupy snapshot re-baseline PR: a dedicated `fix(test):`/`chore(test):` commit, never folded into an unrelated feature change.
-
-**`tests/visual` retirement (pytest DOM-smoke, not this workspace):** `tests/visual/test_reader_*.py` covers the legacy shell (`/`, `/w/stack`, `/w/compare`, `/s/:id`, `/p`, `/a`), not the `/app` verticals here. It retires surface-by-surface as each legacy view is replaced by a `/app` vertical with equivalent Playwright coverage: session list/read/search now have that coverage via `webui-v2-demo.spec.ts` above, but the legacy shell itself is still load-bearing (it remains the credential-bootstrap surface `first-party-auth.spec.ts` exercises, and `/w/stack`, `/w/compare`, `/p`, `/a` have no `/app` equivalent yet) — so no `tests/visual` file retires until the view it covers is actually replaced, not merely fronted by a v2 page that reads the same data.

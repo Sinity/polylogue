@@ -64,17 +64,13 @@ from polylogue.daemon.web_auth import (
     read_web_credential_cookie,
     same_origin_from_headers,
 )
-from polylogue.daemon.web_shell_attachments import (
+from polylogue.daemon.webui_data import (
     LibraryEntry,
+    PasteBrowserEntry,
     attachment_to_envelope,
     build_library_payload,
-    render_attachment_library_page,
-)
-from polylogue.daemon.web_shell_paste import (
-    PasteBrowserEntry,
     build_paste_browser_payload,
     envelope_paste_spans,
-    render_paste_browser_page,
     snippet_for_paste,
 )
 from polylogue.daemon.write_coordinator import (
@@ -517,13 +513,12 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
 
     routes: list[tuple[RouteMethod, str]] = [
         ("GET", "/"),
-        ("GET", "/app"),
-        ("GET", "/app/observability"),
-        ("GET", "/app/cost"),
-        ("GET", "/app/sessions"),
-        ("GET", "/app/sessions/:session_id"),
-        ("GET", "/app/search"),
-        ("GET", "/app/assets/:asset"),
+        ("GET", "/observability"),
+        ("GET", "/cost"),
+        ("GET", "/sessions"),
+        ("GET", "/sessions/:session_id"),
+        ("GET", "/search"),
+        ("GET", "/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
         ("GET", "/p"),
@@ -1810,46 +1805,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        # The typed WebUI is the canonical browser surface.  Keep the route
-        # aliases here deliberately boring: they all enter the same SSR
-        # handlers, asset-manifest boundary, and auth checks.  In particular,
-        # the root route must not select the interpolated reader based on a
-        # feature flag or fallback condition.
-        if path in ([""], ["app"]):
+        # The typed WebUI is the canonical browser surface. Every browser
+        # route enters the same SSR handlers, asset-manifest boundary, and
+        # authentication checks.
+        if path == [""]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_archive_overview()
             return
-        if path in (["observability"], ["app", "observability"]):
+        if path == ["observability"]:
             if not self._check_auth():
                 return
             self._serve_webui_observability()
             return
-        if path in (["cost"], ["app", "cost"]):
+        if path == ["cost"]:
             if not self._check_auth():
                 return
             self._serve_webui_cost()
             return
-        if path in (["sessions"], ["app", "sessions"]):
+        if path == ["sessions"]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_list(params)
             return
-        if (len(path) == 2 and path[0] == "sessions" and bool(path[1])) or (
-            len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2])
-        ):
+        if len(path) == 2 and path[0] == "sessions" and bool(path[1]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_read(path[-1])
             return
-        if path in (["search"], ["app", "search"]):
+        if path == ["search"]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_search(params)
             return
-        if (len(path) == 2 and path[0] == "assets" and bool(path[1])) or (
-            len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2])
-        ):
+        if len(path) == 2 and path[0] == "assets" and bool(path[1]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_asset(path[-1])
@@ -2100,7 +2089,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
-    # Web shell
+    # Typed WebUI
     # ------------------------------------------------------------------
 
     def _handle_web_auth_bootstrap(self) -> None:
@@ -2156,11 +2145,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             set_cookie=expired_credential_cookie(secure=origin.startswith("https://")),
             credential_state="web_credential_revoked",
         )
-
-    def _serve_web_shell(self) -> None:
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
-
-        self._send_html(HTTPStatus.OK, WEB_SHELL_HTML)
 
     def _serve_webui_secondary(
         self, *, title: str, heading: str, description: str, payload: Mapping[str, object] | None, empty: str
@@ -2332,7 +2316,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = clamp_query_limit(self._get_int(params, "limit", SESSION_LIST_LIMIT), default=SESSION_LIST_LIMIT)
         offset = max(0, self._get_int(params, "offset", 0))
         try:
-            page = self._do_archive_session_list(archive_root, params, limit, offset, "/app/sessions")
+            page = self._do_archive_session_list(archive_root, params, limit, offset, "/sessions")
         except QuerySpecError as exc:
             self._send_webui_html(
                 HTTPStatus.BAD_REQUEST,
@@ -2588,12 +2572,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "webui_assets_unavailable", str(exc))
             return
         self._send_webui_asset(asset)
-
-    def _serve_paste_browser_page(self) -> None:
-        self._send_html(HTTPStatus.OK, render_paste_browser_page())
-
-    def _serve_attachment_library_page(self) -> None:
-        self._send_html(HTTPStatus.OK, render_attachment_library_page())
 
     def _handle_agent_coordination(self, params: dict[str, list[str]]) -> None:
         from polylogue.coordination import build_coordination_envelope

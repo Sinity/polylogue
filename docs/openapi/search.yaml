@@ -4623,21 +4623,14 @@ x-polylogue-route-contracts:
   response_contract: semantic archive overview HTML
   notes: Canonical typed WebUI overview; browser data access remains behind the authenticated /api boundary.
 - method: GET
-  pattern: /app
-  kind: browser_shell
-  stability: shell_supported
-  auth_policy: unauthenticated_loopback
-  response_contract: semantic archive overview HTML
-  notes: SSR-first WebUI v2 strangler mount; Preact enhances only bounded continuation controls.
-- method: GET
-  pattern: /app/observability
+  pattern: /observability
   kind: browser_shell
   stability: shell_supported
   auth_policy: credential_if_configured
   response_contract: semantic observability HTML
   notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
 - method: GET
-  pattern: /app/cost
+  pattern: /cost
   kind: browser_shell
   stability: shell_supported
   auth_policy: credential_if_configured
@@ -4645,28 +4638,28 @@ x-polylogue-route-contracts:
   notes: SSR-first registry-driven cost rollup, usage timeline, and session drill-down; credentials protect embedded spend
     evidence when configured.
 - method: GET
-  pattern: /app/sessions
+  pattern: /sessions
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback
   response_contract: semantic session list HTML
   notes: SSR-first origin/date/repo faceted session list; Preact enhances only bounded pagination.
 - method: GET
-  pattern: /app/sessions/:session_id
+  pattern: /sessions/:session_id
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback
   response_contract: semantic session read HTML
   notes: 'SSR-first session shell: header, lineage banner, and a simple message-flow placeholder Preact enhances with paging.'
 - method: GET
-  pattern: /app/search
+  pattern: /search
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback
   response_contract: semantic search results HTML
   notes: SSR-first ranked search over the shared SearchEnvelope; Preact enhances only cursor-based pagination.
 - method: GET
-  pattern: /app/assets/:asset
+  pattern: /assets/:asset
   kind: browser_shell
   stability: shell_supported
   auth_policy: unauthenticated_loopback

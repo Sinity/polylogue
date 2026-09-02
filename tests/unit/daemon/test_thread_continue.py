@@ -31,7 +31,6 @@ from polylogue.daemon.thread_continue import (
     build_url,
     list_templates,
 )
-from polylogue.daemon.web_shell import WEB_SHELL_HTML
 
 
 class _MockServer:
@@ -186,22 +185,3 @@ class TestEndpointDispatch:
         assert status == HTTPStatus.OK
         assert payload["count"] >= 3
         assert payload["env_var"] == TEMPLATE_ENV_VAR
-
-
-class TestReaderShellThreadContinueHooks:
-    """The shipped HTML must carry the action button and JS hooks."""
-
-    def test_continue_action_button_present(self) -> None:
-        assert 'data-act="continue-thread"' in WEB_SHELL_HTML
-
-    def test_js_helpers_present(self) -> None:
-        for hook in (
-            "openThreadContinueMenu",
-            "ensureThreadContinueTemplates",
-            "activateThreadContinue",
-            "_threadContinueFillTemplate",
-        ):
-            assert hook in WEB_SHELL_HTML, f"missing JS hook: {hook}"
-
-    def test_endpoint_url_is_referenced(self) -> None:
-        assert "/api/thread-continue-templates" in WEB_SHELL_HTML
