@@ -195,6 +195,50 @@ def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path, m
         conn.close()
 
 
+def test_fast_forward_rejects_undeclared_layout_drift_and_remains_rejectable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fast-forward must validate the resulting layout before callers use it.
+
+    ANTI-VACUITY: removing the post-fast-forward manifest assertion from
+    ``bootstrap.py`` makes the first open return successfully despite the
+    undeclared table, so this direct ``pytest.raises`` assertion goes green
+    only when the production open path validates the completed plan. The
+    second open proves the failed validation leaves the versioned file in a
+    state that is still refused on restart.
+    """
+    import polylogue.storage.sqlite.lifecycle as lifecycle
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    v43_real = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 43)
+    synthetic_decls = (
+        IndexDeltaDeclaration(version=42, classes=(DerivedDeltaClass.CONSTRAINT_ONLY,)),
+        IndexDeltaDeclaration(version=43, classes=v43_real.classes, operations=v43_real.operations),
+    )
+
+    path = tmp_path / "index.db"
+    _build_v42_shaped_index_db(path)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("CREATE TABLE undeclared_layout_drift (marker TEXT NOT NULL)")
+        from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+        stamp_derived_schema_identity(conn, ArchiveTier.INDEX.value)
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(lifecycle, "INDEX_DELTA_DECLARATIONS", synthetic_decls)
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 43)
+
+    expected_error = "index schema semantic manifest mismatch"
+    with pytest.raises(RuntimeError, match=expected_error):
+        initialize_archive_database(path, ArchiveTier.INDEX)
+
+    with pytest.raises(RuntimeError, match=expected_error):
+        initialize_archive_database(path, ArchiveTier.INDEX)
+
+
 def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A second open of an already fast-forwarded archive must not re-raise or re-mutate."""
     import polylogue.storage.sqlite.lifecycle as lifecycle
