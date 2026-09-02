@@ -139,8 +139,7 @@ settings.register_profile(
     suppress_health_check=[HealthCheck.too_slow],
     database=_HYPOTHESIS_DB,
 )
-# differing_executors fires when mutmut runs tests in threads — suppress globally since
-# it never indicates a real bug (only fires in threaded test runners, not normal pytest).
+# differing_executors only fires in threaded test runners; it never indicates a real bug.
 settings.register_profile(
     "default",
     max_examples=100,
