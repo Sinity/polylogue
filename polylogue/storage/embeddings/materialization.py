@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -101,7 +102,7 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingFailure
 
 
-EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error"]
+EmbedSingleStatus = Literal["embedded", "no_messages", "no_embeddable_messages", "not_found", "error", "deferred"]
 ARCHIVE_EMBED_MESSAGE_BATCH_SIZE = 128
 # Kept under the polylogue-ve9z heuristic purge (h01l): these match HTTP
 # status codes in the embedding provider's OWN live error responses (retry
@@ -248,6 +249,7 @@ class EmbedSessionOutcome:
     title: str | None = None
     embedded_message_count: int = 0
     error: str | None = None
+    deferred: bool = False
 
 
 class _EmbedSessionStore(Protocol):
@@ -1505,6 +1507,7 @@ def embed_archive_session_sync(
     session_id: str,
     *,
     embeddings_db_path: Path | None = None,
+    stop_after_seconds: float | None = None,
 ) -> EmbedSessionOutcome:
     """Admit and serialize the complete archive embedding write route."""
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
@@ -1526,6 +1529,7 @@ def embed_archive_session_sync(
             embeddings_db_path=binding,
             lifecycle_store=store,
             lifecycle_binding=binding,
+            stop_after_seconds=stop_after_seconds,
         )
 
 
@@ -1537,6 +1541,7 @@ def _embed_archive_session_sync(
     embeddings_db_path: Path | EmbeddingGenerationBinding | None = None,
     lifecycle_store: EmbeddingGenerationStore | None = None,
     lifecycle_binding: EmbeddingGenerationBinding | None = None,
+    stop_after_seconds: float | None = None,
 ) -> EmbedSessionOutcome:
     """Embed one archive session with exact-key, generation-guarded publication.
 
@@ -1574,7 +1579,8 @@ def _embed_archive_session_sync(
         from polylogue.storage.sqlite.archive_tiers.embedding_write import (
             ArchiveEmbeddingWrite,
             begin_embedding_attempt,
-            complete_embedding_attempt_success,
+            finalize_embedding_attempt_success,
+            publish_embedding_attempt_window,
             supersede_embedding_attempt,
         )
         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -1651,10 +1657,33 @@ def _embed_archive_session_sync(
         )
 
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-        writes: list[ArchiveEmbeddingWrite] = []
+        started_at = time.monotonic()
+        existing_refs = {
+            str(row[0]): bytes(row[1])
+            for row in embeddings_conn.execute(
+                """
+                SELECT r.message_id, r.vector_derivation_hash
+                FROM message_embedding_refs AS r
+                JOIN message_embeddings_meta AS em
+                  ON em.vector_derivation_hash = r.vector_derivation_hash
+                WHERE r.session_id = ?
+                """,
+                (session_id,),
+            ).fetchall()
+        }
+        pending_embeddable = [
+            row
+            for row in embeddable
+            if existing_refs.get(str(row["message_id"])) != input_hash_by_message_id[str(row["message_id"])]
+        ]
         batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
-        for start in range(0, len(embeddable), batch_size):
-            batch = embeddable[start : start + batch_size]
+        deferred = False
+        published_count = 0
+        for start in range(0, len(pending_embeddable), batch_size):
+            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+                deferred = True
+                break
+            batch = pending_embeddable[start : start + batch_size]
             attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
             try:
                 vectors = text_provider._get_embeddings(
@@ -1665,6 +1694,7 @@ def _embed_archive_session_sync(
                 raise _ProviderRequestError(str(exc)) from exc
             if len(vectors) != len(batch):
                 raise _ProviderRequestError("embedding provider returned a mismatched vector count")
+            writes: list[ArchiveEmbeddingWrite] = []
             for row, vector in zip(batch, vectors, strict=True):
                 message_id = str(row["message_id"])
                 input_hash = input_hash_by_message_id[message_id]
@@ -1686,6 +1716,30 @@ def _embed_archive_session_sync(
                         generation=attempt.generation,
                     )
                 )
+            if not publish_embedding_attempt_window(
+                embeddings_conn,
+                attempt=attempt,
+                writes=writes,
+                completed_at_ms=now_ms,
+            ):
+                return EmbedSessionOutcome(status="error", session_id=session_id, error="embedding attempt superseded")
+            if lifecycle_store is not None and lifecycle_binding is not None:
+                lifecycle_store.refresh_binding_contract(lifecycle_binding)
+            published_count += len(batch)
+            if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
+                deferred = start + len(batch) < len(pending_embeddable)
+                if deferred:
+                    break
+
+        if deferred:
+            embedded_count = len(embeddable) - len(pending_embeddable) + published_count
+            return EmbedSessionOutcome(
+                status="deferred",
+                session_id=session_id,
+                title=None if session["title"] is None else str(session["title"]),
+                embedded_message_count=embedded_count,
+                deferred=True,
+            )
 
         current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
             index_conn, session_id, model=text_provider.model
@@ -1712,10 +1766,10 @@ def _embed_archive_session_sync(
 
         if lifecycle_store is not None and lifecycle_binding is not None:
             lifecycle_store.assert_binding(lifecycle_binding)
-        committed = complete_embedding_attempt_success(
+        committed = finalize_embedding_attempt_success(
             embeddings_conn,
             attempt=attempt,
-            writes=writes,
+            message_ids=[str(row["message_id"]) for row in embeddable],
             completed_at_ms=now_ms,
         )
         if not committed:
