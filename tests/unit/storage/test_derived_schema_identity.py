@@ -6,8 +6,13 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 from polylogue.storage.sqlite.archive_tiers.schema_identity import (
     DERIVED_SCHEMA_META_DDL,
@@ -16,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_identity import (
     read_schema_identity,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
+from polylogue.storage.sqlite.lifecycle import get_latest_sql_fast_forwardable_version, index_fast_forward_plan
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
 
@@ -104,11 +109,12 @@ def test_fast_forward_adopts_older_stamped_index_before_identity_validation(tmp_
     """Lifecycle upgrades run before rejecting an identity from an older schema."""
     path = tmp_path / "index.db"
     initialize_archive_database(path, ArchiveTier.INDEX)
-    source_version = 78
-    target_version = 79
+    target_version = INDEX_SCHEMA_VERSION
+    source_version = get_latest_sql_fast_forwardable_version(target_version)
+    assert source_version is not None
     assert index_fast_forward_plan(source_version, target_version) is not None
     with sqlite3.connect(path) as conn:
-        conn.execute("DROP INDEX idx_sessions_sort_key")
+        conn.execute("CREATE TABLE agent_meta_sidecar_purge_receipts (id INTEGER)")
         conn.execute(f"PRAGMA user_version = {source_version}")
         conn.execute("UPDATE schema_identity SET identity = 'old-runtime' WHERE tier = 'index'")
 
@@ -143,3 +149,14 @@ async def test_canonical_async_bootstrap_adopts_current_unstamped_index(tmp_path
         row = await cursor.fetchone()
     assert row is not None
     assert row[0] == derived_schema_identity(DerivedTier.INDEX)
+
+
+def test_read_only_archive_open_refuses_stale_index_identity(tmp_path: Path) -> None:
+    """A read-only archive must reject stale derived results before serving them."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = 'index'")
+
+    with pytest.raises(SchemaSkew, match="stale derived tier"):
+        ArchiveStore.open_existing(archive_root, read_only=True)

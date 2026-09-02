@@ -111,6 +111,8 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 lifecycle_action="rebuild_index",
             ) from exc
 
+        assert_derived_schema_identity(conn, "index")
+
 
 def _readable_without_fts(conn: sqlite3.Connection) -> bool:
     """Allow read-only structured access when only message FTS is missing."""
