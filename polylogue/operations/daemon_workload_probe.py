@@ -107,7 +107,6 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "attachment_refs",
         "paste_spans",
         "session_tags",
-        "insight_materialization",
         "session_work_events",
         "session_phases",
         "session_profiles",
@@ -191,7 +190,6 @@ def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | No
         "sessions",
         "raw_sessions",
         "session_profiles",
-        "insight_materialization",
         "ingest_attempts",
         "convergence_debt",
         "cursor_lag_samples",
@@ -1222,21 +1220,8 @@ def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_de
             "counts": {},
         }
     counts = derived.get("counts") or {}
-    missing_materialization = derived.get("missing_materialization_counts") or {}
     missing_profiles = int(counts.get("missing_profile_row_count") or 0)
-    missing_work_events = int(missing_materialization.get("work_events") or 0)
-    missing_phases = int(missing_materialization.get("phases") or 0)
-    missing_threads = int(missing_materialization.get("thread") or 0)
-    missing_latency = int(missing_materialization.get("latency") or 0)
-    missing_profile_materialization = int(missing_materialization.get("session_profile") or 0)
-    total_missing = (
-        missing_profiles
-        + missing_profile_materialization
-        + missing_work_events
-        + missing_phases
-        + missing_threads
-        + missing_latency
-    )
+    total_missing = missing_profiles
     retry_debt = int(convergence_debt.get("unresolved_count") or convergence_debt.get("failed_count") or 0)
     state = "ready" if total_missing == 0 else "catching_up"
     return {
@@ -1245,11 +1230,6 @@ def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_de
         "reason": None,
         "counts": {
             "missing_profile_rows": missing_profiles,
-            "missing_session_profile_materialization": missing_profile_materialization,
-            "missing_work_events_materialization": missing_work_events,
-            "missing_phases_materialization": missing_phases,
-            "missing_threads_materialization": missing_threads,
-            "missing_latency_materialization": missing_latency,
             "automatic_backlog_total": total_missing,
             "retry_debt_unresolved": retry_debt,
         },
@@ -1386,8 +1366,6 @@ def _unchecked_archive_derived_readiness(reason: str) -> dict[str, Any]:
         "reason": reason,
         "source_check_available": False,
         "counts": {},
-        "materialization_counts": {},
-        "missing_materialization_counts": {},
         "ready": {},
         "surface_readiness": {},
     }
@@ -1414,8 +1392,6 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
         counts["lost_source_evidence_count"] = counts["missing_raw_session_count"]
         counts["lost_source_evidence_samples"] = counts["missing_raw_session_samples"]
         counts.update(_raw_materialization_debt_counts(root))
-        materialization_counts = _archive_materialization_counts(conn)
-        missing_materialization_counts = _archive_missing_materialization_counts(conn)
         messages_fts_ready = (
             counts["text_block_count"] == counts["messages_fts_count"]
             if exact_counts
@@ -1433,15 +1409,9 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             "profile_counts_ready": (
                 counts["profile_work_event_count_mismatch"] == 0 and counts["profile_phase_count_mismatch"] == 0
             ),
-            "profile_materialization_ready": missing_materialization_counts["session_profile"] == 0,
-            "work_event_materialization_ready": missing_materialization_counts["work_events"] == 0,
-            "phase_materialization_ready": missing_materialization_counts["phases"] == 0,
-            "thread_materialization_ready": missing_materialization_counts["thread"] == 0,
-            "latency_materialization_ready": missing_materialization_counts["latency"] == 0,
         }
         surface_readiness = _archive_surface_readiness(
             counts,
-            missing_materialization_counts=missing_materialization_counts,
             source_check_available=source_check_available,
         )
         return {
@@ -1449,8 +1419,6 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             "reason": None,
             "source_check_available": source_check_available,
             "counts": counts,
-            "materialization_counts": materialization_counts,
-            "missing_materialization_counts": missing_materialization_counts,
             "ready": ready,
             "surface_readiness": surface_readiness,
         }
@@ -1459,8 +1427,6 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             "checked": False,
             "reason": str(exc),
             "counts": {},
-            "materialization_counts": {},
-            "missing_materialization_counts": {},
             "ready": {},
             "surface_readiness": {},
         }
@@ -1628,7 +1594,6 @@ def _raw_materialization_debt_counts(root: Path) -> dict[str, int | None]:
 def _archive_surface_readiness(
     counts: dict[str, Any],
     *,
-    missing_materialization_counts: dict[str, int],
     source_check_available: bool,
 ) -> dict[str, Any]:
     """Project low-level archive counters into operator-facing surface verdicts."""
@@ -1644,12 +1609,6 @@ def _archive_surface_readiness(
             "blockers": blockers,
             "evidence": evidence,
         }
-
-    def materialization_surface(insight_type: str) -> tuple[bool, list[str]]:
-        missing = missing_materialization_counts.get(insight_type, 0)
-        if missing == 0:
-            return True, []
-        return False, [f"missing_{insight_type}_materialization"]
 
     raw_ready: bool | None
     raw_blockers: list[str] = []
@@ -1676,7 +1635,6 @@ def _archive_surface_readiness(
         and counts["orphan_profile_row_count"] == 0
         and counts["profile_work_event_count_mismatch"] == 0
         and counts["profile_phase_count_mismatch"] == 0
-        and missing_materialization_counts["session_profile"] == 0
     )
     profile_blockers: list[str] = []
     if counts["missing_profile_row_count"]:
@@ -1687,13 +1645,14 @@ def _archive_surface_readiness(
         profile_blockers.append("profile_work_event_count_mismatch")
     if counts["profile_phase_count_mismatch"]:
         profile_blockers.append("profile_phase_count_mismatch")
-    if missing_materialization_counts["session_profile"]:
-        profile_blockers.append("missing_session_profile_materialization")
-
-    work_events_ready, work_events_blockers = materialization_surface("work_events")
-    phases_ready, phases_blockers = materialization_surface("phases")
-    thread_ready, thread_blockers = materialization_surface("thread")
-    latency_ready, latency_blockers = materialization_surface("latency")
+    work_events_blockers: list[str] = []
+    phases_blockers: list[str] = []
+    thread_blockers: list[str] = []
+    latency_blockers: list[str] = []
+    work_events_ready = True
+    phases_ready = True
+    thread_ready = True
+    latency_ready = True
 
     return {
         "archive_sessions": surface(
@@ -1735,7 +1694,6 @@ def _archive_surface_readiness(
                 "profile_row_count": counts["profile_row_count"],
                 "missing_profile_row_count": counts["missing_profile_row_count"],
                 "orphan_profile_row_count": counts["orphan_profile_row_count"],
-                "missing_materialization_count": missing_materialization_counts["session_profile"],
             },
         ),
         "timeline_work_events": surface(
@@ -1743,7 +1701,6 @@ def _archive_surface_readiness(
             blockers=work_events_blockers,
             evidence={
                 "work_event_row_count": counts["work_event_row_count"],
-                "missing_materialization_count": missing_materialization_counts["work_events"],
             },
         ),
         "timeline_phases": surface(
@@ -1751,7 +1708,6 @@ def _archive_surface_readiness(
             blockers=phases_blockers,
             evidence={
                 "phase_row_count": counts["phase_row_count"],
-                "missing_materialization_count": missing_materialization_counts["phases"],
             },
         ),
         "threads": surface(
@@ -1760,7 +1716,6 @@ def _archive_surface_readiness(
             evidence={
                 "thread_count": counts["thread_count"],
                 "thread_session_count": counts["thread_session_count"],
-                "missing_materialization_count": missing_materialization_counts["thread"],
             },
         ),
         "tag_rollups": surface(
@@ -1779,48 +1734,13 @@ def _archive_surface_readiness(
             evidence={
                 "cost_profile_count": counts["cost_profile_count"],
                 "missing_profile_row_count": counts["missing_profile_row_count"],
-                "missing_materialization_count": missing_materialization_counts["session_profile"],
             },
         ),
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,
-            evidence={"missing_materialization_count": missing_materialization_counts["latency"]},
+            evidence={},
         ),
-    }
-
-
-def _archive_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    keys = ("session_profile", "work_events", "phases", "latency", "thread")
-    rows = conn.execute(
-        """
-        SELECT insight_type, COUNT(*)
-        FROM insight_materialization
-        GROUP BY insight_type
-        """
-    ).fetchall()
-    counts = dict.fromkeys(keys, 0)
-    counts.update({str(row[0]): int(row[1] or 0) for row in rows})
-    return counts
-
-
-def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    keys = ("session_profile", "work_events", "phases", "latency", "thread")
-    return {
-        key: _scalar_int(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions AS s
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM insight_materialization AS m
-                WHERE m.insight_type = ? AND m.session_id = s.session_id
-            )
-            """,
-            (key,),
-        )
-        for key in keys
     }
 
 
@@ -2703,10 +2623,6 @@ def _archive_derived_readiness_delta(before_state: dict[str, Any], after_state: 
     after_readiness = after_state.get("derived_readiness") or {}
     before_counts = _coerce_int_map(before_readiness.get("counts") or {})
     after_counts = _coerce_int_map(after_readiness.get("counts") or {})
-    before_materialized = _coerce_int_map(before_readiness.get("materialization_counts") or {})
-    after_materialized = _coerce_int_map(after_readiness.get("materialization_counts") or {})
-    before_missing = _coerce_int_map(before_readiness.get("missing_materialization_counts") or {})
-    after_missing = _coerce_int_map(after_readiness.get("missing_materialization_counts") or {})
     before_surfaces = before_readiness.get("surface_readiness") or {}
     after_surfaces = after_readiness.get("surface_readiness") or {}
     return {
@@ -2715,8 +2631,6 @@ def _archive_derived_readiness_delta(before_state: dict[str, Any], after_state: 
         "source_check_available_before": bool(before_readiness.get("source_check_available")),
         "source_check_available_after": bool(after_readiness.get("source_check_available")),
         "counts": _int_map_delta(before_counts, after_counts),
-        "materialization_counts": _int_map_delta(before_materialized, after_materialized),
-        "missing_materialization_counts": _int_map_delta(before_missing, after_missing),
         "ready_before": dict(before_readiness.get("ready") or {}),
         "ready_after": dict(after_readiness.get("ready") or {}),
         "surface_readiness": _archive_surface_readiness_delta(before_surfaces, after_surfaces),

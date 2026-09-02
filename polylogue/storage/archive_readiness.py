@@ -1264,11 +1264,7 @@ def _archive_readiness_counts(
         "stale_thread_count": insight_status.stale_thread_count,
         "orphan_thread_count": insight_status.orphan_thread_count,
         **_action_readiness_counts(conn),
-        "missing_session_profile_materialization": insight_status.missing_session_profile_materialization_count,
-        "missing_work_events_materialization": insight_status.missing_work_event_materialization_count,
-        "missing_phases_materialization": insight_status.missing_phase_materialization_count,
-        "missing_thread_materialization": insight_status.missing_thread_materialization_count,
-        "missing_latency_materialization": insight_status.missing_latency_materialization_count,
+        "missing_latency_profile_row_count": insight_status.missing_latency_profile_row_count,
     }
 
 
@@ -1310,21 +1306,10 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
     profile_blockers: list[str] = []
     if count("missing_profile_row_count"):
         profile_blockers.append("missing_profile_rows")
-    profile_blockers.extend(
-        present_blockers(
-            "missing_session_profile_materialization",
-            "stale_profile_row_count",
-            "orphan_profile_row_count",
-        )
-    )
-
-    def materialized(name: str) -> tuple[bool, list[str]]:
-        key = f"missing_{name}_materialization"
-        missing = count(key)
-        return (missing == 0, [] if missing == 0 else [key])
+    profile_blockers.extend(present_blockers("stale_profile_row_count", "orphan_profile_row_count"))
 
     work_blockers = present_blockers(
-        "missing_work_events_materialization",
+        "missing_work_event_row_count",
         "stale_work_event_row_count",
         "orphan_work_event_row_count",
     )
@@ -1332,18 +1317,19 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         mismatch_blocker("work_event_row_count", "expected_work_event_row_count", "work_event_row_mismatch")
     )
     phase_blockers = present_blockers(
-        "missing_phases_materialization",
+        "missing_phase_row_count",
         "stale_phase_row_count",
         "orphan_phase_row_count",
     )
     phase_blockers.extend(mismatch_blocker("phase_row_count", "expected_phase_row_count", "phase_row_mismatch"))
     thread_blockers = present_blockers(
-        "missing_thread_materialization",
+        "missing_thread_row_count",
         "stale_thread_count",
         "orphan_thread_count",
     )
     thread_blockers.extend(mismatch_blocker("thread_count", "root_thread_count", "thread_root_mismatch"))
-    latency_ready, latency_blockers = materialized("latency")
+    latency_blockers = present_blockers("missing_latency_profile_row_count", "stale_latency_profile_row_count")
+    latency_ready = not latency_blockers
     tool_usage_blockers: list[str] = []
     if not bool(counts.get("actions_view_present", False)):
         tool_usage_blockers.append("actions_view_missing")
@@ -1386,7 +1372,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
             evidence={
                 "profile_row_count": count("profile_row_count"),
                 "missing_profile_row_count": count("missing_profile_row_count"),
-                "missing_materialization_count": count("missing_session_profile_materialization"),
+                "missing_row_count": count("missing_profile_row_count"),
                 "stale_profile_row_count": count("stale_profile_row_count"),
                 "orphan_profile_row_count": count("orphan_profile_row_count"),
             },
@@ -1397,7 +1383,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
             evidence={
                 "work_event_row_count": count("work_event_row_count"),
                 "expected_work_event_row_count": count("expected_work_event_row_count", count("work_event_row_count")),
-                "missing_materialization_count": count("missing_work_events_materialization"),
+                "missing_row_count": count("missing_work_event_row_count"),
                 "stale_work_event_row_count": count("stale_work_event_row_count"),
                 "orphan_work_event_row_count": count("orphan_work_event_row_count"),
             },
@@ -1408,7 +1394,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
             evidence={
                 "phase_row_count": count("phase_row_count"),
                 "expected_phase_row_count": count("expected_phase_row_count", count("phase_row_count")),
-                "missing_materialization_count": count("missing_phases_materialization"),
+                "missing_row_count": count("missing_phase_row_count"),
                 "stale_phase_row_count": count("stale_phase_row_count"),
                 "orphan_phase_row_count": count("orphan_phase_row_count"),
             },
@@ -1419,7 +1405,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
             evidence={
                 "thread_count": count("thread_count"),
                 "root_thread_count": count("root_thread_count", count("thread_count")),
-                "missing_materialization_count": count("missing_thread_materialization"),
+                "missing_row_count": count("missing_thread_row_count"),
                 "stale_thread_count": count("stale_thread_count"),
                 "orphan_thread_count": count("orphan_thread_count"),
             },
@@ -1437,7 +1423,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,
-            evidence={"missing_materialization_count": counts["missing_latency_materialization"]},
+            evidence={"missing_row_count": count("missing_latency_profile_row_count")},
         ),
     }
 

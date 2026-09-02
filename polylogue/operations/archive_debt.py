@@ -39,8 +39,7 @@ from polylogue.surfaces.payloads import (
 
 _CONVERGENCE_STAGE_MAINTENANCE_TARGETS = {
     "embed": "message_embeddings",
-    "insights": "session_insights",
-    "session_insights": "session_insights",
+    "derived": "session_insights",
 }
 
 
@@ -894,7 +893,7 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 details=(
                     f"{model_row_count} session_model_usage row(s) across {model_count} model(s) contain only zero "
                     "token counters. A daemon convergence pass now self-heals this (polylogue-f2qv.5: "
-                    "session_model_usage carries an insight_materialization('provider_usage') stamp and is "
+                    "session_model_usage carries provider-usage rows and is "
                     "re-derived from session_provider_usage_events/messages whenever a session's insights are "
                     "rebuilt) — if it persists after a daemon run, rebuild the index with current provider-usage "
                     "materialization, then inspect `polylogue analyze usage` for missing-model, zero-token, or "

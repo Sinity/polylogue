@@ -50,16 +50,8 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
         profile_row_count=2,
         work_event_inference_count=1,
         expected_work_event_inference_count=4,
-        missing_work_event_materialization_count=3,
         phase_inference_count=2,
         expected_phase_inference_count=5,
-        missing_phase_materialization_count=3,
-        profile_rows_ready=True,
-        work_event_inference_rows_ready=False,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=False,
-        threads_ready=True,
-        tag_rollups_ready=True,
     )
     monkeypatch.setattr(
         derived_status_mod,

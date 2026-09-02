@@ -827,8 +827,7 @@ class TestNoArchiveStatus:
         combined = _combined_calls(env)
         assert "Archive surfaces:" in combined
         assert "blocked" in combined
-        assert "session_profiles: missing_profile_rows, missing_session_profile_materialization" in combined
-        assert "timeline_work_events: missing_work_events_materialization" in combined
+        assert "session_profiles: missing_profile_rows" in combined
 
     def test_direct_status_json_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -1055,11 +1054,10 @@ class TestNoArchiveStatus:
                 },
                 "session_profiles": {
                     "ready": False,
-                    "blockers": ["missing_session_profile_materialization"],
+                    "blockers": ["missing_profile_rows"],
                     "evidence": {
                         "profile_row_count": 2,
                         "missing_profile_row_count": 0,
-                        "missing_materialization_count": 1,
                     },
                 },
                 "tool_usage": {"ready": True, "blockers": [], "evidence": {"action_count": 4}},

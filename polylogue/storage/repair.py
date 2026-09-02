@@ -5299,7 +5299,7 @@ def _resolve_session_insight_convergence_debt(
                 conn.execute(
                     """
                     DELETE FROM convergence_debt
-                    WHERE stage = 'insights'
+                    WHERE stage = 'derived'
                       AND target_type = 'session_id'
                     """
                 )
@@ -5308,7 +5308,7 @@ def _resolve_session_insight_convergence_debt(
                     conn.execute(
                         """
                         DELETE FROM convergence_debt
-                        WHERE stage = 'insights'
+                        WHERE stage = 'derived'
                           AND target_type = 'session_id'
                           AND target_id = ?
                         """,
@@ -5321,12 +5321,6 @@ def _resolve_session_insight_convergence_debt(
             session_ids=session_ids,
             error=str(exc),
         )
-
-
-def _session_insight_materializer_version() -> int:
-    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-
-    return SESSION_INSIGHT_MATERIALIZER_VERSION
 
 
 def _session_insight_requires_archive_wide_rebuild(status: object) -> bool:
@@ -5346,7 +5340,28 @@ def _session_insight_aggregate_debt_count(status: object) -> int:
     return sum(
         int(getattr(status, attr, 0) or 0)
         for attr in (
-            "missing_thread_materialization_count",
+            "stale_thread_count",
+            "orphan_thread_count",
+            "stale_tag_rollup_count",
+            "stale_day_summary_count",
+        )
+    )
+
+
+def _session_insight_row_debt_count(status: object) -> int:
+    return sum(
+        int(getattr(status, attr, 0) or 0)
+        for attr in (
+            "missing_profile_row_count",
+            "stale_profile_row_count",
+            "orphan_profile_row_count",
+            "missing_latency_profile_row_count",
+            "stale_latency_profile_row_count",
+            "orphan_latency_profile_row_count",
+            "stale_work_event_inference_count",
+            "orphan_work_event_inference_count",
+            "stale_phase_inference_count",
+            "orphan_phase_inference_count",
             "stale_thread_count",
             "orphan_thread_count",
             "stale_tag_rollup_count",
@@ -5361,23 +5376,6 @@ def _targeted_session_insight_rebuild_ids(
 ) -> tuple[str, ...] | None:
     if conn is None or _session_insight_requires_archive_wide_rebuild(status):
         return None
-
-    materialization_selects = "\nUNION\n".join(
-        """
-        SELECT s.session_id
-        FROM sessions AS s
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM insight_materialization AS m
-            WHERE m.insight_type = ?
-              AND m.session_id = s.session_id
-              AND m.materializer_version = ?
-              AND ABS(COALESCE(m.source_sort_key_ms, 0) - COALESCE(s.sort_key_ms, 0)) = 0
-        )
-        """
-        for _insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
-    )
-    materializer_version = _session_insight_materializer_version()
     profile_stale_predicate = session_profile_stale_predicate("s", "p")
     latency_stale_predicate = session_profile_stale_predicate("s", "lp")
     rows = conn.execute(
@@ -5393,8 +5391,7 @@ def _targeted_session_insight_rebuild_ids(
             SELECT s.session_id
             FROM sessions AS s
             JOIN session_profiles AS p ON p.session_id = s.session_id
-            WHERE p.materializer_version != ?
-               OR {profile_stale_predicate}
+            WHERE {profile_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5406,8 +5403,7 @@ def _targeted_session_insight_rebuild_ids(
             SELECT lp.session_id
             FROM session_latency_profiles AS lp
             JOIN sessions AS s ON s.session_id = lp.session_id
-            WHERE lp.materializer_version != ?
-               OR {latency_stale_predicate}
+            WHERE {latency_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5420,20 +5416,10 @@ def _targeted_session_insight_rebuild_ids(
             WHERE p.phase_count != (
                 SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
             )
-            UNION
-            {materialization_selects}
         )
         ORDER BY session_id
         """,
-        (
-            materializer_version,
-            materializer_version,
-            *(
-                value
-                for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
-                for value in (insight_type, materializer_version)
-            ),
-        ),
+        (),
     ).fetchall()
     return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
 
@@ -6196,34 +6182,8 @@ def repair_session_insights(
     set instead of touching the full archive — used by the maintenance
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
 
-    KEEP-WITH-REASON (polylogue-ygfwa): this mutate path is *not*
-    fully redundant with the daemon's automatic convergence mechanisms
-    (the per-ingest ``make_insights_stage`` ``ConvergenceStage`` and the
-    periodic ``convergence_debt`` retry loop in ``daemon/cli.py``). Both
-    automatic mechanisms only ever call ``rebuild_session_insights_sync``
-    (per-session profile/work_events/phases). Neither one ever calls
-    ``refresh_session_insight_aggregates_sync`` — the archive-wide,
-    non-per-session-scoped refresh of thread materialization
-    (``threads``/``thread_sessions``), tag rollups
-    (``session_tag_rollups``), and provider-day aggregates. This
-    function is the *only* caller of
-    ``refresh_session_insight_aggregates_sync`` in the codebase (verified
-    by grep across ``daemon/`` and the rest of the tree, 2026-08-02): it
-    runs that refresh whenever ``_session_insight_aggregate_debt_count``
-    (``missing_thread_materialization_count``, ``stale_thread_count``,
-    ``orphan_thread_count``, ``stale_tag_rollup_count``,
-    ``stale_day_summary_count``) is nonzero. So a bump to
-    ``SESSION_INSIGHT_MATERIALIZER_VERSION`` (or any other event that
-    stales thread/tag-rollup aggregates archive-wide) leaves those
-    aggregates stale forever unless something calls this manual repair
-    path — the daemon has no automatic route to clear that debt. This
-    function is also reused directly (not via the doctor CLI) by
-    ``maintenance/rebuild_index.py``'s terminal stage to materialize
-    insights for a freshly built *inactive* generation before promotion,
-    a scenario the daemon (which only ever touches the live/active
-    generation) cannot reach at all. Do not remove the mutate path
-    without first giving thread/tag-rollup/day-summary aggregate
-    staleness its own automatic convergence mechanism.
+    This path repairs session-derived rows and archive-wide aggregates. It is
+    also used for inactive generations before they are promoted.
 
     ``resolve_convergence_debt=False`` is reserved for an owned inactive
     generation. Its ``ops.db`` is a read-through link to live disposable
@@ -6247,17 +6207,17 @@ def repair_session_insights(
         )
         with archive_context as archive:
             status = archive.session_insight_status()
-            assessment = assess_session_insight_repairs(status)
+            row_debt = _session_insight_row_debt_count(status)
             aggregate_debt = _session_insight_aggregate_debt_count(status)
             targeted_session_ids = (
                 None
-                if session_ids is not None or (assessment.row_debt == 0 and aggregate_debt == 0)
+                if session_ids is not None or (row_debt == 0 and aggregate_debt == 0)
                 else _targeted_session_insight_rebuild_ids(getattr(archive, "_conn", None), status)
             )
 
             if dry_run:
                 if session_ids is not None:
-                    pending = min(assessment.row_debt, len(session_ids))
+                    pending = min(row_debt, len(session_ids))
                     detail = (
                         "Would: session insights already ready"
                         if pending == 0
@@ -6271,18 +6231,18 @@ def repair_session_insights(
                         else (
                             "Would: rebuild session insights for "
                             f"{len(targeted_session_ids):,} candidate session(s), including any affected "
-                            "thread-materialization marker(s)"
-                            f" to repair {assessment.row_debt:,} total debt row(s)"
+                            "thread aggregate rows"
+                            f" to repair {row_debt:,} total debt row(s)"
                         )
                     )
-                elif assessment.row_debt == 0:
+                elif row_debt == 0:
                     pending = 0
                     detail = "Would: session insights already ready"
                 else:
                     pending = status.total_sessions
                     detail = (
                         "Would: rebuild archive-wide session insights "
-                        f"for {pending:,} session(s) to repair {assessment.row_debt:,} debt row(s)"
+                        f"for {pending:,} session(s) to repair {row_debt:,} debt row(s)"
                     )
                 return _repair_result(
                     "session_insights",
@@ -6291,7 +6251,7 @@ def repair_session_insights(
                     detail=detail,
                 )
 
-            if session_ids is None and assessment.row_debt == 0 and aggregate_debt == 0:
+            if session_ids is None and row_debt == 0 and aggregate_debt == 0:
                 return _repair_result(
                     "session_insights",
                     repaired_count=0,
@@ -6309,7 +6269,7 @@ def repair_session_insights(
             refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
-            success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0
+            success = True if session_ids is not None else _session_insight_row_debt_count(refreshed) == 0
             if success and resolve_convergence_debt:
                 _resolve_session_insight_convergence_debt(
                     ops_db=config.archive_root / "ops.db",

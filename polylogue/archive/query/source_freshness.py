@@ -1653,7 +1653,7 @@ def _load_insight_evidence(
                         f"AND {stage_column} = ? "
                         f"ORDER BY rowid DESC LIMIT {max(limits.max_debt_rows, 1) + 1}"
                     )
-                    params = cast(tuple[object, ...], (target_type, *ids, "insights"))
+                    params = cast(tuple[object, ...], (target_type, *ids, "derived"))
                     selected_rows = db.exact_rows(
                         label=f"insight-debt-by-{target_type}",
                         sql=sql,
@@ -1678,7 +1678,7 @@ def _load_insight_evidence(
                     f"WHERE {target_column} IN ({placeholders}) AND {stage_column} = ? "
                     f"ORDER BY rowid DESC LIMIT {max(limits.max_debt_rows, 1) + 1}"
                 )
-                params = cast(tuple[object, ...], (*target_ids, "insights"))
+                params = cast(tuple[object, ...], (*target_ids, "derived"))
                 selected_rows = db.exact_rows(
                     label="insight-debt-by-source-or-session-id",
                     sql=sql,
@@ -1704,7 +1704,7 @@ def _load_insight_evidence(
             converged=False,
             state="debt-recorded",
             debt_count_lower_bound=len(visible),
-            debt_stages=tuple(sorted({_optional_str(row["stage"]) or "insights" for row in visible})),
+            debt_stages=tuple(sorted({_optional_str(row["stage"]) or "derived" for row in visible})),
             debt_errors=tuple(dict.fromkeys(error for row in visible if (error := _optional_str(row["error"])))),
             debt_truncated=truncated,
             reason="insight convergence debt is recorded",

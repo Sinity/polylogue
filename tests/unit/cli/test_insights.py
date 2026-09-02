@@ -943,9 +943,6 @@ def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
     assert counts.work_events >= 1
     assert counts.phases >= 1
     assert status.profile_row_count == 2
-    assert status.profile_rows_ready is True
-    assert status.work_event_inference_rows_ready is True
-    assert status.phase_inference_rows_ready is True
 
 
 def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspace) -> None:
@@ -1163,9 +1160,6 @@ def test_session_insight_status_accepts_epoch_backed_session_timestamps(cli_work
     assert status.stale_profile_row_count == 0
     assert status.stale_work_event_inference_count == 0
     assert status.stale_phase_inference_count == 0
-    assert status.profile_rows_ready is True
-    assert status.work_event_inference_rows_ready is True
-    assert status.phase_inference_rows_ready is True
     assert status.profile_merged_fts_duplicate_count == 0
 
 
@@ -1176,7 +1170,6 @@ def test_targeted_session_insight_rebuild_does_not_duplicate_profile_fts(cli_wor
     status = _insight_status(cli_workspace["db_path"])
 
     assert status.profile_row_count == 2
-    assert status.profile_rows_ready is True
 
 
 def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspace: CliWorkspace) -> None:
@@ -1194,7 +1187,6 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
     assert status.profile_row_count == 1
     assert status.missing_profile_row_count == 1
-    assert status.profile_rows_ready is False
 
 
 def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:

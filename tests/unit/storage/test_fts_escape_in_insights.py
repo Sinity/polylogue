@@ -42,19 +42,19 @@ async def _make_work_events_db() -> aiosqlite.Connection:
         """
         CREATE TABLE sessions (
             session_id TEXT PRIMARY KEY,
-            origin TEXT NOT NULL
+            origin TEXT NOT NULL,
+            sort_key_ms INTEGER
         );
-        CREATE TABLE insight_materialization (
-            insight_type TEXT NOT NULL,
-            session_id TEXT NOT NULL,
+        CREATE TABLE session_profiles (
+            session_id TEXT PRIMARY KEY,
             materializer_version INTEGER NOT NULL,
-            materialized_at_ms INTEGER NOT NULL,
-            source_updated_at_ms INTEGER,
-            source_sort_key_ms INTEGER,
-            input_high_water_mark_ms INTEGER,
+            materialized_at TEXT,
+            source_updated_at TEXT,
+            source_sort_key REAL,
+            input_content_hash TEXT,
+            input_high_water_mark TEXT,
             input_high_water_mark_source TEXT,
-            input_row_count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(insight_type, session_id)
+            input_row_count INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE session_work_events (
             event_id TEXT GENERATED ALWAYS AS (session_id || ':work_event:' || position) STORED UNIQUE,
@@ -89,10 +89,9 @@ async def _make_work_events_db() -> aiosqlite.Connection:
         CREATE TRIGGER session_work_events_fts_au AFTER UPDATE ON session_work_events BEGIN SELECT 1; END;
         INSERT INTO sessions (session_id, origin)
         VALUES ('c1', 'claude-code-session');
-        INSERT INTO insight_materialization (
-            insight_type, session_id, materializer_version, materialized_at_ms,
-            source_sort_key_ms, input_row_count
-        ) VALUES ('work_events', 'c1', 5, 1767225600000, 1767225600000, 1);
+        INSERT INTO session_profiles (
+            session_id, materializer_version, materialized_at, source_sort_key, input_row_count
+        ) VALUES ('c1', 5, '2026-01-01T00:00:00Z', 1767225600, 1);
         INSERT INTO session_work_events (
             session_id, position, work_event_type, summary, started_at_ms, search_text
         ) VALUES ('c1', 0, 'edit', 'hello', 1767225600000, 'hello world');
@@ -215,9 +214,9 @@ async def test_timeline_read_keeps_missing_materialization_unknown_and_orders_by
         await conn.executescript(
             """
             INSERT INTO sessions (session_id, origin) VALUES ('c2', 'claude-code-session');
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, materialized_at_ms, input_row_count
-            ) VALUES ('work_events', 'c2', 5, 1893456000000, 1);
+            INSERT INTO session_profiles (
+                session_id, materializer_version, materialized_at, input_row_count
+            ) VALUES ('c2', 5, '2030-01-01T00:00:00.000Z', 1);
             INSERT INTO session_work_events (
                 session_id, position, work_event_type, summary, search_text
             ) VALUES ('c2', 0, 'edit', 'timeless but freshly materialized', 'timeless');
@@ -236,9 +235,9 @@ async def test_timeline_read_keeps_missing_materialization_unknown_and_orders_by
         assert timeless.end_time is None
         assert timeless.canonical_session_date is None
 
-        await conn.execute("DELETE FROM insight_materialization WHERE session_id = 'c2'")
+        await conn.execute("DELETE FROM session_profiles WHERE session_id = 'c2'")
         await conn.commit()
-        without_marker = (await list_work_events(conn, SessionTimelineListQuery(session_id="c2", limit=5)))[0]
-        assert without_marker.materialized_at is None
+        without_profile = (await list_work_events(conn, SessionTimelineListQuery(session_id="c2", limit=5)))[0]
+        assert without_profile.materialized_at is None
     finally:
         await conn.close()

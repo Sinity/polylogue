@@ -374,7 +374,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "session_phases",
         "threads",
         "thread_sessions",
-        "insight_materialization",
     ),
     # message_embeddings_meta/message_embeddings are content-addressed and
     # deduped (polylogue-q88p); message_embedding_refs is the per-message

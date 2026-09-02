@@ -89,8 +89,7 @@ def _semantic_snapshot(root: Path) -> tuple[object, ...]:
                 "SELECT src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id "
                 "FROM session_links ORDER BY src_session_id, dst_origin, dst_native_id, link_type",
                 "SELECT session_id, message_count, materializer_version FROM session_profiles ORDER BY session_id",
-                "SELECT insight_type, session_id, materializer_version "
-                "FROM insight_materialization ORDER BY insight_type, session_id",
+                "SELECT session_id, materializer_version FROM session_latency_profiles ORDER BY session_id",
             )
         )
     with ArchiveStore.open_existing(root, read_only=True) as archive:

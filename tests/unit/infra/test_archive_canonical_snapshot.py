@@ -305,22 +305,16 @@ def test_snapshot_covers_semantic_archive_and_public_read_surfaces(tmp_path: Pat
     assert "search:fixture" in public_names
 
 
-def test_only_allowlisted_materialization_stamps_are_ignored(tmp_path: Path) -> None:
+def test_only_allowlisted_session_profile_stamps_are_ignored(tmp_path: Path) -> None:
     archive = _build_archive(tmp_path / "archive", rich_convergence_pathology())
     before = capture_canonical_snapshot(archive.root)
 
     with sqlite3.connect(archive.root / "index.db") as conn:
         profile = conn.execute("SELECT session_id FROM session_profiles LIMIT 1").fetchone()
-        materialization = conn.execute("SELECT session_id FROM insight_materialization LIMIT 1").fetchone()
         assert profile is not None
-        assert materialization is not None
         conn.execute(
             "UPDATE session_profiles SET materialized_at = '2099-01-01T00:00:00+00:00' WHERE session_id = ?",
             (profile[0],),
-        )
-        conn.execute(
-            "UPDATE insight_materialization SET materialized_at_ms = 2099 WHERE session_id = ?",
-            (materialization[0],),
         )
         conn.commit()
 

@@ -359,9 +359,8 @@ class SessionInsightRecordBundle:
     # polylogue-dab/itvd: run/observed-event/context-snapshot rows are no
     # longer materialized into tables (they are computed on read by
     # run_projection_relations.py's CTEs), so the bundle only needs counts
-    # for the insight_materialization ledger stamp below, not full record
-    # lists -- building SessionRunRecord/etc. objects here would be pure
-    # waste (a full RunProjection compile + search_text join per session)
+    # for diagnostics -- building SessionRunRecord/etc. objects here would be
+    # pure waste (a full RunProjection compile + search_text join per session)
     # for values nothing ever reads back.
     run_count: int
     observed_event_count: int
@@ -905,7 +904,7 @@ def build_session_insight_records(
     # invariant holds for every session, including empty ones. A projection
     # failure must surface, not be swallowed, so the rebuild fails loudly on
     # malformed evidence. polylogue-dab/itvd: only the counts are needed here
-    # (for the insight_materialization ledger stamp) -- run/observed-event/
+    # (for diagnostics) -- run/observed-event/
     # context-snapshot rows are no longer materialized into tables, so
     # building full SessionRunRecord/etc. objects (a search_text join per
     # row) would be wasted work.
@@ -1547,70 +1546,6 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     return int(row[0]) if row is not None else 0
 
 
-def _stamp_bundle_materialization(conn: sqlite3.Connection, bundle: SessionInsightRecordBundle) -> None:
-    """Stamp insight_materialization for one rebuilt session bundle.
-
-    The canonical bulk rebuild and the api archive rebuild both materialize the
-    same per-session insight bundle; stamping here keeps insight_materialization
-    populated on the daemon convergence path (not only the api path), so
-    materialization tracking is coherent regardless of which entrypoint ran.
-    Uses the no-commit primitive so the stamp participates in the rebuild's
-    single transaction.
-    """
-    from polylogue.storage.sqlite.archive_tiers.write import apply_insight_materialization
-
-    profile = bundle.profile_record
-    latency = bundle.latency_profile_record
-    session_id = str(profile.session_id)
-    materialized_at_ms = _epoch_ms_or_none(profile.materialized_at) or 0
-    source_updated_at_ms = _epoch_ms_or_none(profile.source_updated_at)
-    source_sort_key_ms = _source_sort_key_ms(profile.source_sort_key)
-    input_high_water_mark_ms = _epoch_ms_or_none(profile.input_high_water_mark)
-    # polylogue-f2qv.5: re-derive session_model_usage every time a session's
-    # insights are rebuilt (missing-profile backfill, stale-version repair, or
-    # hot-source convergence) so provider-usage rollups self-heal the same way
-    # session_profile/latency/phases already do, instead of staying frozen at
-    # whatever the original ingest wrote.
-    provider_usage_row_count = _refresh_provider_usage_rollup(conn, session_id)
-    for insight_type, materializer_version, input_row_count in (
-        ("session_profile", profile.materializer_version, profile.input_row_count),
-        ("latency", latency.materializer_version, latency.input_row_count),
-        ("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.work_event_records)),
-        ("phases", SESSION_INSIGHT_MATERIALIZER_VERSION, len(bundle.phase_records)),
-        ("runs", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.run_count),
-        ("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.observed_event_count),
-        ("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION, bundle.context_snapshot_count),
-        ("thread", SESSION_INSIGHT_MATERIALIZER_VERSION, 1),
-        ("provider_usage", SESSION_INSIGHT_MATERIALIZER_VERSION, provider_usage_row_count),
-    ):
-        stamp_source_updated_at_ms = source_updated_at_ms
-        stamp_source_sort_key_ms = source_sort_key_ms
-        stamp_input_high_water_mark_ms = input_high_water_mark_ms
-        stamp_input_high_water_mark_source = profile.input_high_water_mark_source
-        if insight_type == "latency":
-            stamp_source_updated_at_ms = _epoch_ms_or_none(latency.source_updated_at)
-            stamp_source_sort_key_ms = _source_sort_key_ms(latency.source_sort_key)
-            stamp_input_high_water_mark_ms = _epoch_ms_or_none(latency.input_high_water_mark)
-            stamp_input_high_water_mark_source = latency.input_high_water_mark_source
-        apply_insight_materialization(
-            conn,
-            insight_type=insight_type,
-            session_id=session_id,
-            materializer_version=materializer_version,
-            materialized_at_ms=materialized_at_ms,
-            source_updated_at_ms=stamp_source_updated_at_ms,
-            source_sort_key_ms=stamp_source_sort_key_ms,
-            input_high_water_mark_ms=stamp_input_high_water_mark_ms,
-            input_high_water_mark_source=stamp_input_high_water_mark_source,
-            input_row_count=input_row_count,
-        )
-
-
-def _source_sort_key_ms(source_sort_key: float | None) -> int | None:
-    """Recover the canonical integer millisecond key from a float-seconds value."""
-    return round(source_sort_key * 1000) if source_sort_key is not None else None
-
-
 def _count_record_bundles(
     bundles: Sequence[SessionInsightRecordBundle],
 ) -> tuple[int, int, int]:
@@ -1749,7 +1684,7 @@ def rebuild_session_insights_sync(
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
     stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "insights",
+    stage_timing_prefix: str = "derived",
 ) -> SessionInsightCounts:
     # ``add_timing`` is handed to ``build_session_insight_record_bundles`` as
     # ``stage_timing_add`` and invoked from every per-session compute job
@@ -1931,7 +1866,6 @@ def rebuild_session_insights_sync(
             _lower_marker_candidates(marker_conn, record_bundles)
         # Run-projection cache tables are no longer materialized (polylogue-dab).
         # Reads fall back to source-derived CTEs when the tables are absent.
-        t0 = time.perf_counter()
         for bundle in record_bundles:
             _stamp_bundle_materialization(conn, bundle)
         add_timing("stamp_materialization", t0)

@@ -57,7 +57,6 @@ class CanonicalArchiveSnapshot:
 # all timestamps".  Acquisition, authored-content, authority, and evidence
 # timestamps are semantic facts and must survive route comparison.
 RUN_LOCAL_NORMALIZATION_ALLOWLIST: Mapping[str, frozenset[str]] = {
-    "index.insight_materialization": frozenset({"materialized_at_ms"}),
     "index.session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "index.session_profiles": frozenset({"materialized_at"}),
     "index.session_latency_profiles": frozenset({"materialized_at"}),
@@ -174,7 +173,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("index", "session_tag_rollups"),
         ("index", "repos"),
         ("index", "repo_checkouts"),
-        ("index", "insight_materialization"),
         ("index", "actions"),
         ("index", "delegations"),
         ("index", "fts_freshness_state"),

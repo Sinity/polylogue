@@ -84,9 +84,9 @@ make usage totals line up.
 
 `session_model_usage` self-heals like every other session insight
 (`session_profiles`, `session_latency_profiles`, ...): it carries an
-`insight_materialization('provider_usage')` stamp keyed on
-`SESSION_INSIGHT_MATERIALIZER_VERSION`, and the same session-insight rebuild
-path that repairs a stale/missing `session_profile` also re-derives
+source-bound row stamp keyed on `SESSION_INSIGHT_MATERIALIZER_VERSION`, and
+the same session-insight rebuild path that repairs a stale/missing
+`session_profile` also re-derives
 `session_model_usage` from `session_provider_usage_events`/`messages`
 whenever that stamp is stale or missing. This runs automatically on the
 daemon's periodic session-insight drain, hot-source convergence, and

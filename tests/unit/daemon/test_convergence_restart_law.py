@@ -11,7 +11,7 @@ import pytest
 
 from polylogue.daemon.convergence import DaemonConverger, StageState
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
 from polylogue.scenarios import WorkloadPhaseObservation, WorkloadReceipt, WorkloadRunStatus
 from polylogue.sources.live.convergence_debt import convergence_debt_from_states
 from polylogue.sources.live.convergence_outcome import record_convergence_outcome
@@ -82,11 +82,11 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
 
     # Bounded work is allowed to defer, but the exact stage/session obligation
     # must be written durably before this process ends.
-    insights = make_insights_stage(recovered.index_db)
+    insights = make_derived_stage(recovered.index_db)
     initial_states, _timings = DaemonConverger((insights,)).converge_batch((recovered.target_source,))
     initial_state = initial_states[recovered.target_source]
-    assert initial_state.stages == {"insights": StageState.PENDING}
-    assert initial_state.last_error == "insights deferred until source quiet"
+    assert initial_state.stages == {"derived": StageState.PENDING}
+    assert initial_state.last_error == "batch stage derived returned False"
     record_convergence_outcome(
         CursorStore(recovered.index_db),
         recovered.target_source,
@@ -96,7 +96,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
 
     initial_insights_debt = debt_ledger_row(
         recovered.ops_db,
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=recovered.target_session_id,
     )
@@ -150,8 +150,8 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     assert status_with_fts_debt.failed_count == 1
     assert status_with_fts_debt.retry_due_count == 0
     assert [(item.stage, item.failed_count, item.deferred_count) for item in status_with_fts_debt.stage_summaries] == [
+        ("derived", 0, 1),
         ("fts", 1, 0),
-        ("insights", 0, 1),
     ]
 
     # First restart: the source is still hot. Retrying must update the same
@@ -159,14 +159,14 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     # untouched.
     set_debt_retry_at(
         recovered.ops_db,
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=recovered.target_session_id,
         retry_at=_DUE_RETRY_AT,
     )
     due_insights_debt = debt_ledger_row(
         recovered.ops_db,
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=recovered.target_session_id,
     )
@@ -175,7 +175,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
 
     deferred_again = debt_ledger_row(
         recovered.ops_db,
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=recovered.target_session_id,
     )
@@ -216,7 +216,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     recovered.make_target_quiet()
     set_debt_retry_at(
         recovered.ops_db,
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=recovered.target_session_id,
         retry_at=_DUE_RETRY_AT,
@@ -225,7 +225,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     assert (
         debt_ledger_row(
             recovered.ops_db,
-            stage="insights",
+            stage="derived",
             subject_type="session_id",
             subject_id=recovered.target_session_id,
         )
@@ -304,7 +304,7 @@ def test_convergence_debt_survives_restart_and_reaches_one_terminal_fact_set(tmp
     # same stable profile/receipt/event/thread facts and leaves the unrelated
     # session untouched.
     baseline = seed_partial_convergence_archive(tmp_path / "baseline", target_hot=False)
-    baseline_states, _baseline_timings = DaemonConverger((make_insights_stage(baseline.index_db),)).converge_batch(
+    baseline_states, _baseline_timings = DaemonConverger((make_derived_stage(baseline.index_db),)).converge_batch(
         (baseline.target_source,)
     )
     assert baseline_states[baseline.target_source].converged

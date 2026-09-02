@@ -58,23 +58,21 @@ def provenance_db(workspace_env: Mapping[str, Path]) -> Path:
 
 class TestProfileProvenance:
     def test_profile_has_materialized_at_and_input_provenance(self, provenance_db: Path) -> None:
-        # Native provenance lives in insight_materialization, keyed by
-        # (insight_type, session_id); the per-session input_row_count for a
-        # session_profile must equal the session's message_count.
+        # Native provenance lives on each derived session row; the profile's
+        # input_row_count must equal the session's message_count.
         with closing(_open_archive(provenance_db)) as conn:
             rows = conn.execute(
                 """
-                SELECT im.session_id, im.materialized_at_ms, im.input_high_water_mark_ms,
-                       im.input_row_count, s.message_count
-                FROM insight_materialization im
-                JOIN sessions s ON s.session_id = im.session_id
-                WHERE im.insight_type = 'session_profile'
-                ORDER BY im.session_id
+                SELECT sp.session_id, sp.materialized_at, sp.input_high_water_mark,
+                       sp.input_row_count, s.message_count
+                FROM session_profiles sp
+                JOIN sessions s ON s.session_id = sp.session_id
+                ORDER BY sp.session_id
                 """
             ).fetchall()
         assert rows, "expected materialized session_profile provenance rows"
         for row in rows:
-            assert row["materialized_at_ms"], f"missing materialized_at for {row['session_id']}"
+            assert row["materialized_at"], f"missing materialized_at for {row['session_id']}"
             assert int(row["input_row_count"]) == int(row["message_count"]), (
                 f"input_row_count must match message_count for {row['session_id']}; "
                 f"got input_row_count={row['input_row_count']} message_count={row['message_count']}"

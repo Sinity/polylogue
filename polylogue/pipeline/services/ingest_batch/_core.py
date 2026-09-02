@@ -1155,10 +1155,6 @@ def _write_session(
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
-    conn.execute(
-        "DELETE FROM insight_materialization WHERE session_id = ?",
-        (payload.session_id,),
-    )
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
     counts["sessions"] = 1

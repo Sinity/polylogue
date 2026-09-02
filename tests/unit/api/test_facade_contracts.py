@@ -4329,7 +4329,6 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert rebuilt_profile.inference is not None
         assert rebuilt_profile.inference.workflow_shape
         assert rebuilt_status.profile_row_count == 1
-        assert rebuilt_status.profile_rows_ready is True
         assert rebuilt_status.thread_count == 1
         assert [hit.session_id for hit in normal_search.hits] == [session_id]
         assert normal_envelope.total == 1
@@ -5004,11 +5003,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        upsert_insight_materialization,
-        upsert_session_phase,
-        upsert_session_work_event,
-    )
+    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_phase, upsert_session_work_event
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -5026,15 +5021,6 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         with ArchiveStore(archive.config.archive_root) as archive_db:
             session_id = archive_db.write_parsed(session)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            upsert_insight_materialization(
-                conn,
-                insight_type="work_events",
-                session_id=session_id,
-                materializer_version=7,
-                materialized_at_ms=1_770_000_000_000,
-                source_sort_key_ms=1_770_000_060_000,
-                input_row_count=1,
-            )
             upsert_session_work_event(
                 conn,
                 session_id=session_id,
@@ -5050,15 +5036,6 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
                 file_paths=("polylogue/api/insights.py",),
                 tools_used=("apply_patch",),
                 evidence={"canonical_session_date": "2026-02-02"},
-            )
-            upsert_insight_materialization(
-                conn,
-                insight_type="phases",
-                session_id=session_id,
-                materializer_version=8,
-                materialized_at_ms=1_770_000_010_000,
-                source_sort_key_ms=1_770_000_060_000,
-                input_row_count=1,
             )
             upsert_session_phase(
                 conn,
@@ -5093,14 +5070,14 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
         assert events == filtered_events
         assert events[0].session_id == session_id
         assert events[0].origin == Origin.CODEX_SESSION.value
-        assert events[0].provenance.materializer_version == 7
+        assert events[0].provenance.materializer_version == 5
         assert events[0].inference.heuristic_label == "implementation"
         assert events[0].evidence.file_paths == ("polylogue/api/insights.py",)
         assert len(phases) == 1
         assert phases == filtered_phases
         assert phases[0].session_id == session_id
         assert phases[0].origin == Origin.CODEX_SESSION.value
-        assert phases[0].provenance.materializer_version == 8
+        assert phases[0].provenance.materializer_version == 5
         assert phases[0].evidence.tool_counts == {"apply_patch": 1}
         assert phases[0].semantic_tier == "evidence"
         assert phases[0].inference is None
@@ -5122,7 +5099,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
 
     archive = _archive(tmp_path)
     parent = ParsedSession(
@@ -5169,15 +5145,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             parent_id = archive_db.write_parsed(parent)
             child_id = archive_db.write_parsed(child)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            upsert_insight_materialization(
-                conn,
-                insight_type="thread",
-                session_id=parent_id,
-                materializer_version=11,
-                materialized_at_ms=1_770_000_400_000,
-                source_sort_key_ms=1_770_000_300_000,
-                input_row_count=2,
-            )
             conn.execute(
                 """
                 INSERT INTO session_profiles (
@@ -5251,14 +5218,12 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert candidates[0].file_overlap == ("/realm/project/polylogue/polylogue/api/archive.py",)
         readiness_by_name = {entry.insight_name: entry for entry in readiness.insights}
         assert readiness.total_sessions == 2
-        assert readiness_by_name["session_profiles"].verdict == "partial"
+        assert readiness_by_name["session_profiles"].verdict == "stale"
         assert readiness_by_name["session_profiles"].missing_count == 1
         assert readiness_by_name["threads"].verdict == "stale"
         assert readiness_by_name["threads"].row_count == 1
         assert readiness_by_name["threads"].expected_row_count == 1
         assert readiness_by_name["threads"].stale_count == 1
-        assert readiness_by_name["threads"].ready_flags == {"threads_ready": False}
-        assert "threads_ready=False" in readiness_by_name["threads"].evidence
         rigor_by_name = {entry.insight_name: entry for entry in rigor.entries}
         assert rigor.sample_limit == 10
         assert rigor_by_name["session_profiles"].sample_size == 1
@@ -5288,7 +5253,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert thread.thread_id == parent_id
         assert thread.root_id == parent_id
         assert thread.dominant_repo == "https://example.test/polylogue.git"
-        assert thread.provenance.materializer_version == 11
+        assert thread.provenance.materializer_version == 5
         assert thread.thread.session_ids == (parent_id, child_id)
         assert thread.thread.session_count == 2
         assert thread.thread.depth == 1
@@ -5311,10 +5276,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        upsert_insight_materialization,
-        upsert_session_profile_costs,
-    )
+    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 
     archive = _archive(tmp_path)
     priced_session = ParsedSession(
@@ -5364,15 +5326,6 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
                 priced_with="voyage-cost-v1-test",
                 priced_at_ms=1_770_000_300_000,
             )
-            upsert_insight_materialization(
-                conn,
-                insight_type="session_profile",
-                session_id=priced_id,
-                materializer_version=9,
-                materialized_at_ms=1_770_000_300_000,
-                source_sort_key_ms=1_770_000_300_000,
-                input_row_count=1,
-            )
 
         costs = await archive.list_session_cost_insights(
             SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="exact", limit=10)
@@ -5392,7 +5345,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert costs[0].estimate.status == "exact"
         assert costs[0].estimate.total_usd == 1.25
         assert costs[0].estimate.basis.provider_reported_usd == 1.25
-        assert costs[0].provenance.materializer_version == 9
+        assert costs[0].provenance.materializer_version == 14
         assert len(unavailable) == 1
         assert unavailable[0].estimate.status == "unavailable"
         assert unavailable[0].estimate.missing_reasons == ("no_tokens",)
@@ -5433,7 +5386,6 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -5479,17 +5431,6 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             session_id = archive_db.write_parsed(session)
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            upsert_insight_materialization(
-                conn,
-                insight_type="latency",
-                session_id=session_id,
-                materializer_version=12,
-                materialized_at_ms=1_770_000_360_000,
-                source_sort_key_ms=1_770_000_300_000,
-                input_row_count=4,
-            )
-
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
             SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
@@ -5508,7 +5449,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert profile.session_id == session_id
         assert profile.origin == Origin.CODEX_SESSION.value
         assert profile.title == "Latency v1"
-        assert profile.provenance.materializer_version == 12
+        assert profile.provenance.materializer_version == 14
         assert profile.latency.median_agent_response_ms == 90000
         assert profile.latency.median_user_response_ms == 120000
         assert profile.latency.median_tool_call_ms == 0
@@ -5564,7 +5505,6 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
 
         assert by_name["archive_session_profile_rows"].category == "derived_repair"
         assert by_name["archive_session_profile_rows"].issue_count == 1
-        assert by_name["archive_insight_materialization"].issue_count >= 1
         assert by_name["archive_user_overlay_orphans"].category == "archive_cleanup"
         assert by_name["archive_user_overlay_orphans"].issue_count == 1
         assert all(not debt.healthy for debt in debts)
@@ -5586,7 +5526,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
 
     archive = _archive(tmp_path)
     session = ParsedSession(
@@ -5639,15 +5578,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                     ),
                 ),
             )
-            upsert_insight_materialization(
-                conn,
-                insight_type="session_profile",
-                session_id=session_id,
-                materializer_version=10,
-                materialized_at_ms=1_770_000_300_000,
-                source_sort_key_ms=1_770_000_300_000,
-                input_row_count=1,
-            )
 
         merged = await archive.get_session_profile_insight(session_id)
         evidence_only = await archive.get_session_profile_insight(session_id, tier="evidence")
@@ -5668,7 +5598,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged.session_id == session_id
         assert merged.origin == Origin.CODEX_SESSION.value
         assert merged.title == "Native profile"
-        assert merged.provenance.materializer_version == 10
+        assert merged.provenance.materializer_version == 5
         assert merged.evidence is not None
         assert merged.evidence.total_duration_ms == 120000
         assert merged.evidence.canonical_session_date == "2026-02-02"
@@ -5746,7 +5676,6 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_insight_materialization
 
     archive = _archive(tmp_path)
     first = ParsedSession(
@@ -5776,7 +5705,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             first_id = archive_db.write_parsed(first)
-            second_id = archive_db.write_parsed(second)
+            archive_db.write_parsed(second)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(
                 """
@@ -5818,20 +5747,16 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.total_sessions == 2
         assert status.profile_row_count == 1
         assert status.missing_profile_row_count == 1
-        assert status.profile_rows_ready is False
         assert status.work_event_inference_count == 1
         assert status.expected_work_event_inference_count == 1
         assert status.stale_work_event_inference_count == 0
-        assert status.work_event_inference_rows_ready is True
         assert status.phase_count == 1
         assert status.expected_phase_count == 1
-        assert status.phase_rows_ready is True
         assert status.thread_count == 2
         assert status.root_threads == 2
         assert status.threads_ready is False
         assert status.tag_rollup_count == 0
         assert status.expected_tag_rollup_count == 0
-        assert status.tag_rollups_ready is True
     finally:
         await archive.close()
 

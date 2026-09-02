@@ -13,7 +13,6 @@ from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapsh
 from polylogue.storage.derived.session.status import (
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
-    SessionInsightReadyDescriptor,
     session_insight_status_async,
     session_insight_status_sync,
     session_profile_repair_candidate_ids_sync,
@@ -21,7 +20,7 @@ from polylogue.storage.derived.session.status import (
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 
-def test_fts_descriptor_marks_duplicates_unready() -> None:
+def test_fts_descriptor_reports_duplicate_counts() -> None:
     descriptor = SessionInsightFtsDescriptor(
         table_key="demo_fts",
         table_name="demo_fts",
@@ -30,14 +29,18 @@ def test_fts_descriptor_marks_duplicates_unready() -> None:
         source_count_key="source_rows",
         distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
         duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
-        ready_key="profile_merged_fts_ready",
     )
 
     tables = {"demo_fts": True}
 
-    assert descriptor.ready(tables, {"source_rows": 2, "indexed_rows": 3, "duplicate_rows": 1}) is False
-    assert descriptor.ready(tables, {"source_rows": 2, "indexed_rows": 2, "duplicate_rows": 0}) is True
-    assert descriptor.ready({"demo_fts": False}, {"source_rows": 0, "indexed_rows": 0, "duplicate_rows": 0}) is False
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE demo_fts (id TEXT)")
+        assert descriptor.counts_sync(
+            conn,
+            tables,
+            {"source_rows": 2},
+            verify_freshness=False,
+        ) == {"indexed_rows": 0, "duplicate_rows": 0}
 
 
 async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path: Path) -> None:
@@ -59,7 +62,6 @@ async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path:
             source_count_key="source_rows",
             distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
             duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
-            ready_key="profile_merged_fts_ready",
         )
 
         fresh = await descriptor.counts_async(
@@ -95,24 +97,6 @@ def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
             {"materialized_rows": 7},
             verify_freshness=False,
         ) == ("expected_rows", 7)
-
-
-def test_ready_descriptor_combines_table_equalities_and_zero_counts() -> None:
-    descriptor = SessionInsightReadyDescriptor(
-        ready_key="threads_ready",
-        table_key="threads",
-        equal_counts=(("thread_count", "root_threads"),),
-        zero_counts=("stale_thread_count", "orphan_thread_count"),
-    )
-
-    assert descriptor.ready(
-        {"threads": True},
-        {"thread_count": 3, "root_threads": 3, "stale_thread_count": 0, "orphan_thread_count": 0},
-    )
-    assert not descriptor.ready(
-        {"threads": True},
-        {"thread_count": 3, "root_threads": 3, "stale_thread_count": 1, "orphan_thread_count": 0},
-    )
 
 
 def test_profile_repair_candidates_match_sort_key_freshness() -> None:
@@ -484,8 +468,6 @@ async def test_readiness_report_treats_empty_run_projection_cache_as_ready(tmp_p
             SessionInsightStatusSnapshot(
                 total_sessions=1,
                 run_count=0,
-                missing_run_materialization_count=1,
-                run_rows_ready=True,
             ),
             InsightReadinessQuery(insights=("session_runs",)),
         )
@@ -494,7 +476,6 @@ async def test_readiness_report_treats_empty_run_projection_cache_as_ready(tmp_p
     assert entry.insight_name == "session_runs"
     assert entry.row_count == 0
     assert entry.missing_count == 0
-    assert entry.ready_flags == {"run_rows_ready": True}
     assert entry.verdict == "ready"
 
 
@@ -642,8 +623,8 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
     assert sync_status.root_threads == 1
     assert sync_status.missing_profile_row_count == 2
     assert sync_status.stale_profile_row_count == 0
-    assert sync_status.profile_rows_ready is False
-    assert sync_status.threads_ready is False
+    assert sync_status.profile_row_count == 0
+    assert sync_status.thread_count == 0
 
 
 async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp_path: Path) -> None:

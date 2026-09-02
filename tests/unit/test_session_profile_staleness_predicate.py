@@ -71,12 +71,6 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
             );
             CREATE TABLE session_work_events (session_id TEXT);
             CREATE TABLE session_phases (session_id TEXT);
-            CREATE TABLE insight_materialization (
-                insight_type TEXT,
-                session_id TEXT,
-                materializer_version INTEGER,
-                source_sort_key_ms INTEGER
-            );
             """
         )
         conn.execute(

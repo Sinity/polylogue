@@ -53,7 +53,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "delegation_refresh_scope": frozenset(),
     "derived_refresh_guard": frozenset(),
     "file_edits": frozenset(),
-    "insight_materialization": frozenset({"materialized_at_ms"}),
     "messages": frozenset(),
     "paste_spans": frozenset(),
     "raw_revision_heads": frozenset({"decided_at_ms"}),
@@ -106,7 +105,6 @@ class DerivedModelSnapshot:
     tables: tuple[tuple[str, TableProjection], ...]
     public_reads: tuple[tuple[str, object], ...]
     fts: FtsReadiness
-    materialization_markers: tuple[FactRow, ...]
     open_debt: tuple[FactRow, ...]
 
 
@@ -136,7 +134,6 @@ def snapshot_derived_model(
     census = compared_table_census()
     with _connect(index_path) as conn:
         tables = tuple((table, _project_table(conn, table)) for table in census)
-        markers = _marker_rows(conn)
         fts_ledger = _fts_ledger_rows(conn)
         source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0])
         indexed_rows = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
@@ -154,7 +151,6 @@ def snapshot_derived_model(
             public_index_count=public_index_count,
             public_searches=searches,
         ),
-        materialization_markers=markers,
         open_debt=_open_debt_rows(archive_root / "ops.db"),
     )
 
@@ -178,8 +174,6 @@ def assert_derived_models_equivalent(expected: DerivedModelSnapshot, actual: Der
         )
     if expected.fts != actual.fts:
         raise AssertionError("FTS readiness or public FTS reads differ")
-    if expected.materialization_markers != actual.materialization_markers:
-        raise AssertionError("insight materialization markers differ")
     if expected.open_debt != actual.open_debt:
         raise AssertionError(f"open convergence debt differs: expected={expected.open_debt}, actual={actual.open_debt}")
 
@@ -211,19 +205,6 @@ def _project_table(conn: sqlite3.Connection, table: str) -> TableProjection:
     quoted = ", ".join(f'"{column}"' for column in columns)
     rows = tuple(sorted((_fact_row(row) for row in conn.execute(f'SELECT {quoted} FROM "{table}"')), key=repr))
     return TableProjection(columns=columns, rows=rows)
-
-
-def _marker_rows(conn: sqlite3.Connection) -> tuple[FactRow, ...]:
-    rows = conn.execute(
-        """
-        SELECT insight_type, session_id, materializer_version, source_updated_at_ms,
-               source_sort_key_ms, input_high_water_mark_ms,
-               input_high_water_mark_source, input_row_count
-        FROM insight_materialization
-        ORDER BY insight_type, session_id
-        """
-    )
-    return tuple(_fact_row(row) for row in rows)
 
 
 def _fts_ledger_rows(conn: sqlite3.Connection) -> tuple[FactRow, ...]:

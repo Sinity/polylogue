@@ -282,7 +282,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # metadata sidecar file into its own empty session, duplicate of the real,
 # correctly-ingested subagent transcript). Brand-new table, no existing
 # archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
-# forwards to a plain create, same shape as v33's `insight_materialization`.
 # polylogue-omsw: v58 declares the classification change made to
 # `archive.artifact_taxonomy.classify_artifact`/`classify_artifact_path`:
 # (1) a `tool-results/<name>.json` sidecar now refuses session
@@ -393,7 +392,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #    unchanged values" precedent.
 #  - The other two column-level findings from the same audit (bead
 #    polylogue-664l) were re-verified and found stale on current source, so
-#    no DDL change accompanies them here: `insight_materialization`'s CHECK
 #    vocabulary (9 values) is fully live (every value has a real writer in
 #    `rebuild.py`/`write.py`); the registry entries with no per-session
 #    ledger row are either `readiness_exempt=True` (query-time aggregates
@@ -1299,10 +1297,6 @@ CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_delete
 AFTER DELETE ON session_tags BEGIN
     UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
 END;
-
-CREATE TABLE IF NOT EXISTS insight_materialization (
-    {TABLE_SPECS["insight_materialization"].ddl_body}
-) STRICT;
 
 CREATE TABLE IF NOT EXISTS session_work_events (
     {TABLE_SPECS["session_work_events"].ddl_body}

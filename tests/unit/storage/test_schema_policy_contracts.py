@@ -352,7 +352,6 @@ def test_every_prior_index_schema_version_is_rejected_not_silently_reopened(tmp_
     fresh-first rebuild (``polylogue ops reset --index && polylogued run``)
     instead of being silently reopened with stale DDL that a subsequent
     write could violate (see commit that added
-    ``insight_materialization.insight_type = 'provider_usage'``: it bumped
     ``INDEX_SCHEMA_VERSION`` specifically so this scenario is caught here,
     not as a runtime CHECK-constraint failure deep in convergence).
     """

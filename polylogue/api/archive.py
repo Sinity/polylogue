@@ -1135,11 +1135,19 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                 )
             )
             insight_status = archive.session_insight_status()
-            insights_ready = (
-                insight_status.profile_rows_ready
-                and insight_status.work_event_inference_rows_ready
-                and insight_status.phase_rows_ready
-                and insight_status.threads_ready
+            insights_ready = all(
+                value == 0
+                for value in (
+                    insight_status.missing_profile_row_count,
+                    insight_status.stale_profile_row_count,
+                    insight_status.orphan_profile_row_count,
+                    insight_status.stale_work_event_inference_count,
+                    insight_status.orphan_work_event_inference_count,
+                    insight_status.stale_phase_inference_count,
+                    insight_status.orphan_phase_inference_count,
+                    insight_status.stale_thread_count,
+                    insight_status.orphan_thread_count,
+                )
             )
             checks.append(
                 ReadinessCheck(

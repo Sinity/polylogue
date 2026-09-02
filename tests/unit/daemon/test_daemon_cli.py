@@ -1901,103 +1901,6 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
     assert daemon_cli._browser_capture_spool_has_pending_files() is False
 
 
-def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("drain")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(
-            daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
-        )
-        task = asyncio.create_task(
-            daemon_cli._periodic_session_insight_convergence_after(catch_up_complete=catch_up_complete)
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        catch_up_complete.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drain"]
-
-
-def test_periodic_session_insight_convergence_bursts_successful_backlog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    drains: list[int] = []
-    sleeps: list[float] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
-        drains.append(len(drains))
-        return 100 if len(drains) <= 2 else 0
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if seconds == daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    with (
-        patch("asyncio.sleep", side_effect=fake_sleep),
-        patch.object(
-            daemon_cli,
-            "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
-        ),
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
-
-    assert drains == [0, 1, 2]
-    assert sleeps == [
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS,
-    ]
-
-
-def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    async def fake_sleep(_seconds: float) -> None:
-        raise asyncio.CancelledError
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        raise sqlite3.OperationalError("database is locked")
-
-    with (
-        patch("asyncio.sleep", side_effect=fake_sleep),
-        patch.object(
-            daemon_cli,
-            "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
-        ),
-        patch.object(daemon_cli.logger, "info") as info,
-        patch.object(daemon_cli.logger, "warning") as warning,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
-
-    info.assert_called_once()
-    assert info.call_args.args[0] == "insights: archive busy; retrying profile backlog on next tick: %s"
-    warning.assert_not_called()
-
-
 def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -3754,13 +3657,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 lambda **_kwargs: fake_loop("raw-materialization"),
             )
         )
-        stack.enter_context(
-            patch.object(
-                daemon_cli,
-                "_periodic_session_insight_convergence_after",
-                lambda _gate=None: fake_loop("session-insights"),
-            )
-        )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
         stack.enter_context(
             patch.object(
@@ -3785,6 +3681,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         )
         stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
+        stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
         asyncio.run(
             daemon_cli.run_daemon_services(

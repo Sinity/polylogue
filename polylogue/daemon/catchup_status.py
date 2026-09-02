@@ -309,11 +309,9 @@ def _catchup_mode(latest: CatchupStageEvent | None, latest_attempt: object | Non
     attempt_status = _str_attr(latest_attempt, "status") if latest_attempt is not None else None
     attempt_phase = _str_attr(latest_attempt, "phase") if latest_attempt is not None else None
     if attempt_status == "running":
-        return (
-            "converging" if attempt_phase in {"convergence", "fts", "insights", "full_worker_wait"} else "catching_up"
-        )
+        return "converging" if attempt_phase in {"convergence", "fts", "derived", "full_worker_wait"} else "catching_up"
     if latest is not None and latest.status == "running":
-        return "converging" if latest.phase in {"convergence", "fts", "insights", "full_worker_wait"} else "catching_up"
+        return "converging" if latest.phase in {"convergence", "fts", "derived", "full_worker_wait"} else "catching_up"
     if _int_attr(convergence, "retry_due_count") > 0:
         return "debt_retry"
     if _int_attr(convergence, "failed_count") > 0:
