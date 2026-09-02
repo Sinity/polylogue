@@ -539,6 +539,13 @@ def _execution_plan_digest() -> str:
         "consumer_reachability": {
             name: os.environ.get(name, "") for name in ("CONSUMER_REACHABILITY_BASE", "CONSUMER_REACHABILITY_HEAD")
         },
+        # Gates that compare against master read the tracking ref; a fetch
+        # that moves it is a different plan at the same head.
+        "master": _git_commit("origin/master") or "",
+        "merge_base": _merge_base_with_master(),
+        # A stored Hypothesis counterexample is replayed by a real run; the
+        # example database is part of what the corpus executes.
+        "hypothesis_examples": _tree_listing(ROOT / ".cache" / "hypothesis" / "examples"),
         "node": node_version,
         "npm": npm_version,
         # The Python gate executables the plan requires: a missing or
@@ -566,6 +573,21 @@ def _execution_plan_digest() -> str:
         },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _merge_base_with_master() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "HEAD", "origin/master"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            cwd=ROOT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
 
 
 def _executable_identity(executable: str) -> str:
@@ -628,15 +650,19 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
         aggregate = row.get("pytest_aggregate")
         if not (isinstance(receipt, Mapping) and isinstance(selection, Mapping) and isinstance(aggregate, Mapping)):
             continue
+        if aggregate.get("covered_by_run"):
+            # A skip is not an attempt; the attempt it reused is older.
+            continue
+        if receipt.get("source_revision") != head:
+            # The newest complete attempt anywhere rewrote the shared graph
+            # for its own head; a green at this head is no longer the graph
+            # on disk, so the corpus runs and restores it.
+            return None
         if (
-            receipt.get("source_revision") != head
-            or selection.get("environment_digest") != environment
+            selection.get("environment_digest") != environment
             or selection.get("packages_digest") != packages
             or selection.get("plan_digest") != plan
         ):
-            continue
-        if aggregate.get("covered_by_run"):
-            # A skip is not an attempt; the attempt it reused is older.
             continue
         # The newest attempt decides: a later failed recompute must not be
         # hidden behind an older green.
@@ -843,6 +869,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.recompute and not args.all_tests:
+        parser.error("--recompute applies to the complete corpus; pass --all")
     _anchor_verification_paths()
     validate_authority_matrix()
     started = time.monotonic()

@@ -764,7 +764,7 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
             "artifact_dir": f".cache/verify/runs/{run_id}",
             "git_dirty": dirty,
             "git_head": start_head,
-            "semantic_receipt": {"source_revision": "head"},
+            "semantic_receipt": {"source_revision": start_head if run_id == "elsewhere" else "head"},
             "testmon_selection": {"environment_digest": "env-1", "packages_digest": packages, "plan_digest": plan},
             "pytest_aggregate": aggregate,
         }
@@ -779,6 +779,8 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
         )
 
     assert covered([row("green")]) == "green"
+    # A newer complete run at another head rewrote the shared graph.
+    assert covered([row("green"), row("elsewhere", start_head="other")]) is None
     assert covered([row("green")], packages="pkgs-2") is None
     assert covered([row("green")], plan="plan-2") is None
     assert covered([row("dirty", dirty=True)]) is None
@@ -839,3 +841,30 @@ def test_execution_plan_digest_sees_consumer_reachability_overrides(
     overridden = verify._execution_plan_digest()
 
     assert plain != overridden
+
+
+def test_recompute_requires_the_complete_corpus(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as raised:
+        verify._main(["--recompute"])
+    assert raised.value.code == 2
+
+
+def test_execution_plan_digest_sees_master_and_hypothesis_examples(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: a moved origin/master or a stored counterexample must change the plan."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+    monkeypatch.setattr(verify, "_git_commit", lambda ref: "m1")
+    monkeypatch.setattr(verify, "_merge_base_with_master", lambda: "b1")
+    examples = tmp_path / ".cache" / "hypothesis" / "examples"
+    examples.mkdir(parents=True)
+    first = verify._execution_plan_digest()
+    monkeypatch.setattr(verify, "_git_commit", lambda ref: "m2")
+    moved = verify._execution_plan_digest()
+    (examples / "deadbeef").write_bytes(b"counterexample")
+    stored = verify._execution_plan_digest()
+
+    assert len({first, moved, stored}) == 3
