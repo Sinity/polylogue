@@ -96,6 +96,7 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "x-ai": "grok",
     "twitter-grok": "grok",
     "cursor": "codex",
+    "codex-state": "codex",
 }
 
 

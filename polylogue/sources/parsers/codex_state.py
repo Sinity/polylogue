@@ -86,6 +86,7 @@ class CodexStateDbClassification:
 
     kind: CodexSqliteKind
     disposition: CodexAcquisitionDisposition
+    filenames: tuple[str, ...]
     reason: str
 
 
@@ -98,6 +99,7 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="thread_state",
         disposition="acquire",
+        filenames=("state_5.sqlite",),
         reason=(
             "threads.title and thread_spawn_edges have no other evidence source: "
             "no Codex rollout JSONL session_meta record carries a curated title or "
@@ -107,6 +109,7 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="goals",
         disposition="acquire-partial",
+        filenames=("goals_1.sqlite",),
         reason=(
             "thread_goals.objective is stated task intent unavailable anywhere else, "
             "but the table is small (tens of rows) and low-churn; acquire the raw "
@@ -117,6 +120,7 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="memories",
         disposition="acquire-partial",
+        filenames=("memories_1.sqlite",),
         reason=(
             "stage1_outputs.raw_memory is Codex-side memory with no archive "
             "representation, but its content is a derived summary over content "
@@ -128,6 +132,7 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="logs",
         disposition="out-of-scope",
+        filenames=("logs_2.sqlite",),
         reason=(
             "627 MB of runtime tracing (level/target/module_path/file/line), not "
             "session evidence. Acquiring it by default would roughly double this "
@@ -139,6 +144,7 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="automation",
         disposition="out-of-scope",
+        filenames=("codex-dev.db",),
         reason=(
             "Local CLI automation scheduling config (inbox items, cron-like "
             "automations, automation run records), not AI session content. Empty "
@@ -187,6 +193,14 @@ def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexS
 def is_in_scope_codex_sqlite_path(path: Path, *, immutable: bool = False) -> bool:
     """Return whether *path* is one of the databases this module acquires."""
     return classify_codex_sqlite_path(path, immutable=immutable) in IN_SCOPE_KINDS
+
+
+def declared_codex_sqlite_classification(path: Path) -> CodexStateDbClassification | None:
+    """Return the declared acquisition mode for a known database name."""
+    for classification in CODEX_STATE_FIDELITY:
+        if path.name in classification.filenames:
+            return classification
+    return None
 
 
 def marker_payload(path: Path, *, kind: CodexSqliteKind, immutable: bool = False) -> JSONDocument:
@@ -439,6 +453,7 @@ __all__ = [
     "CodexThreadGoal",
     "CodexThreadRecord",
     "classify_codex_sqlite_path",
+    "declared_codex_sqlite_classification",
     "is_in_scope_codex_sqlite_path",
     "looks_like_state_db_payload",
     "marker_payload",

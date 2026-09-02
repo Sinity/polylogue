@@ -19,6 +19,7 @@ from polylogue.sources.parsers.codex_state import (
     CODEX_STATE_FIDELITY,
     IN_SCOPE_KINDS,
     classify_codex_sqlite_path,
+    declared_codex_sqlite_classification,
     is_in_scope_codex_sqlite_path,
     looks_like_state_db_payload,
     marker_payload,
@@ -276,6 +277,18 @@ def test_fidelity_declaration_covers_every_known_kind() -> None:
     assert dispositions["logs"] == "out-of-scope"
     assert dispositions["automation"] == "out-of-scope"
     assert {"thread_state", "goals", "memories"} == IN_SCOPE_KINDS
+    assert {
+        filename: (classification.kind, classification.disposition)
+        for classification in CODEX_STATE_FIDELITY
+        for filename in classification.filenames
+    } == {
+        "state_5.sqlite": ("thread_state", "acquire"),
+        "goals_1.sqlite": ("goals", "acquire-partial"),
+        "memories_1.sqlite": ("memories", "acquire-partial"),
+        "logs_2.sqlite": ("logs", "out-of-scope"),
+        "codex-dev.db": ("automation", "out-of-scope"),
+    }
+    assert declared_codex_sqlite_classification(Path("unknown.sqlite")) is None
 
 
 # --- parsing ------------------------------------------------------------

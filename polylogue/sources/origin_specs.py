@@ -344,26 +344,71 @@ def recognize_source_class(
     source_path: str | Path,
     *,
     payload: object | None = None,
+    source_only: bool = False,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
-    Hermes is currently the only broad provider root whose acquisition modes
-    share a directory and suffixes.  Keep this dispatch declaration-owned and
-    structural; callers may still enumerate cheaply by suffix, but may not
-    assign a Hermes session from that suffix alone.
+    Keep this dispatch declaration-owned and structural; callers may still
+    enumerate cheaply by suffix, but may not assign a provider session from
+    that suffix alone.
     """
-    if provider is not Provider.HERMES:
+    if provider is Provider.UNKNOWN:
+        if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            return SourceClassRecognition("unsupported", "SQLite has no declared provider source class")
         return None
 
-    from polylogue.sources.parsers import hermes_spans, hermes_state, hermes_verification, local_agent
+    from polylogue.sources.parsers import (
+        antigravity,
+        codex_state,
+        hermes_spans,
+        hermes_state,
+        hermes_verification,
+        local_agent,
+    )
 
     path = Path(source_path)
+    rule = artifact_rule_for_path(provider, str(path))
+    if rule is not None and rule.parse_policy != "session":
+        return SourceClassRecognition("non_session", f"declared {rule.kind} artifact")
+    if provider is Provider.ANTIGRAVITY:
+        classification = antigravity.classify_source_path(path)
+        if classification.role.value == "conversation_protobuf":
+            return SourceClassRecognition("session", "Antigravity declared conversation source class")
+        if classification.role.value != "unknown":
+            return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
+
+    if path.suffix.lower() == ".zip":
+        return None
+
     if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
-            path
-        ):
-            return SourceClassRecognition("session", "Hermes SQLite schema signature")
-        return SourceClassRecognition("unsupported", "Hermes SQLite lacks a declared state/verification schema")
+        if source_only:
+            if provider is Provider.CODEX:
+                declaration = codex_state.declared_codex_sqlite_classification(path)
+                if declaration is None:
+                    return SourceClassRecognition("unsupported", "Codex SQLite has no declared database identity")
+                if declaration.disposition == "out-of-scope":
+                    return SourceClassRecognition("unsupported", f"declared Codex {declaration.kind} database")
+                return SourceClassRecognition("session", f"declared Codex {declaration.kind} database")
+            if provider is Provider.HERMES and path.name in {"state.db", "verification_evidence.db"}:
+                return SourceClassRecognition("session", "declared Hermes SQLite source class")
+            return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+        if provider is Provider.HERMES:
+            if hermes_state.looks_like_state_db_path(
+                path
+            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
+                return SourceClassRecognition("session", "Hermes SQLite schema signature")
+            return SourceClassRecognition("unsupported", "Hermes SQLite lacks a declared state/verification schema")
+        if provider is Provider.CODEX:
+            if codex_state.is_in_scope_codex_sqlite_path(path):
+                return SourceClassRecognition("session", "Codex SQLite schema signature")
+            return SourceClassRecognition("unsupported", "Codex SQLite lacks a declared state schema")
+        return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+
+    if source_only:
+        return None
+
+    if provider not in {Provider.HERMES, Provider.ANTIGRAVITY}:
+        return None
 
     if payload is None:
         try:
@@ -381,18 +426,25 @@ def recognize_source_class(
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")
 
-    record = payload if isinstance(payload, dict) else None
-    if record is not None and (
-        hermes_spans.looks_like_atif_payload(record)
-        or hermes_spans.looks_like_atof_payload(record)
-        or local_agent.looks_like_hermes(record)
-    ):
-        return SourceClassRecognition("session", "Hermes declared JSON structural signature")
-    if isinstance(payload, list) and any(
-        isinstance(item, dict) and hermes_spans.looks_like_atof_payload(item) for item in payload
-    ):
-        return SourceClassRecognition("session", "Hermes ATOF JSONL structural signature")
-    return SourceClassRecognition("unsupported", "Hermes candidate has no declared source-class signature")
+    if provider is Provider.HERMES:
+        record = payload if isinstance(payload, dict) else None
+        if record is not None and (
+            hermes_spans.looks_like_atif_payload(record)
+            or hermes_spans.looks_like_atof_payload(record)
+            or local_agent.looks_like_hermes(record)
+        ):
+            return SourceClassRecognition("session", "Hermes declared JSON structural signature")
+        if isinstance(payload, list) and any(
+            isinstance(item, dict) and hermes_spans.looks_like_atof_payload(item) for item in payload
+        ):
+            return SourceClassRecognition("session", "Hermes ATOF JSONL structural signature")
+        return SourceClassRecognition("unsupported", "Hermes candidate has no declared source-class signature")
+
+    if provider is Provider.ANTIGRAVITY:
+        if isinstance(payload, dict) and antigravity.looks_like_markdown_export(payload):
+            return SourceClassRecognition("session", "Antigravity language-server export structural signature")
+        return SourceClassRecognition("unsupported", "Antigravity candidate has no declared source-class signature")
+    return None
 
 
 #: Root the committed schema packages live under, resolved once here so

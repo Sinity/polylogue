@@ -246,14 +246,6 @@ def scoped_cursor_authority_authorization(
         _CURSOR_AUTHORIZATION.reset(marker)
 
 
-# polylogue-0jf4: known ~/.codex live SQLite state filenames, matched by name
-# first (cheap, no I/O) before the structural table-shape check in
-# ``codex_state.is_in_scope_codex_sqlite_path`` decides whether to acquire.
-# Kept in sync with ``sources/parsers/codex_state.py``'s ``CODEX_STATE_FIDELITY``.
-_CODEX_STATE_DB_NAMES = frozenset({"state_5.sqlite", "goals_1.sqlite", "memories_1.sqlite"})
-_CODEX_OUT_OF_SCOPE_STATE_DB_NAMES = frozenset({"logs_2.sqlite", "codex-dev.db"})
-
-
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
@@ -1981,28 +1973,20 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
-            hermes_source_class = (
-                recognize_source_class(Provider.HERMES, path) if fallback_provider is Provider.HERMES else None
+            source_class = (
+                None
+                if path.suffix.lower() == ".zip"
+                else recognize_source_class(fallback_provider, path, source_only=source_only)
             )
-            hermes_owned_sqlite_name = (
-                source_only
-                and fallback_provider is Provider.HERMES
-                and path.name in {"state.db", "verification_evidence.db"}
-            )
-            if (
-                hermes_source_class is not None
-                and hermes_source_class.source_class == "unsupported"
-                and not hermes_owned_sqlite_name
-            ):
-                # A broad Hermes root is suffix-enumerated so every candidate
-                # remains observable.  Only the OriginSpec recognizer may
-                # admit a candidate to the Hermes parser; unknown/config/cache
-                # material is a typed non-session observation instead.
+            if source_class is not None and source_class.source_class == "unsupported":
+                # Suffixes only make a candidate observable. The declaration
+                # owned recognizer admits provider sessions before parsing.
                 logger.info(
-                    "live.hermes_candidate_not_admitted path=%s source_class=%s reason=%s",
+                    "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
                     path,
-                    hermes_source_class.source_class,
-                    hermes_source_class.reason,
+                    fallback_provider.value,
+                    source_class.source_class,
+                    source_class.reason,
                 )
                 self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
                 continue
@@ -2051,13 +2035,16 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            codex_owned_sqlite_name = (
-                source_only and fallback_provider is Provider.CODEX and path.name in _CODEX_STATE_DB_NAMES
-            )
             if (
-                hermes_owned_sqlite_name
-                or hermes_state.looks_like_state_db_path(path)
-                or hermes_verification.looks_like_verification_evidence_db_path(path)
+                source_only
+                and fallback_provider is Provider.HERMES
+                and path.name in {"state.db", "verification_evidence.db"}
+            ) or (
+                not source_only
+                and (
+                    hermes_state.looks_like_state_db_path(path)
+                    or hermes_verification.looks_like_verification_evidence_db_path(path)
+                )
             ):
                 provider = Provider.HERMES
                 source_name = provider.value
@@ -2092,19 +2079,16 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif codex_owned_sqlite_name or (
-                path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path)
-            ):
-                # polylogue-0jf4: acquire live Codex SQLite state the same
-                # way Hermes acquires its state.db -- a consistent
-                # backup/snapshot (never a raw read of a possibly-live-locked
-                # file) into the content-addressed blob store. The filename
-                # gate keeps this cheap for the vast majority of ~/.codex
-                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
-                # then re-confirms the table shape before trusting the name.
-                # Source-only acquisition intentionally skips that structural
-                # decode: a mid-write or future-schema state snapshot is still
-                # durable authority to replay once the derived tier returns.
+            elif (
+                source_only
+                and fallback_provider is Provider.CODEX
+                and source_class is not None
+                and source_class.source_class == "session"
+            ) or (not source_only and codex_state.is_in_scope_codex_sqlite_path(path)):
+                # Snapshot live Codex SQLite state before hashing or storing it.
+                # Normal ingest requires the declared SQLite schema; source-only
+                # ingest accepts a declared filename so a future or mid-write
+                # snapshot remains durable authority for later replay.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -2138,16 +2122,6 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif path.name in _CODEX_STATE_DB_NAMES or path.name in _CODEX_OUT_OF_SCOPE_STATE_DB_NAMES:
-                # Matched a known Codex state-db filename but either failed
-                # structural verification (mid-write, corrupt, or a future
-                # Codex schema change) or is a database CODEX_STATE_FIDELITY
-                # (sources/parsers/codex_state.py) declares out-of-scope
-                # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
-                # automation config) -- exclude cleanly without ever reading
-                # the bytes as a generic session artifact.
-                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
-                continue
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
                 # an ad hoc parse pass. Provider detection and session/artifact
