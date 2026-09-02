@@ -341,7 +341,7 @@ def _match_session_payload(
     session_id = payload.session_id
     messages = payload.parsed_session.messages
     position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
-    owner_resolution, by_owner_key = _attachment_message_id_maps(
+    owner_resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,

@@ -65,6 +65,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
@@ -3628,24 +3629,49 @@ def _increment_session_counts_for_append(
     )
 
 
+def _attachment_provenance(
+    attachment: ParsedAttachment,
+    owning_message: ParsedMessage | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the direction and producer this attachment is persisted with.
+
+    Attachments carry their own provenance once a parser has derived it.
+    Records reconstructed from evidence written before the field existed carry
+    none, so the owning turn's role supplies it here through the same shared
+    derivation the parsers use -- the stored column is never null.
+    """
+    if attachment.direction is not None:
+        return attachment.direction, attachment.producer_ref
+    if owning_message is None:
+        return None, None
+    derived_direction, derived_producer = derive_attachment_provenance(
+        owning_message.role, owning_message.provider_message_id
+    )
+    return derived_direction, attachment.producer_ref or derived_producer
+
+
 def _attachment_message_id_maps(
     session_id: str,
     messages: list[ParsedMessage],
     *,
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
-) -> tuple[MessageOwnerResolution, dict[str, str]]:
+) -> tuple[MessageOwnerResolution, dict[str, str], dict[str, ParsedMessage]]:
     """Build the authoritative attachment-owner lookup maps.
 
     The first result is the shared private owner-resolution contract. The
     second maps its resolved owner keys to stored message ids, including the
     full ``(position, variant_index)`` coordinate and any reorder-stable
-    parser evidence. Keep this shared with repair/relink paths so they cannot
-    invent a weaker ownership rule than the production write.
+    parser evidence. The third maps those stored message ids back to the
+    owning parsed message, which is what lets the write boundary derive an
+    attachment's direction from its owning turn. Keep this shared with
+    repair/relink paths so they cannot invent a weaker ownership rule than
+    the production write.
     """
     duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
     resolution = message_owner_resolution(messages)
     by_owner_key: dict[str, str] = {}
+    by_message_id: dict[str, ParsedMessage] = {}
     for fallback_position, (message, owner_key) in enumerate(zip(messages, resolution.keys, strict=True)):
         if owner_key in resolution.ambiguous_keys:
             continue
@@ -3657,7 +3683,8 @@ def _attachment_message_id_maps(
             duplicate_native_ids=duplicates,
         )
         by_owner_key[owner_key] = message_id
-    return resolution, by_owner_key
+        by_message_id.setdefault(message_id, message)
+    return resolution, by_owner_key, by_message_id
 
 
 def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
@@ -3681,7 +3708,7 @@ def _write_attachments(
     preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None = None,
 ) -> None:
     attachments = tuple(attachments)
-    owner_resolution, by_owner_key = _attachment_message_id_maps(
+    owner_resolution, by_owner_key, owning_messages = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
@@ -3718,9 +3745,10 @@ def _write_attachments(
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
             continue
-        if attachment.direction not in {"user_input", "model_output"}:
-            raise ValueError(f"attachment direction is not supported: {attachment.direction!r}")
-        if attachment.direction == "model_output" and not attachment.producer_ref:
+        direction, producer_ref = _attachment_provenance(attachment, owning_messages.get(message_id))
+        if direction not in {"user_input", "model_output"}:
+            raise ValueError(f"attachment direction is not supported: {direction!r}")
+        if direction == "model_output" and not producer_ref:
             raise ValueError(
                 "model_output attachment requires producer provenance: "
                 f"attachment_id={attachment.provider_attachment_id!r}"
@@ -3789,8 +3817,8 @@ def _write_attachments(
                 message_id,
                 ref_position,
                 _sqlite_text(attachment.upload_origin),
-                attachment.direction,
-                _sqlite_text(attachment.producer_ref),
+                direction,
+                _sqlite_text(producer_ref),
                 _sqlite_text(_attachment_source_url(attachment)),
                 _sqlite_text(_attachment_caption(attachment)),
             ),
