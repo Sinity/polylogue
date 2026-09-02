@@ -21,7 +21,6 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
-from polylogue.core.errors import SchemaSkewError
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
@@ -90,10 +89,6 @@ def probe_archive_tier(tier: ArchiveTier, path: Path) -> ArchiveTierProbe:
             version_status = "ok" if user_version == expected_user_version else "mismatch"
         finally:
             conn.close()
-    except SchemaSkewError as exc:
-        user_version = int(cast(int, exc.found))
-        version_status = "mismatch"
-        logger.warning("archive tier version mismatch for %s (%s): %s", path, tier.value, exc)
     except sqlite3.Error as exc:
         logger.warning("archive tier version probe failed for %s (%s): %s", path, tier.value, exc, exc_info=True)
     return ArchiveTierProbe(
