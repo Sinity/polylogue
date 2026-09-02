@@ -9,6 +9,7 @@ import pytest
 from polylogue.maintenance import blob_conservation
 from polylogue.storage.blob_liveness import BlobLivenessProjection
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
 
 
 def _empty_archive(root: Path) -> None:
@@ -74,6 +75,31 @@ def test_conservation_refuses_a_live_archive_writer(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="requires the archive writer to be stopped: live pidfile PID 42"):
         blob_conservation.check_blob_conservation(tmp_path)
+
+
+def test_conservation_holds_writer_exclusion_for_its_evidence_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An archive writer cannot begin after the offline probe passes.
+
+    Anti-vacuity: removing the rebuild lease lets ``ActiveWriterLease`` enter
+    while the census is collecting its SQLite and filesystem evidence.
+    """
+    _empty_archive(tmp_path)
+    projection = BlobLivenessProjection(frozenset())
+
+    def project(*args: object, **kwargs: object) -> BlobLivenessProjection:
+        writer = ActiveWriterLease(tmp_path)
+        try:
+            writer.acquire()
+        except RebuildLeaseUnavailableError:
+            return projection
+        writer.close()
+        pytest.fail("census did not exclude an archive writer")
+
+    monkeypatch.setattr(blob_conservation, "project_source_blob_liveness", project)
+
+    assert blob_conservation.check_blob_conservation(tmp_path).ok
 
 
 def test_conservation_excludes_staged_work_from_blob_population(

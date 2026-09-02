@@ -13,6 +13,7 @@ from polylogue.maintenance.offline_guard import offline_writer_block_reason
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_integrity import project_source_blob_liveness
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
+from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +76,22 @@ def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> Blo
     separately and are never treated as blobs.
     """
     root = archive_root.resolve()
-    blocker = offline_writer_block_reason(Config(archive_root=root, render_root=root / "render", sources=[]))
+    config = Config(archive_root=root, render_root=root / "render", sources=[])
+    blocker = offline_writer_block_reason(config)
     if blocker is not None:
         raise RuntimeError(f"blob conservation requires the archive writer to be stopped: {blocker}")
+    try:
+        with RebuildLease(root):
+            blocker = offline_writer_block_reason(config)
+            if blocker is not None:
+                raise RuntimeError(f"blob conservation requires the archive writer to be stopped: {blocker}")
+            return _check_blob_conservation_locked(root, sample_size=sample_size)
+    except RebuildLeaseUnavailableError as exc:
+        raise RuntimeError(f"blob conservation requires exclusive offline archive ownership: {exc}") from exc
+
+
+def _check_blob_conservation_locked(root: Path, *, sample_size: int) -> BlobConservationReport:
+    """Compare the complete blob/reference evidence while writers are excluded."""
     source_db = root / "source.db"
     index_db = resolve_active_index_path(root)
     store = BlobStore(root / "blob")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -196,6 +197,38 @@ def test_blob_conservation_is_a_click_command() -> None:
     from polylogue.cli.commands.maintenance._blob_conservation import blob_conservation_command
 
     assert isinstance(blob_conservation_command, click.Command)
+
+
+def test_blob_conservation_json_returns_failure_for_a_failed_census(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Automation receives a nonzero status for JSON conservation failures.
+
+    Anti-vacuity: returning directly after JSON output leaves Click with a
+    success status despite the failing report.
+    """
+    from polylogue.cli.commands.maintenance._blob_conservation import blob_conservation_command
+    from polylogue.maintenance import blob_conservation
+
+    monkeypatch.setattr(
+        blob_conservation,
+        "check_blob_conservation",
+        lambda *_args, **_kwargs: blob_conservation.BlobConservationReport(
+            archive_root="/archive",
+            referenced_blobs=1,
+            present_blobs=0,
+            orphan_blobs=0,
+            dangling_references=1,
+            recoverable_references=0,
+            reserved_blobs=0,
+            corrupt_blobs=0,
+            invalid_namespace_entries=0,
+            staged_in_flight=0,
+        ),
+    )
+
+    result = CliRunner().invoke(blob_conservation_command, ["--output-format", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.output)["ok"] is False
 
 
 def test_maintenance_plan_help_output() -> None:
