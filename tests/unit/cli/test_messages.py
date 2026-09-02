@@ -37,7 +37,19 @@ class _FakeApi:
         session_origin: str = "codex-session",
         topology: object | None = None,
         lineage_completeness: LineageCompleteness | None = None,
+        config: Config | None = None,
     ) -> None:
+        # The read path builds its authority envelope from `api.config`; the
+        # double carries one so it exercises the same route.
+        self.config = (
+            config
+            if config is not None
+            else Config(
+                archive_root=Path("/nonexistent/fake-archive"),
+                render_root=Path("/nonexistent/fake-archive/render"),
+                sources=[],
+            )
+        )
         self.messages_result = messages_result
         self.raw_result = raw_result
         self.hook_summary_result = hook_summary_result

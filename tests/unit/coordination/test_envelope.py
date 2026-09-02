@@ -68,6 +68,7 @@ def _seed_coordination_archive(index: Path) -> None:
                 tool_command TEXT,
                 tool_id TEXT,
                 tool_name TEXT,
+                tool_outcome TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
                 search_text TEXT

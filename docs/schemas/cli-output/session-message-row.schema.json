@@ -215,6 +215,11 @@
       "title": "Id",
       "type": "string"
     },
+    "identity_source": {
+      "default": "positional",
+      "title": "Identity Source",
+      "type": "string"
+    },
     "input_tokens": {
       "default": 0,
       "title": "Input Tokens",

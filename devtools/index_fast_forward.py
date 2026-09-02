@@ -224,7 +224,9 @@ def _inspect_clean_database(path: Path) -> tuple[int, dict[str, str]]:
         sidecar = Path(f"{path.resolve(strict=True)}{suffix}")
         if sidecar.exists() and sidecar.stat().st_size:
             raise IndexFastForwardError(f"non-empty SQLite sidecar blocks fast-forward: {sidecar}")
-    with closing(open_readonly_connection(path.resolve(strict=True), immutable=True)) as conn:
+    # Fast-forward exists to carry an index whose version is not the runtime's;
+    # reading that version is this function's whole job.
+    with closing(open_readonly_connection(path.resolve(strict=True), immutable=True, validate_schema=False)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0]), _schema_objects(conn)
 
 
@@ -326,7 +328,11 @@ def _sample_manifest(archive_root: Path, index_path: Path, *, limit: int) -> lis
         raw_ids = [str(row[0]) for row in source_conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id")]
     if not raw_ids:
         raise IndexFastForwardError("source-backed fast-forward proof requires retained raw evidence")
-    with closing(open_readonly_connection(index_path.resolve(strict=True), immutable=True)) as index_conn:
+    # The sampled index is the pre-fast-forward one: its version is the version
+    # this run exists to carry forward.
+    with closing(
+        open_readonly_connection(index_path.resolve(strict=True), immutable=True, validate_schema=False)
+    ) as index_conn:
         rows = _query_rows_in_chunks(
             index_conn,
             lambda marks: (
