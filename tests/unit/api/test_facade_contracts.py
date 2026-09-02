@@ -6357,3 +6357,29 @@ async def test_facade_judges_candidate_assertion_in_user_tier(workspace_env: dic
         assert disabled == {"candidate_already_accepted"}
     finally:
         await archive.close()
+
+
+async def test_facade_candidate_queue_includes_agent_authored_terminal_notes(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The facade queue must use the broad candidate-kind registry."""
+
+    archive_root = workspace_env["archive_root"]
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    try:
+        candidate = await archive.capture_assertion_candidate(
+            body_text="Keep the operator judgment boundary explicit.",
+            kind=AssertionKind.NOTE,
+            author_ref="agent:codex",
+            author_kind="agent",
+            idempotency_key="queue-note-1",
+        )
+        assert candidate.status is AssertionStatus.CANDIDATE
+        assert candidate.context_policy is not None
+        assert candidate.context_policy["inject"] is False
+
+        queued = await archive.list_assertion_candidates()
+        assert [item.assertion_id for item in queued] == [candidate.assertion_id]
+        assert queued[0].kind is AssertionKind.NOTE
+    finally:
+        await archive.close()
