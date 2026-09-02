@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from devtools.render_schema_disposition import render_markdown
 from polylogue.storage.sqlite.archive_tiers import AUDIT_COLUMN_DISPOSITIONS
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
@@ -82,7 +85,7 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     assert by_ref["source:table:otlp_spans"].disposition == "KEEP"
     assert by_ref["source:table:raw_failure_disposition_receipts"].disposition == "KEEP"
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
-    assert not any("raw_unknown_export_reclassification_receipts" in row.object_ref for row in rows)
+    assert by_ref["source:table:raw_unknown_export_reclassification_receipts"].disposition == "PURGE"
     assert not any("dominant_repo_id" in row.object_ref for row in rows)
     assert all(
         row.semantic_owner
@@ -116,3 +119,13 @@ def test_six_tier_report_is_generated_from_the_complete_disposition() -> None:
     assert report["unknown_count"] == 0
     assert set(cast("dict[str, object]", report["tier_counts"])) == {tier.value for tier in ArchiveTier}
     assert len(objects) == report["object_count"]
+
+
+def test_committed_schema_disposition_artifacts_match_the_canonical_report() -> None:
+    report = schema_disposition_report()
+
+    artifact = json.loads(Path("docs/evidence/schema-disposition-2026-08-31.json").read_text(encoding="utf-8"))
+    markdown = Path("docs/schema-disposition-2026-08-19.md").read_text(encoding="utf-8")
+
+    assert artifact == report
+    assert markdown == render_markdown(report)

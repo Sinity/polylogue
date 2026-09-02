@@ -157,6 +157,13 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "render schema-disposition",
+        "generated surfaces",
+        "Render the declaration-derived six-tier schema disposition artifacts.",
+        "devtools.render_schema_disposition",
+        examples=("devtools render schema-disposition", "devtools render schema-disposition --check"),
+    ),
+    CommandSpec(
         "scenario",
         "verification",
         "Run a named archive verification scenario.",
