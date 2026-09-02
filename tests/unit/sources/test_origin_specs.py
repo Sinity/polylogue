@@ -24,6 +24,7 @@ from polylogue.sources.origin_specs import (
     TopologyCapability,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
+    database_capability_for_provider,
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
@@ -167,6 +168,35 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_database_origins_declare_snapshot_and_member_disposition() -> None:
+    """Database acquisition policy is projected from OriginSpec, not filename sets."""
+
+    codex = database_capability_for_provider(Provider.CODEX)
+    hermes = database_capability_for_provider(Provider.HERMES)
+    assert codex is not None
+    assert hermes is not None
+    for capability in (codex, hermes):
+        assert capability.snapshot_method == "sqlite_backup"
+        assert "Connection.backup" in capability.consistency_fence
+        assert "mtime_ns" in capability.revision_identity
+        assert capability.full_snapshot_per_revision
+        assert capability.snapshot_lineage_policy
+        assert capability.filenames
+
+    assert codex.member("state_5.sqlite").disposition == "acquire"  # type: ignore[union-attr]
+    assert codex.member("logs_2.sqlite").disposition == "out-of-scope"  # type: ignore[union-attr]
+    assert hermes.member("state.db").disposition == "acquire"  # type: ignore[union-attr]
+
+
+def test_database_member_lookup_is_origin_owned() -> None:
+    """A declared member can be discovered without a second source filename registry."""
+
+    capability = database_capability_for_provider(Provider.CODEX)
+    assert capability is not None
+    assert capability.member("new-database.sqlite") is None
+    assert {member.filename for member in capability.members} == capability.filenames
 
 
 def test_topology_capability_census_is_complete_and_typed() -> None:
