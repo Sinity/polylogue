@@ -1599,7 +1599,7 @@ def _show_direct_json(
         try:
             from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-            conn = open_readonly_connection(active_db)
+            conn = open_readonly_connection(active_db, validate_schema=False)
             try:
                 payload.update(_direct_archive_counts(conn, configured_root=active_root))
                 payload["db_exists"] = True
@@ -2166,7 +2166,7 @@ def _show_direct_status(
     try:
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        conn = open_readonly_connection(active_db)
+        conn = open_readonly_connection(active_db, validate_schema=False)
         try:
             counts = _direct_archive_counts(conn, configured_root=active_root)
             convs = counts["sessions"]

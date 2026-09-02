@@ -748,7 +748,7 @@ def _archive_tier_status(
         return ArchiveTierStatus(name=name, path=probe.path, expected_user_version=probe.expected_user_version)
     table_count = -2
     try:
-        conn = open_readonly_connection(path)
+        conn = open_readonly_connection(path, validate_schema=False)
         try:
             table_count = _row_int(
                 conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
@@ -798,7 +798,7 @@ def _insight_freshness_info() -> dict[str, object]:
         if archive_info is not None:
             return archive_info
     try:
-        conn = open_readonly_connection(dbf)
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             tables = {
                 row[0]
@@ -832,7 +832,7 @@ def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | Non
     if not archive_db.exists():
         return None
     try:
-        conn = open_readonly_connection(archive_db)
+        conn = open_readonly_connection(archive_db, validate_schema=False)
         try:
             tables = {
                 row[0]
@@ -938,7 +938,7 @@ def _archive_raw_failure_info(
             maintenance_count=maintenance_count,
         )
     try:
-        conn = open_readonly_connection(archive_db)
+        conn = open_readonly_connection(archive_db, validate_schema=False)
         try:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone():
                 return _unavailable_raw_failure_info(
@@ -1187,7 +1187,7 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
     if not dbf.exists():
         return LiveCursorSummary()
     try:
-        conn = open_readonly_connection(dbf)
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"
@@ -1276,7 +1276,7 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
     if not ops_db.exists():
         return None
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
@@ -1373,7 +1373,7 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     if not dbf.exists():
         return ops_summary if ops_summary is not None else LiveIngestAttemptSummary()
     try:
-        conn = open_readonly_connection(dbf)
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_attempt'"
@@ -1514,7 +1514,7 @@ def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttempt
     if not ops_db.exists():
         return None
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_attempts'"

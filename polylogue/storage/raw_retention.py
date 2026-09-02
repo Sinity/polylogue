@@ -1228,7 +1228,7 @@ def raw_frontier_integrity_projection(
         try:
             from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-            conn = open_readonly_connection(source_db_path)
+            conn = open_readonly_connection(source_db_path, validate_schema=False)
         except (OSError, sqlite3.Error) as exc:
             logger.warning("raw frontier integrity: source tier is unreadable: %s", exc)
             snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unreadable: {exc}")

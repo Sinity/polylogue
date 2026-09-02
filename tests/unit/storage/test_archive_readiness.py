@@ -8,10 +8,12 @@ from typing import Any, cast
 import pytest
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.core.errors import SchemaSkew
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
     archive_readiness_status,
     claude_workflow_materialization_status,
+    probe_archive_tier,
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
@@ -24,11 +26,29 @@ from polylogue.storage.raw_authority import (
     record_raw_authority_census,
     record_raw_replay_outcome,
 )
+from polylogue.storage.sqlite import connection_profile
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
+
+
+def test_probe_archive_tier_reports_schema_skew_without_opening_a_usable_reader(tmp_path: Path) -> None:
+    """The version probe remains readable when the normal reader rejects stale schemas."""
+    db_path = tmp_path / "source.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1}")
+
+    with pytest.raises(SchemaSkew):
+        connection_profile.open_readonly_connection(db_path)
+
+    probe = probe_archive_tier(ArchiveTier.SOURCE, db_path)
+
+    assert probe.user_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1
+    assert probe.version_status == "mismatch"
 
 
 def test_raw_materialization_readiness_requires_completed_frontier_census() -> None:

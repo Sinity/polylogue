@@ -80,7 +80,10 @@ def probe_archive_tier(tier: ArchiveTier, path: Path) -> ArchiveTierProbe:
     user_version: int | None = None
     version_status: ArchiveTierVersionStatus = "invalid"
     try:
-        conn = open_readonly_connection(path)
+        # Readiness must inspect the version that the connection factory would
+        # otherwise reject. This probe reports schema skew as data for status
+        # and recovery callers; it does not authorize ordinary tier reads.
+        conn = open_readonly_connection(path, validate_schema=False)
         try:
             user_version = _row_int(conn.execute("PRAGMA user_version").fetchone()[0])
             version_status = "ok" if user_version == expected_user_version else "mismatch"

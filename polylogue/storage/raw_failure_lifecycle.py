@@ -108,7 +108,7 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     if not source_db.exists():
         return RawFailureLifecycleSnapshot(False, reason=f"source.db not found: {source_db}")
     try:
-        conn = open_readonly_connection(source_db)
+        conn = open_readonly_connection(source_db, validate_schema=False)
     except (OSError, sqlite3.Error) as exc:
         logger.warning("could not open source.db read-only", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")
