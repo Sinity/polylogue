@@ -556,19 +556,11 @@ def initialize_archive_database(
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
+        derived_tier = None
         if tier in (ArchiveTier.INDEX, ArchiveTier.OPS) and current_version != 0:
-            from polylogue.storage.sqlite.archive_tiers.schema_identity import (
-                DerivedTier,
-                derived_schema_identity,
-                read_schema_identity,
-            )
-            from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier
 
             derived_tier = DerivedTier(tier.value)
-            expected_identity = derived_schema_identity(derived_tier)
-            found_identity = read_schema_identity(conn, derived_tier)
-            if found_identity != expected_identity:
-                raise SchemaSkew(tier.value, expected_identity, found_identity)
         if current_version == required_version:
             # ops.db is disposable and evolves through idempotent additive DDL
             # without version bumps. Re-apply it so existing same-version
@@ -589,10 +581,25 @@ def initialize_archive_database(
 
                 ensure_runtime_indexes_sync(conn)
                 apply_index_benign_ddl_convergence(conn)
+            if derived_tier is not None:
+                from polylogue.storage.sqlite.archive_tiers.schema_identity import read_schema_identity
+                from polylogue.storage.sqlite.schema_bootstrap import (
+                    assert_derived_schema_identity,
+                    stamp_derived_schema_identity,
+                )
+
+                identity_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'"
+                ).fetchone()
+                found_identity = read_schema_identity(conn, derived_tier) if identity_table is not None else None
+                if identity_table is None or found_identity is None:
+                    stamp_derived_schema_identity(conn, tier.value)
+                assert_derived_schema_identity(conn, tier.value)
+            if tier is ArchiveTier.INDEX:
                 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
                 assert_schema_manifest(conn, tier)
-                conn.commit()
+            conn.commit()
             return
         if current_version != 0:
             if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:
