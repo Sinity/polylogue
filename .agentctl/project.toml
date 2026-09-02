@@ -46,7 +46,7 @@ description = "Run Polylogue's affected-test verification plan"
 # Eight of these run beside agent lanes; four workers each keeps the host
 # at its thread count instead of three times over it.
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "devtools", "verify"]
-pool = "normal"
+pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 3600
@@ -87,7 +87,7 @@ checkout = "default"
 # Nightly master-boundary corpus: failures reach the coordinator through the
 # events spool; green nights stay silent. Off-peak, odd minute by convention.
 schedule = "*-*-* 03:17:00"
-pool = "bulk"
+pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 14400
@@ -146,7 +146,7 @@ range = [49120, 49183]
 
 [operations.harvest]
 description = "Review a finished lane, then publish it under an authorized receipt"
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "sinnixd-harvest"]
+exec = ["sinnixd-harvest"]
 pool = "normal"
 result = "json"
 cache = "none"
@@ -157,7 +157,7 @@ scratch = "nvme"
 # The domain verdict decides the terminal phase: a refused publication
 # (red gate, rebase conflict) must not read as a succeeded job (sinnix-u9if).
 success = ["HARVEST_OK", "HARVEST_EMPTY"]
-refusal = ["GATE_RED", "REBASE_CONFLICT"]
+refusal = ["GATE_RED", "REBASE_CONFLICT", "NO_TEST_EVIDENCE"]
 failure = ["HARVEST_ERROR"]
 
 [operations.harvest.parameters.authorize]
