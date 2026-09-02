@@ -17,7 +17,18 @@ from polylogue.maintenance.assertion_transition import (
     reconcile_object_refs,
 )
 from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from polylogue.storage.sqlite.query_objects import (
+    EvaluationReceipt,
+    get_result_set,
+    membership_merkle_root,
+    put_evaluation_receipt,
+    put_query,
+    put_result_set,
+    put_retained_query_run,
+)
 
 
 def _binding() -> TransitionBinding:
@@ -248,34 +259,153 @@ def test_omitted_relation_in_a_complete_schema_blocks_apply() -> None:
         apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
 
 
-def test_result_set_members_are_sealed_against_identity_rewrites() -> None:
+def test_result_set_member_transition_clones_the_manifest_and_repoints_owners() -> None:
     conn = sqlite3.connect(":memory:")
-    conn.executescript(
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.USER)
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "claude-code"},
+        grain="message",
+        lane="dialogue",
+        rank_policy="fixture",
+        created_at_ms=1,
+    )
+    old = tuple(f"message:claude-code:legacy:{index}" for index in range(20))
+    new = tuple(f"message:claude-code:current:n:{index}" for index in range(20))
+    put_result_set(
+        conn,
+        result_set_id="finding",
+        query_hash=query.query_hash,
+        grain="message",
+        corpus_epoch="before",
+        member_refs=old,
+        exactness="exact",
+        persistence_class="finding",
+        created_at_ms=2,
+    )
+    put_retained_query_run(
+        conn, run_id="qr_finding", query_hash=query.query_hash, result_set_id="finding", retained_at_ms=3
+    )
+    put_evaluation_receipt(
+        conn,
+        query_hash=query.query_hash,
+        result_set_id="finding",
+        receipt=EvaluationReceipt("receipt", "source", "user", "index", "build"),
+        created_at_ms=4,
+    )
+    conn.executemany(
         """
-        CREATE TABLE assertions (
-            assertion_id TEXT PRIMARY KEY, scope_ref TEXT, target_ref TEXT NOT NULL,
-            evidence_refs_json TEXT, supersedes_json TEXT
-        );
-        CREATE TABLE result_set_members (
-            result_set_id TEXT NOT NULL, rank INTEGER NOT NULL, member_ref TEXT NOT NULL,
-            PRIMARY KEY (result_set_id, rank)
-        );
-        INSERT INTO assertions VALUES ('a', NULL, 'message:old', '[]', '[]');
-        INSERT INTO result_set_members VALUES ('finding', 0, 'message:old');
-        """
+        INSERT INTO assertions (
+            assertion_id, scope_ref, target_ref, kind, evidence_refs_json,
+            created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, 'note', ?, 6, 6)
+        """,
+        (
+            (
+                f"assertion-{index}",
+                "result-set:finding" if index == 0 else None,
+                old[index % len(old)],
+                json.dumps([old[(index + 1) % len(old)], "codex-session:demo::m::0", "/tmp/receipt"]),
+            )
+            for index in range(107)
+        ),
     )
     binding = _binding()
+    refs = tuple(item.value for item in enumerate_durable_reference_inventory(conn))
     plan = reconcile_object_refs(
-        ("message:old",),
-        candidate_refs=("message:new",),
+        refs,
+        candidate_refs=tuple(new) + tuple(ref for ref in refs if ref not in old),
         source_claims=SourceIdentityClaims.from_refs(()),
-        migration_map=IdentityMigrationMap("producer", (("message:old", "message:new"),)),
+        migration_map=IdentityMigrationMap("producer", tuple(zip(old, new, strict=True))),
         binding=binding,
     )
 
-    with pytest.raises(ObjectRefReconciliationError, match="sealed durable relation: user.result_set_members"):
-        apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
-    assert conn.execute("SELECT member_ref FROM result_set_members").fetchone() == ("message:old",)
+    apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
+
+    successor = conn.execute("SELECT result_set_id FROM retained_query_runs WHERE run_id = 'qr_finding'").fetchone()[0]
+    assert successor != "finding"
+    assert (
+        tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT member_ref FROM result_set_members WHERE result_set_id = ? ORDER BY rank", (successor,)
+            )
+        )
+        == new
+    )
+    assert (
+        tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT member_ref FROM result_set_members WHERE result_set_id = 'finding' ORDER BY rank"
+            )
+        )
+        == old
+    )
+    manifest = get_result_set(conn, successor)
+    assert manifest is not None
+    assert manifest.member_count == len(new)
+    assert manifest.membership_merkle_root == membership_merkle_root(new)
+    assert tuple(
+        conn.execute("SELECT result_set_id FROM query_evaluation_receipts WHERE receipt_id = 'receipt'").fetchone()
+    ) == (successor,)
+    assert tuple(conn.execute("SELECT scope_ref FROM assertions WHERE assertion_id = 'assertion-0'").fetchone()) == (
+        f"result-set:{successor}",
+    )
+    assert tuple(
+        conn.execute(
+            "SELECT COUNT(*) FROM assertions WHERE target_ref LIKE 'message:claude-code:current:n:%'"
+        ).fetchone()
+    ) == (107,)
+    evidence = json.loads(
+        conn.execute("SELECT evidence_refs_json FROM assertions WHERE assertion_id = 'assertion-0'").fetchone()[0]
+    )
+    assert evidence[-2:] == ["codex-session:demo::m::0", "/tmp/receipt"]
+
+
+def test_corrupt_result_set_manifest_blocks_and_rolls_back() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.USER)
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "claude-code"},
+        grain="message",
+        lane="dialogue",
+        rank_policy="fixture",
+        created_at_ms=1,
+    )
+    old, new = "message:legacy", "message:current:n:1"
+    put_result_set(
+        conn,
+        result_set_id="finding",
+        query_hash=query.query_hash,
+        grain="message",
+        corpus_epoch="before",
+        member_refs=(old,),
+        exactness="exact",
+        persistence_class="finding",
+        created_at_ms=2,
+    )
+    conn.execute(
+        "INSERT INTO assertions (assertion_id, target_ref, kind, created_at_ms, updated_at_ms) VALUES ('a', ?, 'note', 3, 3)",
+        (old,),
+    )
+    conn.execute("UPDATE result_sets SET membership_merkle_root = ? WHERE result_set_id = 'finding'", ("0" * 64,))
+    refs = tuple(item.value for item in enumerate_durable_reference_inventory(conn))
+    plan = reconcile_object_refs(
+        refs,
+        candidate_refs=(new,),
+        source_claims=SourceIdentityClaims.from_refs(()),
+        migration_map=IdentityMigrationMap("producer", ((old, new),)),
+        binding=_binding(),
+    )
+
+    with pytest.raises(ObjectRefReconciliationError, match="membership root"):
+        apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
+    assert tuple(conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'a'").fetchone()) == (old,)
+    assert tuple(conn.execute("SELECT COUNT(*) FROM result_sets").fetchone()) == (1,)
 
 
 def test_inventory_includes_evidence_refs_and_rejects_undeclared_reference_columns() -> None:
@@ -290,16 +420,24 @@ def test_inventory_includes_evidence_refs_and_rejects_undeclared_reference_colum
         """
     )
     evidence = "codex-session:demo::message-old::0"
+    file_ref = "file:artifact"
     conn.execute(
         "INSERT INTO assertions VALUES (?, ?, ?, ?, ?, ?)",
-        ("a", "message:session:old", "message:session:old", "user:local", json.dumps([evidence, "/tmp/receipt"]), "[]"),
+        (
+            "a",
+            "message:session:old",
+            "message:session:old",
+            "user:local",
+            json.dumps([evidence, file_ref, "file:///tmp/receipt"]),
+            "[]",
+        ),
     )
     with pytest.raises(ObjectRefReconciliationError, match="lacks a descriptor"):
         enumerate_durable_reference_inventory(conn)
 
     conn.execute("DROP TABLE unexpected_relation")
     inventory = enumerate_durable_reference_inventory(conn)
-    assert {item.value for item in inventory} == {"message:session:old", "user:local", evidence}
+    assert {item.value for item in inventory} == {"message:session:old", "user:local", evidence, file_ref}
 
 
 def test_fresh_durable_ddl_is_covered_by_the_reference_catalog() -> None:

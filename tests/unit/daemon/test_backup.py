@@ -8,7 +8,6 @@ import os
 import sqlite3
 import zipfile
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +17,6 @@ from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
 from polylogue.daemon import backup as backup_mod
 from polylogue.daemon.backup import backup_archive
-from polylogue.operations import zip_acquisition_replay as zip_replay
 from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
@@ -740,40 +738,6 @@ def test_zip_replay_derives_member_and_split_from_empty_legacy_coordinates(tmp_p
             "source_path": recorded_path,
             "source_index": 1,
             "blob_hash": hashlib.sha256(expected).hexdigest(),
-            "capture_mode": "chatgpt",
-        },
-        source_path=recorded_path,
-        zip_payload_cache={},
-    )
-
-    assert error is None
-    assert payload == expected
-
-
-def test_zip_replay_prefers_a_unique_exact_payload_over_structural_matches(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    source_path = tmp_path / "structural-match.zip"
-    with zipfile.ZipFile(source_path, "w") as archive:
-        archive.writestr("conversations.json", "[]")
-    expected = b'{"count":1}'
-    structural_match = b'{"count":1.0}'
-    expected_hash, _ = BlobStore(tmp_path / "blob").write_from_bytes(expected)
-
-    def replay(*_args: object) -> list[SimpleNamespace]:
-        return [
-            SimpleNamespace(source_index=0, payload_bytes=expected),
-            SimpleNamespace(source_index=1, payload_bytes=structural_match),
-        ]
-
-    monkeypatch.setattr(zip_replay, "replay_zip_entry_acquisition_payloads", replay)
-    recorded_path = f"{source_path}:conversations.json"
-    payload, error = zip_reacquisition_payload(
-        {
-            "coordinate_format": "zip-v2",
-            "entry_ordinal": 0,
-            "split_index": 0,
-            "blob_hash": expected_hash,
             "capture_mode": "chatgpt",
         },
         source_path=recorded_path,

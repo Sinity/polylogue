@@ -7,7 +7,7 @@ from typing import Literal
 
 ReferenceCardinality = Literal["scalar", "json-list"]
 ReferenceGrammar = Literal["public", "public-or-opaque"]
-ReferenceTransition = Literal["rewrite", "sealed"]
+ReferenceTransition = Literal["rewrite", "successor", "sealed"]
 DurableTier = Literal["user", "audit"]
 
 
@@ -54,7 +54,13 @@ _USER_RELATIONS = (
         "rewrite",
     ),
     DurableReferenceRelation("user", "query_excision_ledger", ("ledger_id",), (_scalar("actor_ref"),)),
-    DurableReferenceRelation("user", "result_set_members", ("result_set_id", "rank"), (_scalar("member_ref"),)),
+    DurableReferenceRelation(
+        "user",
+        "result_set_members",
+        ("result_set_id", "rank"),
+        (_scalar("member_ref"),),
+        "successor",
+    ),
     DurableReferenceRelation(
         "user",
         "query_evaluation_receipts",

@@ -16,12 +16,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from polylogue.core.hashing import hash_payload
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.storage.sqlite.archive_tiers.durable_references import (
     DurableReferenceField,
     DurableTier,
     durable_reference_relations,
 )
+from polylogue.storage.sqlite.query_objects import membership_merkle_root
 
 
 class ObjectRefDisposition(StrEnum):
@@ -352,6 +354,9 @@ def apply_assertion_transition(
     try:
         for connection, tier in connections_by_tier:
             _apply_declared_references(connection, tier, plan)
+            if tier == "user":
+                successor_refs = _migrate_result_set_manifests(connection, plan)
+                _apply_declared_references(connection, tier, plan, forward=successor_refs)
         if append_audit is not None:
             append_audit(plan)
         for connection, savepoint in zip(connections, savepoints, strict=True):
@@ -378,7 +383,7 @@ def _parse_durable_public_ref(value: str) -> ObjectRef | EvidenceRef:
     if (
         value.startswith(("/", "\\"))
         or "://" in value
-        or lowered.startswith(("file:", "path:", "receipt:", "codex-receipt:"))
+        or lowered.startswith(("file:/", "path:", "receipt:", "codex-receipt:"))
     ):
         raise ValueError("external locator is not an archive evidence ref")
     return parse_public_ref(value)
@@ -476,10 +481,12 @@ def _apply_declared_references(
     conn: sqlite3.Connection,
     tier: DurableTier,
     plan: AssertionTransitionPlan,
+    *,
+    forward: dict[str, str] | None = None,
 ) -> None:
     columns_by_table = _schema_columns(conn)
     tables = frozenset(columns_by_table)
-    forward = dict(plan.forward)
+    forward = dict(plan.forward) if forward is None else forward
     for relation in durable_reference_relations(tier):
         if relation.transition != "rewrite" or relation.table not in tables:
             continue
@@ -516,6 +523,149 @@ def _apply_declared_references(
                 )
 
 
+def _migrate_result_set_manifests(conn: sqlite3.Connection, plan: AssertionTransitionPlan) -> dict[str, str]:
+    """Clone changed immutable result manifests and repoint their owners."""
+    required = {"result_sets", "result_set_members"}
+    present = required & set(_tables(conn))
+    if present and present != required:
+        raise ObjectRefReconciliationError("result-set manifest schema is incomplete")
+    if not present:
+        return {}
+    forward = dict(plan.forward)
+    successors: dict[str, str] = {}
+    rows = tuple(
+        conn.execute(
+            """
+            SELECT result_set_id, query_hash, grain, corpus_epoch, member_count,
+                   membership_merkle_root, ordered_rank_hash, exactness,
+                   persistence_class, created_at_ms, privacy_class,
+                   retention_policy_json, excision_link, promoted_at_ms
+            FROM result_sets ORDER BY result_set_id
+            """
+        )
+    )
+    for row in rows:
+        result_set_id = str(row[0])
+        member_refs = tuple(
+            str(member_row[0])
+            for member_row in conn.execute(
+                "SELECT member_ref FROM result_set_members WHERE result_set_id = ? ORDER BY rank", (result_set_id,)
+            )
+        )
+        _validate_result_set_manifest(row, member_refs)
+        transitioned = tuple(_mapped_reference(member_ref, forward) or member_ref for member_ref in member_refs)
+        if transitioned == member_refs:
+            continue
+        if len(transitioned) != len(set(transitioned)):
+            raise ObjectRefReconciliationError("identity transition collapses result-set members")
+        successor_id = _result_set_successor_id(result_set_id, member_refs, transitioned)
+        _insert_result_set_successor(conn, successor_id, row, transitioned)
+        _repoint_result_set_owners(conn, result_set_id, successor_id)
+        successors[f"result-set:{result_set_id}"] = f"result-set:{successor_id}"
+    return successors
+
+
+def _validate_result_set_manifest(row: tuple[object, ...], member_refs: tuple[str, ...]) -> None:
+    member_count = row[4]
+    if isinstance(member_count, bool) or not isinstance(member_count, int):
+        raise ObjectRefReconciliationError("result-set manifest member count is invalid")
+    if member_count != len(member_refs):
+        raise ObjectRefReconciliationError("result-set member count does not match its manifest")
+    if str(row[5]) != membership_merkle_root(member_refs):
+        raise ObjectRefReconciliationError("result-set membership root does not match its members")
+    if str(row[6]) != hash_payload(list(member_refs)):
+        raise ObjectRefReconciliationError("result-set rank hash does not match its members")
+
+
+def _result_set_successor_id(
+    result_set_id: str,
+    member_refs: tuple[str, ...],
+    transitioned: tuple[str, ...],
+) -> str:
+    return f"{result_set_id}:transition:{hash_payload((result_set_id, member_refs, transitioned))}"
+
+
+def _insert_result_set_successor(
+    conn: sqlite3.Connection,
+    successor_id: str,
+    row: tuple[object, ...],
+    member_refs: tuple[str, ...],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO result_sets (
+            result_set_id, query_hash, grain, corpus_epoch, member_count,
+            membership_merkle_root, ordered_rank_hash, exactness,
+            persistence_class, created_at_ms, privacy_class,
+            retention_policy_json, excision_link, promoted_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            successor_id,
+            *row[1:4],
+            len(member_refs),
+            membership_merkle_root(member_refs),
+            hash_payload(list(member_refs)),
+            *row[7:],
+        ),
+    )
+    conn.executemany(
+        "INSERT INTO result_set_members (result_set_id, rank, member_ref) VALUES (?, ?, ?)",
+        ((successor_id, rank, member_ref) for rank, member_ref in enumerate(member_refs)),
+    )
+
+
+def _repoint_result_set_owners(conn: sqlite3.Connection, old: str, new: str) -> None:
+    if (
+        _table_exists(conn, "query_excision_ledger")
+        and conn.execute("SELECT 1 FROM query_excision_ledger WHERE result_set_id = ?", (old,)).fetchone()
+    ):
+        raise ObjectRefReconciliationError("cannot replace an excised result-set manifest")
+    _clone_holdout_policy(conn, old, new)
+    owner_columns = (
+        ("retained_query_runs", "result_set_id"),
+        ("query_evaluation_receipts", "result_set_id"),
+        ("watched_query_baselines", "result_set_id"),
+    )
+    tables = frozenset(_tables(conn))
+    for table, column in owner_columns:
+        if table in tables and column in _columns(conn, table):
+            conn.execute(
+                f"UPDATE {_quote_identifier(table)} SET {_quote_identifier(column)} = ? "
+                f"WHERE {_quote_identifier(column)} = ?",
+                (new, old),
+            )
+
+
+def _clone_holdout_policy(conn: sqlite3.Connection, old: str, new: str) -> None:
+    if not _table_exists(conn, "result_set_holdout_policies"):
+        return
+    policy = conn.execute(
+        """
+        SELECT frame, selection_definition_json, intended_confirmation_use,
+               authority, created_epoch, created_at_ms
+        FROM result_set_holdout_policies WHERE result_set_id = ?
+        """,
+        (old,),
+    ).fetchone()
+    if policy is None:
+        return
+    if (
+        _table_exists(conn, "holdout_access_receipts")
+        and conn.execute("SELECT 1 FROM holdout_access_receipts WHERE result_set_id = ?", (old,)).fetchone()
+    ):
+        raise ObjectRefReconciliationError("cannot replace a result set with holdout access receipts")
+    conn.execute(
+        """
+        INSERT INTO result_set_holdout_policies (
+            result_set_id, frame, selection_definition_json,
+            intended_confirmation_use, authority, created_epoch, created_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (new, *policy),
+    )
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return (
         conn.execute("SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?", (name,)).fetchone()
@@ -531,7 +681,7 @@ def _validate_plan_inventory(
     classified = {row.source for row in plan.rows}
     for connection, tier in connections:
         inventory = _inventory_for_connection(connection, tier)
-        present = {item.value for item in inventory if item.grammar == "public"}
+        present = {item.value for item in inventory}
         unclassified = present - classified
         if unclassified:
             raise ObjectRefReconciliationError(

@@ -75,13 +75,6 @@ _DOCUMENT_FIELDS = frozenset(
         "adopted_session_id",
         "unresolved",
         "error",
-        # Dispatch sidecar fields are evidence for resolving the sibling
-        # transcript to its parent tool-use block.
-        "toolUseId",
-        "tool_use_id",
-        "agentType",
-        "agent_type",
-        "description",
     }
 )
 _JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
@@ -128,18 +121,6 @@ class ClaudeOrchestrationFact:
     @property
     def meta_path(self) -> str | None:
         return _first_string(self.payload, "metaPath", "meta_path")
-
-    @property
-    def tool_use_id(self) -> str | None:
-        return _first_string(self.payload, "toolUseId", "tool_use_id")
-
-    @property
-    def agent_type(self) -> str | None:
-        return _first_string(self.payload, "agentType", "agent_type")
-
-    @property
-    def description(self) -> str | None:
-        return _string(self.payload.get("description"))
 
     @property
     def is_result(self) -> bool:
