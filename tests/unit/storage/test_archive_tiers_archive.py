@@ -398,7 +398,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-error",
                         text="failed",
                         is_error=True,
-                        exit_code=2,
+                        exit_code=1,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -424,6 +424,21 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
         occurrence_rows = facade.query_session_action_occurrences([session_id], limit=10)
+        is_error_false = parse_unit_source_expression("actions where is_error:false")
+        is_error_true = parse_unit_source_expression("actions where is_error:true")
+        exit_code_zero = parse_unit_source_expression("actions where exit_code = 0")
+        exit_code_one = parse_unit_source_expression("actions where exit_code = 1")
+        exit_code_nonnegative = parse_unit_source_expression("actions where exit_code:>=0")
+        assert is_error_false is not None
+        assert is_error_true is not None
+        assert exit_code_zero is not None
+        assert exit_code_one is not None
+        assert exit_code_nonnegative is not None
+        is_error_false_rows = facade.query_actions(is_error_false.predicate, limit=10)
+        is_error_true_rows = facade.query_actions(is_error_true.predicate, limit=10)
+        exit_code_zero_rows = facade.query_actions(exit_code_zero.predicate, limit=10)
+        exit_code_one_rows = facade.query_actions(exit_code_one.predicate, limit=10)
+        exit_code_nonnegative_rows = facade.query_actions(exit_code_nonnegative.predicate, limit=10)
 
     payloads = [ActionQueryRowPayload.from_row(row) for row in rows]
     assert {row.tool_command: row.result_state for row in rows} == {
@@ -447,6 +462,11 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
         "empty": ActionResultState.NO_RESULT,
     }
     assert occurrence_by_command["empty"].tool_result_block_id is None
+    assert [row.tool_command for row in is_error_false_rows] == ["success"]
+    assert [row.tool_command for row in is_error_true_rows] == ["error"]
+    assert [row.tool_command for row in exit_code_zero_rows] == ["success"]
+    assert [row.tool_command for row in exit_code_one_rows] == ["error"]
+    assert [row.tool_command for row in exit_code_nonnegative_rows] == ["success", "error"]
 
 
 def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage(
