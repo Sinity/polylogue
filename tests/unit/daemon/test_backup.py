@@ -754,6 +754,7 @@ def test_zip_replay_derives_member_and_split_from_empty_legacy_coordinates(tmp_p
         ("codex-session", "full"),
         ("claude-code-session", "full"),
         ("claude-code-session", "unknown"),
+        ("hermes-session", "unknown"),
     ],
 )
 def test_backup_replays_historical_full_snapshot_prefix(
@@ -789,6 +790,46 @@ def test_backup_replays_historical_full_snapshot_prefix(
     assert len(proofs) == 1
     assert proofs[0]["kind"] == "historical_snapshot_prefix_sha256"
     assert unproven == []
+
+
+def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A grown file cannot replace a mismatching historical prefix proof."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "grown.jsonl"
+    historical = b'{"id":"stale"}\n'
+    expected = b'{"id":"expected"}\n'
+    source_path.write_bytes(historical + b'{"id":"later"}\n')
+    blob_hash = hashlib.sha256(expected).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind
+            ) VALUES ('decoder-fallback', 'hermes-session', ?, 0, ?, ?, 1, 'passed', 'full')""",
+            (str(source_path), blob_hash, len(expected)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert proofs == []
+    assert unproven == [
+        {
+            "blob_hash": blob_hash.hex(),
+            "kind": "historical_snapshot_prefix_mismatch",
+            "reason": "historical_snapshot:prefix_mismatch",
+            "raw_id": "decoder-fallback",
+            "source_path": str(source_path),
+        }
+    ]
 
 
 def test_backup_types_legacy_codex_append_without_window(
