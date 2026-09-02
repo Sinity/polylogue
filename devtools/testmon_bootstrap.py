@@ -47,7 +47,12 @@ NativeSelectionMode = Literal["all", "bootstrap", "affected"]
 ASTClassification = Literal["declaration-only", "executable", "source-unreadable"]
 
 _ENVIRONMENT_INPUTS = (
-    "uv.lock",
+    # NOT uv.lock and NOT the installed distributions. A dependency version
+    # does not change what pytest collects, and testmon cannot see inside
+    # site-packages either way; hashing them renamed the environment on every
+    # dependabot merge (16 uv.lock changes in 30 days) and discarded a
+    # complete graph each time. A moved package set earns one complete run,
+    # which the nightly keys on separately (packages_digest in the receipt).
     "pyproject.toml",
     "pytest.ini",
     "tox.ini",
@@ -328,6 +333,12 @@ def _environment_input_paths(
     return tuple(sorted(paths))
 
 
+def installed_packages_digest() -> str:
+    """One digest over the installed distribution set, for run receipts."""
+    encoded = json.dumps(_installed_distributions(), separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _installed_distributions() -> tuple[tuple[str, str], ...]:
     distributions: list[tuple[str, str]] = []
     for distribution in importlib.metadata.distributions():
@@ -361,7 +372,6 @@ def testmon_environment_digest(
             "abi_flags": getattr(sys, "abiflags", ""),
             "platform": platform.platform(),
         },
-        "distributions": _installed_distributions(),
         "inputs": _fingerprint_inputs(
             root,
             _environment_input_paths(root, deadline_monotonic=deadline_monotonic),

@@ -5,10 +5,11 @@ at a cost measured in hours.
 
 pytest-testmon identifies a dependency graph by an *environment digest*. The
 digest must cover anything that changes collection semantics but that testmon
-cannot observe by tracing files -- the installed distribution set, pytest
-configuration, the plugin list, the marker expressions, the collection roots.
-When one of those changes, every recorded fingerprint is suspect and the graph
-must be rebuilt.
+cannot observe by tracing files -- pytest configuration, the plugin list, the
+marker expressions, the collection roots. When one of those changes, every
+recorded fingerprint is suspect and the graph must be rebuilt. The installed
+distribution set is deliberately not in it: a dependency version is recorded
+on the receipt as package drift and re-traced by the next complete run.
 
 `devtools/verify.py` was itself a digest input, because it constructs that
 invocation. But it is also a ~3,500-line orchestrator that formats output,

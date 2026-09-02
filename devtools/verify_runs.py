@@ -175,9 +175,17 @@ def _read_only_git_env() -> dict[str, str]:
 def git_dirty(cwd: Path | None = None) -> bool:
     try:
         result = subprocess.run(
-            ["git", "status", "--short"], capture_output=True, text=True, timeout=5, cwd=cwd, env=_read_only_git_env()
+            ["git", "status", "--short", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd,
+            env=_read_only_git_env(),
         )
     except (OSError, subprocess.TimeoutExpired):
+        return True
+    if result.returncode != 0:
+        # A tree whose status cannot be read is not a proven-clean tree.
         return True
     return bool((result.stdout or "").strip())
 
@@ -269,6 +277,9 @@ class VerifyRun:
         missing_executable_paths: Sequence[str] = (),
         runtime_data_paths: Sequence[str] = (),
         environment_digest: str | None = None,
+        packages_digest: str | None = None,
+        plan_digest: str | None = None,
+        packages_drift: bool = False,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -277,6 +288,9 @@ class VerifyRun:
             "missing_executable_paths": list(missing_executable_paths),
             "runtime_data_paths": list(runtime_data_paths),
             "environment_digest": environment_digest,
+            "packages_digest": packages_digest,
+            "plan_digest": plan_digest,
+            "packages_drift": packages_drift,
         }
         self.write()
 
@@ -793,6 +807,8 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
             "exit_code",
             "diagnosis",
             "artifact_dir",
+            "git_head",
+            "git_dirty",
             "testmon_selection",
             "pytest_aggregate",
         )
@@ -927,17 +943,43 @@ def prune_successful_verify_runs(
                     }
                 )
 
+        # A skipped complete run has no detail of its own; it must not spend
+        # the successful-detail quota. The run a skip names as coverage stays
+        # retained while one of the newest ``max_successful`` skips points at
+        # it, so pins are bounded the way retained successes are rather than
+        # accumulating with the append-only history.
+        skipped: list[tuple[str, str, str]] = []
+        for run_id, row in durable.items():
+            if row.get("diagnosis") != "corpus_already_verified":
+                continue
+            aggregate = row.get("pytest_aggregate")
+            covered = aggregate.get("covered_by_run") if isinstance(aggregate, Mapping) else None
+            skipped.append((str(row.get("finished_at") or ""), run_id, covered if isinstance(covered, str) else ""))
+        skipped.sort(reverse=True)
+        skipped_ids = {run_id for _finished, run_id, _covered in skipped}
+        pinned_ids = {covered for _finished, _run_id, covered in skipped[:max_successful] if covered}
         successes = sorted(
-            (candidate for candidate in candidates if candidate["status"] == "success"),
+            (
+                candidate
+                for candidate in candidates
+                if candidate["status"] == "success" and candidate["run_id"] not in skipped_ids
+            ),
             key=lambda item: (item["finished_at"], item["run_id"]),
             reverse=True,
         )
+        pinned = [
+            candidate
+            for candidate in candidates
+            if candidate["run_id"] in pinned_ids and candidate not in successes[:max_successful]
+        ]
         failures = sorted(
             (candidate for candidate in candidates if candidate["status"] != "success"),
             key=lambda item: (item["finished_at"], item["run_id"]),
             reverse=True,
         )
-        retained = [candidate["run_id"] for candidate in successes[:max_successful]]
+        retained = [candidate["run_id"] for candidate in successes[:max_successful]] + [
+            candidate["run_id"] for candidate in pinned
+        ]
         retained_failures: list[str] = []
         keep_failure_names: set[str] = set()
         if failures:
@@ -957,7 +999,11 @@ def prune_successful_verify_runs(
                 keep_failure_names.add(candidate["name"])
                 used_bytes += candidate["size"]
 
-        keep_names = {candidate["name"] for candidate in successes[:max_successful]} | keep_failure_names
+        keep_names = (
+            {candidate["name"] for candidate in successes[:max_successful]}
+            | {candidate["name"] for candidate in pinned}
+            | keep_failure_names
+        )
         pruned: list[str] = []
         for candidate in candidates:
             if candidate["name"] in keep_names:

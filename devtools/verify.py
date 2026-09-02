@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from devtools.testmon_bootstrap import (
     NativeTestmonDeadlineError,
     NativeTestmonRepairError,
     classify_native_testmon_changes,
+    installed_packages_digest,
     prepare_native_testmon_environment,
 )
 from devtools.toolchain import venv_bin, venv_python
@@ -45,6 +47,8 @@ from devtools.verification_ledger import (
     read_verify_history,
 )
 from devtools.verification_result import declared_verification_result
+from devtools.verify_js_tests import _STAMP_NAME as JS_INSTALL_STAMP
+from devtools.verify_js_tests import JS_PACKAGES, available_cpus, extension_test_workers
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
@@ -54,6 +58,7 @@ from devtools.verify_runs import (
     canonical_verification_receipt,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
+    git_dirty,
     git_head,
     prune_successful_verify_runs,
 )
@@ -502,6 +507,192 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
     return VerificationScope.AFFECTED
 
 
+def _execution_plan_digest() -> str:
+    """Inputs of the whole verification plan beyond Python collection: worker
+    count, the JavaScript toolchain and installed package trees the js-tests
+    gate runs against, and whether each required Python gate executable can
+    be launched."""
+    node = shutil.which("node")
+    node_version = ""
+    if node:
+        try:
+            node_version = subprocess.run(
+                [node, "--version"], capture_output=True, text=True, timeout=10, check=False
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            node_version = "unavailable"
+    npm = shutil.which("npm")
+    npm_version = ""
+    if npm:
+        try:
+            npm_version = subprocess.run(
+                [npm, "--version"], capture_output=True, text=True, timeout=10, check=False
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            npm_version = "unavailable"
+    payload = {
+        "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
+        "js_workers": os.environ.get("POLYLOGUE_EXTENSION_TEST_WORKERS")
+        or str(extension_test_workers(available_cpus())),
+        # Gates that read an authority override from the environment run a
+        # different plan under it.
+        "consumer_reachability": {
+            name: os.environ.get(name, "") for name in ("CONSUMER_REACHABILITY_BASE", "CONSUMER_REACHABILITY_HEAD")
+        },
+        # Gates that compare against master read the tracking ref; a fetch
+        # that moves it is a different plan at the same head.
+        "master": _git_commit("origin/master") or "",
+        "merge_base": _merge_base_with_master(),
+        # A stored Hypothesis counterexample is replayed by a real run; the
+        # example database is part of what the corpus executes.
+        "hypothesis_examples": _tree_listing(ROOT / ".cache" / "hypothesis" / "examples"),
+        "node": node_version,
+        "npm": npm_version,
+        # The Python gate executables the plan requires: a missing or
+        # unlaunchable one turns a real run red, so its availability is part
+        # of the plan a recorded green stands for.
+        "gates": {name: _executable_identity(venv_bin(name, root=ROOT)) for name in ("ruff", "mypy", "dmypy")},
+        # Every step of the complete plan names an executable; tools a gate
+        # resolves at run time are listed here.
+        "steps": {
+            label: _executable_identity(command[0])
+            for label, command in build_verify_steps(quick=False, testmon_mode="all", testmon_environment="plan")
+            if command
+        },
+        "tools": {name: _executable_identity(name) for name in ("ast-grep", "node", "npm")},
+        # The js-tests gate runs against each package's installed tree; the
+        # lockfile, the install stamp and the installed binaries identify
+        # what a green run executed.
+        "js": {
+            package: {
+                "lock": _file_digest(ROOT / package / "package-lock.json"),
+                "installed": _file_digest(ROOT / package / "node_modules" / JS_INSTALL_STAMP),
+                "binaries": _tree_listing(ROOT / package / "node_modules" / ".bin"),
+            }
+            for package in JS_PACKAGES
+        },
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _reuse_inputs_still_hold(packages: str, plan: str) -> bool:
+    """Recompute the reuse inputs at the decision; anything unreadable means run."""
+    try:
+        return installed_packages_digest() == packages and _execution_plan_digest() == plan
+    except (NativeTestmonRepairError, OSError):
+        return False
+
+
+def _merge_base_with_master() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "HEAD", "origin/master"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            cwd=ROOT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _executable_identity(executable: str) -> str:
+    """Where an executable resolves and what it is, or "absent"."""
+    if not executable_gate_result([executable], gate="plan").executable_available:
+        return "absent"
+    resolved = executable if os.path.dirname(executable) else shutil.which(executable)
+    if resolved is None:
+        return "absent"
+    try:
+        real = os.path.realpath(resolved)
+        state = os.stat(real)
+    except OSError:
+        return "absent"
+    return f"{real}:{state.st_size}:{int(state.st_mtime)}"
+
+
+def _tree_listing(root: Path) -> str:
+    """A digest of the names and sizes of the files directly under a directory."""
+    try:
+        entries = sorted((entry.name, entry.stat().st_size) for entry in root.iterdir() if not entry.is_dir())
+    except OSError:
+        return "absent"
+    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "absent"
+
+
+def _packages_drift(packages: str) -> bool:
+    """Whether the installed set differs from the newest complete run's.
+
+    A dependency version does not rename the environment (testmon cannot see
+    inside site-packages), so this is recorded on the receipt rather than
+    used to discard the graph; the next complete run re-traces under the new
+    set because its skip rule keys on packages_digest.
+    """
+    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
+        if row.get("tier") != "all":
+            continue
+        selection = row.get("testmon_selection")
+        recorded = selection.get("packages_digest") if isinstance(selection, Mapping) else None
+        if isinstance(recorded, str):
+            return recorded != packages
+    return False
+
+
+def _corpus_already_verified(*, head: str, environment: str, packages: str, plan: str) -> str | None:
+    """The run id of the newest complete-corpus attempt at this head, environment,
+    package set, and execution plan, if that attempt was a clean-tree success."""
+    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
+        receipt = row.get("semantic_receipt")
+        selection = row.get("testmon_selection")
+        aggregate = row.get("pytest_aggregate")
+        if not (isinstance(receipt, Mapping) and isinstance(selection, Mapping) and isinstance(aggregate, Mapping)):
+            continue
+        if aggregate.get("covered_by_run"):
+            # A skip is not an attempt; the attempt it reused is older.
+            continue
+        if row.get("tier") != "all":
+            # Any traced run since, at any head, rewrote the shared graph's
+            # edges; the complete run on record no longer describes the
+            # graph on disk.
+            return None
+        # The newest complete attempt anywhere is the graph on disk. If it
+        # ran at another head, environment, package set or plan, this
+        # invocation's corpus is not what is recorded, so it runs.
+        if (
+            receipt.get("source_revision") != head
+            or selection.get("environment_digest") != environment
+            or selection.get("packages_digest") != packages
+            or selection.get("plan_digest") != plan
+        ):
+            return None
+        # The newest attempt decides: a later failed recompute must not be
+        # hidden behind an older green.
+        if (
+            row.get("status") == "success"
+            and row.get("git_dirty") is False
+            and row.get("git_head") == head
+            and aggregate.get("complete_corpus_covered") is True
+        ):
+            run_id = row.get("run_id")
+            artifact_dir = row.get("artifact_dir")
+            # Coverage is only reusable while its evidence still exists; a
+            # run whose detail retention pruned is history, not a receipt.
+            if isinstance(run_id, str) and isinstance(artifact_dir, str) and (ROOT / artifact_dir).is_dir():
+                return run_id
+            return None
+        return None
+    return None
+
+
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
     if operation:
@@ -681,8 +872,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--commit", action="store_true")
     parser.add_argument("--all", "--full", dest="all_tests", action="store_true")
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="run the complete corpus even when this head and environment already have a successful complete run",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.recompute and not args.all_tests:
+        parser.error("--recompute applies to the complete corpus; pass --all")
     _anchor_verification_paths()
     validate_authority_matrix()
     started = time.monotonic()
@@ -723,6 +921,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     ROOT,
                     required_executable_paths=impact.executable_paths,
                 )
+                packages = installed_packages_digest()
+                plan = _execution_plan_digest()
             except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
                 payload = _finish_and_record_verification(
                     run=run,
@@ -742,7 +942,47 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 missing_executable_paths=preparation.local_state.missing_executable_paths,
                 runtime_data_paths=impact.runtime_data_paths,
                 environment_digest=preparation.environment_name,
+                packages_digest=packages,
+                plan_digest=plan,
+                packages_drift=_packages_drift(packages),
             )
+            if args.all_tests and not args.recompute and preparation.local_state.valid:
+                # A graph that needs bootstrapping is itself a reason to run:
+                # the skip covers verification, not the graph.
+                covered = _corpus_already_verified(
+                    head=head, environment=preparation.environment_name, packages=packages, plan=plan
+                )
+                if (
+                    covered is not None
+                    and not git_dirty(ROOT)
+                    and git_head(ROOT) == head
+                    # The inputs are recomputed at the decision: an
+                    # environment sync between capture and here is a new plan.
+                    and _reuse_inputs_still_hold(packages, plan)
+                ):
+                    # The corpus at this head under this environment is already
+                    # a recorded fact; rerunning it changes nothing but the
+                    # electricity bill. A different head, a moved dependency
+                    # set, a dirty tree, or a head that moved while this run
+                    # prepared runs in full.
+                    payload = _finish_and_record_verification(
+                        run=run,
+                        exit_code=0,
+                        duration_s=time.monotonic() - started,
+                        diagnosis="corpus_already_verified",
+                        verification_scope=scope.value,
+                        final_git_head=head,
+                        pytest_aggregate={
+                            "selection_mode": "all",
+                            "outcomes": {},
+                            "terminal_green": True,
+                            "complete_corpus_covered": False,
+                            "covered_by_run": covered,
+                        },
+                    )
+                    sys.stderr.write(f"verify: complete corpus already verified at {head[:12]} by run {covered}\n")
+                    _emit(payload, use_json=args.json, operation=agentctl_operation)
+                    return 0
             if preparation.selection_mode == "bootstrap" and not args.all_tests:
                 payload = _finish_and_record_verification(
                     run=run,

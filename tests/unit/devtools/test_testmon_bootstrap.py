@@ -225,16 +225,18 @@ def test_environment_digest_changes_with_collection_semantics(
 
     (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-ra'\n", encoding="utf-8")
     config_changed = _testmon_environment_digest(tmp_path)
+    # Neither a dependency version nor the process environment changes what
+    # pytest collects; renaming the environment for them discarded a complete
+    # graph on every dependabot merge and split shells from the daemon.
     monkeypatch.setattr("devtools.testmon_bootstrap._installed_distributions", lambda: (("pytest", "changed"),))
     distributions_changed = _testmon_environment_digest(tmp_path)
-    # Process environment that changes example budgets, not collection, must
-    # not rename the environment: the daemon and every shell share one graph.
     monkeypatch.setenv("HYPOTHESIS_PROFILE", "ci")
     monkeypatch.setenv("POLYLOGUE_CI", "testmon-digest-contract")
     process_environment_changed = _testmon_environment_digest(tmp_path)
 
-    assert len({initial, config_changed, distributions_changed}) == 3
-    assert process_environment_changed == distributions_changed
+    assert initial != config_changed
+    assert distributions_changed == config_changed
+    assert process_environment_changed == config_changed
 
 
 def test_environment_digest_changes_when_root_conftest_is_added(tmp_path: Path) -> None:

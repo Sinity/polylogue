@@ -71,9 +71,12 @@ browser install step is normally unnecessary after `npm ci`.
 verification reuses a compatible graph or refuses before pytest starts; an
 explicit `devtools verify --all` is the route that builds a missing graph.
 
-The native environment key includes Python, active distributions, lock and
-project metadata, pytest configuration, the repository-root and `tests/**`
-`conftest.py` files, and collection-active local pytest plugins. Ordinary
+The native environment key includes the Python version, project and pytest
+configuration, the repository-root `conftest.py` sentinel, the collection
+contract, and collection-active local pytest plugins. Installed distributions
+and `uv.lock` are not part of it: a dependency change cannot be traced, so it
+is recorded on the receipt as package drift and re-traced by the next complete
+run rather than discarding the graph. Ordinary
 `tests/infra` helpers stay incremental: import
 them from an executing fixture or test when their module initialization is
 dependency-bearing, so pytest-testmon observes that initialization and helper
