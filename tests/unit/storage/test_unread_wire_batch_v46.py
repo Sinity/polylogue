@@ -658,6 +658,45 @@ async def test_session_identity_alias_resolves_parent_dispatch_evidence(tmp_path
                     (child_id,),
                 )
             )
+        await ingest_session(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="parent-native:worktree-a",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="parent-message",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Task",
+                                tool_id="dispatch-1",
+                            )
+                        ],
+                    )
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="claude_delegation_progress",
+                        source_message_provider_id="dispatch-1",
+                        payload={"child_provider_id": "child-native:agent-a"},
+                    )
+                ],
+            ),
+            backend=backend,
+        )
+        async with backend.connection() as conn:
+            retired_links = list(
+                await conn.execute_fetchall(
+                    """SELECT l.resolved_dst_session_id, l.parent_tool_use_block_id,
+                              s.parent_session_id, s.root_session_id
+                       FROM session_links AS l
+                       JOIN sessions AS s ON s.session_id = l.src_session_id
+                       WHERE l.src_session_id = ?""",
+                    (child_id,),
+                )
+            )
     finally:
         await repo.close()
 
@@ -667,6 +706,11 @@ async def test_session_identity_alias_resolves_parent_dispatch_evidence(tmp_path
     assert link["parent_tool_use_block_id"] == archive_block_id(
         archive_message_id(parent_id, "parent-message", position=0), position=0
     )
+    [retired_link] = retired_links
+    assert retired_link["resolved_dst_session_id"] is None
+    assert retired_link["parent_tool_use_block_id"] is None
+    assert retired_link["parent_session_id"] is None
+    assert retired_link["root_session_id"] == child_id
     assert link["parent_tool_use_block_id"] != archive_block_id(
         archive_message_id(decoy_id, "decoy-message", position=0), position=0
     )
@@ -704,7 +748,20 @@ async def test_session_identity_alias_resolves_child_written_before_parent(tmp_p
                         provider_message_id="parent-message",
                         role=Role.ASSISTANT,
                         position=0,
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent")],
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Task",
+                                tool_id="dispatch-1",
+                            )
+                        ],
+                    )
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="claude_delegation_progress",
+                        source_message_provider_id="dispatch-1",
+                        payload={"child_provider_id": "child-native:agent-a"},
                     )
                 ],
             ),
@@ -713,7 +770,9 @@ async def test_session_identity_alias_resolves_child_written_before_parent(tmp_p
         async with backend.connection() as conn:
             links = list(
                 await conn.execute_fetchall(
-                    "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ?", (child_id,)
+                    """SELECT resolved_dst_session_id, parent_tool_use_block_id
+                       FROM session_links WHERE src_session_id = ?""",
+                    (child_id,),
                 )
             )
     finally:
@@ -722,3 +781,75 @@ async def test_session_identity_alias_resolves_child_written_before_parent(tmp_p
     assert len(links) == 1
     link = links[0]
     assert link["resolved_dst_session_id"] == parent_id
+    assert link["parent_tool_use_block_id"] == archive_block_id(
+        archive_message_id(parent_id, "parent-message", position=0), position=0
+    )
+
+
+async def test_session_identity_alias_conflict_invalidates_resolved_child(tmp_path: Path) -> None:
+    """An ambiguous alias cannot keep an older resolved parent edge."""
+    backend = SQLiteBackend(db_path=tmp_path / "session-identity-alias-conflict.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        await ingest_session(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="parent-a:worktree-a",
+                provider_session_aliases=["parent-native"],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="parent-a-message",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent a")],
+                    )
+                ],
+            ),
+            backend=backend,
+        )
+        child_id = await ingest_session(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="child-native:agent-a",
+                parent_session_provider_id="parent-native",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="child-message",
+                        role=Role.USER,
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="work")],
+                    )
+                ],
+            ),
+            backend=backend,
+        )
+        await ingest_session(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="parent-b:worktree-b",
+                provider_session_aliases=["parent-native"],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="parent-b-message",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="parent b")],
+                    )
+                ],
+            ),
+            backend=backend,
+        )
+        async with backend.connection() as conn:
+            [link] = await conn.execute_fetchall(
+                """SELECT l.resolved_dst_session_id, s.parent_session_id, s.root_session_id
+                   FROM session_links AS l
+                   JOIN sessions AS s ON s.session_id = l.src_session_id
+                   WHERE l.src_session_id = ?""",
+                (child_id,),
+            )
+    finally:
+        await repo.close()
+
+    assert link["resolved_dst_session_id"] is None
+    assert link["parent_session_id"] is None
+    assert link["root_session_id"] == child_id
