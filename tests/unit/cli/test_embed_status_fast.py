@@ -66,6 +66,10 @@ def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = 
             "INSERT INTO messages (message_id, session_id, content_hash) VALUES (?, ?, ?)",
             [("msg-1", "conv-1", "h1"), ("msg-2", "conv-2", "h2")],
         )
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
         if vec_table:
             conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
         conn.commit()
@@ -137,6 +141,12 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
             ("codex-session:pending:m2", "codex-session:pending", _PENDING_TEXT_2),
         )
         conn.commit()
+
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
 
     from polylogue.storage.embeddings.identity import (
         EmbeddingRecipe,
@@ -239,6 +249,14 @@ def _payload(result_output: str) -> dict[str, Any]:
 
 
 def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str, Any]:
+    index_db = db_path if db_path.name == "index.db" else db_path.with_name("index.db")
+    if index_db.exists():
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        with sqlite3.connect(index_db) as conn:
+            if int(conn.execute("PRAGMA user_version").fetchone()[0]) == 0:
+                conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",
@@ -255,6 +273,14 @@ def _run_status(db_path: Path, *args: str, cfg: _Cfg | None = None) -> dict[str,
 
 
 def _run_status_text(db_path: Path, *, detail: bool = False, cfg: _Cfg | None = None) -> str:
+    index_db = db_path if db_path.name == "index.db" else db_path.with_name("index.db")
+    if index_db.exists():
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        with sqlite3.connect(index_db) as conn:
+            if int(conn.execute("PRAGMA user_version").fetchone()[0]) == 0:
+                conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
     runner = CliRunner(env={"POLYLOGUE_FORCE_PLAIN": "1"})
     with patch(
         "polylogue.config.load_polylogue_config",

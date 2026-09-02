@@ -1381,6 +1381,29 @@ def test_seeded_archive_key_changes_with_archive_schema(monkeypatch: pytest.Monk
     assert seeded_archive_key(()).archive_schema_id != baseline.archive_schema_id
 
 
+def test_seeded_archive_key_changes_with_derived_schema_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Derived tier identity changes invalidate reusable archive artifacts.
+
+    Anti-vacuity: removing derived identities from ``_archive_schema_id`` makes
+    both key comparisons equal after this simulated runtime-index change.
+    """
+    from polylogue.storage.sqlite.archive_tiers import schema_identity
+
+    baseline = seeded_archive_key(())
+    original = schema_identity.derived_schema_identity
+
+    def changed_identity(tier: schema_identity.DerivedTier) -> str:
+        identity = original(tier)
+        return identity + "-changed" if tier is schema_identity.DerivedTier.INDEX else identity
+
+    monkeypatch.setattr(schema_identity, "derived_schema_identity", changed_identity)
+
+    changed = seeded_archive_key(())
+
+    assert changed.value != baseline.value
+    assert changed.archive_schema_id != baseline.archive_schema_id
+
+
 def test_seeded_archive_key_ignores_ddl_reordering() -> None:
     """The schema component names the DDL, not the module text around it.
 
