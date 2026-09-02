@@ -618,6 +618,87 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
     assert history["pytest_aggregate"]["covered_by_run"] == "run-prior"
 
 
+def test_a_head_that_moves_during_preparation_is_not_reused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: without the recheck a clean tree at a new commit inherits
+    the old commit's coverage."""
+    history: dict[str, Any] = {}
+    heads = iter(["head", "head-moved", "head-moved", "head-moved"])
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: next(heads, "head-moved"))
+    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    monkeypatch.setattr(
+        verify,
+        "prepare_native_testmon_environment",
+        lambda *_a, **_k: SimpleNamespace(
+            selection_mode="affected",
+            environment_name="env-1",
+            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
+        ),
+    )
+    monkeypatch.setattr(
+        verify,
+        "read_verify_history",
+        lambda _path: [
+            {
+                "tier": "all",
+                "status": "success",
+                "run_id": "run-prior",
+                "git_dirty": False,
+                "git_head": "head",
+                "semantic_receipt": {"source_revision": "head"},
+                "testmon_selection": {
+                    "environment_digest": "env-1",
+                    "packages_digest": "pkgs-1",
+                    "plan_digest": "plan-1",
+                },
+                "pytest_aggregate": {"complete_corpus_covered": True},
+            }
+        ],
+    )
+    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
+    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: "plan-1")
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    built: list[str] = []
+
+    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
+        built.append("built")
+        return []
+
+    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
+
+    verify._main(["--all"])
+
+    assert built == ["built"], "a moved head must run, not inherit"
+    assert history.get("diagnosis") != "corpus_already_verified"
+
+
+def test_execution_plan_digest_sees_gate_executables(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: a ruff that vanished after the green run must change the plan."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    binaries = tmp_path / ".venv" / "bin"
+    binaries.mkdir(parents=True)
+    for name in ("ruff", "mypy", "dmypy"):
+        target = binaries / name
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o755)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+
+    with_ruff = verify._execution_plan_digest()
+    (binaries / "ruff").unlink()
+    without_ruff = verify._execution_plan_digest()
+
+    assert with_ruff != without_ruff
+
+
 def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity, one clause each: a moved package set or plan runs; a dirty
     source run is not coverage; a newer failed recompute is not hidden behind

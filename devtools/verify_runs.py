@@ -936,17 +936,20 @@ def prune_successful_verify_runs(
                 )
 
         # A skipped complete run has no detail of its own; it must not spend
-        # the successful-detail quota, and the run it names as coverage stays
-        # retained while any receipt still points at it.
-        skipped_ids: set[str] = set()
-        pinned_ids: set[str] = set()
+        # the successful-detail quota. The run a skip names as coverage stays
+        # retained while one of the newest ``max_successful`` skips points at
+        # it, so pins are bounded the way retained successes are rather than
+        # accumulating with the append-only history.
+        skipped: list[tuple[str, str, str]] = []
         for run_id, row in durable.items():
-            if row.get("diagnosis") == "corpus_already_verified":
-                skipped_ids.add(run_id)
+            if row.get("diagnosis") != "corpus_already_verified":
+                continue
             aggregate = row.get("pytest_aggregate")
             covered = aggregate.get("covered_by_run") if isinstance(aggregate, Mapping) else None
-            if isinstance(covered, str) and covered:
-                pinned_ids.add(covered)
+            skipped.append((str(row.get("finished_at") or ""), run_id, covered if isinstance(covered, str) else ""))
+        skipped.sort(reverse=True)
+        skipped_ids = {run_id for _finished, run_id, _covered in skipped}
+        pinned_ids = {covered for _finished, _run_id, covered in skipped[:max_successful] if covered}
         successes = sorted(
             (
                 candidate

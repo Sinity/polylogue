@@ -32,13 +32,13 @@ def test_successful_detail_retention_requires_durable_history_and_preserves_fail
     failed = _finished_run(tmp_path, index=20, exit_code=1)
     cancelled = _finished_run(tmp_path, index=21, exit_code=143)
 
-    before_history = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=2)
+    before_history = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=2, now=_TEST_NOW)
     assert before_history["history_durable"] is False
     assert all((tmp_path / str(payload["artifact_dir"])).exists() for payload in successful)
 
     for payload in (*successful, failed, cancelled):
         append_verify_history(payload, path=history)
-    receipt = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=2)
+    receipt = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=2, now=_TEST_NOW)
     retained = receipt["retained_run_ids"]
     pruned = receipt["pruned_run_ids"]
     assert isinstance(retained, list)
@@ -200,3 +200,26 @@ def test_pruning_refuses_detail_tree_over_global_node_budget(tmp_path: Path, mon
 
     assert result["pruned_run_ids"] == []
     assert detail.exists()
+
+
+def test_coverage_pins_are_bounded_by_the_newest_skips(tmp_path: Path) -> None:
+    """Anti-vacuity: pinning every historical ``covered_by_run`` keeps the
+    oldest full run's detail forever."""
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    full = [_finished_run(tmp_path, index=index, exit_code=0) for index in range(4)]
+    skips = []
+    for index, covered in enumerate(full[:3]):
+        skip = _finished_run(tmp_path, index=10 + index, exit_code=0)
+        skip["diagnosis"] = "corpus_already_verified"
+        skip["pytest_aggregate"] = {"covered_by_run": covered["run_id"]}
+        skips.append(skip)
+    for payload in (*full, *skips):
+        append_verify_history(payload, path=history)
+
+    receipt = prune_successful_verify_runs(root=tmp_path, history_path=history, max_successful=1)
+
+    retained = set(cast(list[str], receipt["retained_run_ids"]))
+    assert full[3]["run_id"] in retained, "the newest full run is retained on its own"
+    assert full[2]["run_id"] in retained, "the newest skip's coverage is pinned"
+    assert full[0]["run_id"] not in retained
+    assert full[1]["run_id"] not in retained

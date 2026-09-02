@@ -507,7 +507,8 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
 
 def _execution_plan_digest() -> str:
     """Inputs of the whole verification plan beyond Python collection: worker
-    count and the JavaScript toolchain the js-tests gate runs under."""
+    count, the JavaScript toolchain the js-tests gate runs under, and whether
+    each required Python gate executable can be launched."""
     node = shutil.which("node")
     node_version = ""
     if node:
@@ -530,6 +531,13 @@ def _execution_plan_digest() -> str:
         "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
         "node": node_version,
         "npm": npm_version,
+        # The Python gate executables the plan requires: a missing or
+        # unlaunchable one turns a real run red, so its availability is part
+        # of the plan a recorded green stands for.
+        "gates": {
+            name: executable_gate_result([venv_bin(name, root=ROOT)], gate=name).executable_available
+            for name in ("ruff", "mypy", "dmypy")
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -844,11 +852,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 covered = _corpus_already_verified(
                     head=head, environment=preparation.environment_name, packages=packages, plan=plan
                 )
-                if covered is not None and not git_dirty(ROOT):
+                if covered is not None and not git_dirty(ROOT) and git_head(ROOT) == head:
                     # The corpus at this head under this environment is already
                     # a recorded fact; rerunning it changes nothing but the
                     # electricity bill. A different head, a moved dependency
-                    # set, or a dirty tree runs in full.
+                    # set, a dirty tree, or a head that moved while this run
+                    # prepared runs in full.
                     payload = _finish_and_record_verification(
                         run=run,
                         exit_code=0,
